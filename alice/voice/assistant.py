@@ -24,10 +24,22 @@ from alice.voice.tone import SentenceSplitter
 VOICE_PROMPT = """# Voice mode
 You are speaking out loud through text-to-speech. The user hears you, they may not be looking at the screen.
 - Answer in Turkish, in 1-3 short spoken sentences unless asked for detail. No markdown, lists, tables or emojis.
+- Each user message ends with the current date and time in brackets. Use it for time/date questions;
+  answer simple questions (time, date, small talk, general knowledge) directly without calling tools.
 - Never read code, paths or long numbers aloud; say you put it on screen.
 - In urgent situations (flight warnings, errors) be clear and brief, no jokes.
 - Checklists (checklist tool): read only the current step, then wait; on "tamam", "devam" or "sonraki" call next.
 - "Not al" during a flight goes to the kneeboard (kneeboard tool, action note); otherwise to the notes tool."""
+
+def with_clock(text: str) -> str:
+    """Sesli asistan saatlerce açık kalır; sistem istemindeki saat eskir. Saati/tarihi her cümleye ekle ki
+    "saat kaç" gibi sorular komut çalıştırmadan cevaplansın."""
+    from datetime import datetime
+
+    days = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
+    now = datetime.now()
+    return f"{text}\n\n[şu an: {now:%d.%m.%Y} {days[now.weekday()]}, saat {now:%H:%M}]"
+
 
 FILLERS = ["Hemen bakıyorum.", "Bir saniye, bakıyorum.", "Tamam, bakıyorum."]
 YES = ("evet", "tamam", "olur", "onay", "yap", "devam", "peki")
@@ -208,7 +220,7 @@ class VoiceAssistant:
             self._busy.set()
             try:
                 self.ui.begin_turn()
-                self.agent.run_turn(text)
+                self.agent.run_turn(with_clock(text))
             except Exception as e:
                 self.speaker.say("Bir sorun çıktı, ekrana yazdım.", "serious")
                 self.emit(f"hata: {e}")

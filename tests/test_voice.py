@@ -271,7 +271,8 @@ class FakeAgent:
         self.stopped = 0
 
     def run_turn(self, text):
-        self.turns.append(text)
+        assert "[şu an: " in text  # saat her cümleye eklenir
+        self.turns.append(text.split("\n\n[şu an: ")[0])
         self.ui.stream_delta("Tamam, hallettim.")
         self.ui.stream_end("Tamam, hallettim.", "x")
         return "ok"

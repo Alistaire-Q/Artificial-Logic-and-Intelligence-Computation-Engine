@@ -21,6 +21,9 @@ from typing import Any
 from alice.tools.base import DANGER, EXEC, Tool, ToolContext, ToolError, ToolResult, obj, truncate
 
 IS_WIN = sys.platform == "win32"
+# Konsolsuz çalışan çekirdekten (pythonw) her komut ayrı bir siyah pencere açmasın. Komutun başlattığı
+# pencereli programlar (Blender, Not Defteri...) yine görünür.
+NO_WINDOW = 0x08000000 if IS_WIN else 0
 
 # Geri dönüşü zor ya da sistemi bozabilecek kalıplar. "auto" modda bunlar için onay istenir.
 DANGEROUS = [
@@ -106,7 +109,7 @@ class RunCommand(Tool):
             fh = open(log, "wb")
             kwargs: dict[str, Any] = {}
             if IS_WIN:
-                kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
+                kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | NO_WINDOW  # type: ignore[attr-defined]
             else:
                 kwargs["start_new_session"] = True
             pop = subprocess.Popen(argv, cwd=wd, stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
@@ -121,7 +124,8 @@ class RunCommand(Tool):
         # Çıktı boru yerine geçici dosyaya yazılır: komutun başlattığı pencereli bir program (ör. Blender)
         # boruları devralırsa subprocess.run zaman aşımından sonra bile sonsuza kadar bekliyordu.
         with tempfile.TemporaryFile() as fo, tempfile.TemporaryFile() as fe:
-            pop = subprocess.Popen(argv, cwd=wd, stdout=fo, stderr=fe, stdin=subprocess.DEVNULL, env=_env())
+            pop = subprocess.Popen(argv, cwd=wd, stdout=fo, stderr=fe, stdin=subprocess.DEVNULL, env=_env(),
+                                   creationflags=NO_WINDOW)
             with track_foreground(ctx, pop):
                 try:
                     returncode = pop.wait(timeout=timeout)
