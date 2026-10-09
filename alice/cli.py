@@ -593,6 +593,15 @@ def app_cmd(argv: list[str]) -> int:
     cfg = load_config(cwd=cwd)
     state = AppState(cfg, cwd, a.mode or cfg.agent.get("permission_mode", "auto"))
     server = AppServer(state, a.port).start()
+    if cfg.data.get("voice", {}).get("enabled"):
+        # "Hey Alice" çekirdekte dinlenir; uygulama açılınca çekirdek kapalıysa onu da başlat.
+        try:
+            from alice.core.service import start_detached
+
+            if start_detached():
+                state.ui.info("Sesli asistan için arka plandaki ALICE çekirdeği başlatıldı.")
+        except Exception:  # noqa: BLE001 - ses başlamazsa uygulama yine açılsın
+            pass
     console.print(f"[bold magenta]ALICE[/] uygulaması: {server.url}")
     if not state.router.first_available("brain"):
         state.ui.info(f"Kullanılabilir model yok. {alice_home() / '.env'} dosyasına bir API anahtarı ekleyip uygulamayı yeniden aç.")

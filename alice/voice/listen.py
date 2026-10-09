@@ -79,15 +79,47 @@ def utterances(frames: Iterator[bytes], vad: VAD, start_frames: int = 6, end_sil
             ring.clear()
 
 
-_WAKE = re.compile(r"^\W*(hey|hay|hei|ey|hi)?\W*(alice|alis|alıs|elis|ales|alise)\b\W*", re.I)
+# Whisper "Hey Alice"i Türkçede çok farklı yazıyor: "Hey Alis", "Ey Alıs", "Hey Ellis", "Heyalis", "Hey Alize"...
+_FILLERS = {"e", "ee", "eee", "şey", "ya", "hmm", "hı", "ıı", "a", "ah", "oh", "pardon"}
+_HEYS = {"hey", "hay", "hei", "heyy", "ey", "hi", "he", "hej", "hello", "helo", "selam", "alo"}
+_NAMES = {"alice", "alis", "alise", "alize", "aliz", "alisa", "alys", "elis", "ellis", "elise", "ales", "ailis",
+          "alıs", "alıse", "aliş", "alış", "allis", "alliss", "alist"}
+_TR = str.maketrans("ıİçÇşŞğĞöÖüÜ", "iIcCsSgGoOuU")
+
+
+def _name_like(word: str, after_hey: bool) -> bool:
+    import difflib
+
+    w = word.lower().translate(_TR)
+    if w in {n.translate(_TR) for n in _NAMES}:
+        return True
+    if after_hey and w == "ali":  # "Hey Ali" sık bir yanlış duyma; "hey" olmadan Ali bir isim olabilir
+        return True
+    # Benzerlik yalnızca "hey"den sonra: tek başına "Alicem nerede" gibi cümleler uyandırmasın.
+    return after_hey and len(w) >= 4 and max(difflib.SequenceMatcher(None, w, n).ratio() for n in ("alis", "alice", "elis")) >= 0.8
 
 
 def strip_wake(text: str) -> str | None:
-    """'Hey Alice, saat kaç?' -> 'saat kaç?'. Uyandırma yoksa None."""
-    m = _WAKE.match(text.strip())
-    if not m:
-        return None
-    return text.strip()[m.end():].strip()
+    """'Hey Alice, saat kaç?' -> 'saat kaç?'. Uyandırma yoksa None.
+    Başta bir dolgu sözcüğüne ("ee", "şey") ve Whisper'ın farklı yazımlarına izin verir."""
+    text = text.strip()
+    words = list(re.finditer(r"\w+", text))
+    i = 0
+    if i < len(words) and words[i].group().lower() in _FILLERS and len(words) > 1:
+        i += 1
+    if i < len(words):
+        w = words[i].group().lower().translate(_TR)
+        # "Heyalis" gibi bitişik yazım
+        for h in ("hey", "hay", "ey"):
+            if w.startswith(h) and len(w) > len(h) + 2 and _name_like(w[len(h):], True):
+                return text[words[i].end():].lstrip(" ,.!?;:-").strip()
+    after_hey = False
+    if i < len(words) and words[i].group().lower().translate(_TR) in _HEYS:
+        after_hey = True
+        i += 1
+    if i < len(words) and i <= 2 and _name_like(words[i].group(), after_hey):
+        return text[words[i].end():].lstrip(" ,.!?;:-'’").strip()
+    return None
 
 
 class WakeWord:
