@@ -60,7 +60,7 @@ def test_splitter_streams_sentences():
     for ch in "Tamam, hemen bakıyorum. GPU 3.5 derece arttı! Kod:\n```\nx=1. y=2\n```\nBitti.":
         out += s.feed(ch)
     out += s.flush()
-    assert out == ["Tamam, hemen bakıyorum.", "GPU 3.5 derece arttı!", "Kod:", "Kodu ekrana yazdım.", "Bitti."]
+    assert out == ["Tamam, hemen bakıyorum.", "GPU üç virgül beş derece arttı!", "Kod:", "Kodu ekrana yazdım.", "Bitti."]
 
 
 # ----------------------------------------------------------------------- TTS
@@ -77,11 +77,14 @@ def test_gemini_tts_request_and_decode():
 
     eng = GeminiTTS("k", "Kore", client=httpx.Client(transport=httpx.MockTransport(handler)))
     audio = eng.synth("Yakıt az.", "urgent")
-    assert audio.pcm == pcm and audio.rate == 24000
-    assert seen["key"] == "k" and "gemini-2.5-flash-preview-tts:generateContent" in seen["url"]
+    assert audio.rate == 24000 and audio.pcm.startswith(b"\x00\x00") and len(audio.pcm) > len(pcm)
+    assert seen["key"] == "k" and "gemini-3.8-flash-lite-tts:generateContent" in seen["url"]
     cfg = seen["body"]["generationConfig"]
     assert cfg["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"] == "Kore"
-    assert seen["body"]["contents"][0]["parts"][0]["text"].endswith("acil bir tonla, kısa ve kararlı söyle: Yakıt az.")
+    prompt = seen["body"]["contents"][0]["parts"][0]["text"]
+    # Yönerge ayrı başlıkta, konuşulacak metin sadece TRANSCRIPT altında
+    assert prompt.endswith("#### TRANSCRIPT\nYakıt az.") and "DIRECTOR'S NOTES\nStyle: Clear, firm and urgent" in prompt
+    assert prompt.index("Do NOT speak them") < prompt.index("#### TRANSCRIPT")
 
     bad = GeminiTTS("k", client=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(429, text="quota"))))
     with pytest.raises(TTSError):
@@ -121,7 +124,8 @@ def test_tts_router_fallback_and_flight_policy():
 
 
 def test_emotion_library(tmp_path):
-    out = build_library(FakeTTS("gemini:Aoede"), tmp_path / "lib")
+    out, missing = build_library(FakeTTS("gemini:Aoede"), tmp_path / "lib")
+    assert missing == []
     lib = EmotionLibrary(tmp_path / "lib")
     assert lib.exists() and lib.source == "gemini:Aoede" and lib.clip("urgent").name == "urgent.wav"
     (out / "urgent.wav").unlink()
@@ -254,7 +258,7 @@ def test_voice_ui_streams_and_fillers():
         ui.stream_delta(ch)
     ui.stream_end("Dün en yüksek 78 dereceydi. Gayet normal.", "x")
     assert sp.said[0] in ("Hemen bakıyorum.", "Bir saniye, bakıyorum.", "Tamam, bakıyorum.")
-    assert sp.said[1:] == ["Dün en yüksek 78 dereceydi.", "Gayet normal."]
+    assert sp.said[1:] == ["Dün en yüksek yetmiş sekiz dereceydi.", "Gayet normal."]
     ui.mute()
     ui.stream_end("söylenmemeli", "x")
     assert "söylenmemeli" not in sp.said
@@ -324,3 +328,419 @@ def test_audition_page(tmp_path):
     n = len(engines[0].calls)
     run_audition(engines[:1], ["calm", "urgent"], out=tmp_path)
     assert len(engines[0].calls) == n  # var olanlar yeniden üretilmez
+
+
+GEMINI_429 = json.dumps({"error": {"code": 429, "message": "Quota exceeded... Please retry in 41.9s.", "details": [
+    {"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [
+        {"quotaId": "GenerateRequestsPerMinutePerProjectPerModel-FreeTier", "quotaValue": "3"}]},
+    {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "41s"}]}})
+
+
+def test_gemini_quota_parsing():
+    from alice.voice.tts import QuotaError, gemini_quota_error
+
+    q = gemini_quota_error(GEMINI_429)
+    assert isinstance(q, QuotaError) and q.retry_after == 41 and not q.daily and "dakikalık" in str(q)
+    d = gemini_quota_error(GEMINI_429.replace("PerMinute", "PerDay"))
+    assert d.daily and "günlük" in str(d)
+    eng = GeminiTTS("k", client=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(429, text=GEMINI_429))))
+    with pytest.raises(QuotaError):
+        eng.synth("x")
+
+
+def test_audition_waits_on_minute_quota_and_stops_on_daily(tmp_path):
+    from alice.voice.tts import QuotaError
+
+    class Flaky(FakeTTS):
+        def __init__(self, name, errors):
+            super().__init__(name)
+            self.errors = list(errors)
+
+        def synth(self, text, emotion="calm"):
+            if self.errors:
+                raise self.errors.pop(0)
+            return super().synth(text, emotion)
+
+    waits = []
+    eng = Flaky("gemini:Kore", [QuotaError("dk", 30, False)])
+    run_audition([eng], ["calm", "urgent"], out=tmp_path, sleep=waits.append)
+    assert waits == [31] and (tmp_path / "gemini_Kore_calm.wav").exists() and (tmp_path / "gemini_Kore_urgent.wav").exists()
+
+    a = Flaky("gemini:Leda", [QuotaError("gün", None, True)])
+    b = FakeTTS("gemini:Aoede")
+    run_audition([a, b], ["calm", "happy"], out=tmp_path / "2", sleep=waits.append)
+    assert len(a.calls) == 0 and b.calls == []  # günlük kota: gemini'nin kalanına hiç istek gitmez
+    assert len(waits) == 1
+
+
+def test_gemini_rotates_models_on_quota():
+    from alice.voice.tts import QuotaError
+
+    pcm = tone(0.05, 24000).pcm
+    daily = GEMINI_429.replace("PerMinute", "PerDay")
+    plan = {"m1": daily, "m2": "404", "m3": "ok"}
+    hits = []
+
+    def handler(req):
+        model = req.url.path.split("/")[-1].split(":")[0]
+        hits.append(model)
+        r = plan[model]
+        if r == "404":
+            return httpx.Response(404, text="not found")
+        if r == "ok":
+            return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"inlineData": {
+                "mimeType": "audio/L16;rate=24000", "data": base64.b64encode(pcm).decode()}}]}}]})
+        return httpx.Response(429, text=r)
+
+    eng = GeminiTTS("k", "Aoede", ["m1", "m2", "m3"], client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert eng.synth("a").rate == 24000 and eng.last_model == "m3" and hits == ["m1", "m2", "m3"]
+    eng.synth("b")
+    assert hits[3:] == ["m3"]  # dolan ve olmayan modeller atlanıyor
+
+    plan["m3"] = GEMINI_429  # dakikalık
+    with pytest.raises(QuotaError) as ei:
+        eng.synth("c")
+    assert not ei.value.daily and ei.value.retry_after
+    eng.down["m3"] = 0
+    plan["m3"] = daily
+    with pytest.raises(QuotaError) as ei:
+        eng.synth("d")
+    assert ei.value.daily
+
+
+def test_speech_cache(tmp_path):
+    from alice.voice.tts import SpeechCache
+
+    cloud = FakeTTS("cloud")
+    r = TTSRouter(cloud, None, policy=lambda: {}, cache=SpeechCache(tmp_path))
+    a = r.synth("Hemen bakıyorum.", "calm")
+    b = r.synth("Hemen bakıyorum.", "calm")
+    assert a.pcm == b.pcm and len(cloud.calls) == 1 and r.last.endswith("(önbellek)")
+    r.synth("Hemen bakıyorum.", "urgent")
+    r.synth("uzun " * 40, "calm")
+    r.synth("uzun " * 40, "calm")
+    assert len(cloud.calls) == 4  # farklı ton ve uzun cümle önbelleğe alınmaz
+
+
+def test_polish_removes_click_and_noisy_tail():
+    import array as arr
+
+    rate = 24000
+    body = tone(0.4, rate, amp=0.5)
+    # sonda hafif ama sessiz olmayan cızırtı (~%2) ve aniden biten sinyal
+    noise = arr.array("h", [((i * 7919) % 1300) - 650 for i in range(int(0.3 * rate))]).tobytes()
+    out = Audio(body.pcm + noise, rate).polish()
+    a = arr.array("h", out.pcm)
+    speech_end = int(0.4 * rate)
+    assert abs(a[0]) <= 1                                         # başta tık yok
+    nz = max(i for i, x in enumerate(a) if x != 0)
+    assert nz < speech_end + int(0.08 * rate)                     # cızırtılı kuyruğun çoğu kesildi
+    assert all(abs(x) < 400 for x in a[nz - 10:nz + 1])           # sona doğru sıfıra iniyor (tık yok)
+    assert len(a) - nz >= int(0.14 * rate)                        # sonda sessizlik var
+
+
+def test_leak_detection_and_format_fallback(tmp_path):
+    from alice.voice.tts import leaked
+
+    assert leaked("Style: serious, composed. Yedekleme yarıda kaldı.", "Yedekleme yarıda kaldı.")
+    assert leaked("Ciddi bir sesle söyle yedekleme yarıda kaldı hedef diskte yer yok", "Yedekleme yarıda kaldı.")
+    assert not leaked("Yedekleme yarıda kaldı.", "Yedekleme yarıda kaldı.")
+    assert not leaked("yedeklemeler yarıda kaldı", "Yedekleme yarıda kaldı.")  # küçük Whisper farkı
+
+    pcm = tone(0.2, 24000).pcm
+    prompts = []
+
+    def handler(req):
+        prompts.append(json.loads(req.content)["contents"][0]["parts"][0]["text"])
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"inlineData": {
+            "mimeType": "audio/L16;rate=24000", "data": base64.b64encode(pcm).decode()}}]}}]})
+
+    seen = []
+    verify = lambda audio, text: (seen.append(prompts[-1]) or not prompts[-1].startswith("Synthesize"))  # noqa: E731
+    f = tmp_path / "fmt.json"
+    eng = GeminiTTS("k", "Kore", ["m1"], client=httpx.Client(transport=httpx.MockTransport(handler)),
+                    verify=verify, formats_file=f)
+    eng.synth("Yedekleme yarıda kaldı.", "serious")
+    assert eng.last_format == "tag" and prompts[1] == "[serious, composed] Yedekleme yarıda kaldı."
+    assert json.loads(f.read_text()) == {"m1": ["notes"]}
+    eng2 = GeminiTTS("k", "Kore", ["m1"], client=httpx.Client(transport=httpx.MockTransport(handler)), formats_file=f)
+    eng2.synth("Merhaba.", "calm")
+    assert eng2.last_format == "tag" and prompts[-1].startswith("[calm")  # kayıtlı iyi biçim, tek istek
+
+
+def test_gemini_timeout_moves_to_next_model():
+    pcm = tone(0.1, 24000).pcm
+
+    def handler(req):
+        if "m1" in req.url.path:
+            raise httpx.ReadTimeout("yavaş", request=req)
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"inlineData": {
+            "mimeType": "audio/L16;rate=24000", "data": base64.b64encode(pcm).decode()}}]}}]})
+
+    eng = GeminiTTS("k", "Kore", ["m1", "m2"], client=httpx.Client(transport=httpx.MockTransport(handler)))
+    eng.synth("Merhaba.")
+    assert eng.last_model == "m2" and eng.down["m1"] > 0
+
+
+def test_list_models_and_status_detail():
+    from alice.voice.tts import QuotaError, list_gemini_tts_models
+
+    pages = {"": {"models": [{"name": "models/gemini-2.5-flash"}, {"name": "models/gemini-2.5-flash-preview-tts"}],
+                  "nextPageToken": "p2"},
+             "p2": {"models": [{"name": "models/gemini-3.8-flash-tts"}]}}
+    c = httpx.Client(transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, json=pages[r.url.params.get("pageToken", "")])))
+    assert list_gemini_tts_models("k", c) == ["gemini-2.5-flash-preview-tts", "gemini-3.8-flash-tts"]
+
+    daily = GEMINI_429.replace("PerMinute", "PerDay")
+    eng = GeminiTTS("k", "Kore", ["yok", "dolu"], client=httpx.Client(transport=httpx.MockTransport(
+        lambda r: httpx.Response(404, text="nf") if "yok" in r.url.path else httpx.Response(429, text=daily))))
+    with pytest.raises(QuotaError) as ei:
+        eng.synth("x")
+    assert "yok: bulunamadı" in str(ei.value) and "dolu: günlük kota" in str(ei.value)
+
+
+FAKE_TORCH = """
+class cuda:
+    @staticmethod
+    def is_available():
+        return False
+    @staticmethod
+    def empty_cache():
+        pass
+"""
+FAKE_CHATTERBOX = """
+import numpy as np
+LOADS = []
+class ChatterboxMultilingualTTS:
+    sr = 24000
+    @classmethod
+    def from_pretrained(cls, device):
+        LOADS.append(device)
+        m = cls(); m.device = device
+        return m
+    def generate(self, text, language_id="en", audio_prompt_path=None, exaggeration=0.5, cfg_weight=0.5):
+        assert language_id == "tr" and text.endswith((".", "!", "?"))
+        n = int(0.15 * len(text) * self.sr)
+        t = np.arange(n) / self.sr
+        return (0.3 * np.sin(2 * np.pi * (220 + 400 * exaggeration) * t)).astype("float32")
+"""
+
+
+def test_chatterbox_local_server_end_to_end(tmp_path, monkeypatch):
+    """Gerçek tts_server.py sürecini sahte chatterbox/torch modülleriyle başlatıp konuş."""
+    import socket
+    import sys
+
+    pytest.importorskip("numpy")
+    from alice.voice.tts import Chatterbox, EmotionLibrary
+
+    fake = tmp_path / "fake"
+    (fake / "chatterbox").mkdir(parents=True)
+    (fake / "chatterbox" / "__init__.py").write_text("")
+    (fake / "chatterbox" / "mtl_tts.py").write_text(FAKE_CHATTERBOX)
+    (fake / "torch.py").write_text(FAKE_TORCH)
+    monkeypatch.setenv("PYTHONPATH", str(fake))
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    eng = Chatterbox(sys.executable, port, library=EmotionLibrary(lib), allow_gpu=lambda: True, start_timeout=30)
+    try:
+        a = eng.synth("Merhaba, ben ALICE.", "urgent")
+        assert a.rate == 24000 and a.seconds > 0.5
+        assert eng.healthy()
+        b = eng.synth("Tekrar.", "calm")  # aynı sunucu, yeniden başlatma yok
+        assert b.seconds > 0.2 and eng._proc.poll() is None
+    finally:
+        if eng._proc is not None:
+            eng._proc.kill()
+            eng._proc.wait(5)
+
+
+def test_chatterbox_not_installed():
+    from alice.voice.tts import Chatterbox, TTSError
+
+    with pytest.raises(TTSError, match="install-local"):
+        Chatterbox("", 1).synth("x")
+
+
+def test_install_local_flow(tmp_path, monkeypatch):
+    from alice.voice import install_local as il
+
+    calls = []
+    monkeypatch.setattr(il, "find_python", lambda: (["py", "-3.11"], "3.11"))
+    monkeypatch.setattr(il, "has_nvidia", lambda: True)
+    outs = {"torch": "2.6.0+cpu  False", "torchaudio": "2.6.0", "chatterbox": "ok"}
+
+    def fake_out(cmd):
+        code = cmd[-1]
+        if "import torch;" in code:
+            return outs["torch"]
+        if "torchaudio" in code:
+            return outs["torchaudio"]
+        if "chatterbox" in code:
+            return outs["chatterbox"]
+        return None
+
+    def fake_run(cmd):
+        calls.append(cmd)
+        if cmd[1:3] == ["-m", "venv"] or "venv" in cmd:
+            py = il.venv_python(tmp_path / "v")
+            py.parent.mkdir(parents=True, exist_ok=True)
+            py.write_text("")
+        return 0
+
+    monkeypatch.setattr(il, "_out", fake_out)
+    monkeypatch.setattr(il, "venv_dir", lambda: tmp_path / "v")
+    py = il.install(emit=lambda s: None, run=fake_run)
+    flat = [" ".join(c) for c in calls]
+    assert any("install chatterbox-tts" in c for c in flat)
+    assert any("torch==2.6.0" in c and "whl/cu126" in c for c in flat)
+    from alice.config import load_config
+
+    v = load_config().data["voice"]
+    assert v["tts_local"] == "chatterbox" and v["local_python"] == str(py)
+
+
+def test_trim_by_words_cuts_hallucinated_tail():
+    from alice.voice.trim import by_words
+
+    audio = tone(4.0, 16000)
+    words = [("Merhaba,", 0.0, 0.5), ("ben", 0.6, 0.8), ("ALICE.", 0.9, 1.4), ("ve", 2.0, 2.2), ("şey", 2.3, 2.6)]
+    out = by_words(audio, words, "Merhaba, ben ALICE.")
+    assert abs(out.seconds - 1.55) < 0.01
+    # son kelime uydurma kuyrukta tekrar etse de ilk gerçek bitişte kesilir
+    words2 = [("Yakıt", 0.0, 0.4), ("az.", 0.5, 0.9), ("az", 1.5, 1.8), ("az", 2.0, 2.3)]
+    assert abs(by_words(audio, words2, "Yakıt az.").seconds - 1.05) < 0.01
+    assert by_words(audio, [("alakasız", 0, 1)], "Merhaba ben ALICE") is None
+
+
+def test_trim_by_length_drops_late_segments():
+    from alice.voice.trim import by_length
+
+    speech = tone(1.0, 16000) + Audio.silence(0.6, 16000) + tone(1.5, 16000)  # ikinci parça uydurma
+    out = by_length(speech, "Merhaba, ben ALICE.")  # ~1.7 + 0.8 sn bekleniyor -> ikinci parça 1.6'da başlıyor
+    assert abs(out.seconds - speech.seconds) < 0.01  # beklenen süre içinde başladığı için korunur
+    late = tone(1.0, 16000) + Audio.silence(2.0, 16000) + tone(1.0, 16000)
+    out2 = by_length(late, "Merhaba, ben ALICE.")
+    assert out2.seconds < 1.2
+
+
+def test_make_trimmer_falls_back(monkeypatch):
+    from alice.voice.trim import make_trimmer
+
+    class Bad:
+        engines = [type("E", (), {"words": lambda self, a: (_ for _ in ()).throw(STTError("x"))})()]
+
+    late = tone(1.0, 16000) + Audio.silence(2.0, 16000) + tone(1.0, 16000)
+    assert make_trimmer(Bad())(late, "Merhaba.").seconds < 1.2
+    assert make_trimmer(None)(late, "Merhaba.").seconds < 1.2
+
+
+def test_groq_words_request():
+    seen = {}
+
+    def handler(req):
+        seen["body"] = req.content
+        return httpx.Response(200, json={"text": "Merhaba", "words": [{"word": "Merhaba", "start": 0.1, "end": 0.6}]})
+
+    stt = GroqWhisper("g", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert stt.words(tone(0.5)) == [("Merhaba", 0.1, 0.6)]
+    assert b"verbose_json" in seen["body"] and b"timestamp_granularities[]" in seen["body"]
+
+
+FAKE_WHISPER = """
+CALLS = []
+class _M:
+    def transcribe(self, audio, language=None, word_timestamps=False, **kw):
+        CALLS.append(len(audio))
+        dur = len(audio) / 16000
+        if len(CALLS) == 1:
+            # ilk deneme: model saçmaladı (istenen kelimeler yok)
+            return {"segments": [{"words": [{"word": "alakasız", "start": 0.0, "end": 0.5},
+                                            {"word": "şeyler", "start": 0.6, "end": 1.0},
+                                            {"word": "söyledi", "start": 1.1, "end": 1.5}]}]}
+        # ikinci deneme: doğru cümle + sonda uydurma kuyruk
+        return {"segments": [{"words": [{"word": "Yakıt", "start": 0.0, "end": 0.4},
+                                        {"word": "az,", "start": 0.5, "end": 0.8},
+                                        {"word": "eve", "start": 0.9, "end": 1.1},
+                                        {"word": "dön.", "start": 1.2, "end": 1.5},
+                                        {"word": "hmm", "start": dur - 0.3, "end": dur - 0.1}]}]}
+def load_model(name, device=None):
+    return _M()
+"""
+
+
+def test_local_server_whisper_trims_and_retries(tmp_path, monkeypatch):
+    import socket
+    import sys
+
+    pytest.importorskip("numpy")
+    from alice.voice.tts import Chatterbox, EmotionLibrary
+
+    fake = tmp_path / "fake"
+    (fake / "chatterbox").mkdir(parents=True)
+    (fake / "chatterbox" / "__init__.py").write_text("")
+    (fake / "chatterbox" / "mtl_tts.py").write_text(FAKE_CHATTERBOX)
+    (fake / "torch.py").write_text(FAKE_TORCH)
+    (fake / "whisper.py").write_text(FAKE_WHISPER)
+    monkeypatch.setenv("PYTHONPATH", str(fake))
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    eng = Chatterbox(sys.executable, port, library=EmotionLibrary(lib), start_timeout=30,
+                     trim=lambda a, t: (_ for _ in ()).throw(AssertionError("sunucu kesti, istemci kesmemeli")))
+    try:
+        # sahte model karakter başına 0.15 sn üretir (~2.7 sn); Whisper "dön"ü 1.5 sn'de duyuyor
+        a = eng.synth("Yakıt az, eve dön.", "urgent")
+        assert float(eng.last_quality) >= 0.85                 # ikinci deneme seçildi
+        assert a.seconds < 1.5 + 0.15 + 0.06 + 0.15 + 0.05      # "dön"den sonrası kesildi (+fade/boşluk)
+    finally:
+        if eng._proc is not None:
+            eng._proc.kill()
+            eng._proc.wait(5)
+
+
+def test_server_assess():
+    import importlib.util
+    from pathlib import Path
+
+    import alice.voice.tts as t
+
+    spec = importlib.util.spec_from_file_location("tts_server_mod", Path(t.__file__).with_name("tts_server.py"))
+    srv = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(srv)
+    q, end = srv.assess([("Merhaba,", 0, 0.5), ("ben", 0.6, 0.8), ("ALICE.", 0.9, 1.3), ("bla", 2, 2.5),
+                         ("bla", 2.6, 3)], "Merhaba, ben ALICE.")
+    assert end == 1.3 and 0.5 < q < 1.0
+    q2, end2 = srv.assess([("tamamen", 0, 1), ("başka", 1, 2)], "Merhaba, ben ALICE.")
+    assert q2 == 0 and end2 is None
+
+
+def test_library_resumes_after_quota(tmp_path):
+    from alice.voice.tts import QuotaError
+
+    class Limited(FakeTTS):
+        def __init__(self, name, budget):
+            super().__init__(name)
+            self.budget = budget
+
+        def synth(self, text, emotion="calm"):
+            if self.budget <= 0:
+                raise QuotaError("günlük", None, True)
+            self.budget -= 1
+            return super().synth(text, emotion)
+
+    lib = tmp_path / "lib"
+    _, missing = build_library(Limited("gemini:Kore", 4), lib)
+    assert missing == ["playful"] and len(list(lib.glob("*.wav"))) == 4
+    e = Limited("gemini:Kore", 5)
+    _, missing = build_library(e, lib)
+    assert missing == [] and e.calls == [(e.calls[0][0], "playful")]   # sadece eksik olan
+    e2 = Limited("gemini:Aoede", 10)
+    build_library(e2, lib)                                               # ses değişti: hepsi yeniden
+    assert len(e2.calls) == 5 and EmotionLibrary(lib).source == "gemini:Aoede"

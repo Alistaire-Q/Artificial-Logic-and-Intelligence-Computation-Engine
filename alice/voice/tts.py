@@ -25,7 +25,7 @@ import httpx
 
 from alice.config import Config, alice_home
 from alice.voice.audio import Audio
-from alice.voice.tone import CHATTERBOX, EMOTIONS, NAMES_TR, STYLE
+from alice.voice.tone import CHATTERBOX, DIRECTION, EMOTIONS, NAMES_TR
 
 # Gemini'nin kadın sesleri (Google'ın tanımlarıyla). Dinleme testinde bunlardan seçilir.
 GEMINI_VOICES = {
@@ -36,6 +36,43 @@ GEMINI_VOICES = {
 
 class TTSError(Exception):
     pass
+
+
+class QuotaError(TTSError):
+    """Kota doldu. daily: günlük kota (yarına kadar yok); retry_after: kaç saniye sonra tekrar denenebilir."""
+
+    def __init__(self, message: str, retry_after: float | None = None, daily: bool = False):
+        super().__init__(message)
+        self.retry_after = retry_after
+        self.daily = daily
+
+
+def gemini_quota_error(body: str) -> QuotaError:
+    """Gemini'nin 429 cevabından kota türünü ve bekleme süresini çıkar."""
+    import re
+
+    retry, daily, limit = None, False, ""
+    try:
+        err = json.loads(body).get("error", {})
+    except ValueError:
+        err = {}
+    for d in err.get("details", []) or []:
+        t = d.get("@type", "")
+        if t.endswith("RetryInfo"):
+            m = re.match(r"([\d.]+)s", str(d.get("retryDelay", "")))
+            retry = float(m.group(1)) if m else None
+        if t.endswith("QuotaFailure"):
+            for v in d.get("violations", []) or []:
+                qid = str(v.get("quotaId", ""))
+                daily = daily or "PerDay" in qid
+                limit = limit or str(v.get("quotaValue", ""))
+    if retry is None:
+        m = re.search(r"retry in ([\d.]+)s", str(err.get("message", "")))
+        retry = float(m.group(1)) if m else None
+    kind = "günlük" if daily else "dakikalık"
+    lim = f" (sınır {limit} istek)" if limit else ""
+    wait = f", {retry:.0f} sn sonra tekrar denenebilir" if retry and not daily else ""
+    return QuotaError(f"gemini {kind} ses kotası doldu{lim}{wait}", retry, daily)
 
 
 class TTS(Protocol):
@@ -84,45 +121,140 @@ LIBRARY_TEXT = {
 }
 
 
-def build_library(engine: "TTS", out: Path | None = None, emit: Callable[[str], None] = lambda s: None) -> Path:
+def build_library(engine: "TTS", out: Path | None = None, emit: Callable[[str], None] = lambda s: None,
+                  redo: bool = False) -> tuple[Path, list[str]]:
+    """Her duygu için referans kaydı üret. Var olanlar (redo değilse) atlanır, kota dolarsa kalanlar
+    sonraki çalıştırmaya kalır. (klasör, eksik kalan duygular) döndürür."""
     out = out or library_dir()
     out.mkdir(parents=True, exist_ok=True)
+    meta_path = out / "meta.json"
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        meta = {}
+    if meta.get("source") and meta["source"] != engine.name:
+        redo = True  # başka bir sesle yapılmış kütüphaneyi karıştırma
+        emit(f"önceki kütüphane {meta['source']} sesiyle yapılmış, {engine.name} ile yeniden yapılıyor")
+    missing: list[str] = []
     for emo, text in LIBRARY_TEXT.items():
+        path = out / f"{emo}.wav"
+        if path.exists() and not redo:
+            continue
         emit(f"{NAMES_TR[emo]} kaydı hazırlanıyor")
-        engine.synth(text, emo).save(out / f"{emo}.wav")
-    (out / "meta.json").write_text(json.dumps({"source": engine.name, "created": time.time()}), encoding="utf-8")
-    return out
+        try:
+            engine.synth(text, emo).save(path)
+        except QuotaError as e:
+            emit(f"  {e}")
+            rest = list(LIBRARY_TEXT)[list(LIBRARY_TEXT).index(emo):]
+            missing += [m for m in rest if redo or not (out / f"{m}.wav").exists()]
+            break
+        except TTSError as e:
+            emit(f"  atlandı: {e}")
+            missing.append(emo)
+    meta_path.write_text(json.dumps({"source": engine.name, "created": time.time()}), encoding="utf-8")
+    return out, sorted(set(missing), key=list(LIBRARY_TEXT).index)
 
 
 # ------------------------------------------------------------------- Gemini
+DEFAULT_GEMINI_MODELS = ["gemini-3.8-flash-lite-tts", "gemini-3.8-flash-tts", "gemini-3.1-flash-tts-preview",
+                         "gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts"]
+
+
+FORMATS = ("notes", "tag", "plain")
+
+TAGS = {"calm": "calm, warm", "happy": "cheerful", "serious": "serious, composed", "urgent": "urgent, firm",
+        "playful": "playful"}
+
+
+def formats_path() -> Path:
+    return alice_home() / "voice" / "gemini-formats.json"
+
+
 class GeminiTTS:
+    """Gemini ses modelleri. Kota model başına sayıldığı için birinin kotası dolunca sıradakine geçer;
+    ses (ör. Aoede) aynı kalır.
+
+    Ton talimatı üç biçimde verilebilir: notes (ayrı başlıklar), tag (metnin başında [köşeli] etiket),
+    plain (talimatsız, ton yok). Bazı modeller talimatı da sesli okuyor; verify verilirse (Whisper ile
+    yazıya çevirip karşılaştıran fonksiyon) okunan biçim o model için 'kötü' işaretlenir, sıradaki biçim
+    denenir ve sonuç diske yazılır. Günlük konuşma kayıtlı iyi biçimi kullanır."""
+
     URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
-    def __init__(self, api_key: str, voice: str = "Aoede", model: str = "gemini-2.5-flash-preview-tts",
-                 client: httpx.Client | None = None):
+    def __init__(self, api_key: str, voice: str = "Aoede", models: list[str] | str | None = None,
+                 client: httpx.Client | None = None, verify: Callable[[Audio, str], bool] | None = None,
+                 formats_file: Path | None = None):
         self.api_key = api_key
         self.voice = voice
-        self.model = model
+        self.models = [models] if isinstance(models, str) else list(models or DEFAULT_GEMINI_MODELS)
         self.name = f"gemini:{voice}"
-        self.client = client or httpx.Client(timeout=60)
+        # Uzun cümlelerde ses üretimi yavaş olabiliyor; bağlantı kurulamazsa hızlı vazgeç.
+        self.client = client or httpx.Client(timeout=httpx.Timeout(45, connect=10))
+        self.verify = verify
+        self.formats_file = formats_file or formats_path()
+        self.down: dict[str, float] = {}  # model -> bu ana kadar atla
+        self.reason: dict[str, str] = {}  # model -> daily | minute | error
+        self.last_model = ""
+        self.last_format = ""
+        try:
+            self.bad: dict[str, list[str]] = json.loads(self.formats_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            self.bad = {}
 
-    def synth(self, text: str, emotion: str = "calm") -> Audio:
+    def _mark_bad(self, model: str, fmt: str) -> None:
+        self.bad.setdefault(model, [])
+        if fmt not in self.bad[model]:
+            self.bad[model].append(fmt)
+        try:
+            self.formats_file.parent.mkdir(parents=True, exist_ok=True)
+            self.formats_file.write_text(json.dumps(self.bad), encoding="utf-8")
+        except OSError:
+            pass
+
+    def formats_for(self, model: str) -> list[str]:
+        bad = self.bad.get(model, [])
+        return [f for f in FORMATS if f not in bad] or ["plain"]
+
+    @staticmethod
+    def prompt(text: str, emotion: str, fmt: str = "notes") -> str:
+        if fmt == "plain":
+            return text
+        if fmt == "tag":
+            return f"[{TAGS.get(emotion, TAGS['calm'])}] {text}"
+        # Yönerge ile konuşulacak metin ayrı başlıklarda (Google'ın önerdiği yapı).
+        return (
+            "Synthesize speech for the performance defined below. The audio profile and director's notes are "
+            "direction only. Do NOT speak them. Speak ONLY the lines under #### TRANSCRIPT, exactly as written, "
+            "in Turkish.\n\n"
+            "# AUDIO PROFILE\nALICE: a young adult female AI assistant with a calm, warm voice, native Turkish "
+            "speaker.\n\n"
+            f"### DIRECTOR'S NOTES\nStyle: {DIRECTION.get(emotion, DIRECTION['calm'])}\n\n"
+            f"#### TRANSCRIPT\n{text}")
+
+    def _request(self, model: str, prompt: str):
+        """("ok", Audio) | ("quota", QuotaError) | ("error", mesaj)."""
         body = {
-            "contents": [{"parts": [{"text": f"{STYLE.get(emotion, STYLE['calm'])}: {text}"}]}],
+            "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"responseModalities": ["AUDIO"], "speechConfig": {
                 "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": self.voice}}}},
         }
         try:
-            r = self.client.post(self.URL.format(model=self.model), json=body,
-                                 headers={"x-goog-api-key": self.api_key})
+            r = self.client.post(self.URL.format(model=model), json=body, headers={"x-goog-api-key": self.api_key})
+        except httpx.TimeoutException:
+            # Model o an yavaş/takıldı: bu cümle için sıradaki modele geç.
+            return "slow", f"{model}: zaman aşımı"
         except httpx.HTTPError as e:
             raise TTSError(f"gemini bağlantı hatası: {e}") from e
+        if r.status_code == 429:
+            return "quota", gemini_quota_error(r.text)
+        if r.status_code in (400, 403, 404):
+            return "missing", f"{model}: {r.status_code}"
         if r.status_code != 200:
-            raise TTSError(f"gemini {r.status_code}: {r.text[:200]}")
+            return "error", f"{model}: {r.status_code} {r.text[:120]}"
         try:
             part = r.json()["candidates"][0]["content"]["parts"][0]["inlineData"]
-        except (KeyError, IndexError, ValueError) as e:
-            raise TTSError(f"gemini ses döndürmedi: {r.text[:200]}") from e
+        except (KeyError, IndexError, ValueError):
+            return "error", f"{model}: ses döndürmedi"
         rate = 24000
         mime = part.get("mimeType", "")
         if "rate=" in mime:
@@ -130,7 +262,115 @@ class GeminiTTS:
                 rate = int(mime.split("rate=")[1].split(";")[0])
             except ValueError:
                 pass
-        return Audio(base64.b64decode(part["data"]), rate)
+        return "ok", Audio(base64.b64decode(part["data"]), rate).polish()
+
+    def synth(self, text: str, emotion: str = "calm") -> Audio:
+        now = time.monotonic()
+        quota: list[QuotaError] = []
+        errors: list[str] = []
+        status: dict[str, str] = {}
+        for model in self.models:
+            if self.down.get(model, 0) > now:
+                status[model] = {"daily": "günlük kota", "minute": "dakikalık kota"}.get(self.reason.get(model, ""),
+                                                                                         "bekletiliyor")
+                continue
+            fallback: Audio | None = None
+            for fmt in self.formats_for(model):
+                kind, res = self._request(model, self.prompt(text, emotion, fmt))
+                if kind == "quota":
+                    # Günlük kota: o model bugün yok. Dakikalık: o model kısa süre beklesin, diğerine geç.
+                    self.down[model] = now + (6 * 3600 if res.daily else (res.retry_after or 60))
+                    self.reason[model] = "daily" if res.daily else "minute"
+                    quota.append(res)
+                    status[model] = "günlük kota" if res.daily else "dakikalık kota"
+                    break
+                if kind == "missing":
+                    # Model yok, bu hesapta açık değil ya da ses/dil desteklenmiyor: bir gün atla.
+                    self.down[model] = now + 86400
+                    self.reason[model] = "error"
+                    errors.append(res)
+                    status[model] = "bulunamadı/desteklenmiyor (" + res.rsplit(" ", 1)[-1] + ")"
+                    break
+                if kind == "slow":
+                    self.down[model] = now + 120  # iki dakika diğer modellerle devam et
+                    self.reason[model] = "error"
+                    errors.append(res)
+                    status[model] = "zaman aşımı"
+                    break
+                if kind == "error":
+                    errors.append(res)
+                    status[model] = res.split(": ", 1)[-1][:60]
+                    break
+                if self.verify is not None and fmt != "plain" and not self.verify(res, text):
+                    self._mark_bad(model, fmt)  # model talimatı da okudu: bu biçimi bu modelde bir daha kullanma
+                    fallback = res
+                    continue
+                self.last_model, self.last_format = model, fmt
+                return res
+            if fallback is not None:  # bütün biçimler doğrulamadan geçemediyse son sesi kullan
+                self.last_model, self.last_format = model, "?"
+                return fallback
+        # Hiçbir model ses vermedi. Sadece kota yüzündense QuotaError (dinleme testi buna göre bekler/durur).
+        skipped = [m for m in self.models if self.down.get(m, 0) > now and self.reason.get(m) != "error"]
+        if quota or skipped:  # var olmayan modellerin hataları önemsiz; kota belirleyici
+            minute = [max(1.0, self.down[m] - now) for m in self.models
+                      if self.reason.get(m) == "minute" and self.down.get(m, 0) > now]
+            daily = not minute
+            kind = "günlük" if daily else "dakikalık"
+            retry = None if daily else min(minute)
+            wait = f", {retry:.0f} sn sonra tekrar denenebilir" if retry else ""
+            detail = "; ".join(f"{m}: {st}" for m, st in status.items())
+            raise QuotaError(f"gemini {kind} ses kotası doldu{wait} [{detail}]", retry, daily)
+        raise TTSError("gemini: " + ("; ".join(f"{m}: {st}" for m, st in status.items()) or "kullanılabilir model yok"))
+
+
+def list_gemini_tts_models(api_key: str, client: httpx.Client | None = None) -> list[str]:
+    """Bu anahtarla erişilebilen ses (TTS) modelleri. Model listesi kota harcamaz."""
+    c = client or httpx.Client(timeout=15)
+    out, token = [], ""
+    for _ in range(10):
+        r = c.get("https://generativelanguage.googleapis.com/v1beta/models",
+                  params={"pageSize": 1000, **({"pageToken": token} if token else {})},
+                  headers={"x-goog-api-key": api_key})
+        r.raise_for_status()
+        data = r.json()
+        out += [m["name"].split("/", 1)[-1] for m in data.get("models", []) if "tts" in m.get("name", "").lower()]
+        token = data.get("nextPageToken", "")
+        if not token:
+            break
+    return sorted(out)
+
+
+def _fold(s: str) -> list[str]:
+    import re
+    import unicodedata
+
+    s = s.lower().replace("ı", "i").replace("İ", "i")
+    s = "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
+    return re.findall(r"[a-z0-9]+", s)
+
+
+LEAK_WORDS = {"style", "synthesize", "speech", "transcript", "director", "notes", "profile", "speak", "calm",
+              "serious", "urgent", "cheerful", "playful", "composed", "warm", "voice", "assistant", "turkish"}
+
+
+def leaked(heard: str, expected: str) -> bool:
+    """Whisper'ın duyduğu, istenen metinden fazlasını içeriyor mu (talimat okunmuş mu)?"""
+    want = set(_fold(expected))
+    got = _fold(heard)
+    if any(w in LEAK_WORDS and w not in want for w in got):
+        return True
+    extra = [w for w in got if w not in want and not any(w[:4] == x[:4] for x in want if len(w) > 3)]
+    return len(extra) >= 3 and len(extra) > 0.3 * max(1, len(want))
+
+
+def make_verifier(stt) -> Callable[[Audio, str], bool]:
+    def verify(audio: Audio, text: str) -> bool:
+        try:
+            return not leaked(stt.transcribe(audio), text)
+        except Exception:
+            return True  # doğrulayamıyorsak sesi kabul et
+    return verify
 
 
 # -------------------------------------------------------------- yerel motorlar
@@ -173,42 +413,101 @@ class XTTS:
             raise TTSError("duygu kütüphanesi yok: alice voice library")
         with self._lock:
             wav = self._load().tts(text=text, speaker_wav=str(ref), language="tr")
-        return Audio.from_floats(wav, 24000)
+        return Audio.from_floats(wav, 24000).polish()
 
 
 class Chatterbox:
-    """Resemble Chatterbox çok dilli (pip install chatterbox-tts). exaggeration ile duygu yoğunluğu."""
+    """Resemble Chatterbox çok dilli, ayrı sanal ortamdaki yerel ses sunucusu üzerinden (tts_server.py).
 
-    def __init__(self, library: EmotionLibrary | None = None, allow_gpu: Callable[[], bool] = lambda: True):
+    Sunucu çalışmıyorsa ilk istekte arka planda başlatılır (ilk açılışta model ~2 GB indirir).
+    Sesi duygu kütüphanesindeki kayıttan taklit eder; kütüphane yoksa Chatterbox'ın kendi sesiyle konuşur.
+    Uçuşta (local_gpu = false) model işlemciye taşınır, ekran kartı oyuna kalır."""
+
+    def __init__(self, python: str = "", port: int = 8771, library: EmotionLibrary | None = None,
+                 allow_gpu: Callable[[], bool] = lambda: True, client: httpx.Client | None = None,
+                 start_timeout: float = 600, trim: Callable[[Audio, str], Audio] | None = None,
+                 temperature: float = 0.6, verify: bool = True, whisper_model: str = "small"):
+        from alice.voice.trim import by_length
+
+        self.trim = trim or by_length
+        self.temperature = temperature
+        self.verify = verify
+        self.whisper_model = whisper_model
+        self.last_quality = ""
+        self.python = python
+        self.port = port
         self.library = library or EmotionLibrary()
         self.allow_gpu = allow_gpu
         self.name = "chatterbox"
-        self._model = None
-        self._device = ""
+        self.client = client or httpx.Client(timeout=httpx.Timeout(180, connect=3))
+        self.start_timeout = start_timeout
+        self._proc = None
         self._lock = threading.Lock()
 
-    def _load(self):
-        dev = _device(self.allow_gpu())
-        if self._model is None or dev != self._device:
-            try:
-                from chatterbox.mtl_tts import ChatterboxMultilingualTTS
-            except ImportError as e:
-                raise TTSError("Chatterbox kurulu değil: pip install chatterbox-tts") from e
-            self._model = ChatterboxMultilingualTTS.from_pretrained(device=dev)
-            self._device = dev
-        return self._model
+    @property
+    def base(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+    def healthy(self) -> bool:
+        try:
+            return self.client.get(self.base + "/health", timeout=3).status_code == 200
+        except httpx.HTTPError:
+            return False
+
+    def ensure_server(self) -> None:
+        with self._lock:
+            if self.healthy():
+                return
+            if not self.python or not Path(self.python).exists():
+                raise TTSError("yerel ses kurulu değil: alice voice install-local")
+            import subprocess
+            import sys
+
+            log = alice_home() / "voice" / "tts-server.log"
+            log.parent.mkdir(parents=True, exist_ok=True)
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+            device = "cuda" if self.allow_gpu() else "cpu"
+            self._proc = subprocess.Popen(
+                [self.python, str(Path(__file__).with_name("tts_server.py")), "--port", str(self.port),
+                 "--device", device, "--preload"],
+                stdout=open(log, "a", encoding="utf-8"), stderr=subprocess.STDOUT, creationflags=flags)
+            end = time.monotonic() + 30
+            while time.monotonic() < end:
+                if self._proc.poll() is not None:
+                    raise TTSError(f"yerel ses sunucusu açılamadı, ayrıntı: {log}")
+                if self.healthy():
+                    return
+                time.sleep(0.5)
+            raise TTSError(f"yerel ses sunucusu cevap vermiyor, ayrıntı: {log}")
 
     def synth(self, text: str, emotion: str = "calm") -> Audio:
-        ref = self.library.clip(emotion)
-        if ref is None:
-            raise TTSError("duygu kütüphanesi yok: alice voice library")
+        self.ensure_server()
         exaggeration, cfg_weight = CHATTERBOX.get(emotion, CHATTERBOX["calm"])
-        with self._lock:
-            model = self._load()
-            wav = model.generate(text, language_id="tr", audio_prompt_path=str(ref), exaggeration=exaggeration,
-                                 cfg_weight=cfg_weight)
-        samples = wav.squeeze().detach().cpu().tolist() if hasattr(wav, "squeeze") else list(wav)
-        return Audio.from_floats(samples, int(getattr(model, "sr", 24000)))
+        ref = self.library.clip(emotion)
+        body = {"text": text, "language": "tr", "ref": str(ref) if ref else "", "exaggeration": exaggeration,
+                "cfg_weight": cfg_weight, "temperature": self.temperature,
+                "device": "cuda" if self.allow_gpu() else "cpu", "verify": self.verify,
+                "whisper_model": self.whisper_model}
+        try:
+            # İlk istekte model yüklenir/indirilir: uzun sürebilir.
+            r = self.client.post(self.base + "/synth", json=body, timeout=self.start_timeout)
+        except httpx.HTTPError as e:
+            raise TTSError(f"yerel ses sunucusu hatası: {e}") from e
+        if r.status_code != 200:
+            try:
+                msg = r.json().get("error", r.text)
+            except ValueError:
+                msg = r.text
+            raise TTSError(f"chatterbox: {str(msg)[:200]}")
+        audio = Audio.from_wav(r.content)
+        self.last_quality = r.headers.get("X-Alice-Quality", "")
+        if r.headers.get("X-Alice-Verified") != "1":
+            # Sunucuda Whisper yoksa kuyruğu burada kes (Groq Whisper ya da uzunluğa göre).
+            try:
+                audio = self.trim(audio, text)
+            except Exception:
+                pass
+        return audio.polish()
 
 
 # --------------------------------------------------------------------- seçim
@@ -219,11 +518,51 @@ def core_policy() -> dict[str, Any]:
     return s.get("policy", {}) if s.get("running") else {}
 
 
+class SpeechCache:
+    """Kısa, tekrar eden cümlelerin sesi diskte ("Hemen bakıyorum", "On speed, iyi"...): kota harcamaz, anında çalar."""
+
+    def __init__(self, path: Path | None = None, max_chars: int = 120, max_files: int = 3000):
+        self.path = path or alice_home() / "voice" / "cache"
+        self.max_chars = max_chars
+        self.max_files = max_files
+        self._writes = 0
+
+    def _file(self, engine: str, emotion: str, text: str) -> Path:
+        import hashlib
+
+        key = hashlib.sha1(f"v2|{engine}|{emotion}|{text.strip().lower()}".encode("utf-8")).hexdigest()
+        return self.path / f"{key}.wav"
+
+    def get(self, engine: str, emotion: str, text: str) -> Audio | None:
+        if len(text) > self.max_chars:
+            return None
+        f = self._file(engine, emotion, text)
+        try:
+            return Audio.load(f) if f.exists() else None
+        except (OSError, ValueError, EOFError):
+            return None
+
+    def put(self, engine: str, emotion: str, text: str, audio: Audio) -> None:
+        if len(text) > self.max_chars:
+            return
+        try:
+            self.path.mkdir(parents=True, exist_ok=True)
+            audio.save(self._file(engine, emotion, text))
+            self._writes += 1
+            if self._writes % 100 == 0:
+                files = sorted(self.path.glob("*.wav"), key=lambda p: p.stat().st_mtime)
+                for old in files[: max(0, len(files) - self.max_files)]:
+                    old.unlink()
+        except OSError:
+            pass
+
+
 class TTSRouter:
     """Sıradaki uygun motoru dener. Hata veren motor `cooldown` saniye atlanır."""
 
     def __init__(self, cloud: TTS | None, local: TTS | None, prefer: str = "cloud",
-                 policy: Callable[[], dict[str, Any]] = core_policy, cooldown: float = 300):
+                 policy: Callable[[], dict[str, Any]] = core_policy, cooldown: float = 300,
+                 cache: SpeechCache | None = None):
         self.cloud = cloud
         self.local = local
         self.prefer = prefer
@@ -231,6 +570,7 @@ class TTSRouter:
         self.cooldown = cooldown
         self.down: dict[str, float] = {}
         self.last = ""
+        self.cache = cache
 
     @property
     def name(self) -> str:
@@ -244,8 +584,17 @@ class TTSRouter:
         return [e for e in engines if e is not None]
 
     def synth(self, text: str, emotion: str = "calm") -> Audio:
+        from alice.voice.spoken_numbers import normalize
+
+        text = normalize(text)
         errors = []
         now = time.monotonic()
+        if self.cache is not None:
+            for e in self.order():
+                hit = self.cache.get(e.name, emotion, text)
+                if hit is not None:
+                    self.last = f"{e.name} (önbellek)"
+                    return hit
         for e in self.order():
             if self.down.get(e.name, 0) > now:
                 errors.append(f"{e.name}: bekletiliyor")
@@ -253,9 +602,14 @@ class TTSRouter:
             try:
                 audio = e.synth(text, emotion)
                 self.last = e.name
+                if self.cache is not None:
+                    self.cache.put(e.name, emotion, text, audio)
                 return audio
             except TTSError as ex:
-                self.down[e.name] = now + self.cooldown
+                wait = self.cooldown
+                if isinstance(ex, QuotaError):
+                    wait = 3600 if ex.daily else (ex.retry_after or self.cooldown)
+                self.down[e.name] = now + wait
                 errors.append(f"{e.name}: {ex}")
         raise TTSError("; ".join(errors) or "ses motoru yok")
 
@@ -269,7 +623,10 @@ def make_cloud(cfg: Config, voice: str | None = None) -> GeminiTTS | None:
     key = os.environ.get(cfg.data.get("providers", {}).get("gemini", {}).get("api_key_env", "GEMINI_API_KEY"), "")
     if not key:
         return None
-    return GeminiTTS(key, name or "Aoede", v.get("gemini_tts_model", "gemini-2.5-flash-preview-tts"))
+    models = list(v.get("gemini_tts_models") or DEFAULT_GEMINI_MODELS)
+    if v.get("gemini_tts_model"):  # eski tek model ayarı: onu öne al
+        models = [v["gemini_tts_model"]] + [m for m in models if m != v["gemini_tts_model"]]
+    return GeminiTTS(key, name or "Aoede", models)
 
 
 def make_local(cfg: Config, name: str | None = None) -> TTS | None:
@@ -278,10 +635,18 @@ def make_local(cfg: Config, name: str | None = None) -> TTS | None:
     if name == "xtts":
         return XTTS(allow_gpu=allow)
     if name == "chatterbox":
-        return Chatterbox(allow_gpu=allow)
+        from alice.voice.stt import make_stt
+        from alice.voice.trim import make_trimmer
+
+        v = cfg.data.get("voice", {})
+        trim = make_trimmer(make_stt(cfg) if v.get("local_trim_whisper", True) else None)
+        return Chatterbox(v.get("local_python", ""), int(v.get("local_port", 8771)), allow_gpu=allow, trim=trim,
+                          temperature=float(v.get("local_temperature", 0.6)),
+                          verify=bool(v.get("local_verify", True)),
+                          whisper_model=str(v.get("local_whisper_model", "small")))
     return None
 
 
 def make_tts(cfg: Config) -> TTSRouter:
     v = cfg.data.get("voice", {})
-    return TTSRouter(make_cloud(cfg), make_local(cfg), v.get("prefer", "cloud"))
+    return TTSRouter(make_cloud(cfg), make_local(cfg), v.get("prefer", "cloud"), cache=SpeechCache())

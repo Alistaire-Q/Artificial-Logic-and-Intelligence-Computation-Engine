@@ -72,6 +72,33 @@ class Audio:
             other = other.resample(self.rate)
         return Audio(self.pcm + other.pcm, self.rate)
 
+    def polish(self, fade_in: float = 0.005, fade_out: float = 0.05, pad: float = 0.15,
+               rel_floor: float = 0.06, max_trim: float = 2.0) -> "Audio":
+        """Sesin başını/sonunu yumuşat: sondaki gürültü/patlama kuyruğunu kes, kısa fade ve sessizlik ekle.
+        Aniden biten PCM hoparlörde "tık" ya da cızırtı yapar. Kuyruk eşiği sesin en yüksek yerine göredir
+        (konuşmanın %6'sı altı kuyruk sayılır), böylece sondaki hafif ama sessiz olmayan cızırtı da kesilir."""
+        a = array.array("h", self.pcm[: len(self.pcm) // 2 * 2])
+        if not a:
+            return self
+        win = max(1, int(self.rate * 0.02))
+        levels = [math.sqrt(sum(x * x for x in a[i:i + win]) / max(1, len(a[i:i + win])))
+                  for i in range(0, len(a), win)]
+        peak = max(levels) or 1.0
+        thr = max(0.004 * 32768, peak * rel_floor)
+        last = len(levels) - 1
+        min_last = max(0, len(levels) - int(max_trim / 0.02))
+        while last > min_last and levels[last] < thr:
+            last -= 1
+        end = min(len(a), (last + 1) * win + int(self.rate * 0.06))
+        a = a[:end]
+        n_in, n_out = min(len(a), int(self.rate * fade_in)), min(len(a), int(self.rate * fade_out))
+        for i in range(n_in):
+            a[i] = int(a[i] * i / n_in)
+        for i in range(n_out):
+            j = len(a) - n_out + i
+            a[j] = int(a[j] * (1 - (i + 1) / n_out))
+        return Audio(a.tobytes() + b"\x00\x00" * int(self.rate * pad), self.rate)
+
     def resample(self, rate: int) -> "Audio":
         """Doğrusal ara değerleme; konuşma için yeterli."""
         if rate == self.rate or not self.pcm:

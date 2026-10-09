@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import html
 import json
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -30,8 +31,13 @@ def audition_dir() -> Path:
 
 
 def run_audition(engines: list, emotions: list[str] | None = None, out: Path | None = None,
-                 emit: Callable[[str], None] = lambda s: None) -> Path:
-    """engines: synth(text, emotion) ve name'i olan motorlar. index.html yolunu döndürür."""
+                 emit: Callable[[str], None] = lambda s: None, sleep: Callable[[float], None] = time.sleep,
+                 max_wait: float = 120) -> Path:
+    """engines: synth(text, emotion) ve name'i olan motorlar. index.html yolunu döndürür.
+    Dakikalık kota dolarsa bekleyip devam eder; günlük kota dolarsa o sağlayıcının kalanını atlar."""
+    from alice.voice.tts import QuotaError
+
+    exhausted: set[str] = set()
     out = out or audition_dir()
     out.mkdir(parents=True, exist_ok=True)
     emotions = emotions or list(EMOTIONS)
@@ -41,13 +47,37 @@ def run_audition(engines: list, emotions: list[str] | None = None, out: Path | N
         for emo in emotions:
             fname = f"{eng.name.replace(':', '_')}_{emo}.wav"
             path = out / fname
+            provider = eng.name.split(":")[0]
             if not path.exists():
+                if provider in exhausted:
+                    row[emo] = "!günlük kota doldu"
+                    continue
                 emit(f"{eng.name} · {NAMES_TR[emo]}")
-                try:
-                    eng.synth(SAMPLES[emo], emo).save(path)
-                except Exception as e:
-                    emit(f"  atlandı: {e}")
-                    row[emo] = f"!{e}"
+                err = None
+                for _ in range(4):
+                    try:
+                        eng.synth(SAMPLES[emo], emo).save(path)
+                        err = None
+                        model = getattr(eng, "last_model", "")
+                        if model:  # hangi model ve talimat biçimiyle üretildi (sayfada gösterilir)
+                            row[f"{emo}@"] = f"{model} · {getattr(eng, 'last_format', '')}"
+                        break
+                    except QuotaError as q:
+                        err = str(q)
+                        if q.daily or not q.retry_after or q.retry_after > max_wait:
+                            if q.daily:
+                                exhausted.add(provider)
+                            break
+                        emit(f"  {q}; bekleniyor")
+                        sleep(q.retry_after + 1)
+                    except Exception as e:
+                        err = str(e).splitlines()[0][:160]
+                        break
+                if err is not None:
+                    emit(f"  atlandı: {err}")
+                    row[emo] = f"!{err}"
+                    if provider in exhausted:
+                        emit(f"  {provider} için kalan örnekler atlanıyor; yarın aynı komutla kaldığın yerden devam eder")
                     continue
             row[emo] = fname
     # Önceki çalıştırmalardan kalanları da sayfaya ekle.
@@ -75,7 +105,9 @@ def render(results: dict[str, dict[str, str]], emotions: list[str]) -> str:
         for e in emotions:
             f = row.get(e, "")
             if f and not f.startswith("!"):
-                cells.append(f'<td><audio controls preload="none" src="{html.escape(f)}"></audio></td>')
+                info = row.get(f"{e}@", "")
+                cells.append(f'<td><audio controls preload="none" src="{html.escape(f)}"></audio>'
+                             f'{f"<code>{html.escape(info)}</code>" if info else ""}</td>')
             else:
                 cells.append(f'<td class=err>{html.escape(f[1:80]) if f else "-"}</td>')
         rows.append(f"<tr><td><b>{html.escape(name)}</b><code>alice voice use {html.escape(name)}</code></td>"

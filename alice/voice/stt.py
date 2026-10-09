@@ -54,6 +54,20 @@ class GroqWhisper:
             raise STTError(f"groq {r.status_code}: {r.text[:200]}")
         return str(r.json().get("text", "")).strip()
 
+    def words(self, audio: Audio) -> list[tuple[str, float, float]]:
+        """Kelime zamanlarıyla yazıya çevir: [(kelime, başlangıç sn, bitiş sn)]."""
+        data = {"model": self.model, "language": self.language, "response_format": "verbose_json",
+                "temperature": "0", "timestamp_granularities[]": ["word"]}
+        try:
+            r = self.client.post(self.URL, headers={"Authorization": f"Bearer {self.api_key}"}, data=data,
+                                 files={"file": ("speech.wav", audio.resample(16000).to_wav(), "audio/wav")})
+        except httpx.HTTPError as e:
+            raise STTError(f"groq bağlantı hatası: {e}") from e
+        if r.status_code != 200:
+            raise STTError(f"groq {r.status_code}: {r.text[:200]}")
+        return [(str(w.get("word", "")), float(w.get("start", 0)), float(w.get("end", 0)))
+                for w in r.json().get("words", []) or []]
+
     def transcribe_file(self, data: bytes, filename: str) -> str:
         """Tarayıcıdan gelen webm/ogg gibi kayıtlar (Groq kendisi çözer)."""
         try:

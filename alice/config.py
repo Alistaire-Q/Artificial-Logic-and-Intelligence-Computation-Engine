@@ -73,9 +73,23 @@ enabled = false
 # Bulut sesi "gemini:<ses>"; yerel motor "xtts" ya da "chatterbox" (boş = yok).
 tts_cloud = "gemini:Aoede"
 tts_local = ""
+# Yerel ses sunucusunun Python'u ve portu (`alice voice install-local` doldurur).
+local_python = ""
+local_port = 8771
+# Yerel ses cümle sonunda uydurabiliyor. local_verify: ses sunucusundaki yerel Whisper (ücretsiz,
+# ekran kartında) her cümleyi dinler, son kelimeden sonrasını keser, saçmaladıysa bir kez yeniden üretir.
+local_verify = true
+# tiny | base | small | medium | turbo. Büyüdükçe Türkçesi iyi ama ekran kartı belleği artar.
+local_whisper_model = "small"
+# Sunucuda Whisper yoksa: Groq Whisper ile kes (her cümlede bir istek). false = uzunluğa göre kes.
+local_trim_whisper = true
+# Düşük değer daha az "yaratıcı", daha az uydurma (Chatterbox varsayılanı 0.8).
+local_temperature = 0.6
 # cloud: önce bulut, local: önce yerel. Uçuşta (local_gpu = false) her zaman önce bulut.
 prefer = "cloud"
-gemini_tts_model = "gemini-2.5-flash-preview-tts"
+# Gemini ses modelleri, sırayla: kota model başına sayılır, biri dolunca sıradakine geçilir.
+gemini_tts_models = ["gemini-3.8-flash-lite-tts", "gemini-3.8-flash-tts", "gemini-3.1-flash-tts-preview",
+                     "gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts"]
 # Konuşma tanıma zinciri: groq:<model>, local:<faster-whisper modeli>
 stt = ["groq:whisper-large-v3-turbo", "local:large-v3-turbo"]
 stt_cpu_model = "small"

@@ -9,17 +9,19 @@ from __future__ import annotations
 
 import re
 
+from alice.voice.spoken_numbers import normalize as normalize_numbers
+
 EMOTIONS = ("calm", "happy", "serious", "urgent", "playful")
 
 NAMES_TR = {"calm": "sakin", "happy": "neşeli", "serious": "ciddi", "urgent": "acil", "playful": "şakacı"}
 
-# Gemini gibi stil talimatı alan motorlar için. Sesin kendisi aynı kalır, sadece ton değişir.
-STYLE = {
-    "calm": "Sakin, sıcak ve yumuşak bir sesle, acele etmeden söyle",
-    "happy": "Neşeli, enerjik ve gülümseyerek söyle",
-    "serious": "Ciddi, sakin ama net bir sesle söyle",
-    "urgent": "Net, hızlı ve acil bir tonla, kısa ve kararlı söyle",
-    "playful": "Şakacı, hafif alaycı ve sıcak bir tonla söyle",
+# Gemini ses modelleri için yönetmen notu (İngilizce talimatı daha iyi izliyorlar; konuşulan metin Türkçe).
+DIRECTION = {
+    "calm": "Calm, warm and soft-spoken. Unhurried, gentle pace, friendly.",
+    "happy": "Cheerful and bright, smiling while speaking, energetic but natural.",
+    "serious": "Serious, composed and clear. Steady pace, no playfulness.",
+    "urgent": "Clear, firm and urgent like a flight callout. Short, decisive, slightly faster. No jokes.",
+    "playful": "Playful, lightly teasing and warm, with a hint of a smile.",
 }
 
 # Chatterbox "exaggeration" (0.25-2) ve cfg_weight. Yüksek exaggeration daha duygulu, hızlı.
@@ -57,6 +59,7 @@ def for_speech(text: str) -> str:
     text = re.sub(r"^\s*\|.*\|\s*$", "", text, flags=re.M)  # tablolar okunmaz
     text = re.sub(r"(\*\*|__|\*|_|~~)(.+?)\1", r"\2", text)
     text = re.sub(r"https?://\S+", "bağlantı", text)
+    text = normalize_numbers(text)  # "3.5", "%40", "78°C" gibi ifadeler ses modellerini şaşırtıyor
     return re.sub(r"[ \t]+", " ", re.sub(r"\n{2,}", "\n", text)).strip()
 
 
