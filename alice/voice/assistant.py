@@ -18,7 +18,7 @@ from alice.tools.base import ToolResult
 from alice.voice.audio import Audio, Microphone
 from alice.voice.listen import VAD, PushToTalk, WakeWord, strip_wake, utterances
 from alice.voice.speaker import Speaker
-from alice.voice.stt import STTError
+from alice.voice.stt import STTError, is_hallucination
 from alice.voice.tone import SentenceSplitter
 
 VOICE_PROMPT = """# Voice mode
@@ -90,6 +90,8 @@ class VoiceUI:
         self.splitter = SentenceSplitter()
         self.spoke = False
         self.muted = False  # araya girildi: bu turun geri kalanı söylenmez
+        self.models: list[str] = []
+        self.tools: list[str] = []
 
     def _say(self, text: str, emotion: str | None = None) -> None:
         if not self.muted:
@@ -107,6 +109,7 @@ class VoiceUI:
         self.splitter = SentenceSplitter()
         self.spoke = False
         self.muted = False
+        self.models, self.tools = [], []
 
     def stream_start(self) -> None:
         self._inner("stream_start")
@@ -126,6 +129,7 @@ class VoiceUI:
 
     def stream_end(self, text: str, source: str) -> None:
         self._inner("stream_end", text, source)
+        self.models.append(source)
         rest = self.splitter.flush()
         if not self.spoke and not rest and text:
             # Akış yoktu (stream kapalı ya da yedek model): metnin tamamını söyle.
@@ -136,6 +140,7 @@ class VoiceUI:
 
     def tool_start(self, call_id: str, name: str, summary: str) -> None:
         self._inner("tool_start", call_id, name, summary)
+        self.tools.append(f"{name}({summary[:80]})")
         if not self.spoke and not self.speaker.speaking:
             self._say(random.choice(FILLERS), "calm")
 
@@ -153,11 +158,41 @@ class VoiceUI:
         self._inner("info", msg)
 
 
+def voice_log(line: str) -> None:
+    """~/.alice/voice.log: ne duyuldu, ne cevap verildi (yanlış anlama sorunlarını görmek için)."""
+    from datetime import datetime
+
+    from alice.config import alice_home
+
+    try:
+        p = alice_home() / "voice.log"
+        if p.exists() and p.stat().st_size > 2_000_000:
+            p.replace(p.with_suffix(".log.1"))
+        with p.open("a", encoding="utf-8") as f:
+            f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} {line}\n")
+    except OSError:
+        pass
+
+
+def trim_history(messages: list[dict[str, Any]], keep_turns: int) -> list[dict[str, Any]]:
+    """Sistem istemi + son keep_turns kullanıcı turu (araç çağrıları bölünmeden). Sesli asistan saatlerce açık
+    kalıyor; tüm geçmiş her istekte gidince eski konulara sapıyor ve küçük bağlamlı hızlı modellere sığmıyor."""
+    starts = [i for i, m in enumerate(messages) if i and m.get("role") == "user" and isinstance(m.get("content"), str)
+              and not m.get("_image")]
+    if len(starts) <= keep_turns:
+        return messages
+    return messages[:1] + messages[starts[-keep_turns]:]
+
+
 class VoiceAssistant:
     def __init__(self, agent, speaker: Speaker, stt, mic_factory: Callable[[], Microphone] = Microphone,
                  ptt_key: str = "", wake_model: str = "", wake_phrase: bool = True, barge_in: bool = True,
-                 follow_up: float = 8.0, emit: Callable[[str], None] = lambda s: None):
+                 follow_up: float = 8.0, emit: Callable[[str], None] = lambda s: None,
+                 keep_turns: int = 4, idle_reset: float = 300.0):
         self.agent = agent
+        self.keep_turns = keep_turns
+        self.idle_reset = idle_reset  # bu kadar saniye sessizlikten sonra yeni sohbet
+        self._last_turn = 0.0
         self.speaker = speaker
         self.stt = stt
         self.mic_factory = mic_factory
@@ -247,20 +282,36 @@ class VoiceAssistant:
             self.emit(f"anlaşılamadı: {e}")
             return
         self.emit(f"duyulan: {text}")
+        if is_hallucination(text):
+            voice_log(f"duyulan (gürültü sayıldı) [{getattr(self.stt, 'last', '')}]: {text}")
+            return
+        voice_log(f"duyulan [{getattr(self.stt, 'last', '')}]{' (doğrudan)' if direct else ''}: {text}")
         self.handle_text(text, direct)
 
     def _worker(self) -> None:
         while True:
             text = self._jobs.get()
             self._busy.set()
+            now = time.monotonic()
+            msgs = getattr(self.agent, "messages", None)
+            if isinstance(msgs, list) and msgs:
+                if self._last_turn and now - self._last_turn > self.idle_reset:
+                    msgs[:] = msgs[:1]  # uzun sessizlik: yeni sohbet
+                else:
+                    msgs[:] = trim_history(msgs, self.keep_turns)
+            reply = ""
             try:
                 self.ui.begin_turn()
-                self.agent.run_turn(with_clock(text))
+                reply = self.agent.run_turn(with_clock(text)) or ""
             except Exception as e:
                 self.speaker.say("Bir sorun çıktı, ekrana yazdım.", "serious")
                 self.emit(f"hata: {e}")
+                reply = f"HATA {e}"
             finally:
                 self._busy.clear()
+                self._last_turn = time.monotonic()
+                tools = f" araçlar: {', '.join(self.ui.tools)}" if self.ui.tools else ""
+                voice_log(f"cevap [{', '.join(dict.fromkeys(self.ui.models))}]{tools}: {reply}")
             self.speaker.wait(120)
             self.armed_until = time.monotonic() + self.follow_up
 

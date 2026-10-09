@@ -900,3 +900,26 @@ def test_spoken_time_turkish():
     assert spoken_time(12, 0) == "saat tam on iki"
     assert spoken_time(23, 59) == "saat on ikiye bir var"
     assert "söylenişi: saat" in with_clock("saat kaç?")
+
+
+def test_whisper_hallucinations_filtered():
+    from alice.voice.stt import is_hallucination
+
+    for t in ("Altyazı M.K.", "İzlediğiniz için teşekkürler.", "Abone olmayı unutmayın!", "", " . ", "DCS, F-16"):
+        assert is_hallucination(t), t
+    for t in ("YouTube'u aç", "Hey Alice", "saat kaç?", "Alice hava nasıl"):
+        assert not is_hallucination(t), t
+
+
+def test_trim_history_keeps_last_turns_whole():
+    from alice.voice.assistant import trim_history
+
+    msgs = [{"role": "system", "content": "s"}]
+    for i in range(6):
+        msgs += [{"role": "user", "content": f"u{i}"},
+                 {"role": "assistant", "content": "", "tool_calls": [{"id": f"c{i}"}]},
+                 {"role": "tool", "tool_call_id": f"c{i}", "content": "r"},
+                 {"role": "assistant", "content": f"a{i}"}]
+    out = trim_history(msgs, 2)
+    assert out[0]["content"] == "s" and out[1]["content"] == "u4" and len(out) == 9
+    assert trim_history(out, 4) == out

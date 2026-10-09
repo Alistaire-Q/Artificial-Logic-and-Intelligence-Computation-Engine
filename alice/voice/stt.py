@@ -200,6 +200,23 @@ class STTRouter:
         raise STTError("; ".join(errors) or "konuşma tanıma motoru yok")
 
 
+# Whisper sessizlikte/gürültüde YouTube altyazılarından ezberlediği cümleleri uydurur ("Altyazı M.K." gibi).
+HALLUCINATIONS = ("altyazı", "alt yazı", "m.k.", "abone ol", "izlediğiniz için", "izlediğin için", "teşekkürler",
+                  "teşekkür ederim", "bir sonraki videoda", "videoyu beğen", "kanalıma", "hoşça kalın",
+                  "amara.org", "subtitles by", "thanks for watching", "www.", "sesli betimleme")
+
+
+def is_hallucination(text: str) -> bool:
+    t = text.lower().strip(" .,!?…\"'")
+    if not t:
+        return True
+    if "alice" in t:
+        return False
+    if len(t) > 3 and t in PROMPT.lower():  # ipucu metnini aynen geri vermiş
+        return True
+    return len(t) < 60 and any(h in t for h in HALLUCINATIONS)
+
+
 # İsimlerin doğru yazılması için Whisper'a ipucu.
 PROMPT = "Hey Alice. ALICE, DCS, F-16, Unity, War Thunder, bingo, waypoint, kneeboard."
 
