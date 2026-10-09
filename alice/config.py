@@ -75,7 +75,9 @@ tts_cloud = "gemini:Aoede"
 tts_local = ""
 # cloud: önce bulut, local: önce yerel. Uçuşta (local_gpu = false) her zaman önce bulut.
 prefer = "cloud"
-gemini_tts_model = "gemini-2.5-flash-preview-tts"
+# Gemini ses modelleri, sırayla: kota model başına sayılır, biri dolunca sıradakine geçilir.
+gemini_tts_models = ["gemini-3.8-flash-lite-tts", "gemini-3.8-flash-tts", "gemini-3.1-flash-tts-preview",
+                     "gemini-2.5-flash-preview-tts"]
 # Konuşma tanıma zinciri: groq:<model>, local:<faster-whisper modeli>
 stt = ["groq:whisper-large-v3-turbo", "local:large-v3-turbo"]
 stt_cpu_model = "small"

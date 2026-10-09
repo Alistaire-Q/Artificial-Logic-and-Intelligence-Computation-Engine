@@ -132,16 +132,26 @@ def build_library(engine: "TTS", out: Path | None = None, emit: Callable[[str], 
 
 
 # ------------------------------------------------------------------- Gemini
+DEFAULT_GEMINI_MODELS = ["gemini-3.8-flash-lite-tts", "gemini-3.8-flash-tts", "gemini-3.1-flash-tts-preview",
+                         "gemini-2.5-flash-preview-tts"]
+
+
 class GeminiTTS:
+    """Gemini ses modelleri. Kota model başına sayıldığı için birinin kotası dolunca sıradakine geçer;
+    ses (ör. Aoede) aynı kalır."""
+
     URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
-    def __init__(self, api_key: str, voice: str = "Aoede", model: str = "gemini-2.5-flash-preview-tts",
+    def __init__(self, api_key: str, voice: str = "Aoede", models: list[str] | str | None = None,
                  client: httpx.Client | None = None):
         self.api_key = api_key
         self.voice = voice
-        self.model = model
+        self.models = [models] if isinstance(models, str) else list(models or DEFAULT_GEMINI_MODELS)
         self.name = f"gemini:{voice}"
         self.client = client or httpx.Client(timeout=60)
+        self.down: dict[str, float] = {}  # model -> bu ana kadar atla
+        self.reason: dict[str, str] = {}  # model -> daily | minute | error
+        self.last_model = ""
 
     def synth(self, text: str, emotion: str = "calm") -> Audio:
         body = {
@@ -149,27 +159,59 @@ class GeminiTTS:
             "generationConfig": {"responseModalities": ["AUDIO"], "speechConfig": {
                 "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": self.voice}}}},
         }
-        try:
-            r = self.client.post(self.URL.format(model=self.model), json=body,
-                                 headers={"x-goog-api-key": self.api_key})
-        except httpx.HTTPError as e:
-            raise TTSError(f"gemini bağlantı hatası: {e}") from e
-        if r.status_code == 429:
-            raise gemini_quota_error(r.text)
-        if r.status_code != 200:
-            raise TTSError(f"gemini {r.status_code}: {r.text[:200]}")
-        try:
-            part = r.json()["candidates"][0]["content"]["parts"][0]["inlineData"]
-        except (KeyError, IndexError, ValueError) as e:
-            raise TTSError(f"gemini ses döndürmedi: {r.text[:200]}") from e
-        rate = 24000
-        mime = part.get("mimeType", "")
-        if "rate=" in mime:
+        now = time.monotonic()
+        quota: list[QuotaError] = []
+        errors: list[str] = []
+        for model in self.models:
+            if self.down.get(model, 0) > now:
+                continue
             try:
-                rate = int(mime.split("rate=")[1].split(";")[0])
-            except ValueError:
-                pass
-        return Audio(base64.b64decode(part["data"]), rate)
+                r = self.client.post(self.URL.format(model=model), json=body, headers={"x-goog-api-key": self.api_key})
+            except httpx.HTTPError as e:
+                raise TTSError(f"gemini bağlantı hatası: {e}") from e
+            if r.status_code == 429:
+                q = gemini_quota_error(r.text)
+                # Günlük kota: o model bugün yok. Dakikalık: o model kısa süre beklesin, diğerine geç.
+                self.down[model] = now + (6 * 3600 if q.daily else (q.retry_after or 60))
+                self.reason[model] = "daily" if q.daily else "minute"
+                quota.append(q)
+                continue
+            if r.status_code in (400, 403, 404):
+                # Model yok, bu hesapta açık değil ya da ses/dil desteklenmiyor: bir gün atla.
+                self.down[model] = now + 86400
+                self.reason[model] = "error"
+                errors.append(f"{model}: {r.status_code}")
+                continue
+            if r.status_code != 200:
+                errors.append(f"{model}: {r.status_code} {r.text[:120]}")
+                continue
+            try:
+                part = r.json()["candidates"][0]["content"]["parts"][0]["inlineData"]
+            except (KeyError, IndexError, ValueError):
+                errors.append(f"{model}: ses döndürmedi")
+                continue
+            rate = 24000
+            mime = part.get("mimeType", "")
+            if "rate=" in mime:
+                try:
+                    rate = int(mime.split("rate=")[1].split(";")[0])
+                except ValueError:
+                    pass
+            self.last_model = model
+            return Audio(base64.b64decode(part["data"]), rate)
+        # Hiçbir model ses vermedi. Sadece kota yüzündense QuotaError (dinleme testi buna göre bekler/durur).
+        skipped = [m for m in self.models if self.down.get(m, 0) > now and self.reason.get(m) != "error"]
+        if quota or skipped:  # var olmayan modellerin hataları önemsiz; kota belirleyici
+            minute = [max(1.0, self.down[m] - now) for m in self.models
+                      if self.reason.get(m) == "minute" and self.down.get(m, 0) > now]
+            daily = not minute
+            kind = "günlük" if daily else "dakikalık"
+            retry = None if daily else min(minute)
+            wait = f", {retry:.0f} sn sonra tekrar denenebilir" if retry else ""
+            raise QuotaError(f"gemini {kind} ses kotası doldu ({len(self.models)} model denendi){wait}", retry, daily)
+        if quota:
+            errors.insert(0, "; ".join(str(q) for q in quota))
+        raise TTSError("gemini: " + ("; ".join(errors) if errors else "kullanılabilir model yok"))
 
 
 # -------------------------------------------------------------- yerel motorlar
@@ -258,11 +300,51 @@ def core_policy() -> dict[str, Any]:
     return s.get("policy", {}) if s.get("running") else {}
 
 
+class SpeechCache:
+    """Kısa, tekrar eden cümlelerin sesi diskte ("Hemen bakıyorum", "On speed, iyi"...): kota harcamaz, anında çalar."""
+
+    def __init__(self, path: Path | None = None, max_chars: int = 120, max_files: int = 3000):
+        self.path = path or alice_home() / "voice" / "cache"
+        self.max_chars = max_chars
+        self.max_files = max_files
+        self._writes = 0
+
+    def _file(self, engine: str, emotion: str, text: str) -> Path:
+        import hashlib
+
+        key = hashlib.sha1(f"{engine}|{emotion}|{text.strip().lower()}".encode("utf-8")).hexdigest()
+        return self.path / f"{key}.wav"
+
+    def get(self, engine: str, emotion: str, text: str) -> Audio | None:
+        if len(text) > self.max_chars:
+            return None
+        f = self._file(engine, emotion, text)
+        try:
+            return Audio.load(f) if f.exists() else None
+        except (OSError, ValueError, EOFError):
+            return None
+
+    def put(self, engine: str, emotion: str, text: str, audio: Audio) -> None:
+        if len(text) > self.max_chars:
+            return
+        try:
+            self.path.mkdir(parents=True, exist_ok=True)
+            audio.save(self._file(engine, emotion, text))
+            self._writes += 1
+            if self._writes % 100 == 0:
+                files = sorted(self.path.glob("*.wav"), key=lambda p: p.stat().st_mtime)
+                for old in files[: max(0, len(files) - self.max_files)]:
+                    old.unlink()
+        except OSError:
+            pass
+
+
 class TTSRouter:
     """Sıradaki uygun motoru dener. Hata veren motor `cooldown` saniye atlanır."""
 
     def __init__(self, cloud: TTS | None, local: TTS | None, prefer: str = "cloud",
-                 policy: Callable[[], dict[str, Any]] = core_policy, cooldown: float = 300):
+                 policy: Callable[[], dict[str, Any]] = core_policy, cooldown: float = 300,
+                 cache: SpeechCache | None = None):
         self.cloud = cloud
         self.local = local
         self.prefer = prefer
@@ -270,6 +352,7 @@ class TTSRouter:
         self.cooldown = cooldown
         self.down: dict[str, float] = {}
         self.last = ""
+        self.cache = cache
 
     @property
     def name(self) -> str:
@@ -285,6 +368,12 @@ class TTSRouter:
     def synth(self, text: str, emotion: str = "calm") -> Audio:
         errors = []
         now = time.monotonic()
+        if self.cache is not None:
+            for e in self.order():
+                hit = self.cache.get(e.name, emotion, text)
+                if hit is not None:
+                    self.last = f"{e.name} (önbellek)"
+                    return hit
         for e in self.order():
             if self.down.get(e.name, 0) > now:
                 errors.append(f"{e.name}: bekletiliyor")
@@ -292,6 +381,8 @@ class TTSRouter:
             try:
                 audio = e.synth(text, emotion)
                 self.last = e.name
+                if self.cache is not None:
+                    self.cache.put(e.name, emotion, text, audio)
                 return audio
             except TTSError as ex:
                 wait = self.cooldown
@@ -311,7 +402,10 @@ def make_cloud(cfg: Config, voice: str | None = None) -> GeminiTTS | None:
     key = os.environ.get(cfg.data.get("providers", {}).get("gemini", {}).get("api_key_env", "GEMINI_API_KEY"), "")
     if not key:
         return None
-    return GeminiTTS(key, name or "Aoede", v.get("gemini_tts_model", "gemini-2.5-flash-preview-tts"))
+    models = list(v.get("gemini_tts_models") or DEFAULT_GEMINI_MODELS)
+    if v.get("gemini_tts_model"):  # eski tek model ayarı: onu öne al
+        models = [v["gemini_tts_model"]] + [m for m in models if m != v["gemini_tts_model"]]
+    return GeminiTTS(key, name or "Aoede", models)
 
 
 def make_local(cfg: Config, name: str | None = None) -> TTS | None:
@@ -326,4 +420,4 @@ def make_local(cfg: Config, name: str | None = None) -> TTS | None:
 
 def make_tts(cfg: Config) -> TTSRouter:
     v = cfg.data.get("voice", {})
-    return TTSRouter(make_cloud(cfg), make_local(cfg), v.get("prefer", "cloud"))
+    return TTSRouter(make_cloud(cfg), make_local(cfg), v.get("prefer", "cloud"), cache=SpeechCache())

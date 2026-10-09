@@ -78,7 +78,7 @@ def test_gemini_tts_request_and_decode():
     eng = GeminiTTS("k", "Kore", client=httpx.Client(transport=httpx.MockTransport(handler)))
     audio = eng.synth("Yakıt az.", "urgent")
     assert audio.pcm == pcm and audio.rate == 24000
-    assert seen["key"] == "k" and "gemini-2.5-flash-preview-tts:generateContent" in seen["url"]
+    assert seen["key"] == "k" and "gemini-3.8-flash-lite-tts:generateContent" in seen["url"]
     cfg = seen["body"]["generationConfig"]
     assert cfg["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"] == "Kore"
     assert seen["body"]["contents"][0]["parts"][0]["text"].endswith("acil bir tonla, kısa ve kararlı söyle: Yakıt az.")
@@ -367,3 +367,52 @@ def test_audition_waits_on_minute_quota_and_stops_on_daily(tmp_path):
     run_audition([a, b], ["calm", "happy"], out=tmp_path / "2", sleep=waits.append)
     assert len(a.calls) == 0 and b.calls == []  # günlük kota: gemini'nin kalanına hiç istek gitmez
     assert len(waits) == 1
+
+
+def test_gemini_rotates_models_on_quota():
+    from alice.voice.tts import QuotaError
+
+    pcm = tone(0.05, 24000).pcm
+    daily = GEMINI_429.replace("PerMinute", "PerDay")
+    plan = {"m1": daily, "m2": "404", "m3": "ok"}
+    hits = []
+
+    def handler(req):
+        model = req.url.path.split("/")[-1].split(":")[0]
+        hits.append(model)
+        r = plan[model]
+        if r == "404":
+            return httpx.Response(404, text="not found")
+        if r == "ok":
+            return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"inlineData": {
+                "mimeType": "audio/L16;rate=24000", "data": base64.b64encode(pcm).decode()}}]}}]})
+        return httpx.Response(429, text=r)
+
+    eng = GeminiTTS("k", "Aoede", ["m1", "m2", "m3"], client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert eng.synth("a").pcm == pcm and eng.last_model == "m3" and hits == ["m1", "m2", "m3"]
+    eng.synth("b")
+    assert hits[3:] == ["m3"]  # dolan ve olmayan modeller atlanıyor
+
+    plan["m3"] = GEMINI_429  # dakikalık
+    with pytest.raises(QuotaError) as ei:
+        eng.synth("c")
+    assert not ei.value.daily and ei.value.retry_after
+    eng.down["m3"] = 0
+    plan["m3"] = daily
+    with pytest.raises(QuotaError) as ei:
+        eng.synth("d")
+    assert ei.value.daily
+
+
+def test_speech_cache(tmp_path):
+    from alice.voice.tts import SpeechCache
+
+    cloud = FakeTTS("cloud")
+    r = TTSRouter(cloud, None, policy=lambda: {}, cache=SpeechCache(tmp_path))
+    a = r.synth("Hemen bakıyorum.", "calm")
+    b = r.synth("Hemen bakıyorum.", "calm")
+    assert a.pcm == b.pcm and len(cloud.calls) == 1 and r.last.endswith("(önbellek)")
+    r.synth("Hemen bakıyorum.", "urgent")
+    r.synth("uzun " * 40, "calm")
+    r.synth("uzun " * 40, "calm")
+    assert len(cloud.calls) == 4  # farklı ton ve uzun cümle önbelleğe alınmaz
