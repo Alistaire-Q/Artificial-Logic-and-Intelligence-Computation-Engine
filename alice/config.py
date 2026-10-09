@@ -76,6 +76,11 @@ tts_local = ""
 # Yerel ses sunucusunun Python'u ve portu (`alice voice install-local` doldurur).
 local_python = ""
 local_port = 8771
+# Yerel ses cümle sonunda uydurabiliyor: Whisper'ın kelime zamanlarıyla son kelimeden sonrasını kes
+# (her cümlede bir Groq isteği). false = sadece uzunluğa göre kes.
+local_trim_whisper = true
+# Düşük değer daha az "yaratıcı", daha az uydurma (Chatterbox varsayılanı 0.8).
+local_temperature = 0.6
 # cloud: önce bulut, local: önce yerel. Uçuşta (local_gpu = false) her zaman önce bulut.
 prefer = "cloud"
 # Gemini ses modelleri, sırayla: kota model başına sayılır, biri dolunca sıradakine geçilir.

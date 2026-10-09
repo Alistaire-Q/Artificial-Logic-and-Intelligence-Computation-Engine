@@ -401,7 +401,12 @@ class Chatterbox:
 
     def __init__(self, python: str = "", port: int = 8771, library: EmotionLibrary | None = None,
                  allow_gpu: Callable[[], bool] = lambda: True, client: httpx.Client | None = None,
-                 start_timeout: float = 600):
+                 start_timeout: float = 600, trim: Callable[[Audio, str], Audio] | None = None,
+                 temperature: float = 0.6):
+        from alice.voice.trim import by_length
+
+        self.trim = trim or by_length
+        self.temperature = temperature
         self.python = python
         self.port = port
         self.library = library or EmotionLibrary()
@@ -453,7 +458,8 @@ class Chatterbox:
         exaggeration, cfg_weight = CHATTERBOX.get(emotion, CHATTERBOX["calm"])
         ref = self.library.clip(emotion)
         body = {"text": text, "language": "tr", "ref": str(ref) if ref else "", "exaggeration": exaggeration,
-                "cfg_weight": cfg_weight, "device": "cuda" if self.allow_gpu() else "cpu"}
+                "cfg_weight": cfg_weight, "temperature": self.temperature,
+                "device": "cuda" if self.allow_gpu() else "cpu"}
         try:
             # İlk istekte model yüklenir/indirilir: uzun sürebilir.
             r = self.client.post(self.base + "/synth", json=body, timeout=self.start_timeout)
@@ -465,7 +471,12 @@ class Chatterbox:
             except ValueError:
                 msg = r.text
             raise TTSError(f"chatterbox: {str(msg)[:200]}")
-        return Audio.from_wav(r.content).polish()
+        audio = Audio.from_wav(r.content)
+        try:
+            audio = self.trim(audio, text)  # cümle sonrası uydurma/cızırtıyı kes
+        except Exception:
+            pass
+        return audio.polish()
 
 
 # --------------------------------------------------------------------- seçim
@@ -590,8 +601,13 @@ def make_local(cfg: Config, name: str | None = None) -> TTS | None:
     if name == "xtts":
         return XTTS(allow_gpu=allow)
     if name == "chatterbox":
+        from alice.voice.stt import make_stt
+        from alice.voice.trim import make_trimmer
+
         v = cfg.data.get("voice", {})
-        return Chatterbox(v.get("local_python", ""), int(v.get("local_port", 8771)), allow_gpu=allow)
+        trim = make_trimmer(make_stt(cfg) if v.get("local_trim_whisper", True) else None)
+        return Chatterbox(v.get("local_python", ""), int(v.get("local_port", 8771)), allow_gpu=allow, trim=trim,
+                          temperature=float(v.get("local_temperature", 0.6)))
     return None
 
 

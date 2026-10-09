@@ -519,7 +519,7 @@ class ChatterboxMultilingualTTS:
         m = cls(); m.device = device
         return m
     def generate(self, text, language_id="en", audio_prompt_path=None, exaggeration=0.5, cfg_weight=0.5):
-        assert language_id == "tr"
+        assert language_id == "tr" and text.endswith((".", "!", "?"))
         n = int(0.05 * len(text) * self.sr)
         t = np.arange(n) / self.sr
         return (0.3 * np.sin(2 * np.pi * (220 + 400 * exaggeration) * t)).astype("float32")
@@ -601,3 +601,50 @@ def test_install_local_flow(tmp_path, monkeypatch):
 
     v = load_config().data["voice"]
     assert v["tts_local"] == "chatterbox" and v["local_python"] == str(py)
+
+
+def test_trim_by_words_cuts_hallucinated_tail():
+    from alice.voice.trim import by_words
+
+    audio = tone(4.0, 16000)
+    words = [("Merhaba,", 0.0, 0.5), ("ben", 0.6, 0.8), ("ALICE.", 0.9, 1.4), ("ve", 2.0, 2.2), ("şey", 2.3, 2.6)]
+    out = by_words(audio, words, "Merhaba, ben ALICE.")
+    assert abs(out.seconds - 1.55) < 0.01
+    # son kelime uydurma kuyrukta tekrar etse de ilk gerçek bitişte kesilir
+    words2 = [("Yakıt", 0.0, 0.4), ("az.", 0.5, 0.9), ("az", 1.5, 1.8), ("az", 2.0, 2.3)]
+    assert abs(by_words(audio, words2, "Yakıt az.").seconds - 1.05) < 0.01
+    assert by_words(audio, [("alakasız", 0, 1)], "Merhaba ben ALICE") is None
+
+
+def test_trim_by_length_drops_late_segments():
+    from alice.voice.trim import by_length
+
+    speech = tone(1.0, 16000) + Audio.silence(0.6, 16000) + tone(1.5, 16000)  # ikinci parça uydurma
+    out = by_length(speech, "Merhaba, ben ALICE.")  # ~1.7 + 0.8 sn bekleniyor -> ikinci parça 1.6'da başlıyor
+    assert abs(out.seconds - speech.seconds) < 0.01  # beklenen süre içinde başladığı için korunur
+    late = tone(1.0, 16000) + Audio.silence(2.0, 16000) + tone(1.0, 16000)
+    out2 = by_length(late, "Merhaba, ben ALICE.")
+    assert out2.seconds < 1.2
+
+
+def test_make_trimmer_falls_back(monkeypatch):
+    from alice.voice.trim import make_trimmer
+
+    class Bad:
+        engines = [type("E", (), {"words": lambda self, a: (_ for _ in ()).throw(STTError("x"))})()]
+
+    late = tone(1.0, 16000) + Audio.silence(2.0, 16000) + tone(1.0, 16000)
+    assert make_trimmer(Bad())(late, "Merhaba.").seconds < 1.2
+    assert make_trimmer(None)(late, "Merhaba.").seconds < 1.2
+
+
+def test_groq_words_request():
+    seen = {}
+
+    def handler(req):
+        seen["body"] = req.content
+        return httpx.Response(200, json={"text": "Merhaba", "words": [{"word": "Merhaba", "start": 0.1, "end": 0.6}]})
+
+    stt = GroqWhisper("g", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert stt.words(tone(0.5)) == [("Merhaba", 0.1, 0.6)]
+    assert b"verbose_json" in seen["body"] and b"timestamp_granularities[]" in seen["body"]

@@ -48,13 +48,25 @@ def synth(d: dict) -> bytes:
 
     with LOCK:
         model = load(d.get("device") or "cuda")
-        kwargs = {"language_id": d.get("language") or "tr"}
+        import inspect
+
+        text = str(d["text"]).strip()
+        if text and text[-1] not in ".!?…":
+            text += "."  # noktalamasız biten cümlede model sonunu uydurmaya daha yatkın
+        wanted = {"language_id": d.get("language") or "tr"}
         if d.get("ref"):
-            kwargs["audio_prompt_path"] = d["ref"]
-        for k in ("exaggeration", "cfg_weight"):
+            wanted["audio_prompt_path"] = d["ref"]
+        for k in ("exaggeration", "cfg_weight", "temperature", "repetition_penalty", "min_p", "top_p"):
             if d.get(k) is not None:
-                kwargs[k] = float(d[k])
-        wav = model.generate(str(d["text"]), **kwargs)
+                wanted[k] = float(d[k])
+        # Chatterbox sürümleri arasında parametreler değişiyor: sadece desteklenenleri ver.
+        try:
+            params = inspect.signature(model.generate).parameters
+            accepts_any = any(p.kind is p.VAR_KEYWORD for p in params.values())
+            kwargs = {k: v for k, v in wanted.items() if accepts_any or k in params}
+        except (TypeError, ValueError):
+            kwargs = wanted
+        wav = model.generate(text, **kwargs)
         samples = wav.squeeze().detach().cpu().numpy() if hasattr(wav, "detach") else np.asarray(wav).squeeze()
         rate = int(getattr(model, "sr", 24000))
     pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2").tobytes()
