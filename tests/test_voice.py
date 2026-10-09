@@ -744,3 +744,13 @@ def test_library_resumes_after_quota(tmp_path):
     e2 = Limited("gemini:Aoede", 10)
     build_library(e2, lib)                                               # ses değişti: hepsi yeniden
     assert len(e2.calls) == 5 and EmotionLibrary(lib).source == "gemini:Aoede"
+
+
+def test_strip_wake_turkish_variants():
+    for heard in ("Hey Alis, saat kaç?", "Ey Alıs saat kaç?", "Hey Ellis saat kaç", "Heyalis saat kaç?",
+                  "ee hey Alice saat kaç?", "Hey Ali, saat kaç?", "Hay Alize saat kaç", "Hey Alis' saat kaç?"):
+        assert strip_wake(heard) == "saat kaç?".rstrip("?") or strip_wake(heard) == "saat kaç?", heard
+    assert strip_wake("Ali bugün geldi") is None
+    assert strip_wake("bugün hava nasıl") is None
+    assert strip_wake("hey bakar mısın") is None
+    assert strip_wake("Alice.") == ""

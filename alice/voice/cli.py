@@ -45,10 +45,24 @@ def voice_cmd(argv: list[str]) -> int:
 
 
 def _on(cfg, argv) -> int:
+    from alice.core.service import autostart_path, install_autostart, read_state, start_detached
+
+    was_running = read_state().get("running")
     set_config_value("voice", "enabled", True)
-    console.print("[green]ses açık:[/] çekirdek (tepsideki ALICE) açılınca dinler ve bildirimleri seslendirir. "
-                  "Çekirdek açıksa yeniden başlat: tepsideki ALICE simgesinden Çık, sonra alice core run --tray "
-                  "(ya da bilgisayarı yeniden başlat).")
+    console.print("[green]ses açık.[/] \"Hey Alice\" dinleme, arka plandaki ALICE çekirdeğinde (tepsi simgesi) çalışır.")
+    if was_running:
+        console.print("Çekirdek zaten açık; sesin başlaması için tepsideki ALICE simgesinden Çık, sonra "
+                      "[bold]alice core run --tray[/] (ya da bilgisayarı yeniden başlat).")
+    else:
+        start_detached()
+        console.print("Çekirdek başlatıldı (tepside ALICE simgesi görünür).")
+    if not autostart_path().exists():
+        try:
+            install_autostart()
+            console.print("Windows açılınca çekirdek kendiliğinden başlayacak (kapatmak için: alice core uninstall).")
+        except Exception as e:  # noqa: BLE001
+            console.print(f"[yellow]otomatik başlatma kurulamadı:[/] {escape(str(e))}")
+    console.print('Ne duyduğunu görmek için [bold]alice voice[/] komutunu terminalde de çalıştırabilirsin.')
     return 0
 
 

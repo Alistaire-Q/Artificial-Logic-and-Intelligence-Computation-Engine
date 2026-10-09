@@ -304,6 +304,25 @@ def run_tray(core: Core) -> bool:
 
 
 # ------------------------------------------------------ otomatik başlatma
+def start_detached() -> bool:
+    """Çekirdeği konsolsuz arka planda başlat (zaten çalışıyorsa bir şey yapmaz). Başlattıysa True."""
+    import subprocess
+
+    if read_state().get("running"):
+        return False
+    exe = Path(sys.executable)
+    kwargs: dict[str, Any] = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL,
+                              "cwd": str(Path.home())}
+    if sys.platform == "win32":
+        pyw = exe.with_name("pythonw.exe")
+        exe = pyw if pyw.exists() else exe
+        kwargs["creationflags"] = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+    subprocess.Popen([str(exe), "-m", "alice", "core", "run", "--tray"], **kwargs)
+    return True
+
+
 def autostart_path() -> Path:
     if sys.platform == "win32":
         return Path(os.environ.get("APPDATA", Path.home())) / r"Microsoft\Windows\Start Menu\Programs\Startup" / "ALICE Core.lnk"
