@@ -8,6 +8,7 @@ from typing import Any
 
 import psutil
 
+from alice.tools.shell import NO_WINDOW
 from alice.tools.base import DANGER, EXEC, Tool, ToolContext, ToolError, ToolResult, obj
 
 PROTECTED = {"system", "smss.exe", "csrss.exe", "wininit.exe", "winlogon.exe", "services.exe", "lsass.exe",
@@ -17,12 +18,13 @@ PROTECTED = {"system", "smss.exe", "csrss.exe", "wininit.exe", "winlogon.exe", "
 def _gpu() -> str:
     if shutil.which("nvidia-smi"):
         r = subprocess.run(["nvidia-smi", "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
-                            "--format=csv,noheader"], capture_output=True, text=True)
+                            "--format=csv,noheader"], capture_output=True, text=True, creationflags=NO_WINDOW)
         if r.returncode == 0:
             return r.stdout.strip()
     if sys.platform == "win32":
         r = subprocess.run(["powershell", "-NoProfile", "-Command",
-                            "(Get-CimInstance Win32_VideoController).Name -join ', '"], capture_output=True, text=True)
+                            "(Get-CimInstance Win32_VideoController).Name -join ', '"], capture_output=True, text=True,
+                           creationflags=NO_WINDOW)
         return r.stdout.strip()
     return "bilinmiyor"
 

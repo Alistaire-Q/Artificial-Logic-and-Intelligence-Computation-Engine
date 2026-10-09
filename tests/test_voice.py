@@ -887,3 +887,16 @@ def test_tts_server_chunks_and_token_cap():
     m.t3.inference(max_new_tokens=1000)
     m.t3.inference()
     assert calls == [150, 150]
+
+
+def test_spoken_time_turkish():
+    from alice.voice.assistant import spoken_time, with_clock
+
+    assert spoken_time(1, 13) == "saat biri on üç geçiyor"
+    assert spoken_time(0, 47) == "saat bire on üç var"
+    assert spoken_time(14, 15) == "saat ikiyi çeyrek geçiyor"
+    assert spoken_time(9, 45) == "saat ona çeyrek var"
+    assert spoken_time(13, 30) == "saat bir buçuk"
+    assert spoken_time(12, 0) == "saat tam on iki"
+    assert spoken_time(23, 59) == "saat on ikiye bir var"
+    assert "söylenişi: saat" in with_clock("saat kaç?")
