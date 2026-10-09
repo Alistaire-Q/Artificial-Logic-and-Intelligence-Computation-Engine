@@ -10,6 +10,7 @@
   alice voice status                  motorlar, kütüphane, opsiyonel paketler
   alice voice models                  hesabında hangi Gemini ses modelleri var (kota harcamaz)
   alice voice install-local           yerel ses motorunu (Chatterbox) ayrı ortama kur
+  alice voice on | off                çekirdek açılınca sesli asistan da açılsın / açılmasın
 """
 
 from __future__ import annotations
@@ -35,12 +36,26 @@ def voice_cmd(argv: list[str]) -> int:
     sub = argv[0] if argv and not argv[0].startswith("-") else "run"
     rest = argv[1:] if argv and not argv[0].startswith("-") else argv
     cfg = load_config()
-    fn = {"install-local": _install_local, "models": _models, "run": _run, "audition": _audition, "use": _use, "library": _library, "say": _say, "test": _test,
+    fn = {"on": _on, "off": _off, "install-local": _install_local, "models": _models, "run": _run, "audition": _audition, "use": _use, "library": _library, "say": _say, "test": _test,
           "status": _status}.get(sub)
     if fn is None:
         console.print(__doc__)
         return 2
     return fn(cfg, rest)
+
+
+def _on(cfg, argv) -> int:
+    set_config_value("voice", "enabled", True)
+    console.print("[green]ses açık:[/] çekirdek (tepsideki ALICE) açılınca dinler ve bildirimleri seslendirir. "
+                  "Çekirdek açıksa yeniden başlat: tepsideki ALICE simgesinden Çık, sonra alice core run --tray "
+                  "(ya da bilgisayarı yeniden başlat).")
+    return 0
+
+
+def _off(cfg, argv) -> int:
+    set_config_value("voice", "enabled", False)
+    console.print("ses kapalı (çekirdek yeniden başlayınca geçerli)")
+    return 0
 
 
 def _install_local(cfg, argv) -> int:
