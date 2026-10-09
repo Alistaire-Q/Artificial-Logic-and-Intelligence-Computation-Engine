@@ -191,6 +191,7 @@ class AppState:
         self.agent = Agent(cfg, self.router, all_tools(), self.ctx, Permissions(mode), self.ui, self.decider)
         self.ui.agent = self.agent
         self.sid = sess.new_session_id()
+        self.agent.on_step = lambda: sess.save(self.sid, self.agent.messages, self.ctx.cwd)
         self.token = secrets.token_urlsafe(24)
         self.allowed_hosts = {"127.0.0.1", "localhost"}  # telefon sunucusunda LAN adresi eklenir
         self.watch_store = None  # telefon sunucusu: saat verisi buraya yazılır
@@ -300,6 +301,19 @@ class AppState:
 
             self._stt = make_stt(self.cfg)
         return self._stt.transcribe_file(data, filename)
+
+    def set_cwd(self, path: Path) -> None:
+        """Çalışma klasörünü değiştir, sistem istemindeki klasörü güncelle ve sonraki açılış için hatırla."""
+        from alice.prompts import build_system_prompt
+
+        self.ctx.cwd = path
+        if self.agent.messages and self.agent.messages[0].get("role") == "system":
+            self.agent.messages[0]["content"] = build_system_prompt(path)
+        try:
+            alice_home().mkdir(parents=True, exist_ok=True)
+            (alice_home() / "last_cwd").write_text(str(path), encoding="utf-8")
+        except OSError:
+            pass
 
     def rewind(self, mi: int) -> dict[str, Any]:
         text, restored = self.agent.rewind(mi)
@@ -527,7 +541,7 @@ def make_handler(state: AppState):
                     path = state.ctx.resolve(str(d.get("path", "")))
                     if not path.is_dir():
                         return self._json({"ok": False, "error": f"klasör yok: {path}"}, 400)
-                    state.ctx.cwd = path
+                    state.set_cwd(path)
                     return self._json({"ok": True, **state.status()})
                 if p == "/api/rewind":
                     out = state.rewind(int(d.get("mi", -1)))

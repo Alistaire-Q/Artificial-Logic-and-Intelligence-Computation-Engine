@@ -127,7 +127,7 @@ def test_write_roles_updates_config(isolated_home):
     cfg = load_config()
     assert cfg.roles["brain"] == ["groq:new-model", "gemini:x"]
     assert cfg.roles["vision"] == ["gemini:v"]
-    assert cfg.roles["fast"][0] == "groq:openai/gpt-oss-20b"  # boş öneri dokunulmadı
+    assert cfg.roles["fast"][0] == "auto"  # boş öneri dokunulmadı
 
 
 def test_cli_status_line_and_prompt_session(workdir):

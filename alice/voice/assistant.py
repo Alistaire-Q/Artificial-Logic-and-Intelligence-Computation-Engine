@@ -187,6 +187,13 @@ class VoiceAssistant:
     def handle_audio(self, audio: Audio, direct: bool) -> None:
         if audio.seconds < 0.3:
             return
+        gate = getattr(self.stt, "wake_gate", None)
+        if not direct and not self._awaiting_answer and gate is not None and self.wake_phrase:
+            head = gate.heard(audio)
+            if head is not None:
+                if strip_wake(head) is None:
+                    return  # uyandırma yok: sesi buluta hiç gönderme
+                direct = True  # yerel model "Hey Alice" duydu; bulut yazımı farklı olsa da kabul et
         try:
             text = self.stt.transcribe(audio)
         except STTError as e:

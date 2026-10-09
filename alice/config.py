@@ -45,6 +45,8 @@ screenshot_max_width = 1366
 # Playwright Chromium denenir.
 browser_headless = false
 browser_executable = ""
+# true: rol zincirinde "auto" yazmasan da ölçülen en iyi ücretsiz modeller zincirin sonuna eklenir.
+auto_models = true
 
 # Arka plan çekirdeği (`alice core run`): veri toplar, kuralları değerlendirir, görevleri çalıştırır.
 [core]
@@ -136,32 +138,19 @@ region_hotkey = "<ctrl>+<alt>+s"
 clipboard_hotkey = "<ctrl>+<alt>+c"
 
 # Rol başına model zinciri. Soldan sağa denenir; 429, quota, 5xx, model yok gibi
-# durumlarda bir sonrakine geçilir. `alice models --refresh` bu listeleri
-# canlı ücretsiz model kataloğuna göre güncellemene yardım eder.
+# durumlarda bir sonrakine geçilir.
+# "auto": anahtarı olan tüm sağlayıcılardaki ücretsiz modeller gerçek bir araç çağrısıyla ölçülür
+# (çalışıyor mu, ne kadar hızlı) ve kalite önce, hız sonra sıralanır. Ölçüm günde bir arka planda
+# yenilenir (~/.alice/models.json); elle: `alice models --refresh`. "auto"nun önüne/arkasına
+# sabit modeller de yazabilirsin, ör. brain = ["gemini:gemini-flash-latest", "auto"].
 [roles]
 # Ana beyin (System 2): planlama, kod yazma, araç kullanma.
-brain = [
-    "gemini:gemini-flash-latest",
-    "groq:openai/gpt-oss-120b",
-    "cerebras:gpt-oss-120b",
-    "openrouter:openrouter/free",
-    "ollama:qwen3:8b",
-]
+brain = ["auto", "ollama:qwen3:8b"]
 # Hızlı, kısa işler: özet, input'a yazılacak metni üretme, decider emülasyonu.
-fast = [
-    "groq:openai/gpt-oss-20b",
-    "cerebras:gpt-oss-120b",
-    "gemini:gemini-flash-lite-latest",
-    "openrouter:openrouter/free",
-    "ollama:qwen3:8b",
-]
+fast = ["auto", "ollama:qwen3:8b"]
 # Ekran görüntüsü anlama. Beyin modeli görsel destekliyorsa direkt ona gider,
 # desteklemiyorsa görüntü önce bu rolle metne çevrilir.
-vision = [
-    "gemini:gemini-flash-latest",
-    "gemini:gemini-flash-lite-latest",
-    "nvidia:meta/llama-4-maverick-17b-128e-instruct",
-]
+vision = ["auto", "gemini:gemini-flash-lite-latest"]
 
 # System One (hızlı karar) motoru, soldan sağa denenir:
 #   "jev"            = TypeSafe Jev API (TYPESAFE_API_KEY)
@@ -212,6 +201,26 @@ api_key_env = "CEREBRAS_API_KEY"
 vision_models = []
 max_input_tokens = 30000
 
+# Anahtar eklersen otomatik ölçülüp sıraya girenler (hepsinin ücretsiz katmanı var):
+[providers.mistral]
+base_url = "https://api.mistral.ai/v1"
+api_key_env = "MISTRAL_API_KEY"
+vision_models = ["pixtral-*", "mistral-medium-*", "mistral-small-*"]
+max_input_tokens = 128000
+
+[providers.sambanova]
+base_url = "https://api.sambanova.ai/v1"
+api_key_env = "SAMBANOVA_API_KEY"
+vision_models = ["*vision*", "llama-4-*"]
+max_input_tokens = 64000
+
+# GitHub Models: ücretsiz katmanda istek başına ~8K token girdi, beyin için küçük; hızlı rolde işe yarar.
+[providers.github]
+base_url = "https://models.github.ai/inference"
+api_key_env = "GITHUB_MODELS_TOKEN"
+vision_models = ["openai/gpt-4*", "meta/llama-4-*"]
+max_input_tokens = 8000
+
 [providers.ollama]
 base_url = "http://localhost:11434/v1"
 api_key_env = ""
@@ -241,6 +250,12 @@ GROQ_API_KEY=
 NVIDIA_API_KEY=
 # Cerebras          -> https://cloud.cerebras.ai
 CEREBRAS_API_KEY=
+# Mistral           -> https://console.mistral.ai/api-keys  ("Experiment" ücretsiz plan)
+MISTRAL_API_KEY=
+# SambaNova         -> https://cloud.sambanova.ai/apis
+SAMBANOVA_API_KEY=
+# GitHub Models     -> https://github.com/settings/personal-access-tokens  (izin: Models, read)
+GITHUB_MODELS_TOKEN=
 # TypeSafe Jev (opsiyonel, ücretli ama çok ucuz) -> https://typesafe.ai
 TYPESAFE_API_KEY=
 """

@@ -170,6 +170,8 @@ class Agent:
         self._call_counts: dict[str, int] = {}
         self._fail_counts: dict[str, int] = {}
         self._error_streak = 0
+        # Her araç adımından sonra çağrılır (oturumu kaydetmek için): tur takılır ya da çökerse iz kaybolmasın.
+        self.on_step: Any = None
         # Geri sarma için: kullanıcı mesajının indeksi -> o turda ilk değişen dosyaların eski hali.
         self.checkpoints: dict[int, dict[str, bytes | None]] = {}
         if not is_child:
@@ -177,7 +179,19 @@ class Agent:
 
     # ------------------------------------------------------------------ public
     def tool_specs(self) -> list[dict[str, Any]]:
-        return [t.spec() for t in self.tools.values()]
+        """Modele gönderilen araçlar: temel araçlar + bu oturumda açılmış gruplar (bkz. tools/groups.py)."""
+        if str(self.config.agent.get("tool_groups", "auto")) == "all":
+            return [t.spec() for t in self.tools.values()]
+        from alice.tools.groups import visible_tools
+
+        return [t.spec() for t in visible_tools(self.tools, self.ctx.state.setdefault("tool_groups", set()))]
+
+    def _enable_groups_for(self, text: str = "", tool_names: tuple[str, ...] = ()) -> None:
+        from alice.tools.groups import TOOL_TO_GROUP, groups_for_text
+
+        enabled: set[str] = self.ctx.state.setdefault("tool_groups", set())
+        enabled |= groups_for_text(text)
+        enabled |= {TOOL_TO_GROUP[n] for n in tool_names if n in TOOL_TO_GROUP}
 
     def spawn_child(self) -> "Agent":
         return Agent(self.config, self.router, list(self.tools.values()), self.ctx, self.permissions, self.ui,
@@ -202,6 +216,7 @@ class Agent:
         if images:
             msg["_user_images"] = len(images)
         self.messages.append(msg)
+        self._enable_groups_for(content_text)
         final = ""
         steps = max_steps or self.max_steps
         self.cancel.clear()
@@ -230,6 +245,11 @@ class Agent:
                 if not msg.get("tool_calls"):
                     return final
                 self._run_tools(msg["tool_calls"])
+                if self.on_step is not None:
+                    try:
+                        self.on_step()
+                    except Exception:  # noqa: BLE001 - kayıt hatası işi durdurmasın
+                        pass
             self.ui.info(f"adım limiti ({steps}) doldu; devam etmek için yeni mesaj yaz")
             return final
         except (KeyboardInterrupt, Cancelled, StreamCancelled):
@@ -316,6 +336,8 @@ class Agent:
 
     # ------------------------------------------------------------------- tools
     def _run_tools(self, calls: list[dict[str, Any]]) -> None:
+        # Model gönderilmemiş bir grubun aracını çağırdıysa (sistem isteminden biliyor) grubu açık tut.
+        self._enable_groups_for(tool_names=tuple(c["function"]["name"] for c in calls))
         results = self._execute_calls(calls)
         pending_images: list[tuple[str, list[str]]] = []
         for call, result in zip(calls, results, strict=True):

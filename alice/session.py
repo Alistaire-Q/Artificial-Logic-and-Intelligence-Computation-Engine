@@ -24,7 +24,10 @@ def save(session_id: str, messages: list[dict[str, Any]], cwd: Path) -> Path:
     # Görüntüler diske yazılmaz, oturum dosyaları küçük kalsın.
     body = {"cwd": str(cwd), "saved": datetime.now().isoformat(timespec="seconds"),
             "messages": strip_images(messages[1:])}
-    path.write_text(json.dumps(body, ensure_ascii=False, indent=1), encoding="utf-8")
+    # Önce geçici dosyaya yaz: her adımda kaydederken yarıda kalan bir yazma oturumu bozmasın.
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(body, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(path)
     return path
 
 

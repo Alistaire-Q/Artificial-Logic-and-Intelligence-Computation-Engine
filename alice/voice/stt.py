@@ -126,8 +126,53 @@ class LocalWhisper:
             return " ".join(s.text.strip() for s in segments).strip()
 
 
+class WakeGate:
+    """Yerel küçük Whisper ile sadece cümlenin başına bakıp "Hey Alice" var mı diye kontrol eder.
+
+    Böylece odadaki her konuşma Groq'a gönderilmez (kota ve gecikme); uyandırma yoksa ses hiç
+    buluta gitmez. faster-whisper kurulu değilse available() False döner ve eski davranış sürer."""
+
+    HEAD_SECONDS = 2.5
+
+    def __init__(self, model: str = "base", language: str = "tr"):
+        self.model_name = model
+        self.language = language
+        self._model: Any = None
+        self._failed = False
+        self._lock = threading.Lock()
+
+    def available(self) -> bool:
+        if self._failed:
+            return False
+        try:
+            import faster_whisper  # noqa: F401
+        except ImportError:
+            self._failed = True
+            return False
+        return True
+
+    def heard(self, audio: Audio) -> str | None:
+        """Cümlenin başının yerel yazıya dökümü; yerel model kullanılamıyorsa None."""
+        if not self.available():
+            return None
+        head = Audio(audio.pcm[: int(self.HEAD_SECONDS * audio.rate) * 2], audio.rate).resample(16000)
+        try:
+            with self._lock:
+                if self._model is None:
+                    from faster_whisper import WhisperModel
+
+                    self._model = WhisperModel(self.model_name, device="cpu", compute_type="int8")
+                segments, _ = self._model.transcribe(io.BytesIO(head.to_wav()), language=self.language,
+                                                     beam_size=1, initial_prompt="Hey Alice.")
+                return " ".join(s.text.strip() for s in segments).strip()
+        except Exception:  # noqa: BLE001 - yerel model bozuksa buluta düş
+            self._failed = True
+            return None
+
+
 class STTRouter:
     def __init__(self, engines: list[STT], cooldown: float = 300):
+        self.wake_gate: WakeGate | None = None
         self.engines = engines
         self.cooldown = cooldown
         self.down: dict[str, float] = {}
@@ -156,7 +201,7 @@ class STTRouter:
 
 
 # İsimlerin doğru yazılması için Whisper'a ipucu.
-PROMPT = "ALICE, DCS, F-16, Unity, War Thunder, bingo, waypoint, kneeboard."
+PROMPT = "Hey Alice. ALICE, DCS, F-16, Unity, War Thunder, bingo, waypoint, kneeboard."
 
 
 def make_stt(cfg: Config) -> STTRouter:
@@ -176,4 +221,8 @@ def make_stt(cfg: Config) -> STTRouter:
             engines.append(LocalWhisper(model or "large-v3-turbo", v.get("stt_cpu_model", "small"), lang,
                                         allow_gpu=lambda: core_policy().get("local_gpu", True) is not False,
                                         prompt=PROMPT))
-    return STTRouter(engines)
+    router = STTRouter(engines)
+    gate_model = v.get("wake_local", "base")
+    if gate_model:
+        router.wake_gate = WakeGate(gate_model, lang)
+    return router

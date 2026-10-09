@@ -189,6 +189,7 @@ class OpenAICompatProvider:
         extra: dict[str, Any] | None = None,
         cancel: Callable[[], bool] | None = None,
         on_reasoning: Callable[[str], None] | None = None,
+        on_first: Callable[[], None] | None = None,
     ) -> ChatResult:
         """SSE ile akışlı cevap. Metin parçaları on_delta'ya gider, tool_call parçaları birleştirilir."""
         body = self._body(model, messages, tools, temperature, max_tokens, response_format, extra)
@@ -226,6 +227,10 @@ class OpenAICompatProvider:
                         usage = chunk["usage"]
                     for ch in chunk.get("choices") or []:
                         delta = ch.get("delta") or {}
+                        if on_first is not None and (delta.get("content") or delta.get("tool_calls")
+                                                     or delta.get("reasoning_content") or delta.get("reasoning")):
+                            on_first()  # ilk token süresi (model sıralaması için)
+                            on_first = None
                         thought = delta.get("reasoning_content") or delta.get("reasoning")
                         if thought and on_reasoning and isinstance(thought, str):
                             on_reasoning(thought)
