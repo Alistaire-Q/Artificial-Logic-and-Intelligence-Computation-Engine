@@ -46,6 +46,26 @@ screenshot_max_width = 1366
 browser_headless = false
 browser_executable = ""
 
+# Arka plan çekirdeği (`alice core run`): veri toplar, kuralları değerlendirir, görevleri çalıştırır.
+[core]
+# Kaç saniyede bir veri toplanır.
+interval = 15
+# Veriler kaç gün saklanır.
+retention_days = 30
+# Bu saatlerde sessiz mod: sadece uyarı ve üstü, sesli konuşma yok. Boş = kapalı.
+quiet_hours = "00:30-08:00"
+desktop_notifications = true
+# Zamanlanmış görevler ve araştırma kurallarındaki gözetimsiz ALICE'in izin modu.
+# Onay gerektiren adımlar (auto'da tehlikeli komutlar) gözetimsizken reddedilir.
+task_permission_mode = "auto"
+
+# Mod program listeleri (küçük harf, süreç adı). Politika alanları da ezilebilir:
+# min_severity (info|warn|critical), topics, voice, local_gpu.
+[core.modes.flight]
+programs = ["dcs.exe", "dcs_server.exe", "aces.exe"]
+[core.modes.dev]
+programs = ["unity.exe", "unity hub.exe", "code.exe", "devenv.exe", "rider64.exe"]
+
 # Rol başına model zinciri. Soldan sağa denenir; 429, quota, 5xx, model yok gibi
 # durumlarda bir sonrakine geçilir. `alice models --refresh` bu listeleri
 # canlı ücretsiz model kataloğuna göre güncellemene yardım eder.
@@ -156,6 +176,17 @@ NVIDIA_API_KEY=
 CEREBRAS_API_KEY=
 # TypeSafe Jev (opsiyonel, ücretli ama çok ucuz) -> https://typesafe.ai
 TYPESAFE_API_KEY=
+"""
+
+
+PERSONALITY_TEMPLATE = """# ALICE'in kişiliği
+
+Bu dosya her oturumda ALICE'e okunur. İstediğin gibi değiştir.
+
+- Hitap: bana adımla ya da "sen" diye hitap et, resmî olma.
+- Ton: sakin ve sıcak; gerektiğinde şakacı. Acil durumlarda (uçuş uyarısı, hata) espri yapma, net ve kısa ol.
+- Uzunluk: sesli cevaplarda 1-3 cümle; yazılı cevaplarda gerektiği kadar.
+- Şaka sıklığı: ara sıra, işin önüne geçmeyecek kadar.
 """
 
 
@@ -277,6 +308,10 @@ def init_home(force: bool = False) -> list[Path]:
         written.append(env)
     for sub in ("sessions", "browser-profile"):
         (home / sub).mkdir(exist_ok=True)
+    pers = home / "personality.md"
+    if not pers.exists():
+        pers.write_text(PERSONALITY_TEMPLATE, encoding="utf-8")
+        written.append(pers)
     mem = home / "ALICE.md"
     if not mem.exists():
         mem.write_text(

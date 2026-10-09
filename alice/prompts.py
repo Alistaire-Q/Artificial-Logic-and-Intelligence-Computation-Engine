@@ -59,6 +59,11 @@ def build_system_prompt(cwd: Path) -> str:
     text = SYSTEM_PROMPT.format(os=os_name, shell=shell_name(), cwd=cwd, date=datetime.now().strftime("%Y-%m-%d %A %H:%M"),
                                 home=alice_home())
     extras = []
+    pers = alice_home() / "personality.md"
+    if pers.is_file():
+        body = pers.read_text(encoding="utf-8", errors="replace").strip()
+        if body:
+            extras.append(f"# Your personality (from {pers}; follow it in tone, length and humor)\n{body[:3000]}")
     for p in (alice_home() / "ALICE.md", cwd / "ALICE.md", cwd / "CLAUDE.md", cwd / "AGENTS.md"):
         if p.is_file():
             body = p.read_text(encoding="utf-8", errors="replace").strip()

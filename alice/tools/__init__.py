@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from alice.tools import browser, computer, desktop, files, meta, shell, system, web
+from alice.tools import browser, computer, core, desktop, files, meta, shell, system, web
 from alice.tools.base import Tool, ToolContext, ToolError, ToolResult
 
 
 def all_tools() -> list[Tool]:
     return [*files.TOOLS, *shell.TOOLS, *web.TOOLS, *system.TOOLS, *computer.TOOLS, *desktop.TOOLS,
-            *browser.TOOLS, *meta.TOOLS]
+            *browser.TOOLS, *meta.TOOLS, *core.TOOLS]
 
 
 def attach_mcp(agent, ctx: ToolContext, emit=lambda s: None) -> int:
@@ -22,6 +22,9 @@ def attach_mcp(agent, ctx: ToolContext, emit=lambda s: None) -> int:
 
 def cleanup(ctx: ToolContext) -> None:
     shell.cleanup(ctx)
+    st = ctx.state.pop("core_store", None)
+    if st is not None:
+        st.close()
     browser.cleanup(ctx)
     from alice.mcp import close_all
 

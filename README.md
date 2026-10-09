@@ -211,6 +211,43 @@ Terminalde cevap akarak geliyor, dosya düzenlemeleri renkli diff olarak görün
 
 REPL komutları: `/help`, `/plan`, `/mode plan|ask|auto|yolo` (Shift+Tab ile de döner), `/model` (zincir durumları), `/model brain groq:openai/gpt-oss-120b` (sabitle), `/rewind`, `/init`, `/usage`, `/compact`, `/clear`, `/sessions`, `/resume`, `/cwd`, `/tools`, `/mcp`, `/memory`, `/exit`. Özel komutlar ve `@dosya` terminalde de çalışıyor.
 
+## Arka plan çekirdeği
+
+ALICE'in altında, sen yazmasan da çalışan küçük bir servis var. Bilgisayarı izliyor, uzun süren sorunlarda haber veriyor, ortama göre mod değiştiriyor ve zamanlanmış görevleri çalıştırıyor.
+
+```powershell
+pip install -e ".[core]"     # sistem tepsisi simgesi için (opsiyonel)
+alice core install           # Windows açılınca tepside sessizce başlasın
+alice core run --tray        # şimdi başlat (ya da sadece: alice core run)
+alice core status            # çalışıyor mu, hangi mod, son bildirimler
+alice core mode flight       # modu elle sabitle; alice core mode auto ile otomatiğe dön
+alice core stats "pc.gpu.*" 1d
+```
+
+**Veri.** Her 15 saniyede CPU, RAM, disk, en çok kaynak kullanan programlar, öndeki pencere ve (NVIDIA kartta) GPU sıcaklığı/kullanımı `~/.alice/core.db` dosyasına yazılır, 30 gün saklanır. Windows'ta CPU sıcaklığı için [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) açık olmalı (psutil Windows'ta sıcaklık vermiyor). ALICE'e "dün DCS oynarken GPU kaç dereceydi?" diye sorabilirsin; `metrics` aracıyla uçuş modundaki aralıklara bakar.
+
+**Modlar.** DCS ya da War Thunder açıkken *uçuş*: sadece uçuşla ilgili ve kritik bildirimler geçer, ALICE yerel GPU'yu kullanmaz. Unity ya da editör açıkken *geliştirme*, gece (varsayılan 00:30-08:00) *sessiz*: sadece uyarılar, ses yok. Susturulan bildirimler kaybolmaz, `alice core status` ya da "ben oyundayken ne oldu?" ile görülür. Program listeleri ve politikalar `config.toml` içindeki `[core]` bölümünde.
+
+**Kurallar.** Hazır kurallar: GPU/CPU birkaç dakika çok ısınırsa, RAM uzun süre doluysa, disk dolmak üzereyse, bir program belleği şişirirse. Kendi kuralını cümleyle kurarsın:
+
+```powershell
+alice rules add "GPU 80 dereceyi 5 dakika geçerse ve DCS açık değilse söyle"
+alice rules                  # liste;  alice rules off gpu-hot  /  alice rules rm <id>
+```
+
+Ya da ALICE'e direkt "nabzım uzun süre yüksek kalırsa beni uyar" demen yeter. Karar ucuzdan pahalıya gider: önce kural, durum belirsizse hızlı karar modeli (Jev), gerçekten araştırma gerekiyorsa ALICE'in kendisi.
+
+**Zamanlanmış görevler.**
+
+```powershell
+alice tasks add "her pazar gece D:\Unity altındaki projeleri E:\Yedek'e zip'le"
+alice tasks                  # liste ve son sonuçlar;  alice tasks run <id>  /  alice tasks rm <id>
+```
+
+ALICE cümleyi zamanlamaya çevirip gösterir, onaylarsan kurar. Bilgisayar kapalıyken kaçırılan görev açılışta bir kez telafi edilir. Görevler gözetimsiz çalıştığı için onay gerektiren adımlar (auto modda tehlikeli komutlar) reddedilir; sonuç bildirim olarak gelir.
+
+**Kişilik.** ALICE'in sana nasıl hitap edeceği, ne kadar uzun konuşacağı ve ne sıklıkla şaka yapacağı `~/.alice/personality.md` dosyasında (`alice init` oluşturur), her oturumda okunur.
+
 ## İzin modları ve güvenlik
 
 * **plan:** sadece okur ve araştırır; dosya değiştiren, komut çalıştıran ya da ekrana dokunan her şey reddedilir, ALICE plan yazıp onayını bekler

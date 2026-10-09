@@ -112,9 +112,18 @@ Sıra ihtiyaca göre değişebilir. Bir şey beklediğimiz gibi çıkmazsa ya da
 
 ---
 
+## Durum
+
+* **1. Çekirdek: yapıldı.** `alice core`: arka plan servisi, sistem tepsisi, Windows açılışında otomatik başlama, veri deposu, kurallar (kural → Jev → ALICE), bildirimler, modlar ve mod politikası (uçuşta yerel GPU kapalı). Ayrıntı README'de.
+* **3. Bilgisayar izleme ve zamanlanmış görevler: yapıldı.** Sıcaklık, bellek, disk ve program izleme, hazır uyarılar, geçmişe dönük sorular (`metrics` aracı), doğal dille kural ve görev kurma, kaçırılan görevleri telafi.
+* **Kişilik dosyası: yapıldı** (`~/.alice/personality.md`).
+* **2. Ses ve hızlı bar: sırada.** Önce dinleme testi için aday seslerle örnekler hazırlanacak, seçim senin. Dinleme tarafı: Groq'ta Whisper large-v3-turbo, yedek olarak bilgisayarda faster-whisper; önünde openWakeWord ("Hey Alice") ve Silero VAD.
+* **4-6:** DCS, saat ve eklemeler çekirdeğin üstüne aynı gözlemci yapısıyla eklenecek.
+
 ## Şu an seni bekleyenler
 
 * Gadgetbridge testinin sonucu: nabız ve adım geliyor mu, ne sıklıkla?
+* Windows'ta `alice core install` ile çekirdeği kurup birkaç gün açık bırakman; yanlış alarmları ve eksik gördüğün uyarıları not etmen. CPU sıcaklığı için LibreHardwareMonitor'ın açık olması gerekiyor.
 * ALICE'i birkaç gün gerçek işlerde kullanıp takıldığın yerleri not etmen. Sıradaki adımları gerçek ihtiyaca göre şekillendirmenin en iyi yolu bu.
 
 ---

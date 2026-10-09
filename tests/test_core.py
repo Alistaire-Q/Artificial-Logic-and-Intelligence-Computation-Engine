@@ -1,0 +1,322 @@
+from __future__ import annotations
+
+import json
+from datetime import datetime
+
+import pytest
+
+from alice.config import Config, alice_home, default_config_dict
+from alice.core.modes import ModeManager
+from alice.core.notify import Notification, Notifier
+from alice.core.rules import Rule, RuleEngine, RuleSet, parse_rule
+from alice.core.schedule import Cron, ScheduledTask, TaskStore, parse_task
+from alice.core.service import Core, force_mode, read_state
+from alice.core.store import MODE_KEY, Store, parse_time
+from alice.decider import Answer, Decision
+from alice.tools import ToolContext
+from alice.tools.core import Metrics, Rules, Schedule
+
+
+def ts(s: str) -> float:
+    return datetime.fromisoformat(s).timestamp()
+
+
+@pytest.fixture
+def store():
+    st = Store(":memory:")
+    yield st
+    st.close()
+
+
+def make_notifier(store, mode="normal"):
+    mm = ModeManager()
+    mm.current = mode
+    sent = []
+    n = Notifier(store, lambda: mm.policy, desktop=False)
+    n.channels.append(lambda note, pol: sent.append(note))
+    return n, sent, mm
+
+
+# -------------------------------------------------------------------- store
+def test_parse_time():
+    now = ts("2026-10-09T12:00")
+    assert parse_time("2h", now) == now - 7200
+    assert parse_time("dün", now) == ts("2026-10-08T00:00")
+    assert parse_time("2026-10-08T20:00") == ts("2026-10-08T20:00")
+    with pytest.raises(ValueError):
+        parse_time("geçen yüzyıl")
+
+
+def test_stats_filtered_by_mode(store):
+    store.add(MODE_KEY, text="normal", ts=0)
+    store.add(MODE_KEY, text="flight", ts=100)
+    store.add(MODE_KEY, text="normal", ts=200)
+    for t, v in ((50, 50), (120, 80), (180, 90), (250, 60)):
+        store.add("pc.gpu.temp", v, ts=t)
+    s = store.stats("pc.gpu.temp", mode="flight")
+    assert (s.count, s.max, s.avg, s.max_ts) == (2, 90, 85, 180)
+    assert store.stats("pc.gpu.temp").count == 4
+    assert store.mode_spans("flight", until=300) == [(100, 200)]
+    assert store.keys("pc.*") == ["pc.gpu.temp"]
+
+
+# -------------------------------------------------------------------- modes
+def test_mode_detection_priority_and_quiet_hours():
+    mm = ModeManager({"quiet_hours": "23:00-07:00"})
+    noon, night = datetime(2026, 1, 1, 12), datetime(2026, 1, 1, 2)
+    assert mm.detect(["explorer.exe"], noon) == "normal"
+    assert mm.detect(["Unity.exe"], noon) == "dev"
+    assert mm.detect(["Unity.exe", "DCS.exe"], night) == "flight"
+    assert mm.detect([], night) == "quiet"
+    assert mm.policies["flight"].local_gpu is False
+    mm.forced = "dev"
+    assert mm.detect(["DCS.exe"], noon) == "dev"
+
+
+def test_flight_mode_silences_non_flight(store):
+    n, sent, _ = make_notifier(store, "flight")
+    assert not n.send(Notification("disk", severity="warn", topic="pc"))
+    assert n.send(Notification("yakıt", severity="info", topic="flight"))
+    assert n.send(Notification("acil", severity="critical", topic="pc"))
+    assert [x.title for x in sent] == ["yakıt", "acil"]
+    muted = [e for e in store.events() if not e.delivered]
+    assert [e.title for e in muted] == ["disk"]
+
+
+# -------------------------------------------------------------------- rules
+def feed(store, key, values, start=1000.0, step=15.0):
+    for i, v in enumerate(values):
+        store.add(key, v, ts=start + i * step)
+    return start + (len(values) - 1) * step
+
+
+def engine(store, tmp_path, rules, mode="normal", **kw):
+    rs = RuleSet(tmp_path / "rules.json")
+    rs.rules = rules
+    n, sent, mm = make_notifier(store, mode)
+    return RuleEngine(rs, store, n, mode=lambda: mm.current, **kw), sent
+
+
+def test_sustained_rule_fires_once_then_cools_down(store, tmp_path):
+    rule = Rule("pc.gpu.temp", ">", 85, "GPU {value:.0f}", duration=60, cooldown=600)
+    eng, sent = engine(store, tmp_path, [rule])
+    now = feed(store, "pc.gpu.temp", [90, 91, 92])  # sadece 30 sn: yeterince uzun değil
+    assert eng.evaluate(now) == []
+    now = feed(store, "pc.gpu.temp", [93, 94, 95], start=now + 15)
+    assert [f.text for f in eng.evaluate(now)] == ["GPU 95"]
+    now = feed(store, "pc.gpu.temp", [96], start=now + 15)
+    assert eng.evaluate(now) == []  # cooldown
+    assert len(sent) == 1
+
+
+def test_rule_needs_whole_window(store, tmp_path):
+    eng, _ = engine(store, tmp_path, [Rule("pc.gpu.temp", ">", 85, "x", duration=60)])
+    now = feed(store, "pc.gpu.temp", [90, 70, 90, 90, 90])
+    assert eng.evaluate(now) == []  # pencere içinde 70 var
+
+
+def test_glob_rule_and_match(store, tmp_path):
+    eng, sent = engine(store, tmp_path, [Rule("pc.disk.*.percent", ">", 95, "{match} dolu")])
+    store.add("pc.disk.c.percent", 97, ts=1000)
+    store.add("pc.disk.d.percent", 50, ts=1000)
+    assert [f.text for f in eng.evaluate(1010)] == ["c dolu"]
+    assert eng.evaluate(1000 + 10_000) == []  # veri bayat
+
+
+def test_rule_mode_filter(store, tmp_path):
+    eng, _ = engine(store, tmp_path, [Rule("dcs.fuel.min_left", "<", 10, "yakıt", topic="flight", modes=["flight"])])
+    store.add("dcs.fuel.min_left", 5, ts=1000)
+    assert eng.evaluate(1001) == []
+
+
+class FakeDecider:
+    def __init__(self, p):
+        self.p = p
+        self.calls = []
+
+    def decide(self, state, questions):
+        self.calls.append(state)
+        return Decision({"notify": Answer("noul", self.p, 1.0)}, "fake", 0.0)
+
+
+@pytest.mark.parametrize("p,fires", [(0.9, True), (0.1, False)])
+def test_rule_confirm_asks_decider(store, tmp_path, p, fires):
+    dec = FakeDecider(p)
+    eng, _ = engine(store, tmp_path, [Rule("watch.hr", ">", 120, "nabız", confirm="Uyarmaya değer mi?")], decider=dec)
+    store.add("watch.hr", 130, ts=1000)
+    assert bool(eng.evaluate(1001)) is fires and dec.calls
+
+
+def test_rule_agent_action(store, tmp_path):
+    prompts = []
+    rule = Rule("pc.cpu.percent", ">", 90, "CPU", action="agent", prompt="neden yüksek, bak")
+    eng, sent = engine(store, tmp_path, [rule], run_agent=lambda p: prompts.append(p) or "Chrome yüzünden")
+    store.add("pc.cpu.percent", 99, ts=1000)
+    eng.evaluate(1001)
+    assert "neden yüksek" in prompts[0] and sent[0].body == "Chrome yüzünden"
+
+
+def test_ruleset_persistence(tmp_path):
+    rs = RuleSet(tmp_path / "rules.json")
+    assert any(r.id == "gpu-hot" for r in rs.rules)  # varsayılanlar
+    rs.add(Rule("watch.hr", ">", 120, "nabız", id="hr"))
+    rs.set_enabled("gpu-hot", False)
+    rs2 = RuleSet(tmp_path / "rules.json")
+    assert rs2.get("hr") and rs2.get("gpu-hot").enabled is False
+    with pytest.raises(ValueError):
+        Rule("x", "=>", 1, "m")
+
+
+class FakeRouter:
+    def __init__(self, reply):
+        self.reply = reply
+
+    def chat(self, role, messages, **kw):
+        class R:
+            text = self.reply
+        return R()
+
+
+def test_parse_rule_from_language():
+    reply = json.dumps({"metric": "watch.hr", "op": ">", "threshold": 120, "duration": 600, "severity": "warn",
+                        "topic": "health", "modes": [], "message": "Nabzın {value:.0f}", "confirm": "",
+                        "action": "notify", "prompt": ""})
+    r = parse_rule("nabzım uzun süre yüksek kalırsa uyar", FakeRouter(reply))
+    assert (r.metric, r.duration, r.description) == ("watch.hr", 600, "nabzım uzun süre yüksek kalırsa uyar")
+
+
+# ----------------------------------------------------------------- schedule
+@pytest.mark.parametrize("expr,after,expected", [
+    ("0 23 * * 0", "2026-10-09T12:00", "2026-10-11T23:00"),   # pazar gece
+    ("*/15 * * * *", "2026-10-09T12:07", "2026-10-09T12:15"),
+    ("30 8 1 * *", "2026-10-09T12:00", "2026-11-01T08:30"),
+    ("0 9 * * 1-5", "2026-10-09T09:00", "2026-10-12T09:00"),  # cuma 9'dan sonra -> pazartesi
+    ("0 0 29 2 *", "2026-03-01T00:00", "2028-02-29T00:00"),
+])
+def test_cron_next(expr, after, expected):
+    assert Cron(expr).next_after(datetime.fromisoformat(after)) == datetime.fromisoformat(expected)
+
+
+def test_cron_invalid_and_describe():
+    with pytest.raises(ValueError):
+        Cron("61 * * * *")
+    with pytest.raises(ValueError):
+        Cron("* * *")
+    assert Cron("0 23 * * 0").describe() == "pazar 23:00"
+
+
+def test_due_and_catch_up(tmp_path):
+    store = TaskStore(tmp_path / "tasks.json")
+    created = ts("2026-10-05T12:00")
+    a = store.add(ScheduledTask("0 23 * * *", "yedekle", created=created, catch_up=True))
+    b = store.add(ScheduledTask("0 23 * * *", "özet", created=created, catch_up=False))
+    assert store.due(ts("2026-10-05T22:59")) == []
+    # tam vaktinde ikisi de çalışır
+    assert {t.id for t, late in store.due(ts("2026-10-05T23:02"))} == {a.id, b.id}
+    # bilgisayar günlerce kapalıydı: sadece catch_up olan, telafi olarak
+    due = store.due(ts("2026-10-08T10:00"))
+    assert [(t.id, late) for t, late in due] == [(a.id, True)]
+    assert TaskStore(tmp_path / "tasks.json").get(b.id).last_run == ts("2026-10-08T10:00")
+    store.mark_run(a, "ok", ts("2026-10-08T10:00"))
+    assert store.due(ts("2026-10-08T10:01")) == []
+
+
+def test_parse_task():
+    reply = '{"cron": "0 23 * * 0", "prompt": "D:/Unity klasörünü yedekle", "catch_up": true}'
+    t = parse_task("her pazar gece unity projelerimi yedekle", FakeRouter(reply))
+    assert t.cron == "0 23 * * 0" and t.catch_up
+
+
+# ------------------------------------------------------------------ service
+class FakeMonitor:
+    name = "fake"
+
+    def __init__(self):
+        self.processes = {"DCS.exe"}
+        self.value = 90
+
+    def collect(self):
+        return [("pc.gpu.temp", self.value, None)]
+
+
+def make_core(tmp_path, run_agent=None):
+    cfg = Config(default_config_dict())
+    cfg.data["core"]["quiet_hours"] = ""
+    st = Store(":memory:")
+    n, sent, _ = make_notifier(st)
+    core = Core(cfg, store=st, monitors=[FakeMonitor()], rules=RuleSet(tmp_path / "rules.json"),
+                tasks=TaskStore(tmp_path / "tasks.json"), run_agent=run_agent, notifier=n)
+    n.policy = lambda: core.modes.policy
+    return core, sent
+
+
+def test_core_tick_records_mode_and_state(tmp_path):
+    core, _ = make_core(tmp_path)
+    core.tick(1000)
+    assert core.modes.current == "flight"
+    assert store_mode(core.store) == "flight"
+    s = read_state()
+    assert s["running"] is False or s["mode"] == "flight"  # zaman damgası eski olduğu için running False
+    assert json.loads((alice_home() / "core-state.json").read_text())["policy"]["local_gpu"] is False
+    force_mode("dev")
+    core.tick(1015)
+    assert core.modes.current == "dev"
+    force_mode(None)
+    core.tick(1030)
+    assert core.modes.current == "flight"
+
+
+def store_mode(st):
+    return st.last(MODE_KEY)[2]
+
+
+def test_core_runs_due_task(tmp_path):
+    import threading
+    import time
+
+    done = threading.Event()
+
+    def agent(prompt):
+        done.set()
+        return f"bitti: {prompt}"
+
+    core, sent = make_core(tmp_path, run_agent=agent)
+    core.modes.forced = None
+    core.monitors[0].processes = set()
+    t = core.tasks.add(ScheduledTask("* * * * *", "rapor yaz", created=900))
+    core.tick(1000)
+    assert done.wait(5)
+    for _ in range(100):
+        if not core.running_tasks:
+            break
+        time.sleep(0.05)
+    assert core.tasks.get(t.id).last_result == "bitti: rapor yaz"
+    assert any(x.kind == "task" for x in sent)
+
+
+# -------------------------------------------------------------------- tools
+def test_tools(tmp_path, isolated_home):
+    cfg = Config(default_config_dict())
+    ctx = ToolContext(cwd=tmp_path, config=cfg)
+    st = ctx.state["core_store"] = Store(":memory:")
+    st.add(MODE_KEY, text="flight", ts=ts("2026-10-08T20:00"))
+    st.add("pc.gpu.temp", 78, ts=ts("2026-10-08T20:30"))
+    st.add(MODE_KEY, text="normal", ts=ts("2026-10-08T21:00"))
+    st.add("pc.gpu.temp", 50, ts=ts("2026-10-08T22:00"))
+    out = Metrics().run(ctx, action="stats", key="pc.gpu.temp", since="2026-10-08T00:00", mode="flight").text
+    assert "en yüksek 78.0" in out and "1 ölçüm" in out
+    assert "flight: 08.10 20:00 - 21:00" in Metrics().run(ctx, action="modes", since="2026-10-08T00:00").text
+
+    r = Rules()
+    assert r.risk_for({"action": "add", "rule_action": "agent"}) == "danger"
+    r.run(ctx, action="add", metric="watch.hr", op=">", threshold=120, duration=600, message="nabız", id="hr")
+    assert "watch.hr > 120" in r.run(ctx, action="list").text
+
+    s = Schedule()
+    assert s.risk_for({"action": "add"}) == "danger"
+    assert "pazar 23:00" in s.summary({"action": "add", "cron": "0 23 * * 0", "description": "yedek"})
+    out = s.run(ctx, action="add", cron="0 23 * * 0", prompt="yedekle", description="yedek").text
+    assert "görev kuruldu" in out and "çekirdek çalışmıyor" in out
+    tid = TaskStore().tasks[0].id
+    s.run(ctx, action="run_now", id=tid)
+    assert TaskStore().due()[0][0].id == tid

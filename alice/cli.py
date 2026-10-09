@@ -8,6 +8,9 @@
   alice reflex "hedef"       Jev/System One reflex döngüsünü tek başına çalıştır
   alice app                  masaüstü uygulamasını aç
   alice shortcut             masaüstüne ALICE kısayolu koy (Windows)
+  alice core run|install|status|mode|stats   arka plan çekirdeği (izleme, kurallar, modlar, görevler)
+  alice rules [add "cümle"]  uyarı kuralları ("GPU uzun süre ısınırsa söyle")
+  alice tasks [add "cümle"]  zamanlanmış görevler ("her pazar gece projelerimi yedekle")
 """
 
 from __future__ import annotations
@@ -645,6 +648,10 @@ def main(argv: list[str] | None = None) -> int:
 
             log_error()
             raise
+    if argv and argv[0] in ("core", "rules", "tasks"):
+        from alice.core import cli as core_cli
+
+        return {"core": core_cli.core_cmd, "rules": core_cli.rules_cmd, "tasks": core_cli.tasks_cmd}[argv[0]](argv[1:])
     if argv and argv[0] == "shortcut":
         return shortcut_cmd()
     if argv and argv[0] == "reflex":
