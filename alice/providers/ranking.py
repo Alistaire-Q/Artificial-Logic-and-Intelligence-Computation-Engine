@@ -268,8 +268,9 @@ def fast_score(pr: Probe) -> float:
 
 
 def voice_score(pr: Probe) -> float:
-    # Sesli asistan: ilk kelimeye kadar geçen süre (TTFT) her saniye 8 puan götürür.
-    return pr.quality - pr.ttft * 8
+    # Sesli asistan: ilk kelimeye kadar geçen süre (TTFT) her saniye 15 puan götürür. Ölçümdeki TTFT kısa
+    # istekle; gerçek sesli istekte (uzun sistem istemi) yavaş modeller 5-10 kat yavaşlıyor.
+    return pr.quality - pr.ttft * 15
 
 
 def _diversify(ranked: list[Probe], score: Callable[[Probe], float], gap: float = 12.0) -> list[Probe]:
@@ -311,7 +312,8 @@ def build_chains(results: list[Probe], providers_cfg: dict[str, Any], limit: int
                  and roomy(r.ref)]
     transient = sorted(transient, key=lambda r: -r.quality)[:3]
     brain = brain[:limit - len(transient)] + transient
-    voice = [r for r in ok if r.quality >= 60 and roomy(r.ref)]
+    # Küçük bağlamlı hızlı sağlayıcılar (Groq) da girer: istek sığmazsa router onları atlayıp sonrakine geçer.
+    voice = [r for r in ok if r.quality >= 60]
     voice = _diversify(sorted(voice, key=lambda r: -voice_score(r)), voice_score)
     fast = [r for r in ok if r.quality >= 55 and r.latency <= 15]
     fast.sort(key=lambda r: -fast_score(r))

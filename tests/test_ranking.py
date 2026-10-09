@@ -149,7 +149,7 @@ def test_voice_chain_prefers_low_ttft():
            Probe("q:tiny", True, 90, latency=1, ttft=0.3)]
     ch = build_chains(res, pcs())
     assert ch["brain"][0] == "n:glm"
-    assert ch["voice"] == ["g:flash", "n:glm"]  # q: bağlamı küçük, beyne/sese girmez
+    assert ch["voice"] == ["q:tiny", "g:flash", "n:glm"]  # küçük bağlamlı hızlı model de sese girer
 
 
 def test_voice_chain_from_old_cache_sorts_brain_by_ttft():

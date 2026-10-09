@@ -239,7 +239,16 @@ class Browser(Tool):
                 raise ToolError("goto için url gerekli")
             if "://" not in url:
                 url = "https://" + url
-            page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            except Exception as e:  # noqa: BLE001
+                # Yeni açılan tarayıcı (ör. Opera GX'in GX Corner'ı) kendi başlangıç sayfasını yüklerken ilk gidiş
+                # ERR_ABORTED alıyor; bir saniye sonra tekrar dene.
+                if "ERR_ABORTED" not in str(e):
+                    raise
+                page.wait_for_timeout(1000)
+                page = b.page
+                page.goto(url, wait_until="domcontentloaded", timeout=45000)
             return snap(f"açıldı: {url}")
         if action == "snapshot":
             return snap("snapshot")
