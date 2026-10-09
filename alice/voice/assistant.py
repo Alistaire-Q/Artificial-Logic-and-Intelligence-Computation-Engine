@@ -266,7 +266,10 @@ def build_voice_agent(cfg, inner_ui=None, speaker: Speaker | None = None, cwd=No
     router = Router(cfg)
     decider = Decider.from_config(cfg, router)
     ctx = ToolContext(cwd=cwd or Path.home(), config=cfg, router=router, decider=decider)
-    speaker = speaker or Speaker(make_tts(cfg))
+    if speaker is None:
+        tts = make_tts(cfg)
+        tts.warm_up()
+        speaker = Speaker(tts)
     ui = VoiceUI(speaker, inner_ui)
     agent = Agent(cfg, router, all_tools(), ctx, Permissions(cfg.agent.get("permission_mode", "auto")), ui, decider)
     agent.messages[0]["content"] += "\n\n" + VOICE_PROMPT

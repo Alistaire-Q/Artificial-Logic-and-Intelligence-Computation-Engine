@@ -666,6 +666,21 @@ class TTSRouter:
             engines = [self.cloud, self.backup, self.local]
         return [e for e in engines if e is not None]
 
+    def warm_up(self) -> None:
+        """Yerel ses modelini arka planda ekran kartına yükle: ilk cevap 20-25 sn beklemesin."""
+        load = getattr(self.local, "_load", None)
+        if load is None or self.policy().get("local_gpu") is False:
+            return
+
+        def run() -> None:
+            try:
+                with self.local._lock:
+                    load()
+            except Exception:  # noqa: BLE001 - ısınma olmazsa ilk cümlede yüklenir
+                pass
+
+        threading.Thread(target=run, daemon=True, name="alice-tts-warm").start()
+
     def synth(self, text: str, emotion: str = "calm") -> Audio:
         from alice.voice.spoken_numbers import normalize
 
