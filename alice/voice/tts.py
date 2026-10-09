@@ -547,7 +547,7 @@ class EdgeTTS:
 
         try:
             return asyncio.run(asyncio.wait_for(run(), self.timeout))
-        except Exception as e:  # noqa: BLE001 - ağ/servis hataları tek türde dönsün
+        except Exception as e:  # ağ/servis hataları tek türde dönsün
             raise TTSError(f"edge sesi alınamadı: {type(e).__name__}: {e}") from e
 
     def synth(self, text: str, emotion: str = "calm") -> Audio:
