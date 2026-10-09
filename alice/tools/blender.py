@@ -42,6 +42,7 @@ except Exception:
     traceback.print_exc(file=sys.stdout)
 
 print(MARK + "SAHNE")
+bpy.context.view_layer.update()  # son değişen ölçek/konum boyutlara yansısın
 for o in bpy.context.scene.objects:
     loc = tuple(round(v, 2) for v in o.location)
     dim = tuple(round(v, 2) for v in o.dimensions)
@@ -55,7 +56,10 @@ if ok:
         if scene.camera is None:
             # Kamera yoksa sahneyi çerçeveleyen geçici bir kamera koy (dosyaya kaydedilmez, kayıt yukarıda yapıldı).
             from mathutils import Vector
-            pts = [o.matrix_world @ Vector(c) for o in scene.objects if o.type == "MESH" for c in o.bound_box]
+            meshes = [o for o in scene.objects if o.type == "MESH"]
+            # Zemin gibi büyük düz yüzeyleri çerçeveye katma, yoksa asıl nesne küçücük kalır.
+            solid = [o for o in meshes if o.dimensions.z > 0.05] or meshes
+            pts = [o.matrix_world @ Vector(c) for o in solid for c in o.bound_box]
             if pts:
                 lo = Vector((min(v.x for v in pts), min(v.y for v in pts), min(v.z for v in pts)))
                 hi = Vector((max(v.x for v in pts), max(v.y for v in pts), max(v.z for v in pts)))
@@ -194,8 +198,9 @@ class Blender(Tool):
         user_out = out.split(MARK, 1)[0]
         # Blender'ın kendi açılış satırlarını at, kullanıcının print'lerini bırak.
         user_out = "\n".join(line for line in user_out.splitlines()
-                             if line.strip() and not line.startswith(("Blender ", "Read prefs", "Read blend",
-                                                                       "found bundled python", "Color management")))
+                             if line.strip() and "render | Saved:" not in line
+                             and not line.startswith(("Blender ", "Read prefs", "Read blend",
+                                                      "found bundled python", "Color management")))
         limit = int(ctx.config.agent.get("tool_output_chars", 12000))
         parts = []
         if err:
