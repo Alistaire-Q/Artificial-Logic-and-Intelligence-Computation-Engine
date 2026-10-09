@@ -7,7 +7,7 @@
   alice models [--write]     canlı ücretsiz model kataloğunu tara, rol zinciri öner
   alice reflex "hedef"       Jev/System One reflex döngüsünü tek başına çalıştır
   alice app                  masaüstü uygulamasını aç
-  alice shortcut             masaüstüne ALICE kısayolu koy (Windows)
+  alice shortcut             masaüstüne ve Başlat menüsüne ALICE kısayolu koy (Windows)
   alice core run|install|status|mode|stats   arka plan çekirdeği (izleme, kurallar, modlar, görevler)
   alice rules [add "cümle"]  uyarı kuralları ("GPU uzun süre ısınırsa söyle")
   alice tasks [add "cümle"]  zamanlanmış görevler ("her pazar gece projelerimi yedekle")
@@ -614,8 +614,8 @@ def shortcut_cmd() -> int:
     from alice.app.window import create_shortcut
 
     init_home()
-    lnk = create_shortcut()
-    console.print(f"[green]kısayol oluşturuldu:[/] {lnk}")
+    for lnk in create_shortcut():
+        console.print(f"[green]kısayol oluşturuldu:[/] {lnk}")
     return 0
 
 

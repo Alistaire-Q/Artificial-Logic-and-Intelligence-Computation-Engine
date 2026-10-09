@@ -112,7 +112,7 @@ alice models --write  # canlı ücretsiz katalogdan rol zincirlerini günceller 
 
 ## Masaüstü uygulaması
 
-`install.ps1` masaüstüne **ALICE** kısayolu koyuyor, çift tıklayınca konsol penceresi olmadan uygulama açılıyor. Elle açmak için `alice app`, kısayolu yeniden oluşturmak için `alice shortcut`.
+`install.ps1` masaüstüne ve Başlat menüsüne **ALICE** kısayolu koyuyor (Windows tuşuna basıp "ALICE" yazarak da bulunur), çift tıklayınca konsol penceresi olmadan uygulama açılıyor. Elle açmak için `alice app`, kısayolu yeniden oluşturmak için `alice shortcut`.
 
 ![Başlangıç](docs/app-baslangic.png)
 

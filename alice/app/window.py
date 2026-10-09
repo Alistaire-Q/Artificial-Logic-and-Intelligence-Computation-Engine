@@ -69,18 +69,22 @@ def open_window(url: str, title: str = "ALICE", prefer: str = "auto") -> str:
     return "browser"
 
 
-def create_shortcut() -> Path:
-    """Masaüstüne konsolsuz açılan ALICE kısayolu koy (Windows). OneDrive'a taşınmış masaüstünü de bulur."""
+def create_shortcut() -> list[Path]:
+    """Masaüstüne ve Başlat menüsüne konsolsuz açılan ALICE kısayolu koy (Windows).
+
+    OneDrive'a taşınmış masaüstünü de bulur. Başlat menüsündeki kısayol sayesinde Windows tuşuna
+    basıp "ALICE" yazarak da açılır."""
     if sys.platform != "win32":
         raise RuntimeError("kısayol oluşturma şimdilik sadece Windows'ta")
     pyw = Path(sys.executable).with_name("pythonw.exe")
     target = pyw if pyw.exists() else Path(sys.executable)
     icon = Path(__file__).parent / "static" / "icon.ico"
     ps = (
-        "$d=[Environment]::GetFolderPath('Desktop');$p=Join-Path $d 'ALICE.lnk';"
+        "foreach($f in 'Desktop','Programs'){"
+        "$d=[Environment]::GetFolderPath($f);if(-not $d){continue};$p=Join-Path $d 'ALICE.lnk';"
         "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($p);"
         f"$s.TargetPath='{target}';$s.Arguments='-m alice app';$s.WorkingDirectory='{Path.home()}';"
-        f"$s.IconLocation='{icon}';$s.Description='ALICE';$s.Save();Write-Output $p"
+        f"$s.IconLocation='{icon}';$s.Description='ALICE';$s.Save();Write-Output $p}}"
     )
     r = subprocess.run(["powershell", "-NoProfile", "-Command", ps], check=True, capture_output=True, text=True)
-    return Path(r.stdout.strip().splitlines()[-1])
+    return [Path(line.strip()) for line in r.stdout.splitlines() if line.strip()]
