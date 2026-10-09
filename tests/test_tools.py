@@ -215,3 +215,14 @@ def test_blender_tool_parses_error_and_scene(tmp_path, monkeypatch):
     assert "gas_color" in res.text and "BETİK HATASI" in res.text
     assert "Cube [MESH]" in res.text and "kullanici ciktisi" in res.text
     assert "Blender 5.2.1" not in res.text
+
+
+def test_default_browser_helpers():
+    from alice.tools.browser import cdp_alive, exe_from_command, is_chromium
+
+    cmd = r'"C:\Users\k\AppData\Local\Programs\Opera GX\opera.exe" --single-argument %1'
+    assert exe_from_command(cmd) == r"C:\Users\k\AppData\Local\Programs\Opera GX\opera.exe"
+    assert exe_from_command(r"C:\Firefox\firefox.exe -osint -url %1") == r"C:\Firefox\firefox.exe"
+    assert is_chromium(r"C:\Users\k\AppData\Local\Programs\Opera GX\opera.exe")
+    assert not is_chromium(r"C:\Firefox\firefox.exe")
+    assert not cdp_alive("http://127.0.0.1:1", timeout=0.2)

@@ -41,10 +41,12 @@ tool_output_chars = 12000
 keep_images = 2
 # Ekran görüntüsünün modele gönderilirken küçültüleceği en fazla genişlik.
 screenshot_max_width = 1366
-# Tarayıcı: false = görünür pencere. browser_executable boşsa sırayla Chrome, Edge,
-# Playwright Chromium denenir.
+# Tarayıcı: false = görünür pencere. browser_executable boşsa varsayılan tarayıcı (Chromium tabanlıysa,
+# ör. Opera GX), olmazsa sırayla Chrome, Edge, Playwright Chromium denenir.
 browser_headless = false
 browser_executable = ""
+# Açık tarayıcın --remote-debugging-port=9222 ile çalışıyorsa ALICE yeni pencere açmak yerine ona bağlanır.
+browser_cdp = "http://127.0.0.1:9222"
 # true: rol zincirinde "auto" yazmasan da ölçülen en iyi ücretsiz modeller zincirin sonuna eklenir.
 auto_models = true
 

@@ -439,7 +439,9 @@ class Windows(Tool):
     name = "windows"
     description = ("Pencere yönetimi, kurulu program bulma ve uygulama açma. "
                    "action: list | focus | minimize | maximize | restore | close | open | find. "
-                   "open için target: uygulama adı (ör. 'Discord', 'notepad', 'blender'), exe yolu, dosya ya da URL. "
+                   "open için target: uygulama adı (ör. 'Discord', 'notepad', 'blender'), exe yolu, dosya ya da URL "
+                   "(URL kullanıcının varsayılan tarayıcısında, kendi girişleriyle açılır). "
+                   "Zaten açık bir pencerede iş için: list ile bul, focus ile öne al, sonra ui_elements/ui_act. "
                    "find: kurulu bir programın exe yolunu bulur (Başlat menüsü, kayıt defteri, Program Files, Steam); "
                    "bir programın kurulu olup olmadığını ya da exe yolunu (ör. komut satırından script çalıştırmak için) "
                    "öğrenmek için shell'de arama yapmak yerine bunu kullan.")

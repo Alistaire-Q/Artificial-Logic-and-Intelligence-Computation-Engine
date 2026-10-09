@@ -7,6 +7,9 @@ listesine (DOM snapshot) çevrilir; hem beyin hem reflex döngüsü bunu kullan�
 
 from __future__ import annotations
 
+import re
+import sys
+import urllib.request
 from typing import Any
 
 from alice.config import alice_home
@@ -50,20 +53,76 @@ SNAPSHOT_JS = r"""
 TEXT_JS = "() => document.body ? document.body.innerText : ''"
 
 
+CHROMIUM_FAMILY = ("opera", "chrome", "msedge", "brave", "vivaldi", "chromium", "yandex", "arc")
+
+
+def default_browser_exe() -> str | None:
+    """Windows'ta varsayılan tarayıcının exe yolu (ör. Opera GX). Bulunamazsa None."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+
+        key = r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice"
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as k:
+            prog_id = winreg.QueryValueEx(k, "ProgId")[0]
+        with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, rf"{prog_id}\shell\open\command") as k:
+            cmd = winreg.QueryValueEx(k, "")[0]
+    except OSError:
+        return None
+    return exe_from_command(cmd)
+
+
+def exe_from_command(cmd: str) -> str | None:
+    m = re.match(r'\s*"([^"]+\.exe)"', cmd, re.I) or re.match(r"\s*(\S+\.exe)", cmd, re.I)
+    return m.group(1) if m else None
+
+
+def is_chromium(exe: str) -> bool:
+    name = exe.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return any(n in name for n in CHROMIUM_FAMILY)
+
+
+def cdp_alive(endpoint: str, timeout: float = 0.4) -> bool:
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # yerel port, proxy'ye gitmesin
+        with opener.open(endpoint.rstrip("/") + "/json/version", timeout=timeout):
+            return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 class BrowserSession:
-    def __init__(self, headless: bool = False, executable: str | None = None):
+    """Önce kullanıcının açık tarayıcısına (uzaktan hata ayıklama portu açıksa) bağlanır; yoksa
+    varsayılan tarayıcıyı (Chromium tabanlıysa, ör. Opera GX) ALICE profiliyle açar."""
+
+    def __init__(self, headless: bool = False, executable: str | None = None, cdp: str | None = None):
         try:
             from playwright.sync_api import sync_playwright
         except ImportError as e:
             raise ToolError("playwright kurulu değil: pip install 'alice-harness[browser]' && playwright install chromium") from e
         self._pw = sync_playwright().start()
+        self.attached = False
+        if cdp and cdp_alive(cdp):
+            browser = self._pw.chromium.connect_over_cdp(cdp)
+            self.ctx = browser.contexts[0] if browser.contexts else browser.new_context()
+            self.attached = True
+            self.page = self.ctx.pages[-1] if self.ctx.pages else self.ctx.new_page()
+            self.ctx.on("page", self._on_page)
+            return
         profile = alice_home() / "browser-profile"
         profile.mkdir(parents=True, exist_ok=True)
         kwargs: dict[str, Any] = {"headless": headless, "viewport": None if not headless else {"width": 1366, "height": 860},
                                   "args": ["--start-maximized"]}
-        if executable:
-            self.ctx = self._pw.chromium.launch_persistent_context(str(profile), executable_path=executable, **kwargs)
-        else:
+        exe = executable or default_browser_exe()
+        self.ctx = None
+        if exe and (executable or is_chromium(exe)):
+            try:
+                self.ctx = self._pw.chromium.launch_persistent_context(str(profile), executable_path=exe, **kwargs)
+            except Exception:  # noqa: BLE001
+                if executable:
+                    raise
+        if self.ctx is None:
             self.ctx = self._launch(profile, kwargs)
         self.page = self.ctx.pages[0] if self.ctx.pages else self.ctx.new_page()
         self.ctx.on("page", self._on_page)
@@ -92,7 +151,8 @@ class BrowserSession:
 
     def close(self) -> None:
         try:
-            self.ctx.close()
+            if not self.attached:  # kullanıcının kendi tarayıcısını kapatma, sadece bağlantıyı bırak
+                self.ctx.close()
         finally:
             self._pw.stop()
 
@@ -101,7 +161,8 @@ def get_browser(ctx: ToolContext) -> BrowserSession:
     b = ctx.state.get("browser")
     if b is None:
         a = ctx.config.agent
-        b = BrowserSession(headless=bool(a.get("browser_headless", False)), executable=a.get("browser_executable") or None)
+        b = BrowserSession(headless=bool(a.get("browser_headless", False)), executable=a.get("browser_executable") or None,
+                           cdp=a.get("browser_cdp") or None)
         ctx.state["browser"] = b
     return b
 
@@ -122,7 +183,10 @@ def format_snapshot(page_title: str, url: str, items: list[dict[str, Any]]) -> s
 class Browser(Tool):
     name = "browser"
     description = (
-        "Gerçek tarayıcıyı kontrol et (kalıcı profil, girişler hatırlanır). Aksiyonlar:\n"
+        "Tarayıcıyı kontrol et: kullanıcının açık tarayıcısına bağlanabiliyorsa onu, yoksa varsayılan tarayıcıyı "
+        "(ör. Opera GX) ALICE profiliyle açar. Sadece bir siteyi/videoyu açmak için bunu değil, "
+        "windows action=open target=<URL> kullan: kullanıcının kendi tarayıcısında, girişleriyle açılır. "
+        "Kullanıcının zaten açık penceresindeki bir şey için de windows focus + ui_elements/ui_act kullan. Aksiyonlar:\n"
         "goto(url) | snapshot: tıklanabilir öğeleri ID'leriyle listeler | click(element_id) | "
         "type(element_id, text, submit?) | select(element_id, text) | press(keys, ör. Enter) | "
         "scroll(amount, + aşağı) | back | text: sayfanın düz metni | screenshot | eval(js) | tabs | switch_tab(index) | close.\n"
