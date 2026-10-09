@@ -26,9 +26,9 @@ from alice.config import load_config, set_config_value
 console = Console(highlight=False)
 
 OPTIONAL = (("sounddevice", "mikrofon ve ses çalma", "voice"), ("pynput", "bas-konuş ve kısayollar", "voice"),
-            ("webrtcvad", "daha iyi konuşma algılama", "voice"), ("faster_whisper", "yerel Whisper", "voice-local"),
-            ("openwakeword", "yerel 'Hey Alice'", "voice-local"), ("TTS", "XTTS v2 (coqui-tts)", "elle"),
-            ("chatterbox", "Chatterbox (chatterbox-tts)", "elle"))
+            ("webrtcvad", "daha iyi konuşma algılama", "voice"),
+            ("faster_whisper", "seni dinlemek için yerel Whisper (Groq yoksa)", "voice-local"),
+            ("openwakeword", "yerel 'Hey Alice'", "voice-local"))
 
 
 def voice_cmd(argv: list[str]) -> int:
@@ -84,6 +84,8 @@ def _models(cfg, argv) -> int:
 
 
 def _status(cfg, argv) -> int:
+    from pathlib import Path
+
     from alice.voice.audio import Player, mic_available
     from alice.voice.stt import make_stt
     from alice.voice.tts import EmotionLibrary, make_cloud, make_local
@@ -94,16 +96,30 @@ def _status(cfg, argv) -> int:
                   f"{'[green]hazır[/]' if cloud else '[red]GEMINI_API_KEY yok[/]'}")
     local_state = ""
     if v.get("tts_local") == "chatterbox" and local is not None:
-        from pathlib import Path
-
         if not v.get("local_python") or not Path(v["local_python"]).exists():
             local_state = " [red]kurulu değil (alice voice install-local)[/]"
         else:
             local_state = " [green]sunucu açık[/]" if local.healthy() else " [dim]kurulu, ilk konuşmada açılır[/]"
     console.print(f"[bold]Yerel ses:[/] {v.get('tts_local') or '[dim]yok (alice voice install-local)[/]'}{local_state}")
+    if v.get("local_python") and Path(v["local_python"]).exists():
+        import subprocess
+
+        r = subprocess.run([v["local_python"], "-c", "import importlib.util as u; "
+                            "print(u.find_spec('whisper') is not None)"], capture_output=True, text=True)
+        ok = r.stdout.strip() == "True"
+        console.print(f"[bold]Ses kontrolü (yerel Whisper):[/] "
+                      f"{'[green]var[/]' if ok else '[yellow]yok[/] [dim](alice voice install-local)[/]'}")
     lib = EmotionLibrary()
-    console.print(f"[bold]Duygu kütüphanesi:[/] "
-                  f"{('[green]var[/] (' + lib.source + ')') if lib.exists() else '[dim]yok (alice voice library)[/]'}")
+    if lib.exists():
+        from alice.voice.tone import EMOTIONS, NAMES_TR
+
+        have = [NAMES_TR[e] for e in EMOTIONS if (lib.path / f"{e}.wav").exists()]
+        src = lib.source or "ses bilinmiyor"
+        warn = (f" [yellow]seçili ses {cloud.name}, kütüphane farklı: alice voice library --redo[/]"
+                if cloud and lib.source and lib.source != cloud.name else "")
+        console.print(f"[bold]Duygu kütüphanesi:[/] [green]var[/] ({src}; {', '.join(have)}){warn}")
+    else:
+        console.print("[bold]Duygu kütüphanesi:[/] [dim]yok (alice voice library)[/]")
     stt = make_stt(cfg)
     console.print(f"[bold]Konuşma tanıma:[/] {', '.join(e.name for e in stt.engines) or '[red]yok[/]'}")
     console.print(f"[bold]Ses çalma:[/] {Player().backend}   [bold]Mikrofon:[/] "
