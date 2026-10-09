@@ -468,6 +468,24 @@ def test_leak_detection_and_format_fallback(tmp_path):
     assert eng2.last_format == "tag" and prompts[-1].startswith("[calm")  # kayıtlı iyi biçim, tek istek
 
 
+def test_gemini_too_long_audio_counts_as_leak(tmp_path):
+    """Doğrulayıcı olmadan da: talimatı okuyan (metne göre çok uzun) ses kullanılmaz, sıradaki biçim denenir."""
+    prompts = []
+
+    def handler(req):
+        p = json.loads(req.content)["contents"][0]["parts"][0]["text"]
+        prompts.append(p)
+        pcm = tone(16.0 if p.startswith("Synthesize") else 2.0, 24000).pcm
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"inlineData": {
+            "mimeType": "audio/L16;rate=24000", "data": base64.b64encode(pcm).decode()}}]}}]})
+
+    f = tmp_path / "fmt.json"
+    eng = GeminiTTS("k", "Kore", ["m1"], client=httpx.Client(transport=httpx.MockTransport(handler)), formats_file=f)
+    audio = eng.synth("Söyle bakalım ne yapacağız?")
+    assert eng.last_format == "tag" and audio.seconds < 5
+    assert json.loads(f.read_text()) == {"m1": ["notes"]}
+
+
 def test_gemini_timeout_moves_to_next_model():
     pcm = tone(0.1, 24000).pcm
 
