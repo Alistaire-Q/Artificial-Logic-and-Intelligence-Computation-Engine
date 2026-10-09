@@ -399,6 +399,31 @@ def load_config(path: Path | None = None, cwd: Path | None = None) -> Config:
     return Config(data=data, path=cfg_path if cfg_path.is_file() else None)
 
 
+def _add_missing_env_keys(env: Path) -> bool:
+    """Eski .env'de olmayan yeni sağlayıcı satırlarını (açıklamasıyla) sona ekle; var olanlara dokunma."""
+    try:
+        text = env.read_text(encoding="utf-8-sig")
+    except OSError:
+        return False
+    have = {line.split("=", 1)[0].strip() for line in text.splitlines() if "=" in line and not line.lstrip().startswith("#")}
+    lines = ENV_TEMPLATE.splitlines()
+    add: list[str] = []
+    for i, line in enumerate(lines):
+        if "=" in line and not line.startswith("#") and line.split("=", 1)[0] not in have:
+            if i and lines[i - 1].startswith("# ") and "=" not in lines[i - 1]:
+                add.append(lines[i - 1])
+            add.append(line)
+    if not add:
+        return False
+    sep = "" if text.endswith("\n") or not text else "\n"
+    try:
+        env.write_text(text + sep + "\n# Yeni sağlayıcılar (ALICE güncellemesiyle eklendi)\n" + "\n".join(add) + "\n",
+                       encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
 def init_home(force: bool = False) -> list[Path]:
     home = alice_home()
     home.mkdir(parents=True, exist_ok=True)
@@ -410,6 +435,8 @@ def init_home(force: bool = False) -> list[Path]:
     env = home / ".env"
     if not env.exists():
         env.write_text(ENV_TEMPLATE, encoding="utf-8")
+        written.append(env)
+    elif _add_missing_env_keys(env):
         written.append(env)
     for sub in ("sessions", "browser-profile"):
         (home / sub).mkdir(exist_ok=True)
