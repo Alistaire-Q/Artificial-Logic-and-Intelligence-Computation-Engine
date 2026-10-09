@@ -53,7 +53,20 @@ if ok:
     if preview and preview != "-":
         scene = bpy.context.scene
         if scene.camera is None:
-            print(MARK + "NOT sahnede kamera yok, önizleme alınmadı")
+            # Kamera yoksa sahneyi çerçeveleyen geçici bir kamera koy (dosyaya kaydedilmez, kayıt yukarıda yapıldı).
+            from mathutils import Vector
+            pts = [o.matrix_world @ Vector(c) for o in scene.objects if o.type == "MESH" for c in o.bound_box]
+            if pts:
+                lo = Vector((min(v.x for v in pts), min(v.y for v in pts), min(v.z for v in pts)))
+                hi = Vector((max(v.x for v in pts), max(v.y for v in pts), max(v.z for v in pts)))
+                center, size = (lo + hi) / 2, max((hi - lo).length, 1.0)
+                cam = bpy.data.objects.new("OnizlemeKamerasi", bpy.data.cameras.new("OnizlemeKamerasi"))
+                scene.collection.objects.link(cam)
+                cam.location = center + Vector((1.0, -1.0, 0.7)).normalized() * size * 1.4
+                cam.rotation_euler = (center - cam.location).to_track_quat("-Z", "Y").to_euler()
+                scene.camera = cam
+        if scene.camera is None:
+            print(MARK + "NOT sahnede görünür nesne yok, önizleme alınmadı")
         else:
             scene.render.engine = "BLENDER_WORKBENCH"
             scene.render.resolution_x, scene.render.resolution_y = 640, 400
@@ -101,7 +114,7 @@ class Blender(Tool):
         "hata izi, print çıktısı ve sahnedeki nesnelerin listesi (ad, tür, konum, boyut) döner. Hata gelirse betiği "
         "düzeltip tekrar çalıştır. new=true boş başlangıç sahnesinden başlar (varsayılan küp, kamera, ışık içerir; "
         "istemiyorsan sil), aksi halde önceki run'ın sahnesi üzerinde devam eder. preview=true kameradan küçük bir "
-        "önizleme görüntüsü döndürür. action=open: bitmiş sahneyi Blender penceresinde açar. "
+        "önizleme görüntüsü döndürür (kamera yoksa sahneyi otomatik çerçeveler). action=open: bitmiş sahneyi Blender penceresinde açar. "
         "Betik ipuçları: bpy.ops.mesh.primitive_cube_add(size=..., location=(x,y,z)), "
         "obj = bpy.context.active_object; obj.scale = (sx,sy,sz); malzeme için bpy.data.materials.new(...) ve "
         "mat.diffuse_color = (r,g,b,1); z ekseni yukarıdır, birim metredir."
@@ -162,7 +175,7 @@ class Blender(Tool):
         timeout = max(10, min(int(timeout), 1800))
         with tempfile.TemporaryFile() as fo:
             pop = subprocess.Popen(argv, stdout=fo, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                   env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+                                   env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"})
             try:
                 rc = pop.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
