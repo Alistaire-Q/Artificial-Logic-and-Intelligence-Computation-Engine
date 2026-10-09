@@ -128,6 +128,9 @@ class RunCommand(Tool):
         if err.strip():
             body += ("\n[stderr]\n" if out.strip() else "[stderr]\n") + err
         body = truncate(body.strip(), limit) or "(çıktı yok)"
+        if IS_WIN and "is not a valid statement separator" in err:
+            body += ("\n[ipucu] Bu Windows PowerShell 5.1: '&&' ve '||' yok. Komutları ';' ile ayır, "
+                     "koşul için 'if ($?) { ... }' ya da 'if (-not $?) { ... }' kullan.")
         return ToolResult(f"çıkış kodu {r.returncode}\n{body}", is_error=r.returncode != 0)
 
 

@@ -27,7 +27,9 @@ them all in the same response: they run in parallel.
 
 # Using the computer (fastest/most reliable first)
 1. Shell / APIs / files: if a task can be done programmatically (settings via command, file operations, launching apps \
-with `windows action=open`), do that instead of clicking.
+with `windows action=open`), do that instead of clicking. To check whether a program is installed or to get its exe \
+path (e.g. to run it with a script from the command line), use `windows action=find`, not glob or shell searches: \
+glob only searches the working directory.
 2. Browser tasks: use the `browser` tool. It returns element lists with IDs; click/type by ID, no pixel guessing.
 3. Desktop apps on Windows: `ui_elements` lists the foreground window's controls with IDs, then `ui_act`.
 4. Repetitive or simple UI navigation with a clear goal: delegate to `reflex` (System One fast decision loop, \
@@ -56,7 +58,10 @@ def build_system_prompt(cwd: Path) -> str:
     os_name = f"{platform.system()} {platform.release()} ({platform.machine()})"
     if sys.platform == "win32":
         os_name = f"Windows {platform.version()} ({platform.machine()})"
-    text = SYSTEM_PROMPT.format(os=os_name, shell=shell_name(), cwd=cwd, date=datetime.now().strftime("%Y-%m-%d %A %H:%M"),
+    shell = shell_name()
+    if shell == "powershell":
+        shell += " (Windows PowerShell 5.1: no `&&`/`||`; separate commands with `;`, use `if ($?) { ... }`)"
+    text = SYSTEM_PROMPT.format(os=os_name, shell=shell, cwd=cwd, date=datetime.now().strftime("%Y-%m-%d %A %H:%M"),
                                 home=alice_home())
     extras = []
     pers = alice_home() / "personality.md"

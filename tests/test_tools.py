@@ -155,3 +155,28 @@ def test_cli_slash_commands(workdir, isolated_home, monkeypatch):
     monkeypatch.setattr("alice.cli.console.input", lambda *a, **k: "1")
     assert handle_slash("/rewind", agent, router, ctx, cfg) == ("prefill", "eski mesaj")
     assert len(agent.messages) == 1
+
+
+def test_find_installed_apps_scans_program_folders(tmp_path, monkeypatch):
+    from alice.tools import desktop
+
+    pf = tmp_path / "Program Files"
+    app = pf / "Blender Foundation" / "Blender 4.2"
+    app.mkdir(parents=True)
+    for name in ("blender.exe", "blender-launcher.exe", "uninstall.exe"):
+        (app / name).write_bytes(b"")
+    (pf / "Other").mkdir()
+    (pf / "Other" / "other.exe").write_bytes(b"")
+    monkeypatch.setattr(desktop, "IS_WIN", True)
+    monkeypatch.setattr(desktop.shutil, "which", lambda name: None)
+    monkeypatch.setattr(desktop, "_steam_libraries", lambda: [])
+    monkeypatch.setattr(desktop, "_shortcut_roots", lambda: [])
+    for k in ("ProgramFiles(x86)", "ProgramW6432", "LOCALAPPDATA"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("ProgramFiles", str(pf))
+
+    hits = desktop.find_installed_apps("Blender")
+    paths = [h.split(": ", 1)[1] for h in hits]
+    assert str(app / "blender.exe") in paths
+    assert not any("uninstall" in p or "other.exe" in p for p in paths)
+    assert desktop.find_installed_apps("photoshop") == []
