@@ -151,6 +151,8 @@ clipboard_hotkey = "<ctrl>+<alt>+c"
 [roles]
 # Ana beyin (System 2): planlama, kod yazma, araç kullanma.
 brain = ["auto", "ollama:qwen3:8b"]
+# Sesli asistan: beyin kadar yetenekli ama ilk kelimesi en çabuk gelen modeller (konuşmaya geç başlamasın).
+voice = ["auto", "ollama:qwen3:8b"]
 # Hızlı, kısa işler: özet, input'a yazılacak metni üretme, decider emülasyonu.
 fast = ["auto", "ollama:qwen3:8b"]
 # Ekran görüntüsü anlama. Beyin modeli görsel destekliyorsa direkt ona gider,

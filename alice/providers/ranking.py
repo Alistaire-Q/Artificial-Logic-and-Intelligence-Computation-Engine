@@ -267,6 +267,11 @@ def fast_score(pr: Probe) -> float:
     return min(40.0, 30.0 / max(pr.latency, 0.25)) + pr.quality * 0.3
 
 
+def voice_score(pr: Probe) -> float:
+    # Sesli asistan: ilk kelimeye kadar geçen süre (TTFT) her saniye 8 puan götürür.
+    return pr.quality - pr.ttft * 8
+
+
 def _diversify(ranked: list[Probe], score: Callable[[Probe], float], gap: float = 12.0) -> list[Probe]:
     """Aynı sağlayıcıdan art arda ikiden fazla model koyma (puan farkı gap'ten azsa): bir sağlayıcı
     yoğunluktan 503 verince ya da kotası dolunca zincirin geri kalanı da onunla birlikte düşmesin."""
@@ -306,11 +311,14 @@ def build_chains(results: list[Probe], providers_cfg: dict[str, Any], limit: int
                  and roomy(r.ref)]
     transient = sorted(transient, key=lambda r: -r.quality)[:3]
     brain = brain[:limit - len(transient)] + transient
+    voice = [r for r in ok if r.quality >= 60 and roomy(r.ref)]
+    voice = _diversify(sorted(voice, key=lambda r: -voice_score(r)), voice_score)
     fast = [r for r in ok if r.quality >= 55 and r.latency <= 15]
     fast.sort(key=lambda r: -fast_score(r))
     vision = [r for r in ok if (pc := provider_cfg(r.ref)) and pc.supports_vision(r.ref.split(":", 1)[1])]
     vision.sort(key=lambda r: -brain_score(r))
-    return {"brain": [r.ref for r in brain][:limit], "fast": [r.ref for r in fast][:6],
+    return {"brain": [r.ref for r in brain][:limit], "voice": [r.ref for r in voice][:6] + [r.ref for r in transient],
+            "fast": [r.ref for r in fast][:6],
             "vision": [r.ref for r in vision][:4]}
 
 

@@ -207,7 +207,12 @@ class Router:
         return [r for r in out if r not in ranking.RANDOM_ROUTERS] + [r for r in out if r in ranking.RANDOM_ROUTERS]
 
     def auto_chain(self, role: str) -> list[str]:
-        refs = (self.auto_cache.get("chains") or {}).get(role) or ranking.DEFAULT_AUTO.get(role, [])
+        chains = self.auto_cache.get("chains") or {}
+        refs = chains.get(role) or (role == "voice" and chains.get("brain")) or ranking.DEFAULT_AUTO.get(role, [])
+        if role == "voice" and not chains.get("voice"):  # eski ölçüm: beyin zincirini ilk kelime hızına göre diz
+            res = self.auto_cache.get("results") or {}
+            refs = sorted(refs or ranking.DEFAULT_AUTO["brain"],
+                          key=lambda r: -(res[r].get("quality", 0) - res[r].get("ttft", 0) * 8) if r in res else 0)
         return [r for r in refs if r.partition(":")[0] in self.providers_cfg]
 
     def _cached_dead(self) -> set[str]:

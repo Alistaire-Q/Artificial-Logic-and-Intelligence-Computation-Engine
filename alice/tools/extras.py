@@ -60,6 +60,18 @@ class Report(Tool):
         return ToolResult(f"{report.text(r)}\nRapor: {report.save_html(r)}")
 
 
+class Weather(Tool):
+    name = "weather"
+    description = "Hava durumu: şu an ve bugün (en düşük/yüksek, yağmur ihtimali). city boşsa ayarlı şehir ya da konum."
+    parameters = obj({"city": {"type": "string"}}, [])
+    risk = READ
+
+    def run(self, ctx: ToolContext, city: str = "") -> ToolResult:
+        from alice.extras import brief
+
+        return ToolResult(brief.weather(city or ctx.config.data.get("brief", {}).get("city", ""), auto=True))
+
+
 class Media(Tool):
     name = "media"
     description = ("Müzik/ses. volume_up/down: times basış (~%2). pause_in: müziği minutes sonra durdur. "
@@ -91,4 +103,4 @@ class Media(Tool):
         return ToolResult(media.key(action, times if action.startswith("volume") else 1))
 
 
-TOOLS = [Notes(), Report(), Media()]
+TOOLS = [Notes(), Report(), Weather(), Media()]

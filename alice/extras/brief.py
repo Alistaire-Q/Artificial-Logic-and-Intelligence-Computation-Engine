@@ -18,8 +18,9 @@ BRIEF_PROMPT = ("Sabah özetimi hazırla: report aracını kind=morning ile ça�
                 "sabah özeti olarak anlat. Önce gün ve hava, sonra bugün ne var, sonra gece olanlar ve dünden kalanlar.")
 
 
-def weather(city: str, client: httpx.Client | None = None) -> str:
-    if not city:
+def weather(city: str, client: httpx.Client | None = None, auto: bool = False) -> str:
+    """auto=True ve şehir yoksa konum IP'den bulunur."""
+    if not city and not auto:
         return "hava durumu için config'te [brief] city ayarla"
     c = client or httpx.Client(timeout=8)
     try:
@@ -31,6 +32,9 @@ def weather(city: str, client: httpx.Client | None = None) -> str:
         desc = (cur.get("lang_tr") or cur.get("weatherDesc") or [{"value": ""}])[0]["value"]
         today = d["weather"][0]
         rain = max(int(h.get("chanceofrain", 0)) for h in today.get("hourly", [{}]))
+        if not city:
+            area = (d.get("nearest_area") or [{}])[0]
+            city = ((area.get("areaName") or [{"value": "buralar"}])[0]["value"])
         return (f"{city}: şu an {cur['temp_C']}°C, {desc.lower()}; bugün en düşük {today['mintempC']}°C, "
                 f"en yüksek {today['maxtempC']}°C, yağmur ihtimali en fazla %{rain}")
     except (KeyError, IndexError, ValueError):
