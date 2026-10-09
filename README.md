@@ -278,7 +278,7 @@ alice voice test      # mikrofonu dene
 ```
 
 * **Bas-konuş:** tuşu basılı tut, konuş, bırak. Tuş `config.toml` içinde `[voice] ptt_key`.
-* **"Hey Alice":** el gerektirmez. [openWakeWord](https://github.com/dscripka/openWakeWord) ile kendi eğittiğin bir model (`wake_model`) verirsen tamamen yerelde dinler. Vermezsen konuşma algılanınca Whisper'a çevrilip "Alice" ile başlayıp başlamadığına bakılır.
+* **"Hey Alice":** el gerektirmez. [openWakeWord](https://github.com/dscripka/openWakeWord) ile kendi eğittiğin bir model (`wake_model`) verirsen tamamen yerelde dinler. Vermezsen konuşma algılanınca cümlenin başı bilgisayardaki küçük Whisper modeliyle (faster-whisper, `[voice] wake_local = "base"`) yazıya çevrilip "Hey Alice" ile başlayıp başlamadığına bakılır; sadece uyandırma duyulursa ses Groq'a gider. faster-whisper kurulu değilse her cümle Groq'a gönderilir. `alice voice on` sesi açar ve arka plandaki çekirdeği başlatır.
 * ALICE cevap verdikten sonra 8 saniye boyunca "Hey Alice" demeden devam edebilirsin.
 * ALICE konuşurken araya girersen susar ve yarım kalan işi durdurur. Hoparlör yerine kulaklık kullanırsan yankı yüzünden yanlışlıkla susmaz.
 * Cevabın tamamını beklemez, ilk cümle hazır olunca söyler. Bir araç çalışacaksa önce "hemen bakıyorum" der. Kod ve uzun yolları okumaz, ekrana yazdığını söyler.

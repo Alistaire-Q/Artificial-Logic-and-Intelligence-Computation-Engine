@@ -754,3 +754,36 @@ def test_strip_wake_turkish_variants():
     assert strip_wake("bugün hava nasıl") is None
     assert strip_wake("hey bakar mısın") is None
     assert strip_wake("Alice.") == ""
+
+
+def test_local_wake_gate_keeps_non_wake_audio_off_the_cloud():
+    class Gate:
+        def __init__(self, text):
+            self.text = text
+
+        def heard(self, audio):
+            return self.text
+
+    class CloudSTT:
+        def __init__(self):
+            self.calls = 0
+            self.wake_gate = None
+
+        def transcribe(self, audio):
+            self.calls += 1
+            return "Hey Alis, saat kaç?"
+
+    agent, sp = FakeAgent(), FakeSpeaker()
+    stt = CloudSTT()
+    va = VoiceAssistant(agent, sp, stt=stt)
+    audio = Audio(b"\0\0" * 16000, 16000)
+    stt.wake_gate = Gate("bugün hava güzel")
+    va.handle_audio(audio, direct=False)
+    assert stt.calls == 0 and agent.turns == []
+    stt.wake_gate = Gate("Hey Alice saat")
+    va.handle_audio(audio, direct=False)
+    assert stt.calls == 1
+    assert wait_for(lambda: agent.turns == ["saat kaç?"])
+    stt.wake_gate = Gate(None)
+    va.handle_audio(audio, direct=False)  # yerel model yoksa eskisi gibi buluta gider
+    assert stt.calls == 2

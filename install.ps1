@@ -57,6 +57,10 @@ if ($LASTEXITCODE -ne 0) { Write-Host "pywebview kurulamadı, uygulama Edge penc
 & .\.venv\Scripts\python.exe -m pip install -e ".[core,voice]"
 if ($LASTEXITCODE -ne 0) { Write-Host "Ses paketleri kurulamadı; yazılı kullanım çalışır." -ForegroundColor Yellow }
 
+# Yerel Whisper: "Hey Alice"i bilgisayarda algılar (her cümle buluta gitmez) ve Groq kotası bitince yedek olur.
+& .\.venv\Scripts\python.exe -m pip install faster-whisper
+if ($LASTEXITCODE -ne 0) { Write-Host "Yerel Whisper kurulamadı; konuşma tanıma bulutta (Groq) çalışır." -ForegroundColor Yellow }
+
 # Chrome ya da Edge kuruluysa ALICE onları kullanır; ikisi de yoksa Playwright Chromium indir.
 $chrome = Test-Path "$env:ProgramFiles\Google\Chrome\Application\chrome.exe"
 $edge = Test-Path "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"
