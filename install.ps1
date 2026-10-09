@@ -2,9 +2,12 @@
 #   powershell -ExecutionPolicy Bypass -File install.ps1
 $ErrorActionPreference = "Stop"
 
-$py = Get-Command python -ErrorAction SilentlyContinue
-if (-not $py) { throw "Python bulunamadı. python.org'dan 3.11+ kur ve 'Add to PATH' kutusunu işaretle." }
-$ver = & python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+# Windows'taki "python" Microsoft Store kısayolu gerçek Python değil, gerçekten çalışıyor mu diye bak.
+$ver = $null
+try { $ver = & python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null } catch {}
+if (-not $ver) {
+    throw "Python bulunamadı. 'winget install Python.Python.3.12' çalıştır (ya da python.org'dan kur, 'Add to PATH' işaretli), PowerShell'i kapatıp aç, tekrar dene."
+}
 if ([version]$ver -lt [version]"3.10") { throw "Python $ver çok eski, 3.10+ gerekli." }
 
 if (-not (Test-Path ".venv")) { python -m venv .venv }
