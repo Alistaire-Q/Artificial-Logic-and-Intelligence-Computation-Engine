@@ -307,7 +307,7 @@ class GeminiTTS:
                     errors.append(res)
                     status[model] = res.split(": ", 1)[-1][:60]
                     break
-                if self.verify is not None and fmt != "plain" and not self.verify(res, text):
+                if fmt != "plain" and (too_long(res, text) or (self.verify is not None and not self.verify(res, text))):
                     self._mark_bad(model, fmt)  # model talimatı da okudu: bu biçimi bu modelde bir daha kullanma
                     fallback = res
                     continue
@@ -368,6 +368,12 @@ def leaked(heard: str, expected: str) -> bool:
         return True
     extra = [w for w in got if w not in want and not any(w[:4] == x[:4] for x in want if len(w) > 3)]
     return len(extra) >= 3 and len(extra) > 0.3 * max(1, len(want))
+
+
+def too_long(audio: Audio, text: str) -> bool:
+    """Ses metne göre fazla uzun mu? Talimat okunduysa ses saniyelerce uzar (Türkçe ~12-15 harf/sn).
+    Whisper gerektirmez, her cümlede bedava çalışır."""
+    return audio.seconds > 2.5 + len(text) / 8
 
 
 def make_verifier(stt) -> Callable[[Audio, str], bool]:
