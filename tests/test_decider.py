@@ -109,3 +109,24 @@ def test_question_validation():
 def test_extract_json():
     assert extract_json('blah {"a": 1} trailing') == {"a": 1}
     assert extract_json("nope") is None
+
+
+def test_jev_openrouter_engine_and_402_cooldown(monkeypatch):
+    cfg = make_config({"fast": ["a:m"]})
+    cfg.data["decider"]["chain"] = ["jev", "jev-openrouter", "llm:fast"]
+    router, _ = _llm_router(['{"q": {"choice": "a", "confidence": 0.7}}', '{"q": {"choice": "a", "confidence": 0.7}}'])
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    dec = Decider.from_config(cfg, router)
+    assert dec.names == ["jev-openrouter", "llm:fast"]
+    calls = []
+
+    def handler(req):
+        calls.append(json.loads(req.content))
+        return httpx.Response(402, json={"error": {"message": "Insufficient credits"}})
+
+    dec.engines[0]._client = httpx.Client(transport=httpx.MockTransport(handler))
+    q = {"q": Choice("?", {"a": "A", "b": "B"})}
+    assert dec.decide("s", q)["q"].value == "a"
+    assert calls[0]["model"] == "~typesafe/jev-latest"
+    dec.decide("s", q)
+    assert len(calls) == 1  # kredi yok: 1 saat boyunca tekrar denenmez

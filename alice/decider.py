@@ -11,7 +11,7 @@ Soru tipleri (Jev ile aynı isimler):
   Noul(instructions)                                   -> 0..1 arası "evet" olasılığı
   Score(instructions, levels={1: "...", 5: "..."})     -> seviye (beklenen değer)
 
-Zincir: config [decider].chain, örn. ["jev", "llm:fast"]. Jev anahtarı yoksa ya da
+Zincir: config [decider].chain, örn. ["jev", "jev-openrouter", "llm:fast"]. Jev anahtarı yoksa ya da
 hata verirse aynı soru ücretsiz hızlı bir LLM'e JSON formatında sorulur.
 """
 
@@ -69,7 +69,9 @@ class Decision:
 
 
 class DeciderError(Exception):
-    pass
+    def __init__(self, message: str, cooldown: float = 60.0):
+        super().__init__(message)
+        self.cooldown = cooldown
 
 
 class Engine(Protocol):
@@ -105,9 +107,8 @@ class JevEngine:
     API hâlâ erken erişimde ve alan adları değişebilir.
     """
 
-    name = "jev"
-
-    def __init__(self, url: str, model: str, api_key: str, client: httpx.Client | None = None):
+    def __init__(self, url: str, model: str, api_key: str, client: httpx.Client | None = None, name: str = "jev"):
+        self.name = name
         self.url = url
         self.model = model
         self.api_key = api_key
@@ -132,7 +133,9 @@ class JevEngine:
         except httpx.HTTPError as e:
             raise DeciderError(f"jev ağ hatası: {e}") from e
         if r.status_code != 200:
-            raise DeciderError(f"jev HTTP {r.status_code}: {r.text[:300]}")
+            # 402 = kredi yok (OpenRouter), 401/403 = anahtar/erişim yok: bunlar bir dakikada düzelmez.
+            cooldown = 3600.0 if r.status_code in (401, 402, 403) else 60.0
+            raise DeciderError(f"{self.name} HTTP {r.status_code}: {r.text[:300]}", cooldown)
         data = r.json()
         raw = data.get("answers", data)
         answers = {k: self._parse(q, raw.get(k)) for k, q in questions.items()}
@@ -287,6 +290,13 @@ class Decider:
                 key = os.environ.get(dc.get("jev_api_key_env", "TYPESAFE_API_KEY"))
                 if key:
                     engines.append(JevEngine(dc.get("jev_url"), dc.get("jev_model", "jev-latest"), key))
+            elif item == "jev-openrouter":
+                # Aynı Jev, OpenRouter hesabından faturalanır. Ücretsiz (:free) sürümü yok, kredi gerekir.
+                key = os.environ.get(dc.get("openrouter_jev_api_key_env", "OPENROUTER_API_KEY"))
+                if key:
+                    engines.append(JevEngine(dc.get("openrouter_jev_url", "https://openrouter.ai/api/v1/systemone"),
+                                             dc.get("openrouter_jev_model", "~typesafe/jev-latest"), key,
+                                             name="jev-openrouter"))
             elif item.startswith("llm:"):
                 engines.append(LLMEngine(router, item.split(":", 1)[1]))
         if not engines:
@@ -307,5 +317,5 @@ class Decider:
             except (DeciderError, AllProvidersFailed, httpx.HTTPError) as err:
                 errors.append(f"{e.name}: {err}")
                 self.on_event(f"decider {e.name} başarısız, sıradakine geçiliyor")
-                self._broken[e.name] = time.monotonic() + 60
+                self._broken[e.name] = time.monotonic() + getattr(err, "cooldown", 60.0)
         raise DeciderError("; ".join(errors) or "kullanılabilir karar motoru yok")

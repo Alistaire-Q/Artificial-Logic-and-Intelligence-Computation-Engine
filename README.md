@@ -63,6 +63,7 @@ Katalog değiştiğinde `alice models --write` canlı `/models` uçlarını tara
 Jev (TypeSafe AI, Eylül 2026) metin üretmeyen, tipli karar veren bir System One modeli. **Ücretsiz katmanı yok**: girdi tokenı başına 0.042$/milyon, çıktı ücretsiz, şu an erken erişim listesiyle. Pratikte bu çok ucuz (bir reflex adımı ~1-2K token, yani milyonlarca karar birkaç dolar), ama sen ücretsiz istediğin için şöyle kurdum:
 
 * `TYPESAFE_API_KEY` varsa karar motoru Jev (REST `POST /v1/systemone`, Choice/Noul/Score soruları)
+* TypeSafe yeni kayıtları durdurduğu için Jev'e **OpenRouter üzerinden** de gidiliyor (`~typesafe/jev-latest`, aynı `OPENROUTER_API_KEY`). Burada da `:free` sürümü yok, hesapta kredi olmalı; kredi yoksa OpenRouter 402 döner, ALICE bunu görünce Jev'i 1 saat atlayıp yedeğe geçer
 * Yoksa ya da Jev hata verirse aynı soru formatı, `fast` rolündeki ücretsiz hızlı modele (Groq gpt-oss-20b, `reasoning_effort=low`) JSON olarak soruluyor
 
 Yani reflex modu anahtarsız da çalışıyor, sadece daha yavaş: Jev için bildirilen süre ~100-350 ms, Groq yedeği ise benim tahminimle adım başına birkaç yüz ms ile 1-2 sn arası (ölçmek için `alice doctor` karar süresini yazıyor). Jev erişimi alırsan tek satır anahtar eklemen yetiyor. Jev'e Score soruları güvenli olsun diye Choice olarak gidiyor, çünkü resmi dokümanda en net belgelenen format o.

@@ -76,13 +76,19 @@ vision = [
     "nvidia:meta/llama-4-maverick-17b-128e-instruct",
 ]
 
-# System One (hızlı karar) motoru. "jev" = TypeSafe Jev API,
-# "llm:<rol>" = o rolün modelleriyle Jev formatını taklit eden yedek.
+# System One (hızlı karar) motoru, soldan sağa denenir:
+#   "jev"            = TypeSafe Jev API (TYPESAFE_API_KEY)
+#   "jev-openrouter" = aynı Jev, OpenRouter üzerinden (OPENROUTER_API_KEY + hesapta kredi gerekir,
+#                      kredi yoksa 402 alır ve 1 saat atlanır)
+#   "llm:<rol>"      = o rolün ücretsiz modelleriyle Jev formatını taklit eden yedek
 [decider]
-chain = ["jev", "llm:fast"]
+chain = ["jev", "jev-openrouter", "llm:fast"]
 jev_url = "https://api.typesafe.ai/v1/systemone"
 jev_model = "jev-latest"
 jev_api_key_env = "TYPESAFE_API_KEY"
+openrouter_jev_url = "https://openrouter.ai/api/v1/systemone"
+openrouter_jev_model = "~typesafe/jev-latest"
+openrouter_jev_api_key_env = "OPENROUTER_API_KEY"
 # Bu güvenin altındaki kararlar reflex döngüsünde beyne (System 2) devredilir.
 min_confidence = 0.55
 
