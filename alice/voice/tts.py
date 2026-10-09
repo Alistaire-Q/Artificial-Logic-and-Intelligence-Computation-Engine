@@ -6,11 +6,11 @@ Yerel: XTTS v2 ve Chatterbox. İkisi de sesi bir referans kayıttan klonlar. Ref
 (~/.alice/voice/library/<duygu>.wav). Böylece DCS açıkken buluttan, kapalıyken yerelden
 konuşsa da hep aynı ALICE duyulur.
 
-Yedek: Microsoft Edge'in sinir ağı sesleri (edge-tts). Anahtar ve kota yok, ~1 sn'de hazır; bulut
-düşünce yavaş yerel motordan önce denenir.
+Son çare: Microsoft Edge'in sinir ağı sesleri (edge-tts). Anahtar ve kota yok, ~1 sn'de hazır; bulut
+ve yerel ses düşünce (ya da yerel ses takılıp zaman aşımına uğrayınca) konuşur.
 
-Yedek: Microsoft Edge'in sinir ağı sesleri (edge-tts). Anahtar ve kota yok, ~1 sn'de hazır; bulut
-düşünce yavaş yerel motordan önce denenir.
+Son çare: Microsoft Edge'in sinir ağı sesleri (edge-tts). Anahtar ve kota yok, ~1 sn'de hazır; bulut
+ve yerel ses düşünce (ya da yerel ses takılıp zaman aşımına uğrayınca) konuşur.
 
 Seçim (TTSRouter): DCS açıkken (mod politikası local_gpu = false) yerel motor GPU'ya
 dokunmaz; ya bulut kullanılır ya da yerel motor işlemcide çalışır. Hata veren motor bir
@@ -432,9 +432,12 @@ class Chatterbox:
     def __init__(self, python: str = "", port: int = 8771, library: EmotionLibrary | None = None,
                  allow_gpu: Callable[[], bool] = lambda: True, client: httpx.Client | None = None,
                  start_timeout: float = 600, trim: Callable[[Audio, str], Audio] | None = None,
-                 temperature: float = 0.6, verify: bool = True, whisper_model: str = "small"):
+                 temperature: float = 0.6, verify: bool = True, whisper_model: str = "small",
+                 synth_timeout: float = 30):
         from alice.voice.trim import by_length
 
+        self.synth_timeout = synth_timeout
+        self._warm = False
         self.trim = trim or by_length
         self.temperature = temperature
         self.verify = verify
@@ -494,9 +497,11 @@ class Chatterbox:
                 "cfg_weight": cfg_weight, "temperature": self.temperature,
                 "device": "cuda" if self.allow_gpu() else "cpu", "verify": self.verify,
                 "whisper_model": self.whisper_model}
+        # İlk istekte model yüklenir/indirilir: uzun sürebilir. Sonra bir cümle saniyeler sürmeli; takılırsa
+        # beklemeyip sıradaki sese (Edge) geç, kullanıcı cevapsız kalmasın.
+        timeout = self.start_timeout if not self._warm else self.synth_timeout
         try:
-            # İlk istekte model yüklenir/indirilir: uzun sürebilir.
-            r = self.client.post(self.base + "/synth", json=body, timeout=self.start_timeout)
+            r = self.client.post(self.base + "/synth", json=body, timeout=timeout)
         except httpx.HTTPError as e:
             raise TTSError(f"yerel ses sunucusu hatası: {e}") from e
         if r.status_code != 200:
@@ -506,6 +511,7 @@ class Chatterbox:
                 msg = r.text
             raise TTSError(f"chatterbox: {str(msg)[:200]}")
         audio = Audio.from_wav(r.content)
+        self._warm = True
         self.last_quality = r.headers.get("X-Alice-Quality", "")
         if r.headers.get("X-Alice-Verified") != "1":
             # Sunucuda Whisper yoksa kuyruğu burada kes (Groq Whisper ya da uzunluğa göre).
@@ -631,7 +637,7 @@ class TTSRouter:
                  cache: SpeechCache | None = None, backup: TTS | None = None):
         self.cloud = cloud
         self.local = local
-        self.backup = backup  # bulut düşünce, yavaş yerel motordan önce denenen hızlı yedek (Edge)
+        self.backup = backup  # hızlı son çare (Edge): bulut ve yerel ses düşünce
         self.prefer = prefer
         self.policy = policy
         self.cooldown = cooldown
@@ -644,8 +650,9 @@ class TTSRouter:
         return self.last or (self.order()[0].name if self.order() else "yok")
 
     def order(self) -> list[TTS]:
+        # Yedek (Edge) en sonda: önce ALICE'in kendi sesi (bulut ya da onu taklit eden yerel motor).
         engines = ([self.local, self.cloud, self.backup] if self.prefer == "local"
-                   else [self.cloud, self.backup, self.local])
+                   else [self.cloud, self.local, self.backup])
         if self.policy().get("local_gpu") is False and self.local is not None:
             # Uçuşta GPU oyuna kalsın: önce bulut; yerel ancak işlemcide, son çare olarak.
             engines = [self.cloud, self.backup, self.local]
