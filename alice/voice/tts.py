@@ -136,26 +136,67 @@ DEFAULT_GEMINI_MODELS = ["gemini-3.8-flash-lite-tts", "gemini-3.8-flash-tts", "g
                          "gemini-2.5-flash-preview-tts"]
 
 
+FORMATS = ("notes", "tag", "plain")
+
+TAGS = {"calm": "calm, warm", "happy": "cheerful", "serious": "serious, composed", "urgent": "urgent, firm",
+        "playful": "playful"}
+
+
+def formats_path() -> Path:
+    return alice_home() / "voice" / "gemini-formats.json"
+
+
 class GeminiTTS:
     """Gemini ses modelleri. Kota model başına sayıldığı için birinin kotası dolunca sıradakine geçer;
-    ses (ör. Aoede) aynı kalır."""
+    ses (ör. Aoede) aynı kalır.
+
+    Ton talimatı üç biçimde verilebilir: notes (ayrı başlıklar), tag (metnin başında [köşeli] etiket),
+    plain (talimatsız, ton yok). Bazı modeller talimatı da sesli okuyor; verify verilirse (Whisper ile
+    yazıya çevirip karşılaştıran fonksiyon) okunan biçim o model için 'kötü' işaretlenir, sıradaki biçim
+    denenir ve sonuç diske yazılır. Günlük konuşma kayıtlı iyi biçimi kullanır."""
 
     URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
     def __init__(self, api_key: str, voice: str = "Aoede", models: list[str] | str | None = None,
-                 client: httpx.Client | None = None):
+                 client: httpx.Client | None = None, verify: Callable[[Audio, str], bool] | None = None,
+                 formats_file: Path | None = None):
         self.api_key = api_key
         self.voice = voice
         self.models = [models] if isinstance(models, str) else list(models or DEFAULT_GEMINI_MODELS)
         self.name = f"gemini:{voice}"
         self.client = client or httpx.Client(timeout=60)
+        self.verify = verify
+        self.formats_file = formats_file or formats_path()
         self.down: dict[str, float] = {}  # model -> bu ana kadar atla
         self.reason: dict[str, str] = {}  # model -> daily | minute | error
         self.last_model = ""
+        self.last_format = ""
+        try:
+            self.bad: dict[str, list[str]] = json.loads(self.formats_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            self.bad = {}
+
+    def _mark_bad(self, model: str, fmt: str) -> None:
+        self.bad.setdefault(model, [])
+        if fmt not in self.bad[model]:
+            self.bad[model].append(fmt)
+        try:
+            self.formats_file.parent.mkdir(parents=True, exist_ok=True)
+            self.formats_file.write_text(json.dumps(self.bad), encoding="utf-8")
+        except OSError:
+            pass
+
+    def formats_for(self, model: str) -> list[str]:
+        bad = self.bad.get(model, [])
+        return [f for f in FORMATS if f not in bad] or ["plain"]
 
     @staticmethod
-    def prompt(text: str, emotion: str) -> str:
-        # Yönerge ile konuşulacak metin ayrı başlıklarda: yoksa yeni modeller yönergeyi de sesli okuyor.
+    def prompt(text: str, emotion: str, fmt: str = "notes") -> str:
+        if fmt == "plain":
+            return text
+        if fmt == "tag":
+            return f"[{TAGS.get(emotion, TAGS['calm'])}] {text}"
+        # Yönerge ile konuşulacak metin ayrı başlıklarda (Google'ın önerdiği yapı).
         return (
             "Synthesize speech for the performance defined below. The audio profile and director's notes are "
             "direction only. Do NOT speak them. Speak ONLY the lines under #### TRANSCRIPT, exactly as written, "
@@ -165,52 +206,70 @@ class GeminiTTS:
             f"### DIRECTOR'S NOTES\nStyle: {DIRECTION.get(emotion, DIRECTION['calm'])}\n\n"
             f"#### TRANSCRIPT\n{text}")
 
-    def synth(self, text: str, emotion: str = "calm") -> Audio:
+    def _request(self, model: str, prompt: str):
+        """("ok", Audio) | ("quota", QuotaError) | ("error", mesaj)."""
         body = {
-            "contents": [{"parts": [{"text": self.prompt(text, emotion)}]}],
+            "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"responseModalities": ["AUDIO"], "speechConfig": {
                 "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": self.voice}}}},
         }
+        try:
+            r = self.client.post(self.URL.format(model=model), json=body, headers={"x-goog-api-key": self.api_key})
+        except httpx.HTTPError as e:
+            raise TTSError(f"gemini bağlantı hatası: {e}") from e
+        if r.status_code == 429:
+            return "quota", gemini_quota_error(r.text)
+        if r.status_code in (400, 403, 404):
+            return "missing", f"{model}: {r.status_code}"
+        if r.status_code != 200:
+            return "error", f"{model}: {r.status_code} {r.text[:120]}"
+        try:
+            part = r.json()["candidates"][0]["content"]["parts"][0]["inlineData"]
+        except (KeyError, IndexError, ValueError):
+            return "error", f"{model}: ses döndürmedi"
+        rate = 24000
+        mime = part.get("mimeType", "")
+        if "rate=" in mime:
+            try:
+                rate = int(mime.split("rate=")[1].split(";")[0])
+            except ValueError:
+                pass
+        return "ok", Audio(base64.b64decode(part["data"]), rate).polish()
+
+    def synth(self, text: str, emotion: str = "calm") -> Audio:
         now = time.monotonic()
         quota: list[QuotaError] = []
         errors: list[str] = []
         for model in self.models:
             if self.down.get(model, 0) > now:
                 continue
-            try:
-                r = self.client.post(self.URL.format(model=model), json=body, headers={"x-goog-api-key": self.api_key})
-            except httpx.HTTPError as e:
-                raise TTSError(f"gemini bağlantı hatası: {e}") from e
-            if r.status_code == 429:
-                q = gemini_quota_error(r.text)
-                # Günlük kota: o model bugün yok. Dakikalık: o model kısa süre beklesin, diğerine geç.
-                self.down[model] = now + (6 * 3600 if q.daily else (q.retry_after or 60))
-                self.reason[model] = "daily" if q.daily else "minute"
-                quota.append(q)
-                continue
-            if r.status_code in (400, 403, 404):
-                # Model yok, bu hesapta açık değil ya da ses/dil desteklenmiyor: bir gün atla.
-                self.down[model] = now + 86400
-                self.reason[model] = "error"
-                errors.append(f"{model}: {r.status_code}")
-                continue
-            if r.status_code != 200:
-                errors.append(f"{model}: {r.status_code} {r.text[:120]}")
-                continue
-            try:
-                part = r.json()["candidates"][0]["content"]["parts"][0]["inlineData"]
-            except (KeyError, IndexError, ValueError):
-                errors.append(f"{model}: ses döndürmedi")
-                continue
-            rate = 24000
-            mime = part.get("mimeType", "")
-            if "rate=" in mime:
-                try:
-                    rate = int(mime.split("rate=")[1].split(";")[0])
-                except ValueError:
-                    pass
-            self.last_model = model
-            return Audio(base64.b64decode(part["data"]), rate).polish()
+            fallback: Audio | None = None
+            for fmt in self.formats_for(model):
+                kind, res = self._request(model, self.prompt(text, emotion, fmt))
+                if kind == "quota":
+                    # Günlük kota: o model bugün yok. Dakikalık: o model kısa süre beklesin, diğerine geç.
+                    self.down[model] = now + (6 * 3600 if res.daily else (res.retry_after or 60))
+                    self.reason[model] = "daily" if res.daily else "minute"
+                    quota.append(res)
+                    break
+                if kind == "missing":
+                    # Model yok, bu hesapta açık değil ya da ses/dil desteklenmiyor: bir gün atla.
+                    self.down[model] = now + 86400
+                    self.reason[model] = "error"
+                    errors.append(res)
+                    break
+                if kind == "error":
+                    errors.append(res)
+                    break
+                if self.verify is not None and fmt != "plain" and not self.verify(res, text):
+                    self._mark_bad(model, fmt)  # model talimatı da okudu: bu biçimi bu modelde bir daha kullanma
+                    fallback = res
+                    continue
+                self.last_model, self.last_format = model, fmt
+                return res
+            if fallback is not None:  # bütün biçimler doğrulamadan geçemediyse son sesi kullan
+                self.last_model, self.last_format = model, "?"
+                return fallback
         # Hiçbir model ses vermedi. Sadece kota yüzündense QuotaError (dinleme testi buna göre bekler/durur).
         skipped = [m for m in self.models if self.down.get(m, 0) > now and self.reason.get(m) != "error"]
         if quota or skipped:  # var olmayan modellerin hataları önemsiz; kota belirleyici
@@ -221,9 +280,39 @@ class GeminiTTS:
             retry = None if daily else min(minute)
             wait = f", {retry:.0f} sn sonra tekrar denenebilir" if retry else ""
             raise QuotaError(f"gemini {kind} ses kotası doldu ({len(self.models)} model denendi){wait}", retry, daily)
-        if quota:
-            errors.insert(0, "; ".join(str(q) for q in quota))
         raise TTSError("gemini: " + ("; ".join(errors) if errors else "kullanılabilir model yok"))
+
+
+def _fold(s: str) -> list[str]:
+    import re
+    import unicodedata
+
+    s = s.lower().replace("ı", "i").replace("İ", "i")
+    s = "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
+    return re.findall(r"[a-z0-9]+", s)
+
+
+LEAK_WORDS = {"style", "synthesize", "speech", "transcript", "director", "notes", "profile", "speak", "calm",
+              "serious", "urgent", "cheerful", "playful", "composed", "warm", "voice", "assistant", "turkish"}
+
+
+def leaked(heard: str, expected: str) -> bool:
+    """Whisper'ın duyduğu, istenen metinden fazlasını içeriyor mu (talimat okunmuş mu)?"""
+    want = set(_fold(expected))
+    got = _fold(heard)
+    if any(w in LEAK_WORDS and w not in want for w in got):
+        return True
+    extra = [w for w in got if w not in want and not any(w[:4] == x[:4] for x in want if len(w) > 3)]
+    return len(extra) >= 3 and len(extra) > 0.3 * max(1, len(want))
+
+
+def make_verifier(stt) -> Callable[[Audio, str], bool]:
+    def verify(audio: Audio, text: str) -> bool:
+        try:
+            return not leaked(stt.transcribe(audio), text)
+        except Exception:
+            return True  # doğrulayamıyorsak sesi kabul et
+    return verify
 
 
 # -------------------------------------------------------------- yerel motorlar

@@ -425,14 +425,43 @@ def test_polish_removes_click_and_noisy_tail():
     import array as arr
 
     rate = 24000
-    body = tone(0.3, rate, amp=0.5)
-    noise = arr.array("h", [(i * 37 % 200) - 100 for i in range(int(0.2 * rate))]).tobytes()  # ~%0.3 cızırtı
-    raw = Audio(body.pcm + noise, rate)
-    out = raw.polish()
+    body = tone(0.4, rate, amp=0.5)
+    # sonda hafif ama sessiz olmayan cızırtı (~%2) ve aniden biten sinyal
+    noise = arr.array("h", [((i * 7919) % 1300) - 650 for i in range(int(0.3 * rate))]).tobytes()
+    out = Audio(body.pcm + noise, rate).polish()
     a = arr.array("h", out.pcm)
-    speech_end = int(0.3 * rate)
-    assert abs(a[0]) <= 1                                   # başta tık yok
-    assert all(x == 0 for x in a[speech_end + int(0.03 * rate):])  # kuyruk kesildi, sonrası sessiz
-    cut = speech_end + int(0.03 * rate)
-    assert all(abs(x) < 50 for x in a[cut - 5:cut])            # kesildiği yerde sıfıra iniyor (tık yok)
-    assert len(a) >= speech_end + int(0.15 * rate)          # sonda boşluk var
+    speech_end = int(0.4 * rate)
+    assert abs(a[0]) <= 1                                         # başta tık yok
+    nz = max(i for i, x in enumerate(a) if x != 0)
+    assert nz < speech_end + int(0.08 * rate)                     # cızırtılı kuyruğun çoğu kesildi
+    assert all(abs(x) < 400 for x in a[nz - 10:nz + 1])           # sona doğru sıfıra iniyor (tık yok)
+    assert len(a) - nz >= int(0.14 * rate)                        # sonda sessizlik var
+
+
+def test_leak_detection_and_format_fallback(tmp_path):
+    from alice.voice.tts import leaked
+
+    assert leaked("Style: serious, composed. Yedekleme yarıda kaldı.", "Yedekleme yarıda kaldı.")
+    assert leaked("Ciddi bir sesle söyle yedekleme yarıda kaldı hedef diskte yer yok", "Yedekleme yarıda kaldı.")
+    assert not leaked("Yedekleme yarıda kaldı.", "Yedekleme yarıda kaldı.")
+    assert not leaked("yedeklemeler yarıda kaldı", "Yedekleme yarıda kaldı.")  # küçük Whisper farkı
+
+    pcm = tone(0.2, 24000).pcm
+    prompts = []
+
+    def handler(req):
+        prompts.append(json.loads(req.content)["contents"][0]["parts"][0]["text"])
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"inlineData": {
+            "mimeType": "audio/L16;rate=24000", "data": base64.b64encode(pcm).decode()}}]}}]})
+
+    seen = []
+    verify = lambda audio, text: (seen.append(prompts[-1]) or not prompts[-1].startswith("Synthesize"))  # noqa: E731
+    f = tmp_path / "fmt.json"
+    eng = GeminiTTS("k", "Kore", ["m1"], client=httpx.Client(transport=httpx.MockTransport(handler)),
+                    verify=verify, formats_file=f)
+    eng.synth("Yedekleme yarıda kaldı.", "serious")
+    assert eng.last_format == "tag" and prompts[1] == "[serious, composed] Yedekleme yarıda kaldı."
+    assert json.loads(f.read_text()) == {"m1": ["notes"]}
+    eng2 = GeminiTTS("k", "Kore", ["m1"], client=httpx.Client(transport=httpx.MockTransport(handler)), formats_file=f)
+    eng2.synth("Merhaba.", "calm")
+    assert eng2.last_format == "tag" and prompts[-1].startswith("[calm")  # kayıtlı iyi biçim, tek istek

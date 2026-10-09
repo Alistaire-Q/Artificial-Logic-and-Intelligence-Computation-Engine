@@ -58,6 +58,9 @@ def run_audition(engines: list, emotions: list[str] | None = None, out: Path | N
                     try:
                         eng.synth(SAMPLES[emo], emo).save(path)
                         err = None
+                        model = getattr(eng, "last_model", "")
+                        if model:  # hangi model ve talimat biçimiyle üretildi (sayfada gösterilir)
+                            row[f"{emo}@"] = f"{model} · {getattr(eng, 'last_format', '')}"
                         break
                     except QuotaError as q:
                         err = str(q)
@@ -102,7 +105,9 @@ def render(results: dict[str, dict[str, str]], emotions: list[str]) -> str:
         for e in emotions:
             f = row.get(e, "")
             if f and not f.startswith("!"):
-                cells.append(f'<td><audio controls preload="none" src="{html.escape(f)}"></audio></td>')
+                info = row.get(f"{e}@", "")
+                cells.append(f'<td><audio controls preload="none" src="{html.escape(f)}"></audio>'
+                             f'{f"<code>{html.escape(info)}</code>" if info else ""}</td>')
             else:
                 cells.append(f'<td class=err>{html.escape(f[1:80]) if f else "-"}</td>')
         rows.append(f"<tr><td><b>{html.escape(name)}</b><code>alice voice use {html.escape(name)}</code></td>"

@@ -105,6 +105,7 @@ def _audition(cfg, argv) -> int:
     if not engines:
         console.print("[red]denenecek ses yok[/]")
         return 1
+    _attach_verifier(cfg, engines)
     emotions = [e.strip() for e in a.emotions.split(",") if e.strip()] or None
     with console.status("örnekler hazırlanıyor..."):
         page = run_audition(engines, emotions, emit=lambda s: console.print(f"[dim]{escape(s)}[/]"))
@@ -112,6 +113,20 @@ def _audition(cfg, argv) -> int:
     if not a.no_open:
         webbrowser.open(page.as_uri())
     return 0
+
+
+def _attach_verifier(cfg, engines) -> None:
+    """Gemini çıktısını Whisper'la kontrol et: talimat da okunduysa o biçim o modelde bir daha kullanılmaz."""
+    from alice.voice.stt import make_stt
+    from alice.voice.tts import GeminiTTS, make_verifier
+
+    stt = make_stt(cfg)
+    if not stt.engines:
+        console.print("[yellow]Whisper yok (GROQ_API_KEY):[/] talimat okunması kontrol edilemeyecek")
+        return
+    for e in engines:
+        if isinstance(e, GeminiTTS):
+            e.verify = make_verifier(stt)
 
 
 def _single_ref_library(path):
@@ -149,6 +164,7 @@ def _library(cfg, argv) -> int:
     if eng is None:
         console.print("[red]bulut sesi yok (GEMINI_API_KEY)[/]")
         return 1
+    _attach_verifier(cfg, [eng])
     with console.status("duygu kütüphanesi hazırlanıyor..."):
         out = build_library(eng, emit=lambda s: console.print(f"[dim]{s}[/]"))
     console.print(f"[green]hazır:[/] {out}")
@@ -178,7 +194,9 @@ def _say(cfg, argv) -> int:
     except TTSError as e:
         console.print(f"[red]{escape(str(e))}[/]")
         return 1
-    console.print(f"[dim]{tts.last} · {emo} · {audio.seconds:.1f} sn[/]")
+    model = getattr(tts.cloud, "last_model", "") if tts.last.startswith("gemini") else ""
+    detail = f" · {model} · {tts.cloud.last_format}" if model and "önbellek" not in tts.last else ""
+    console.print(f"[dim]{tts.last}{detail} · {emo} · {audio.seconds:.1f} sn[/]")
     if a.out:
         audio.save(a.out)
         return 0
