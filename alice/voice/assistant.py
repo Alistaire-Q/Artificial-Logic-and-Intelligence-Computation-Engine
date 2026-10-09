@@ -188,8 +188,11 @@ class VoiceAssistant:
     def __init__(self, agent, speaker: Speaker, stt, mic_factory: Callable[[], Microphone] = Microphone,
                  ptt_key: str = "", wake_model: str = "", wake_phrase: bool = True, barge_in: bool = True,
                  follow_up: float = 8.0, emit: Callable[[str], None] = lambda s: None,
-                 keep_turns: int = 4, idle_reset: float = 300.0):
+                 keep_turns: int = 4, idle_reset: float = 300.0, live=None):
         self.agent = agent
+        self.live = live  # Gemini Live: "Hey Alice"ten sonra sesten sese canlı konuşma
+        self._live_q: queue.Queue | None = None  # doluyken mikrofon kareleri Live'a gider
+        self._live_down = 0.0
         self.keep_turns = keep_turns
         self.idle_reset = idle_reset  # bu kadar saniye sessizlikten sonra yeni sohbet
         self._last_turn = 0.0
@@ -259,6 +262,9 @@ class VoiceAssistant:
             return
         if not text:
             self.speaker.say("Efendim?", "calm")
+            if self._live_ready():
+                self._jobs.put("")  # canlı konuşmayı aç, kullanıcı söyleyecek
+                return
             self.armed_until = time.monotonic() + self.follow_up
             return
         if self._busy.is_set():
@@ -288,9 +294,42 @@ class VoiceAssistant:
         voice_log(f"duyulan [{getattr(self.stt, 'last', '')}]{' (doğrudan)' if direct else ''}: {text}")
         self.handle_text(text, direct)
 
+    def _live_ready(self) -> bool:
+        return self.live is not None and self.live.available and time.monotonic() > self._live_down
+
+    def _converse_live(self, text: str) -> bool:
+        """Live oturumu aç ve sessizliğe kadar konuş. Açılamazsa False (eski yola dönülür)."""
+        from alice.voice.live import LiveError
+
+        self.speaker.wait(10)
+        q: queue.Queue = queue.Queue()
+        self._live_q = q
+        try:
+            self.live.converse(text, q, self.stop_event)
+            return True
+        except LiveError as e:
+            self._live_down = time.monotonic() + 300  # 5 dk eski yolla devam
+            voice_log(f"live açılamadı, eski yola dönülüyor: {e}")
+            self.emit(f"live açılamadı: {e}")
+            return False
+        finally:
+            self._live_q = None
+            self.armed_until = 0.0  # tekrar "Hey Alice" gereksin
+
     def _worker(self) -> None:
         while True:
             text = self._jobs.get()
+            if self._live_ready():
+                self._busy.set()
+                try:
+                    if self._converse_live(text):
+                        continue
+                except Exception as e:  # noqa: BLE001
+                    voice_log(f"live hatası: {e}")
+                finally:
+                    self._busy.clear()
+            if not text:
+                continue
             self._busy.set()
             now = time.monotonic()
             msgs = getattr(self.agent, "messages", None)
@@ -330,6 +369,9 @@ class VoiceAssistant:
                         threading.Thread(target=self.handle_audio, args=(audio, True), daemon=True).start()
                         continue
                     frame = mic.read()
+                    if self._live_q is not None:  # canlı konuşmada mikrofon doğrudan Live'a
+                        self._live_q.put(frame)
+                        continue
                     if wake is not None and wake.detect(frame):
                         self._interrupt()
                         self.armed_until = time.monotonic() + self.follow_up
@@ -348,6 +390,16 @@ class VoiceAssistant:
     def stop(self) -> None:
         self.stop_event.set()
         self.speaker.stop()
+
+
+def make_live(cfg, agent):
+    """[voice] mode = "live" ise Gemini Live oturumu (anahtar ve websockets varsa)."""
+    if str(cfg.data.get("voice", {}).get("mode", "live")) != "live":
+        return None
+    from alice.voice.live import LiveSession
+
+    live = LiveSession(cfg, agent, log=voice_log)
+    return live if live.available else None
 
 
 def build_voice_agent(cfg, inner_ui=None, speaker: Speaker | None = None, cwd=None):

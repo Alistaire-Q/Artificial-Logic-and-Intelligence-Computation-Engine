@@ -923,3 +923,35 @@ def test_trim_history_keeps_last_turns_whole():
     out = trim_history(msgs, 2)
     assert out[0]["content"] == "s" and out[1]["content"] == "u4" and len(out) == 9
     assert trim_history(out, 4) == out
+
+
+class FakeLive:
+    available = True
+
+    def __init__(self, fail=False):
+        self.fail = fail
+        self.texts = []
+
+    def converse(self, text, frames, stop):
+        from alice.voice.live import LiveError
+
+        self.texts.append(text)
+        if self.fail:
+            raise LiveError("kota")
+
+
+def test_assistant_uses_live_and_falls_back():
+    agent, sp = FakeAgent(), FakeSpeaker()
+    live = FakeLive()
+    va = VoiceAssistant(agent, sp, stt=None, live=live)
+    va.handle_text("Hey Alice, YouTube'u aç", direct=False)
+    assert wait_for(lambda: live.texts == ["YouTube'u aç"])
+    va.handle_text("Hey Alice", direct=False)                  # sadece çağırma: canlı konuşma boş açılır
+    assert wait_for(lambda: live.texts == ["YouTube'u aç", ""])
+    assert agent.turns == []
+
+    agent2, live2 = FakeAgent(), FakeLive(fail=True)
+    va2 = VoiceAssistant(agent2, FakeSpeaker(), stt=None, live=live2)
+    va2.handle_text("Hey Alice, saat kaç?", direct=False)
+    assert wait_for(lambda: agent2.turns == ["saat kaç?"])   # Live açılamadı -> eski yol
+    assert not va2._live_ready()

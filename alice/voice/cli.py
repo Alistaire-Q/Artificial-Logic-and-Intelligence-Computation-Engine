@@ -345,7 +345,7 @@ def _test(cfg, argv) -> int:
 
 
 def _run(cfg, argv) -> int:
-    from alice.voice.assistant import VoiceAssistant, build_voice_agent
+    from alice.voice.assistant import VoiceAssistant, build_voice_agent, make_live
     from alice.voice.audio import mic_available
     from alice.voice.stt import make_stt
 
@@ -363,7 +363,7 @@ def _run(cfg, argv) -> int:
     va = VoiceAssistant(agent, speaker, make_stt(cfg), ptt_key=a.ptt or v.get("ptt_key", ""),
                         wake_model=v.get("wake_model", ""), wake_phrase=not a.no_wake and v.get("wake_phrase", True),
                         barge_in=v.get("barge_in", True), follow_up=float(v.get("follow_up", 8)),
-                        emit=lambda s: console.print(f"[dim]  {escape(s)}[/]"))
+                        emit=lambda s: console.print(f"[dim]  {escape(s)}[/]"), live=make_live(cfg, agent))
     keys = f"bas-konuş: {va.ptt_key}" if va.ptt_key else ""
     wake = "'Hey Alice'" if va.wake_phrase or va.wake_model else ""
     console.print(f"[bold magenta]ALICE[/] dinliyor ({', '.join(filter(None, [keys, wake]))}). [dim]Ctrl+C çık[/]")
