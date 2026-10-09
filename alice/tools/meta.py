@@ -17,11 +17,15 @@ class TodoWrite(Tool):
         "content": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "in_progress", "done"]}},
         ["content", "status"])}}, ["todos"])
 
+    def summary(self, args: dict[str, Any]) -> str:
+        todos = args.get("todos") or []
+        done = sum(1 for t in todos if t.get("status") == "done")
+        return f"{len(todos)} görev, {done} tamam"
+
     def run(self, ctx: ToolContext, todos: list[dict[str, Any]]) -> ToolResult:
         ctx.state["todos"] = todos
         mark = {"pending": "[ ]", "in_progress": "[~]", "done": "[x]"}
         text = "\n".join(f"{mark.get(t.get('status'), '[ ]')} {t.get('content')}" for t in todos)
-        ctx.emit(f"plan:\n{text}")
         return ToolResult(text or "liste boş")
 
 

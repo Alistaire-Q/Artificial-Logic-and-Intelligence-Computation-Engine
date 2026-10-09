@@ -114,19 +114,76 @@ alice models --write  # canlı ücretsiz katalogdan rol zincirlerini günceller 
 
 `install.ps1` masaüstüne **ALICE** kısayolu koyuyor, çift tıklayınca konsol penceresi olmadan uygulama açılıyor. Elle açmak için `alice app`, kısayolu yeniden oluşturmak için `alice shortcut`.
 
-* **Akışlı cevap:** model yazdıkça metin ekrana akıyor, Markdown ve kod blokları canlı çiziliyor
-* **Araç kartları:** her araç çağrısı ayrı bir kart; tıklayınca çıktısı açılıyor, ekran görüntüleri küçük resim olarak görünüyor
-* **Diff:** dosya düzenlemelerinde kırmızı/yeşil satır farkı ve +/- sayıları
-* **İzin kartı:** tehlikeli işlemde sohbetin içinde "İzin ver / Reddet / Bu araca hep izin ver" butonları
-* **Durum çubuğu:** cevap veren model, context doluluğu, bugünkü istek sayısı, karar motoru, çalışıyor/hazır
-* **Üst çubuk:** çalışma klasörü (tıklayıp değiştirilebilir) ve izin modu (Sor / Otomatik / Tam erişim)
-* **Kenar çubuğu:** yeni sohbet, geçmiş oturumlar, Modeller paneli (zincir durumu, tek modele sabitleme)
-* **Kısayollar:** Enter gönder, Shift+Enter yeni satır, Esc durdur
-* Açık ve koyu tema Windows ayarını takip ediyor
+![Başlangıç](docs/app-baslangic.png)
 
-Pencere sırasıyla şöyle açılıyor: pywebview kuruluysa gerçek bir uygulama penceresi (Windows'ta Edge WebView2), değilse Edge/Chrome'un adres çubuğu olmayan uygulama modu, o da yoksa varsayılan tarayıcı. Arayüz sadece `127.0.0.1`'de çalışıyor ve her açılışta değişen rastgele bir token istiyor. Böylece tarayıcıda açık başka bir site ALICE'e komut gönderemiyor. Model çıktısı ekrana basılmadan önce DOMPurify ile temizleniyor.
+**Görünüm:** sıcak krem/kömür renkler, cevaplarda serif yazı, araç çağrıları kart yerine sade açılır satırlar. Yeni sohbette selamlama ve yazma kutusu ortada duruyor. Açık ve koyu tema Windows ayarını takip ediyor.
 
-![Açık tema](docs/app-acik.png)
+**Yazma kutusu**
+* Enter gönderir, Shift+Enter yeni satır açar.
+* `/` yazınca komut listesi, `@` yazınca dosya/klasör önerileri açılıyor. `@src/main.py` yazdığın dosyanın içeriği mesajla birlikte modele gidiyor.
+* Görseli yapıştırabilir (Ctrl+V), sürükleyip bırakabilir ya da `+` ile ekleyebilirsin.
+* ALICE çalışırken yazdığın mesaj **sıraya** giriyor ve iş bitince otomatik gönderiliyor.
+* Kutunun içinde izin modu (Shift+Tab ile döner) ve model seçici var.
+
+**Sohbet**
+* Cevaplar akarak geliyor. Model akıl yürütme metni gönderiyorsa açılır bir "düşündü" bölümü olarak görünüyor.
+* Dosya düzenlemeleri kırmızı/yeşil diff olarak açılıyor. Komut çıktıları ve ekran görüntüleri satıra tıklayınca açılıyor.
+* ALICE plan tuttuğunda görev listesi işaretli kutularla çiziliyor.
+* Tehlikeli işlemde sohbetin içinde "İzin ver / Bu oturumda hep izin ver / Reddet" kartı çıkıyor.
+* Kod bloklarında ve cevaplarda Kopyala butonu var.
+
+**Geri sarma**
+* Her mesajın altında **Düzenle** ve **Geri sar** var. Konuşma o mesajın öncesine dönüyor.
+* ALICE'in o mesajdan sonra dosya araçlarıyla değiştirdiği ya da oluşturduğu dosyalar eski haline geliyor. Shell komutlarının yaptığı değişiklikler izlenemiyor.
+
+**Kenar çubuğu:** yeni sohbet, geçmiş sohbetler (üzerine gelince sil), alttaki menüde Modeller, Araçlar, Hafıza, Kullanım ve Komutlar. Ctrl+B ile gizlenip açılıyor.
+
+**Durum satırı:** cevap veren model, context doluluğu, bugünkü istek sayısı, karar motoru.
+
+**Pencere ve güvenlik:** Pencere sırasıyla şöyle açılıyor: pywebview kuruluysa gerçek bir uygulama penceresi (Windows'ta Edge WebView2), değilse Edge/Chrome'un adres çubuğu olmayan uygulama modu, o da yoksa varsayılan tarayıcı. Arayüz sadece `127.0.0.1`'de çalışıyor ve her açılışta değişen rastgele bir token istiyor. Böylece tarayıcıda açık başka bir site ALICE'e komut gönderemiyor. Model çıktısı ekrana basılmadan önce DOMPurify ile temizleniyor.
+
+![Sohbet](docs/app-acik.png)
+
+## Claude Code'daki özellikler
+
+| Özellik | ALICE'te |
+|---|---|
+| Plan modu | `/plan` ya da mod menüsü: sadece okur/araştırır, değişiklik yapan araçlar reddedilir, plan yazar |
+| Geri sarma (checkpoint) | Mesaj altındaki Geri sar / Düzenle ya da `/rewind`. Dosya araçlarının değişiklikleri geri alınır |
+| `@dosya` bahsetme | Dosya içeriği ya da klasör listesi mesaja eklenir, uygulamada otomatik tamamlama var |
+| Slash komutları | Yerleşikler + `~/.alice/commands/*.md` ve projede `.alice/commands/*.md` (`.claude/commands` da okunur) |
+| `/init` | Projeyi inceleyip `ALICE.md` talimat dosyası yazar |
+| MCP sunucuları | `config.toml`'da `[mcp.servers.<isim>]`, araçlar `mcp__<sunucu>__<araç>` olarak eklenir |
+| Proje talimatları | `ALICE.md`, `CLAUDE.md`, `AGENTS.md` ve `~/.alice/ALICE.md` otomatik okunur |
+| Alt ajan, todo, hafıza, context özetleme, oturuma devam | var |
+| Mesaj kuyruğu, görsel yapıştırma, düşünme gösterimi | var (uygulamada) |
+| Hook'lar | yok |
+
+**Özel komut örneği**, `~/.alice/commands/incele.md`:
+
+```markdown
+---
+description: Değişiklikleri incele
+---
+Bu projedeki son değişiklikleri incele, hataları ve riskli yerleri listele. Odak: $ARGUMENTS
+```
+
+Sonra `/incele performans` yazınca bu metin `$ARGUMENTS` yerine "performans" konmuş halde gider.
+
+**MCP örneği**, `config.toml`:
+
+```toml
+[mcp.servers.dosyalar]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "C:/Users/hayat/Projeler"]
+
+[mcp.servers.github]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-github"]
+env = { GITHUB_PERSONAL_ACCESS_TOKEN = "..." }
+```
+
+Sunucu başlamazsa hata uygulamada not olarak görünüyor, ayrıntısı `~/.alice/mcp-<isim>.log` dosyasında.
 
 ## Terminal
 
@@ -149,10 +206,11 @@ alice reflex "hava durumunu ara" --target browser --url https://duckduckgo.com -
 
 Terminalde cevap akarak geliyor, dosya düzenlemeleri renkli diff olarak görünüyor, altta model, izin modu, context doluluğu ve bugünkü istek sayısını gösteren bir durum çubuğu var. Çok satırlı yazmak için **Alt+Enter** ya da satırı `\` ile bitirip Enter (her terminalde çalışır); Enter tek başına gönderir.
 
-REPL komutları: `/help`, `/mode ask|auto|yolo`, `/model` (zincir durumları), `/model brain groq:openai/gpt-oss-120b` (sabitle), `/usage` (bugünkü istek/token), `/compact`, `/clear`, `/sessions`, `/resume`, `/cwd`, `/tools`, `/exit`.
+REPL komutları: `/help`, `/plan`, `/mode plan|ask|auto|yolo` (Shift+Tab ile de döner), `/model` (zincir durumları), `/model brain groq:openai/gpt-oss-120b` (sabitle), `/rewind`, `/init`, `/usage`, `/compact`, `/clear`, `/sessions`, `/resume`, `/cwd`, `/tools`, `/mcp`, `/memory`, `/exit`. Özel komutlar ve `@dosya` terminalde de çalışıyor.
 
 ## İzin modları ve güvenlik
 
+* **plan:** sadece okur ve araştırır; dosya değiştiren, komut çalıştıran ya da ekrana dokunan her şey reddedilir, ALICE plan yazıp onayını bekler
 * **ask:** okuma dışındaki her şey onay ister
 * **auto** (varsayılan): dosya düzenleme, komut çalıştırma, fare/klavye serbest; `rm -r`, `Remove-Item -Recurse`, format, registry, shutdown, `git push --force`, `curl | sh` gibi tehlikeli kalıplar ve `C:\Windows`, `Program Files` gibi sistem klasörlerine yazma onay ister
 * **yolo:** hiçbir şey sormaz

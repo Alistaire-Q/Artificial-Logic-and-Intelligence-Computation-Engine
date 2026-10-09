@@ -28,7 +28,7 @@ from alice.config import Config, alice_home
 from alice.decider import Decider
 from alice.permissions import MODES, Permissions
 from alice.providers.router import Router, estimate_tokens, parse_ref
-from alice.tools import ToolContext, all_tools, cleanup
+from alice.tools import ToolContext, all_tools, attach_mcp, cleanup
 from alice.tools.base import ToolResult
 
 STATIC = Path(__file__).parent / "static"
@@ -81,6 +81,9 @@ class AppUI:
     def stream_delta(self, text: str) -> None:
         self.bus.publish({"type": "delta", "text": text})
 
+    def thinking_delta(self, text: str) -> None:
+        self.bus.publish({"type": "thinking", "text": text})
+
     def stream_reset(self) -> None:
         self.bus.publish({"type": "stream_reset"})
 
@@ -132,18 +135,35 @@ def _summary(tools: dict[str, Any], name: str, raw: str) -> str:
     return raw if len(raw) < 160 else raw[:157] + "..."
 
 
+def _user_text(m: dict[str, Any]) -> str:
+    if m.get("_display"):
+        return m["_display"]
+    c = m.get("content")
+    if isinstance(c, list):
+        return next((p.get("text", "") for p in c if p.get("type") == "text"), "")
+    return c or ""
+
+
 def display_history(messages: list[dict[str, Any]], tools: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    """Kayıtlı mesaj geçmişini arayüzün çizebileceği öğelere çevir."""
+    """Mesaj geçmişini arayüzün çizebileceği öğelere çevir. Kullanıcı mesajları geri sarma için
+    ajan geçmişindeki indekslerini (mi) taşır."""
+    from alice.agent import PLAN_NOTE
+
     results = {m.get("tool_call_id"): m.get("content", "") for m in messages if m.get("role") == "tool"}
     items: list[dict[str, Any]] = []
-    for m in messages:
+    for i, m in enumerate(messages):
         role = m.get("role")
         content = m.get("content")
-        if role == "user" and isinstance(content, str):
-            if content.startswith("[Önceki konuşmanın özeti]"):
+        if role == "user":
+            if m.get("_image"):
+                continue
+            text = _user_text(m)
+            if text.startswith("[Önceki konuşmanın özeti]"):
                 items.append({"type": "info", "text": "önceki konuşma özetlendi"})
-            elif not content.startswith("[eski ekran görüntüsü"):
-                items.append({"type": "user", "text": content})
+            elif not text.startswith("[eski ekran görüntüsü"):
+                if text.startswith(PLAN_NOTE):
+                    text = text[len(PLAN_NOTE):]
+                items.append({"type": "user", "text": text, "mi": i, "n_images": m.get("_user_images", 0)})
         elif role == "assistant":
             if content and content != "Özeti aldım, kaldığım yerden devam ediyorum.":
                 items.append({"type": "assistant", "text": content})
@@ -177,6 +197,9 @@ class AppState:
         self._queued = False
         self._worker = threading.Thread(target=self._work, daemon=True, name="alice-agent")
         self._worker.start()
+        # MCP sunucuları (npx ile açılanlar yavaş olabilir) arayüzü bekletmesin.
+        self.run_in_worker(lambda: attach_mcp(self.agent, self.ctx,
+                                              emit=lambda s: self.bus.publish({"type": "info", "text": s})))
 
     def _work(self) -> None:
         while True:
@@ -217,18 +240,39 @@ class AppState:
             "busy": a.busy or self._queued,
             "session": self.sid,
             "pending": list(self.ui.pending.values()),
+            "brain_chain": self.router.chain("brain"),
+            "brain_pinned": "brain" in self.router.role_overrides,
+            "user": _user_name(),
+            "checkpoints": sorted(self.agent.checkpoints),
         }
 
-    def send(self, text: str) -> bool:
+    def send(self, text: str, images: list[str] | None = None) -> tuple[bool, str | None]:
         if self.agent.busy or self._queued:
-            return False
+            return False, "ALICE şu an çalışıyor"
+        prompt = text
+        if text.startswith("/"):
+            from alice.commands import INIT_PROMPT, expand_custom
+
+            if text.split()[0] == "/init":
+                prompt = INIT_PROMPT
+            else:
+                prompt = expand_custom(text, self.ctx.cwd)
+                if prompt is None:
+                    return False, f"bilinmeyen komut: {text.split()[0]}"
         self._queued = True
-        self.bus.publish({"type": "user", "text": text})
+        images = images or []
 
         def run() -> None:
             try:
+                self.bus.publish({"type": "user", "text": text, "mi": len(self.agent.messages),
+                                  "images": images[:6]})
                 self.bus.publish({"type": "busy", "value": True})
-                self.agent.run_turn(text)
+                self.agent.run_turn(prompt, images=images or None)
+                if prompt != text:  # özel komutlarda kullanıcı kendi yazdığını görsün
+                    for m in reversed(self.agent.messages):
+                        if m.get("role") == "user" and not m.get("_image"):
+                            m["_display"] = text
+                            break
             except Exception as e:  # noqa: BLE001 - thread içinde hata uygulamayı düşürmesin
                 self.bus.publish({"type": "info", "text": f"beklenmeyen hata: {e}"})
                 log_error()
@@ -242,7 +286,15 @@ class AppState:
                 self.bus.publish({"type": "status", **self.status()})
 
         self.run_in_worker(run)
-        return True
+        return True, None
+
+    def rewind(self, mi: int) -> dict[str, Any]:
+        text, restored = self.agent.rewind(mi)
+        try:
+            sess.save(self.sid, self.agent.messages, self.ctx.cwd)
+        except OSError:
+            pass
+        return {"text": text, "restored": restored}
 
     def new_session(self) -> None:
         self.agent.reset()
@@ -255,6 +307,16 @@ class AppState:
         self.sid, msgs = loaded
         self.agent.messages = self.agent.messages[:1] + msgs
         return True
+
+
+def _user_name() -> str:
+    import getpass
+
+    try:
+        name = getpass.getuser()
+    except Exception:  # noqa: BLE001
+        return ""
+    return name[:1].upper() + name[1:]
 
 
 def log_error() -> None:
@@ -332,9 +394,25 @@ def make_handler(state: AppState):
             if u.path == "/api/state":
                 return self._json(state.status())
             if u.path == "/api/history":
-                return self._json(display_history(state.agent.messages[1:], state.agent.tools))
+                return self._json(display_history(state.agent.messages, state.agent.tools))
             if u.path == "/api/sessions":
                 return self._json([{"id": i, "cwd": c, "title": t} for i, c, t in sess.list_sessions(40)])
+            if u.path == "/api/files":
+                from alice.mentions import complete_paths
+
+                return self._json(complete_paths(state.ctx.cwd, (q.get("q") or [""])[0]))
+            if u.path == "/api/commands":
+                from alice.commands import catalog
+
+                return self._json(catalog(state.ctx.cwd))
+            if u.path == "/api/usage":
+                return self._json(state.router.usage.today())
+            if u.path == "/api/tools":
+                return self._json([{"name": t.name, "risk": t.risk, "description": t.description.split("\n")[0][:160]}
+                                   for t in state.agent.tools.values()])
+            if u.path == "/api/memory":
+                mem = alice_home() / "memory.md"
+                return self._json({"text": mem.read_text(encoding="utf-8") if mem.exists() else ""})
             if u.path == "/api/models":
                 return self._json({role: [{"ref": r, "status": st} for r, st in rows]
                                    for role, rows in state.router.status().items()})
@@ -372,10 +450,11 @@ def make_handler(state: AppState):
             try:
                 if p == "/api/send":
                     text = str(d.get("text", "")).strip()
-                    if not text:
+                    images = [str(i) for i in (d.get("images") or [])][:6]
+                    if not text and not images:
                         return self._json({"ok": False, "error": "boş mesaj"}, 400)
-                    ok = state.send(text)
-                    return self._json({"ok": ok, "error": None if ok else "ALICE şu an çalışıyor"}, 200 if ok else 409)
+                    ok, err = state.send(text or "Bu görsele bak.", images)
+                    return self._json({"ok": ok, "error": err}, 200 if ok else 409)
                 if p == "/api/stop":
                     state.agent.stop()
                     return self._json({"ok": True})
@@ -395,20 +474,31 @@ def make_handler(state: AppState):
                         return self._json({"ok": False}, 400)
                     state.agent.permissions.mode = mode
                     return self._json({"ok": True, **state.status()})
-                if (state.agent.busy or state._queued) and p in ("/api/new", "/api/resume", "/api/cwd", "/api/compact"):
+                if (state.agent.busy or state._queued) and p in ("/api/new", "/api/resume", "/api/cwd", "/api/compact",
+                                                                  "/api/rewind"):
                     return self._json({"ok": False, "error": "önce mevcut işi durdur"}, 409)
                 if p == "/api/new":
                     state.new_session()
                     return self._json({"ok": True, **state.status()})
                 if p == "/api/resume":
                     ok = state.resume(str(d.get("id", "")))
-                    return self._json({"ok": ok, "history": display_history(state.agent.messages[1:], state.agent.tools), **state.status()})
+                    return self._json({"ok": ok, "history": display_history(state.agent.messages, state.agent.tools), **state.status()})
                 if p == "/api/cwd":
                     path = state.ctx.resolve(str(d.get("path", "")))
                     if not path.is_dir():
                         return self._json({"ok": False, "error": f"klasör yok: {path}"}, 400)
                     state.ctx.cwd = path
                     return self._json({"ok": True, **state.status()})
+                if p == "/api/rewind":
+                    out = state.rewind(int(d.get("mi", -1)))
+                    return self._json({"ok": True, **out, "history": display_history(state.agent.messages, state.agent.tools),
+                                       **state.status()})
+                if p == "/api/session/delete":
+                    sid = str(d.get("id", ""))
+                    f = sess.sessions_dir() / f"{sid}.json"
+                    if sid and f.parent == sess.sessions_dir() and f.exists():
+                        f.unlink()
+                    return self._json({"ok": True})
                 if p == "/api/compact":
                     ok = state.agent.compact()
                     return self._json({"ok": ok, **state.status()})

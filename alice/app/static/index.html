@@ -12,82 +12,102 @@
 <script src="/static/app.js" defer></script>
 </head>
 <body>
-<div id="app">
+<div id="app" class="empty">
   <aside id="sidebar">
-    <div class="brand">
-      <img src="/static/icon.svg" alt="" class="brand-icon">
-      <span>ALICE</span>
+    <div class="side-top">
+      <div class="brand"><img src="/static/icon.svg" alt=""><span>ALICE</span></div>
+      <button class="icon-btn" id="collapseSide" title="Kenar çubuğunu gizle (Ctrl+B)">
+        <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg>
+      </button>
     </div>
-    <button id="newChat" class="side-btn primary">
-      <svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    <button id="newChat" class="new-chat">
+      <span class="plus"><svg viewBox="0 0 24 24"><path d="M12 6v12M6 12h12"/></svg></span>
       Yeni sohbet
     </button>
-    <div class="side-title">Geçmiş</div>
-    <div id="sessions"></div>
+    <div class="side-label">Son sohbetler</div>
+    <nav id="sessions"></nav>
     <div class="side-foot">
-      <button id="modelsBtn" class="side-btn">
-        <svg viewBox="0 0 24 24" width="16" height="16"><path d="M4 7h16M4 12h16M4 17h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-        Modeller
+      <button class="user-chip" id="settingsBtn" title="Modeller ve ayarlar">
+        <span class="avatar" id="avatar">A</span>
+        <span class="user-meta"><b id="userName">ALICE</b><small id="ver"></small></span>
+        <svg viewBox="0 0 24 24" class="chev-ud"><path d="M8 9l4-4 4 4M8 15l4 4 4-4"/></svg>
       </button>
-      <div class="ver" id="ver"></div>
     </div>
   </aside>
 
   <main>
     <header id="topbar">
-      <button id="toggleSide" class="icon-btn" title="Kenar çubuğu">
-        <svg viewBox="0 0 24 24" width="18" height="18"><rect x="3" y="4" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M9 4v16" stroke="currentColor" stroke-width="2"/></svg>
+      <button class="icon-btn" id="openSide" title="Kenar çubuğunu göster (Ctrl+B)">
+        <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg>
       </button>
-      <button id="cwdBtn" class="cwd" title="Çalışma klasörünü değiştir">
-        <svg viewBox="0 0 24 24" width="15" height="15"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+      <button id="cwdBtn" class="cwd-chip" title="Çalışma klasörünü değiştir">
+        <svg viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v7a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5z"/></svg>
         <span id="cwd">…</span>
       </button>
-      <div class="spacer"></div>
-      <div class="seg" id="modeSeg" title="İzin modu">
-        <button data-mode="ask">Sor</button>
-        <button data-mode="auto">Otomatik</button>
-        <button data-mode="yolo">Tam erişim</button>
-      </div>
     </header>
 
-    <section id="chat">
-      <div id="messages"></div>
-      <div id="empty">
-        <img src="/static/icon.svg" alt="" class="empty-icon">
-        <h1>Ne yapalım?</h1>
-        <p>Dosyalar, komutlar, ekran, tarayıcı. Bilgisayarında işi ALICE yapsın.</p>
-        <div class="examples">
-          <button class="ex">Bu klasördeki projeyi incele ve ne yaptığını özetle</button>
-          <button class="ex">RAM'i en çok kullanan 5 programı göster</button>
-          <button class="ex">Ekrana bak, şu an hangi pencereler açık?</button>
-          <button class="ex">Bilgisayarımın donanımını çıkar, GPU sıcaklığına bak</button>
-        </div>
+    <section id="scroller">
+      <div id="hero">
+        <div class="hero-mark"><img src="/static/icon.svg" alt=""></div>
+        <h1 id="greeting">Merhaba</h1>
       </div>
+      <div id="messages"></div>
     </section>
 
-    <footer>
-      <div id="composer">
-        <textarea id="input" rows="1" placeholder="ALICE'e bir iş ver…" spellcheck="false"></textarea>
-        <button id="sendBtn" title="Gönder (Enter)">
-          <svg class="i-send" viewBox="0 0 24 24" width="18" height="18"><path d="M12 19V5M5 12l7-7 7 7" stroke="currentColor" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          <svg class="i-stop" viewBox="0 0 24 24" width="14" height="14"><rect x="4" y="4" width="16" height="16" rx="3" fill="currentColor"/></svg>
-        </button>
+    <div id="dock">
+      <div id="queue"></div>
+      <div id="composerWrap">
+        <div id="popup" hidden></div>
+        <div id="composer">
+          <div id="attachments"></div>
+          <textarea id="input" rows="1" placeholder="ALICE'e bir iş ver…" spellcheck="false"></textarea>
+          <div class="c-row">
+            <button class="c-btn" id="attachBtn" title="Görsel ekle (yapıştırabilir ya da sürükleyebilirsin)">
+              <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+            </button>
+            <button class="c-btn pill" id="modeBtn" title="İzin modu (Shift+Tab)">
+              <svg viewBox="0 0 24 24" id="modeIcon"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/></svg>
+              <span id="modeLabel">Otomatik</span>
+            </button>
+            <span class="grow"></span>
+            <button class="c-btn pill model" id="modelBtn" title="Model">
+              <span id="modelLabel">model</span>
+              <svg viewBox="0 0 24 24" class="caret"><path d="M7 10l5 5 5-5"/></svg>
+            </button>
+            <button id="sendBtn" title="Gönder (Enter)">
+              <svg class="i-send" viewBox="0 0 24 24"><path d="M12 19V6M6 11l6-6 6 6"/></svg>
+              <svg class="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>
+            </button>
+          </div>
+        </div>
+        <input type="file" id="fileInput" accept="image/*" multiple hidden>
       </div>
-      <div class="hint">Enter gönder · Shift+Enter yeni satır · Esc durdur</div>
+      <div id="suggest">
+        <button class="sg" data-text="Bu klasördeki projeyi incele ve ne yaptığını kısaca anlat">
+          <svg viewBox="0 0 24 24"><path d="M8 6l-5 6 5 6M16 6l5 6-5 6"/></svg>Kod</button>
+        <button class="sg" data-text="Bilgisayarımın donanımını çıkar, RAM'i en çok kullanan programları göster">
+          <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>Bilgisayar</button>
+        <button class="sg" data-text="Ekrana bak ve şu an açık olan pencereleri söyle">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/></svg>Ekran</button>
+        <button class="sg" data-text="Web'de araştır: ">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>Araştır</button>
+      </div>
       <div id="statusbar">
-        <span class="st" id="stModel" title="Şu an cevap veren model"><i class="dot"></i><b>…</b></span>
-        <span class="st" id="stCtx" title="Context doluluğu (bu sınırda özetlenir)"><span class="bar"><span></span></span><b></b></span>
-        <span class="st" id="stReq" title="Bugün yapılan istek"></span>
-        <span class="st" id="stDec" title="Hızlı karar motoru"></span>
-        <span class="st grow"></span>
-        <span class="st" id="stBusy"></span>
+        <span id="stModel"></span>
+        <span class="sep">·</span>
+        <span id="stCtx" title="Context doluluğu, sınırda otomatik özetlenir"><i class="meter"><i></i></i><span></span></span>
+        <span class="sep">·</span>
+        <span id="stReq"></span>
+        <span class="sep">·</span>
+        <span id="stDec"></span>
       </div>
-    </footer>
+    </div>
   </main>
 </div>
 
-<div id="overlay" hidden>
-  <div class="dialog" id="dialog"></div>
-</div>
+<div id="menu" hidden></div>
+<div id="overlay" hidden><div class="dialog" id="dialog"></div></div>
+<div id="dropzone" hidden><div>Görseli bırak</div></div>
+<div id="toast" hidden></div>
 </body>
 </html>

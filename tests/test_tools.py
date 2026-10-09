@@ -138,3 +138,20 @@ def test_cli_status_line_and_prompt_session(workdir):
     line = status_line(agent, router, ctx)
     assert "a:m" in line and "izin: auto" in line and "context" in line
     assert make_prompt_session(agent, router, ctx).multiline
+
+
+def test_cli_slash_commands(workdir, isolated_home, monkeypatch):
+    from alice.cli import build, handle_slash
+
+    cfg = make_config({"brain": ["a:m"], "fast": ["a:m"]})
+    agent, router, ctx = build(cfg, workdir, "auto")
+    assert handle_slash("/plan", agent, router, ctx, cfg) is None and agent.permissions.mode == "plan"
+    assert handle_slash("/init", agent, router, ctx, cfg)[0] == "run"
+    d = workdir / ".alice" / "commands"
+    d.mkdir(parents=True)
+    (d / "test.md").write_text("Testleri çalıştır: $ARGUMENTS")
+    assert handle_slash("/test hızlı", agent, router, ctx, cfg) == ("run", "Testleri çalıştır: hızlı")
+    agent.messages.append({"role": "user", "content": "eski mesaj"})
+    monkeypatch.setattr("alice.cli.console.input", lambda *a, **k: "1")
+    assert handle_slash("/rewind", agent, router, ctx, cfg) == ("prefill", "eski mesaj")
+    assert len(agent.messages) == 1

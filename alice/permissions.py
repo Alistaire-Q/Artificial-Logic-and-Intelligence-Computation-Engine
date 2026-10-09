@@ -1,5 +1,6 @@
 """İzin modları.
 
+plan : sadece okuma/araştırma; dosya değiştiren, komut çalıştıran, ekrana dokunan her şey reddedilir
 ask  : okuma dışındaki her şey onay ister
 auto : tehlikeli komutlar (rm -r, format, registry, shutdown...) ve sistem klasörlerine
        yazma onay ister; geri kalan her şey (dosya düzenleme, komut, fare/klavye) serbest
@@ -12,9 +13,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from alice.tools.base import DANGER, READ, WRITE, Tool, ToolContext
+from alice.tools.base import DANGER, NETWORK, READ, WRITE, Tool, ToolContext
 
-MODES = ("ask", "auto", "yolo")
+MODES = ("plan", "ask", "auto", "yolo")
 
 SYSTEM_DIRS_WIN = [r"c:\windows", r"c:\program files", r"c:\program files (x86)", r"c:\programdata\microsoft"]
 SYSTEM_DIRS_POSIX = ["/etc", "/usr", "/bin", "/sbin", "/boot", "/lib", "/lib64", "/var/lib", "/System", "/Library"]
@@ -36,12 +37,14 @@ class Permissions:
         self.always_allow: set[str] = set()
 
     def decide(self, tool: Tool, args: dict[str, Any], ctx: ToolContext) -> str:
-        """'allow' ya da 'ask' döndürür."""
+        """'allow', 'ask' ya da 'deny' döndürür."""
         if self.mode == "yolo":
             return "allow"
         risk = tool.risk_for(args)
         if risk == READ:
             return "allow"
+        if self.mode == "plan":
+            return "allow" if risk == NETWORK else "deny"
         if tool.name in self.always_allow and risk != DANGER:
             return "allow"
         if self.mode == "ask":

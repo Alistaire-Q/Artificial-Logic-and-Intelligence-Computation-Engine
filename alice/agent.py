@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+from pathlib import Path
 from typing import Any, Protocol
 
 from alice.config import Config
@@ -25,6 +26,7 @@ class UI(Protocol):
 
     def stream_start(self) -> None: ...  # model cevabı başlıyor (ilk parça gelene kadar "düşünüyor")
     def stream_delta(self, text: str) -> None: ...
+    # Opsiyonel: def thinking_delta(self, text: str) -> None  (modelin akıl yürütme metni)
     def stream_reset(self) -> None: ...  # model akış ortasında düştü, yedek model baştan yazacak
     def stream_end(self, text: str, source: str) -> None: ...
     def tool_start(self, call_id: str, name: str, summary: str) -> None: ...
@@ -83,6 +85,11 @@ class _Sink:
         self.parts.clear()
         self.ui.stream_reset()
 
+    def on_reasoning(self, text: str) -> None:
+        fn = getattr(self.ui, "thinking_delta", None)
+        if fn is not None:
+            fn(text)
+
     def cancelled(self) -> bool:
         return self.cancel.is_set()
 
@@ -104,6 +111,11 @@ def parse_args(raw: str | dict | None) -> dict[str, Any]:
     if not isinstance(val, dict):
         raise json.JSONDecodeError("argümanlar obje değil", str(raw), 0)
     return val
+
+
+PLAN_NOTE = ("[PLAN MODU: Şu an sadece okuyup araştırabilirsin; dosya değiştiren, komut çalıştıran ya da ekrana "
+             "dokunan araçlar reddedilecek. İşi incele, sonra adım adım net bir uygulama planı yaz ve kullanıcının "
+             "onayını bekle.]\n\n")
 
 
 class Agent:
@@ -136,6 +148,8 @@ class Agent:
         self.stream = bool(a.get("stream", True))
         self.cancel = threading.Event()
         self.busy = False
+        # Geri sarma için: kullanıcı mesajının indeksi -> o turda ilk değişen dosyaların eski hali.
+        self.checkpoints: dict[int, dict[str, bytes | None]] = {}
         if not is_child:
             ctx.state["agent"] = self
 
@@ -147,8 +161,25 @@ class Agent:
         return Agent(self.config, self.router, list(self.tools.values()), self.ctx, self.permissions, self.ui,
                      self.decider, system_prompt=self.messages[0]["content"], is_child=True)
 
-    def run_turn(self, user_text: str, max_steps: int | None = None) -> str:
-        self.messages.append({"role": "user", "content": user_text})
+    def run_turn(self, user_text: str, max_steps: int | None = None, images: list[str] | None = None) -> str:
+        from alice.mentions import expand_mentions
+
+        content_text = expand_mentions(user_text, self.ctx.cwd)
+        if self.permissions.mode == "plan" and not self.is_child:
+            content_text = PLAN_NOTE + content_text
+        content: Any = content_text
+        if images:
+            content = [{"type": "text", "text": content_text}] + [
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b}"}} for b in images]
+        if not self.is_child:
+            self.checkpoints[len(self.messages)] = {}
+            self.ctx.state["checkpoint"] = self.checkpoints[len(self.messages)]
+        msg: dict[str, Any] = {"role": "user", "content": content}
+        if content_text != user_text:
+            msg["_display"] = user_text
+        if images:
+            msg["_user_images"] = len(images)
+        self.messages.append(msg)
         final = ""
         steps = max_steps or self.max_steps
         self.cancel.clear()
@@ -196,6 +227,41 @@ class Agent:
         """Başka bir thread'den (ör. uygulamadaki Durdur butonu) mevcut turu durdur."""
         self.cancel.set()
 
+    def rewind(self, msg_index: int) -> tuple[str, list[str]]:
+        """Konuşmayı msg_index'teki kullanıcı mesajından öncesine geri sar ve o andan beri
+        ALICE'in dosya araçlarıyla değiştirdiği dosyaları eski haline getir.
+        (Shell komutlarının yaptığı değişiklikler izlenemez.) Mesajın metnini ve geri yüklenen dosyaları döndürür."""
+        if self.busy:
+            raise RuntimeError("çalışırken geri sarılamaz")
+        if not 0 < msg_index < len(self.messages) or self.messages[msg_index].get("role") != "user":
+            raise ValueError("geçersiz mesaj")
+        original: dict[str, bytes | None] = {}
+        for idx in sorted(k for k in self.checkpoints if k >= msg_index):
+            for path, data in self.checkpoints[idx].items():
+                original.setdefault(path, data)
+        restored = []
+        for path, data in original.items():
+            p = Path(path)
+            try:
+                if data is None:
+                    if p.exists():
+                        p.unlink()
+                else:
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_bytes(data)
+                restored.append(path)
+            except OSError as e:
+                self.ui.info(f"geri yüklenemedi: {path} ({e})")
+        m = self.messages[msg_index]
+        text = m.get("_display") or (m["content"] if isinstance(m["content"], str) else
+                                     next((p.get("text", "") for p in m["content"] if p.get("type") == "text"), ""))
+        if text.startswith(PLAN_NOTE):
+            text = text[len(PLAN_NOTE):]
+        self.messages = self.messages[:msg_index]
+        for k in [k for k in self.checkpoints if k >= msg_index]:
+            del self.checkpoints[k]
+        return text, restored
+
     # ------------------------------------------------------------------- tools
     def _run_tools(self, calls: list[dict[str, Any]]) -> None:
         pending_images: list[tuple[str, list[str]]] = []
@@ -230,6 +296,12 @@ class Agent:
             return ToolResult(f"argümanlar geçerli JSON değil ({e}). Tekrar dene.", is_error=True)
         summary = tool.summary(args)
         verdict = self.permissions.decide(tool, args, self.ctx)
+        if verdict == "deny":
+            res = ToolResult("Plan modundasın: bu araç değişiklik yapıyor ve şu an kapalı. Önce planını yaz; kullanıcı "
+                             "onaylayıp modu değiştirince uygularsın.", is_error=True)
+            self.ui.tool_start(call["id"], name, summary)
+            self.ui.tool_end(call["id"], name, res)
+            return res
         if verdict == "ask":
             ans = self.ui.ask_permission(name, summary, tool.risk_for(args))
             if ans == "a":
@@ -317,6 +389,7 @@ class Agent:
                          {"role": "user", "content": f"[Önceki konuşmanın özeti]\n{res.text}"},
                          {"role": "assistant", "content": "Özeti aldım, kaldığım yerden devam ediyorum."},
                          *self.messages[cut:]]
+        self.checkpoints.clear()  # mesaj indeksleri değişti, eski geri sarma noktaları geçersiz
         return True
 
     def compact(self) -> bool:

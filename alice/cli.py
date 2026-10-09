@@ -30,25 +30,30 @@ from alice.config import Config, alice_home, init_home, load_config
 from alice.decider import Decider
 from alice.permissions import MODES, Permissions
 from alice.providers.router import AllProvidersFailed, Router, parse_ref
-from alice.tools import ToolContext, all_tools, cleanup
+from alice.tools import ToolContext, all_tools, attach_mcp, cleanup
 from alice.tools.base import ToolResult
 
 console = Console(highlight=False)
 
 HELP = """[bold]Komutlar[/]
-  /help                 bu yardım
-  /mode [ask|auto|yolo] izin modunu göster/değiştir
-  /model                rol zincirlerini ve durumlarını göster
-  /model <rol> <ref>    rolü tek modele sabitle, ör. /model brain groq:openai/gpt-oss-120b
-  /model <rol> reset    config'teki zincire geri dön
-  /usage                bugünkü istek/token kullanımı
-  /tools                araç listesi
-  /compact              context'i şimdi özetle
-  /clear                konuşmayı sıfırla
-  /sessions             kayıtlı oturumlar
-  /resume [id]          oturumu geri yükle (id yoksa en sonuncusu)
-  /cwd [yol]            çalışma klasörünü göster/değiştir
-  /exit                 çık
+  /help                       bu yardım
+  /plan                       plan modu: sadece okur/araştırır, değişiklik yapmadan plan yazar
+  /mode [plan|ask|auto|yolo]  izin modunu göster/değiştir (Shift+Tab ile de döner)
+  /model                      rol zincirlerini ve durumlarını göster
+  /model <rol> <ref>          rolü tek modele sabitle, ör. /model brain groq:openai/gpt-oss-120b
+  /model <rol> reset          config'teki zincire geri dön
+  /rewind                     önceki bir mesaja geri sar (ALICE'in değiştirdiği dosyalar dahil)
+  /init                       bu proje için ALICE.md talimat dosyası oluştur
+  /usage                      bugünkü istek/token kullanımı
+  /tools, /mcp                araçlar / MCP sunucularından gelen araçlar
+  /memory                     kalıcı hafızayı göster
+  /compact                    context'i şimdi özetle
+  /clear                      konuşmayı sıfırla
+  /sessions, /resume [id]     kayıtlı oturumlar / oturumu geri yükle
+  /cwd [yol]                  çalışma klasörünü göster/değiştir
+  /exit                       çık
+Özel komutlar: ~/.alice/commands/*.md ya da projede .alice/commands/*.md ($ARGUMENTS yer tutucusu).
+Mesajda [bold]@dosya/yolu[/] yazarsan dosyanın içeriği mesaja eklenir.
 Çalışırken [bold]Ctrl+C[/] mevcut işi durdurur. Fareyi ekranın sol üst köşesine götürmek fare/klavye kontrolünü keser."""
 
 
@@ -95,6 +100,7 @@ class RichUI:
     # ------------------------------------------------------------------ akış
     def stream_start(self) -> None:
         self._buf = ""
+        self._think = ""
         m = self.model_label()
         self._spin_start(f"düşünüyor{' · ' + m if m else ''}...")
 
@@ -108,6 +114,12 @@ class RichUI:
             self._live.start()
         else:
             self._live.update(_Tail(self._buf))
+
+    def thinking_delta(self, text: str) -> None:
+        self._think = (getattr(self, "_think", "") + text)[-300:]
+        if self._spin is not None and not self._buf:
+            last = " ".join(self._think.split())[-70:]
+            self._spin.update(f"[dim]düşünüyor… {escape(last)}[/]")
 
     def stream_reset(self) -> None:
         self._live_stop()
@@ -191,6 +203,7 @@ def build(cfg: Config, cwd: Path, mode: str, verbose: bool = False) -> tuple[Age
     ctx = ToolContext(cwd=cwd, config=cfg, router=router, decider=decider,
                       emit=lambda s: console.print(f"[dim]  {s}[/]"))
     agent = Agent(cfg, router, all_tools(), ctx, Permissions(mode), ui, decider)
+    attach_mcp(agent, ctx, emit=lambda s: console.print(f"[dim]  {s}[/]"))
     return agent, router, ctx
 
 
@@ -234,6 +247,12 @@ def make_prompt_session(agent: Agent, router: Router, ctx: ToolContext):
         else:
             buf.validate_and_handle()
 
+    @kb.add("s-tab")  # izin modunu döndür
+    def _(event):
+        order = list(MODES)
+        agent.permissions.mode = order[(order.index(agent.permissions.mode) + 1) % len(order)]
+        event.app.invalidate()
+
     @kb.add("escape", "enter")  # Alt+Enter
     @kb.add("c-j")              # Ctrl+J
     def _(event):
@@ -265,9 +284,11 @@ def repl(agent: Agent, router: Router, ctx: ToolContext, cfg: Config, resume: st
     ps = make_prompt_session(agent, router, ctx)
     console.print(f"[bold magenta]ALICE[/] v{__version__}  [dim]/help komutlar · Enter gönder · Alt+Enter ya da "
                   "satır sonu \\ ile yeni satır · Ctrl+C durdur[/]")
+    prefill = ""
     while True:
         try:
-            text = ps.prompt("\n› ").strip()
+            text = ps.prompt("\n› ", default=prefill).strip()
+            prefill = ""
         except KeyboardInterrupt:
             continue
         except EOFError:
@@ -275,9 +296,15 @@ def repl(agent: Agent, router: Router, ctx: ToolContext, cfg: Config, resume: st
         if not text:
             continue
         if text.startswith("/"):
-            if handle_slash(text, agent, router, ctx, cfg) == "exit":
+            res = handle_slash(text, agent, router, ctx, cfg)
+            if res == "exit":
                 break
-            continue
+            if isinstance(res, tuple) and res[0] == "prefill":
+                prefill = res[1]
+                continue
+            if not (isinstance(res, tuple) and res[0] == "run"):
+                continue
+            text = res[1]
         t0 = time.monotonic()
         agent.run_turn(text)
         console.print(f"[dim]  {time.monotonic() - t0:.1f} sn[/]")
@@ -288,13 +315,20 @@ def repl(agent: Agent, router: Router, ctx: ToolContext, cfg: Config, resume: st
     cleanup(ctx)
 
 
-def handle_slash(text: str, agent: Agent, router: Router, ctx: ToolContext, cfg: Config) -> str | None:
+def handle_slash(text: str, agent: Agent, router: Router, ctx: ToolContext, cfg: Config):
+    """None, "exit", ("run", mesaj) ya da ("prefill", metin) döndürür."""
     from alice import session as sess
+    from alice.commands import INIT_PROMPT, expand_custom
 
     parts = text.split()
     cmd, args = parts[0].lower(), parts[1:]
     if cmd in ("/exit", "/quit", "/q"):
         return "exit"
+    if cmd == "/init":
+        return ("run", INIT_PROMPT)
+    custom = expand_custom(text, ctx.cwd)
+    if custom is not None:
+        return ("run", custom)
     if cmd == "/help":
         console.print(HELP)
     elif cmd == "/clear":
@@ -302,10 +336,23 @@ def handle_slash(text: str, agent: Agent, router: Router, ctx: ToolContext, cfg:
         console.print("[green]konuşma sıfırlandı[/]")
     elif cmd == "/compact":
         console.print("[green]özetlendi[/]" if agent.compact() else "[yellow]özetlenecek bir şey yok[/]")
-    elif cmd == "/mode":
-        if args and args[0] in MODES:
+    elif cmd in ("/mode", "/plan"):
+        if cmd == "/plan":
+            agent.permissions.mode = "plan"
+        elif args and args[0] in MODES:
             agent.permissions.mode = args[0]
         console.print(f"izin modu: [bold]{agent.permissions.mode}[/]")
+    elif cmd == "/rewind":
+        return rewind_prompt(agent)
+    elif cmd == "/mcp":
+        mcp = [t for t in agent.tools.values() if t.name.startswith("mcp__")]
+        if not mcp:
+            console.print("[dim]MCP sunucusu yok. config.toml'a [mcp.servers.<isim>] ekle (README'de örnek var).[/]")
+        for t in mcp:
+            console.print(f"[bold]{t.name}[/] [dim]({t.risk})[/] {t.description[:110]}")
+    elif cmd == "/memory":
+        mem = alice_home() / "memory.md"
+        console.print(mem.read_text(encoding="utf-8") if mem.exists() else "[dim](hafıza boş)[/]")
     elif cmd == "/model":
         if len(args) >= 2:
             role, ref = args[0], args[1]
@@ -345,6 +392,25 @@ def handle_slash(text: str, agent: Agent, router: Router, ctx: ToolContext, cfg:
     else:
         console.print(f"[red]bilinmeyen komut {cmd}[/] (/help)")
     return None
+
+
+def rewind_prompt(agent: Agent):
+    turns = [(i, m) for i, m in enumerate(agent.messages)
+             if m.get("role") == "user" and not m.get("_image") and i > 0
+             and not str(m.get("content", "")).startswith("[Önceki konuşmanın özeti]")][-9:]
+    if not turns:
+        console.print("[yellow]geri sarılacak mesaj yok[/]")
+        return None
+    for n, (_, m) in enumerate(reversed(turns), 1):
+        text = m.get("_display") or (m["content"] if isinstance(m["content"], str) else "(görselli mesaj)")
+        console.print(f"  [bold]{n}[/] {escape(text.splitlines()[0][:90])}")
+    ans = console.input("Hangi mesajın öncesine dönülsün? (numara, boş = vazgeç) > ").strip()
+    if not ans.isdigit() or not 1 <= int(ans) <= len(turns):
+        return None
+    mi = list(reversed(turns))[int(ans) - 1][0]
+    text, restored = agent.rewind(mi)
+    console.print("[green]geri sarıldı[/]" + (f", {len(restored)} dosya eski haline getirildi" if restored else ""))
+    return ("prefill", text)
 
 
 def print_status(router: Router) -> None:

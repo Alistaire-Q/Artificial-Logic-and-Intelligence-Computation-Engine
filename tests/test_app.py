@@ -69,7 +69,7 @@ def test_send_streams_events_and_saves_session(app):
     assert "+selam" in tool_end["diff"]
     assert next(e for e in events if e["type"] == "status")["today_requests"] == 2
     hist = client.get("/api/history").json()
-    assert [h["type"] for h in hist] == ["user", "tool", "assistant"]
+    assert [h["type"] for h in hist] == ["user", "tool", "assistant"] and hist[0]["mi"] == 1
     assert hist[1]["summary"].startswith("a.txt")
     assert client.get("/api/sessions").json()[0]["title"] == "dosya yaz"
 
@@ -126,7 +126,7 @@ def test_sse_endpoint_streams(app):
 
 
 def test_display_history_skips_internal():
-    msgs = [{"role": "user", "content": "[Önceki konuşmanın özeti]\n..."},
+    msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "[Önceki konuşmanın özeti]\n..."},
             {"role": "assistant", "content": "Özeti aldım, kaldığım yerden devam ediyorum."},
             {"role": "user", "content": "selam"}]
     assert [h["type"] for h in display_history(msgs)] == ["info", "user"]
@@ -146,3 +146,37 @@ def test_all_turns_run_on_same_worker_thread(app):
         assert client.post("/api/send", json={"text": text}).json()["ok"]
         t.join()
     assert seen == ["alice-agent", "alice-agent"]
+
+
+def test_new_endpoints_rewind_files_commands_images(app, workdir):
+    state, srv, client, prov = app
+    (workdir / "notlar.txt").write_text("x")
+    assert "notlar.txt" in client.get("/api/files", params={"q": "not"}).json()
+    names = [c["name"] for c in client.get("/api/commands").json()]
+    assert "rewind" in names and "plan" in names
+    assert client.post("/api/send", json={"text": "/yok-boyle-komut"}).status_code == 409
+    prov.script.extend([tool_call("write_file", {"path": "a.txt", "content": "1"}), "tamam"])
+    events, t = collect(state, lambda e: e["type"] == "status")
+    assert client.post("/api/send", json={"text": "yaz @notlar.txt", "images": ["AAAA"]}).json()["ok"]
+    t.join()
+    user_ev = next(e for e in events if e["type"] == "user")
+    assert user_ev["mi"] == 1 and user_ev["images"] == ["AAAA"]
+    assert "<file path=" in str(state.agent.messages[1]["content"])  # @dosya içeriği modele gitti
+    hist = client.get("/api/history").json()
+    assert hist[0]["text"] == "yaz @notlar.txt"  # arayüzde kullanıcının yazdığı görünür
+    r = client.post("/api/rewind", json={"mi": 1}).json()
+    assert r["ok"] and r["text"] == "yaz @notlar.txt" and not (workdir / "a.txt").exists() and r["history"] == []
+    sid = client.get("/api/sessions").json()[0]["id"]
+    assert client.post("/api/session/delete", json={"id": sid}).json()["ok"]
+    assert client.post("/api/session/delete", json={"id": "../../etc/passwd"}).json()["ok"]
+
+
+def test_plan_mode_via_api(app, workdir):
+    state, srv, client, prov = app
+    assert client.post("/api/mode", json={"mode": "plan"}).json()["mode"] == "plan"
+    prov.script.extend([tool_call("run_command", {"command": "echo hi"}), "plan yazdım"])
+    events, t = collect(state, lambda e: e["type"] == "status")
+    client.post("/api/send", json={"text": "bir şey yap"})
+    t.join()
+    end = next(e for e in events if e["type"] == "tool_end")
+    assert end["is_error"] and "Plan modundasın" in end["text"]

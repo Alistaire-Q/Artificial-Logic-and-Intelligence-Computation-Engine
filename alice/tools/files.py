@@ -32,6 +32,19 @@ def _read_text(path: Path) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
+def snapshot(ctx: ToolContext, p: Path) -> None:
+    """Geri sarma için: bu turda dosyaya ilk dokunulmadan önceki halini sakla."""
+    cp = ctx.state.get("checkpoint")
+    if cp is None:
+        return
+    key = str(p)
+    if key not in cp:
+        try:
+            cp[key] = p.read_bytes() if p.exists() else None
+        except OSError:
+            pass
+
+
 class ReadFile(Tool):
     name = "read_file"
     description = ("Dosya oku. Satır numaralarıyla döner. Büyük dosyalarda offset/limit kullan. "
@@ -74,6 +87,7 @@ class WriteFile(Tool):
 
     def run(self, ctx: ToolContext, path: str, content: str) -> ToolResult:
         p = ctx.resolve(path)
+        snapshot(ctx, p)
         p.parent.mkdir(parents=True, exist_ok=True)
         existed = p.exists()
         before = _read_text(p) if existed and not _is_binary(p) else ""
@@ -115,6 +129,7 @@ class EditFile(Tool):
             raise ToolError("old_string dosyada bulunamadı. Dosyayı read_file ile tekrar oku ve birebir kopyala.")
         if count > 1 and not replace_all:
             raise ToolError(f"old_string {count} kez geçiyor; bağlam ekle ya da replace_all=true kullan")
+        snapshot(ctx, p)
         before = text
         text = text.replace(old_string, new_string) if replace_all else text.replace(old_string, new_string, 1)
         p.write_text(text, encoding="utf-8", newline="")
