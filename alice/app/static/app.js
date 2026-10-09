@@ -1084,7 +1084,12 @@ const handlers = {
   permission_done: onPermissionDone,
   info: (ev) => addNote(ev.text, /hata|başarısız|cevap veremedi|başlatılamadı/i.test(ev.text) ? "err" :
     /durduruldu|limit/i.test(ev.text) ? "warn" : ""),
-  route: (ev) => { const m = ev.text.match(/^brain -> (.+)$/); if (m) applyStatus({ model: m[1] }); },
+  route: (ev) => {
+    const m = ev.text.match(/^brain -> (.+)$/);
+    if (m) { applyStatus({ model: m[1] }); return; }
+    // Model geçişleri ve sağlayıcı hataları: hangi modelin neden atlandığı görünsün.
+    if (!/^(fast|vision) -> /.test(ev.text)) addNote(ev.text, /hata|geçildi|meşgul|atlandı/i.test(ev.text) ? "warn" : "");
+  },
 };
 // Çalışıyor göstergesini her zaman en altta tut.
 const keepWorkingLast = () => { if (S.working && S.working !== list.lastElementChild) list.appendChild(S.working); };

@@ -111,6 +111,10 @@ def test_mode_cwd_new_and_model(app, workdir):
     sub = workdir / "proje"
     sub.mkdir()
     assert client.post("/api/cwd", json={"path": str(sub)}).json()["cwd"] == str(sub)
+    assert str(sub) in state.agent.messages[0]["content"]  # sistem istemi yeni klasörü biliyor
+    from alice.cli import default_workspace
+
+    assert default_workspace() == sub  # sonraki açılışta aynı klasör
     assert client.post("/api/cwd", json={"path": str(workdir / "yok")}).status_code == 400
     assert client.post("/api/model", json={"role": "brain", "ref": "a:other"}).json()["ok"]
     assert client.get("/api/models").json()["brain"][0]["ref"] == "a:other"

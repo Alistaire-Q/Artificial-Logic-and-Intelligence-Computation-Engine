@@ -194,3 +194,25 @@ def test_repeated_failing_call_gets_a_nudge(workdir):
     tool_msgs = [m["content"] for m in agent.messages if m["role"] == "tool"]
     assert "ALICE notu" not in tool_msgs[0]
     assert "2. kez başarısız" in tool_msgs[1]
+
+
+def test_tool_groups_keep_requests_small(workdir):
+    import json
+
+    seen = []
+
+    def script(model, messages, tools, **kw):
+        seen.append({t["function"]["name"] for t in tools or []})
+        if len(seen) == 2:
+            return tool_call("load_tools", {"groups": ["system"]}, cid="c9")
+        return "tamam"
+
+    agent, _, _ = make_agent(script, workdir)
+    agent.run_turn("merhaba")
+    assert "read_file" in seen[0] and "browser" not in seen[0] and "blender" not in seen[0]
+    agent.run_turn("blender'da bir ev yap")
+    assert "blender" in seen[1] and "computer" not in seen[1]
+    assert "system_info" in seen[2]  # load_tools ile açıldı
+    full = len(json.dumps([t.spec() for t in agent.tools.values()]))
+    small = len(json.dumps(agent.tool_specs()))
+    assert small < full

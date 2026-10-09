@@ -297,6 +297,7 @@ def repl(agent: Agent, router: Router, ctx: ToolContext, cfg: Config, resume: st
     from alice import session as sess
 
     sid = sess.new_session_id()
+    agent.on_step = lambda: sess.save(sid, agent.messages, ctx.cwd)
     if resume is not None:
         loaded = sess.load(resume or None)
         if loaded:
@@ -578,6 +579,30 @@ def reflex_cmd(cfg: Config, a: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------- app
+def default_workspace() -> Path:
+    """Uygulamanın başlangıç klasörü. Ev klasörü çok büyük ("bu proje" deyince her yeri tarıyordu), bu yüzden:
+    config'teki [app] workspace > son kullanılan klasör > Belgeler\\ALICE (yoksa oluşturulur)."""
+    try:
+        ws = (load_config().data.get("app", {}) or {}).get("workspace", "")
+    except Exception:  # noqa: BLE001
+        ws = ""
+    if ws and Path(ws).expanduser().is_dir():
+        return Path(ws).expanduser()
+    try:
+        last = Path((alice_home() / "last_cwd").read_text(encoding="utf-8").strip())
+        if last.is_dir():
+            return last
+    except OSError:
+        pass
+    docs = Path.home() / "Documents"
+    ws_dir = (docs if docs.is_dir() else Path.home()) / "ALICE"
+    try:
+        ws_dir.mkdir(parents=True, exist_ok=True)
+        return ws_dir
+    except OSError:
+        return Path.home()
+
+
 def app_cmd(argv: list[str]) -> int:
     from alice.app.server import AppServer, AppState
     from alice.app.window import open_window
@@ -589,7 +614,7 @@ def app_cmd(argv: list[str]) -> int:
     ap.add_argument("--window", choices=["auto", "webview", "app", "browser", "none"], default="auto",
                     help="none: pencere açma, sadece adresi yaz")
     a = ap.parse_args(argv)
-    cwd = (a.cwd or Path.home()).resolve()
+    cwd = (a.cwd or default_workspace()).resolve()
     cfg = load_config(cwd=cwd)
     state = AppState(cfg, cwd, a.mode or cfg.agent.get("permission_mode", "auto"))
     server = AppServer(state, a.port).start()
