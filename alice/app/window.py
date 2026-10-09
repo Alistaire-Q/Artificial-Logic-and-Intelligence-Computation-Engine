@@ -41,7 +41,9 @@ def open_window(url: str, title: str = "ALICE", prefer: str = "auto") -> str:
         try:
             import webview  # pywebview
 
-            icon = Path(__file__).parent / "static" / "icon.png"
+            # Windows'taki pywebview (WinForms) simgeyi System.Drawing.Icon ile açar ve .png verilince
+            # yakalanamayan bir .NET hatasıyla çöker; orada .ico kullan.
+            icon = Path(__file__).parent / "static" / ("icon.ico" if sys.platform == "win32" else "icon.png")
             webview.create_window(title, url, width=1320, height=880, min_size=(820, 560), background_color="#16161a")
             kwargs = {"icon": str(icon)} if icon.exists() else {}
             try:
