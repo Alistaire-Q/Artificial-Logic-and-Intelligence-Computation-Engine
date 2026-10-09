@@ -105,6 +105,14 @@ def install(emit: Callable[[str], None] = print, run=None) -> Path:
                 break
         else:
             emit("Uyarı: CUDA'lı PyTorch kurulamadı; ses işlemcide (yavaş) üretilecek.")
+    # Yerel Whisper: üretilen sesi dinleyip sondaki uydurmayı keser. torch/numpy sürümlerine dokunmasın.
+    emit("Whisper kuruluyor (sesi kontrol etmek için)")
+    pins = _out([str(py), "-m", "pip", "freeze"]) or ""
+    keep = [ln for ln in pins.splitlines() if ln.split("==")[0].lower() in ("torch", "torchaudio", "numpy")]
+    cons = d / "constraints.txt"
+    cons.write_text("\n".join(keep) + "\n", encoding="utf-8")
+    if run(pip + ["install", "openai-whisper", "-c", str(cons)]) != 0:
+        emit("Uyarı: Whisper kurulamadı; ses kontrolü Groq ile (ya da uzunluğa göre) yapılacak.")
     if _out([str(py), "-c", "from chatterbox.mtl_tts import ChatterboxMultilingualTTS; print('ok')"]) != "ok":
         raise RuntimeError("Chatterbox kuruldu ama içe aktarılamıyor. Şunu çalıştırıp çıktıyı gönder: "
                            f'"{py}" -c "from chatterbox.mtl_tts import ChatterboxMultilingualTTS"')

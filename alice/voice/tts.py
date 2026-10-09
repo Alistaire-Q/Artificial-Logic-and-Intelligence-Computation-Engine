@@ -402,11 +402,14 @@ class Chatterbox:
     def __init__(self, python: str = "", port: int = 8771, library: EmotionLibrary | None = None,
                  allow_gpu: Callable[[], bool] = lambda: True, client: httpx.Client | None = None,
                  start_timeout: float = 600, trim: Callable[[Audio, str], Audio] | None = None,
-                 temperature: float = 0.6):
+                 temperature: float = 0.6, verify: bool = True, whisper_model: str = "small"):
         from alice.voice.trim import by_length
 
         self.trim = trim or by_length
         self.temperature = temperature
+        self.verify = verify
+        self.whisper_model = whisper_model
+        self.last_quality = ""
         self.python = python
         self.port = port
         self.library = library or EmotionLibrary()
@@ -459,7 +462,8 @@ class Chatterbox:
         ref = self.library.clip(emotion)
         body = {"text": text, "language": "tr", "ref": str(ref) if ref else "", "exaggeration": exaggeration,
                 "cfg_weight": cfg_weight, "temperature": self.temperature,
-                "device": "cuda" if self.allow_gpu() else "cpu"}
+                "device": "cuda" if self.allow_gpu() else "cpu", "verify": self.verify,
+                "whisper_model": self.whisper_model}
         try:
             # İlk istekte model yüklenir/indirilir: uzun sürebilir.
             r = self.client.post(self.base + "/synth", json=body, timeout=self.start_timeout)
@@ -472,10 +476,13 @@ class Chatterbox:
                 msg = r.text
             raise TTSError(f"chatterbox: {str(msg)[:200]}")
         audio = Audio.from_wav(r.content)
-        try:
-            audio = self.trim(audio, text)  # cümle sonrası uydurma/cızırtıyı kes
-        except Exception:
-            pass
+        self.last_quality = r.headers.get("X-Alice-Quality", "")
+        if r.headers.get("X-Alice-Verified") != "1":
+            # Sunucuda Whisper yoksa kuyruğu burada kes (Groq Whisper ya da uzunluğa göre).
+            try:
+                audio = self.trim(audio, text)
+            except Exception:
+                pass
         return audio.polish()
 
 
@@ -553,6 +560,9 @@ class TTSRouter:
         return [e for e in engines if e is not None]
 
     def synth(self, text: str, emotion: str = "calm") -> Audio:
+        from alice.voice.spoken_numbers import normalize
+
+        text = normalize(text)
         errors = []
         now = time.monotonic()
         if self.cache is not None:
@@ -607,7 +617,9 @@ def make_local(cfg: Config, name: str | None = None) -> TTS | None:
         v = cfg.data.get("voice", {})
         trim = make_trimmer(make_stt(cfg) if v.get("local_trim_whisper", True) else None)
         return Chatterbox(v.get("local_python", ""), int(v.get("local_port", 8771)), allow_gpu=allow, trim=trim,
-                          temperature=float(v.get("local_temperature", 0.6)))
+                          temperature=float(v.get("local_temperature", 0.6)),
+                          verify=bool(v.get("local_verify", True)),
+                          whisper_model=str(v.get("local_whisper_model", "small")))
     return None
 
 

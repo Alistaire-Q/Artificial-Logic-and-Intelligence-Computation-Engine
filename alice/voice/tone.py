@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import re
 
+from alice.voice.spoken_numbers import normalize as normalize_numbers
+
 EMOTIONS = ("calm", "happy", "serious", "urgent", "playful")
 
 NAMES_TR = {"calm": "sakin", "happy": "neşeli", "serious": "ciddi", "urgent": "acil", "playful": "şakacı"}
@@ -57,6 +59,7 @@ def for_speech(text: str) -> str:
     text = re.sub(r"^\s*\|.*\|\s*$", "", text, flags=re.M)  # tablolar okunmaz
     text = re.sub(r"(\*\*|__|\*|_|~~)(.+?)\1", r"\2", text)
     text = re.sub(r"https?://\S+", "bağlantı", text)
+    text = normalize_numbers(text)  # "3.5", "%40", "78°C" gibi ifadeler ses modellerini şaşırtıyor
     return re.sub(r"[ \t]+", " ", re.sub(r"\n{2,}", "\n", text)).strip()
 
 

@@ -76,8 +76,12 @@ tts_local = ""
 # Yerel ses sunucusunun Python'u ve portu (`alice voice install-local` doldurur).
 local_python = ""
 local_port = 8771
-# Yerel ses cümle sonunda uydurabiliyor: Whisper'ın kelime zamanlarıyla son kelimeden sonrasını kes
-# (her cümlede bir Groq isteği). false = sadece uzunluğa göre kes.
+# Yerel ses cümle sonunda uydurabiliyor. local_verify: ses sunucusundaki yerel Whisper (ücretsiz,
+# ekran kartında) her cümleyi dinler, son kelimeden sonrasını keser, saçmaladıysa bir kez yeniden üretir.
+local_verify = true
+# tiny | base | small | medium | turbo. Büyüdükçe Türkçesi iyi ama ekran kartı belleği artar.
+local_whisper_model = "small"
+# Sunucuda Whisper yoksa: Groq Whisper ile kes (her cümlede bir istek). false = uzunluğa göre kes.
 local_trim_whisper = true
 # Düşük değer daha az "yaratıcı", daha az uydurma (Chatterbox varsayılanı 0.8).
 local_temperature = 0.6

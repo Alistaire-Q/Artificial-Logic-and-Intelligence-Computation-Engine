@@ -60,7 +60,7 @@ def test_splitter_streams_sentences():
     for ch in "Tamam, hemen bakıyorum. GPU 3.5 derece arttı! Kod:\n```\nx=1. y=2\n```\nBitti.":
         out += s.feed(ch)
     out += s.flush()
-    assert out == ["Tamam, hemen bakıyorum.", "GPU 3.5 derece arttı!", "Kod:", "Kodu ekrana yazdım.", "Bitti."]
+    assert out == ["Tamam, hemen bakıyorum.", "GPU üç virgül beş derece arttı!", "Kod:", "Kodu ekrana yazdım.", "Bitti."]
 
 
 # ----------------------------------------------------------------------- TTS
@@ -257,7 +257,7 @@ def test_voice_ui_streams_and_fillers():
         ui.stream_delta(ch)
     ui.stream_end("Dün en yüksek 78 dereceydi. Gayet normal.", "x")
     assert sp.said[0] in ("Hemen bakıyorum.", "Bir saniye, bakıyorum.", "Tamam, bakıyorum.")
-    assert sp.said[1:] == ["Dün en yüksek 78 dereceydi.", "Gayet normal."]
+    assert sp.said[1:] == ["Dün en yüksek yetmiş sekiz dereceydi.", "Gayet normal."]
     ui.mute()
     ui.stream_end("söylenmemeli", "x")
     assert "söylenmemeli" not in sp.said
@@ -520,7 +520,7 @@ class ChatterboxMultilingualTTS:
         return m
     def generate(self, text, language_id="en", audio_prompt_path=None, exaggeration=0.5, cfg_weight=0.5):
         assert language_id == "tr" and text.endswith((".", "!", "?"))
-        n = int(0.05 * len(text) * self.sr)
+        n = int(0.15 * len(text) * self.sr)
         t = np.arange(n) / self.sr
         return (0.3 * np.sin(2 * np.pi * (220 + 400 * exaggeration) * t)).astype("float32")
 """
@@ -648,3 +648,73 @@ def test_groq_words_request():
     stt = GroqWhisper("g", client=httpx.Client(transport=httpx.MockTransport(handler)))
     assert stt.words(tone(0.5)) == [("Merhaba", 0.1, 0.6)]
     assert b"verbose_json" in seen["body"] and b"timestamp_granularities[]" in seen["body"]
+
+
+FAKE_WHISPER = """
+CALLS = []
+class _M:
+    def transcribe(self, audio, language=None, word_timestamps=False, **kw):
+        CALLS.append(len(audio))
+        dur = len(audio) / 16000
+        if len(CALLS) == 1:
+            # ilk deneme: model saçmaladı (istenen kelimeler yok)
+            return {"segments": [{"words": [{"word": "alakasız", "start": 0.0, "end": 0.5},
+                                            {"word": "şeyler", "start": 0.6, "end": 1.0},
+                                            {"word": "söyledi", "start": 1.1, "end": 1.5}]}]}
+        # ikinci deneme: doğru cümle + sonda uydurma kuyruk
+        return {"segments": [{"words": [{"word": "Yakıt", "start": 0.0, "end": 0.4},
+                                        {"word": "az,", "start": 0.5, "end": 0.8},
+                                        {"word": "eve", "start": 0.9, "end": 1.1},
+                                        {"word": "dön.", "start": 1.2, "end": 1.5},
+                                        {"word": "hmm", "start": dur - 0.3, "end": dur - 0.1}]}]}
+def load_model(name, device=None):
+    return _M()
+"""
+
+
+def test_local_server_whisper_trims_and_retries(tmp_path, monkeypatch):
+    import socket
+    import sys
+
+    pytest.importorskip("numpy")
+    from alice.voice.tts import Chatterbox, EmotionLibrary
+
+    fake = tmp_path / "fake"
+    (fake / "chatterbox").mkdir(parents=True)
+    (fake / "chatterbox" / "__init__.py").write_text("")
+    (fake / "chatterbox" / "mtl_tts.py").write_text(FAKE_CHATTERBOX)
+    (fake / "torch.py").write_text(FAKE_TORCH)
+    (fake / "whisper.py").write_text(FAKE_WHISPER)
+    monkeypatch.setenv("PYTHONPATH", str(fake))
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    eng = Chatterbox(sys.executable, port, library=EmotionLibrary(lib), start_timeout=30,
+                     trim=lambda a, t: (_ for _ in ()).throw(AssertionError("sunucu kesti, istemci kesmemeli")))
+    try:
+        # sahte model karakter başına 0.15 sn üretir (~2.7 sn); Whisper "dön"ü 1.5 sn'de duyuyor
+        a = eng.synth("Yakıt az, eve dön.", "urgent")
+        assert float(eng.last_quality) >= 0.85                 # ikinci deneme seçildi
+        assert a.seconds < 1.5 + 0.15 + 0.06 + 0.15 + 0.05      # "dön"den sonrası kesildi (+fade/boşluk)
+    finally:
+        if eng._proc is not None:
+            eng._proc.kill()
+            eng._proc.wait(5)
+
+
+def test_server_assess():
+    import importlib.util
+    from pathlib import Path
+
+    import alice.voice.tts as t
+
+    spec = importlib.util.spec_from_file_location("tts_server_mod", Path(t.__file__).with_name("tts_server.py"))
+    srv = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(srv)
+    q, end = srv.assess([("Merhaba,", 0, 0.5), ("ben", 0.6, 0.8), ("ALICE.", 0.9, 1.3), ("bla", 2, 2.5),
+                         ("bla", 2.6, 3)], "Merhaba, ben ALICE.")
+    assert end == 1.3 and 0.5 < q < 1.0
+    q2, end2 = srv.assess([("tamamen", 0, 1), ("başka", 1, 2)], "Merhaba, ben ALICE.")
+    assert q2 == 0 and end2 is None
