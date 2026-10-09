@@ -405,6 +405,8 @@ class XTTS:
     def _load(self):
         dev = _device(self.allow_gpu())
         if self._model is None or dev != self._device:
+            # Lisans (CPML) sorusu konsolda y/n bekler; arka plandaki çekirdekte bu sonsuza dek takılmak demek.
+            os.environ.setdefault("COQUI_TOS_AGREED", "1")
             try:
                 from TTS.api import TTS as CoquiTTS
             except ImportError as e:
