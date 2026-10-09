@@ -6,6 +6,12 @@ Yerel: XTTS v2 ve Chatterbox. İkisi de sesi bir referans kayıttan klonlar. Ref
 (~/.alice/voice/library/<duygu>.wav). Böylece DCS açıkken buluttan, kapalıyken yerelden
 konuşsa da hep aynı ALICE duyulur.
 
+Yedek: Microsoft Edge'in sinir ağı sesleri (edge-tts). Anahtar ve kota yok, ~1 sn'de hazır; bulut
+düşünce yavaş yerel motordan önce denenir.
+
+Yedek: Microsoft Edge'in sinir ağı sesleri (edge-tts). Anahtar ve kota yok, ~1 sn'de hazır; bulut
+düşünce yavaş yerel motordan önce denenir.
+
 Seçim (TTSRouter): DCS açıkken (mod politikası local_gpu = false) yerel motor GPU'ya
 dokunmaz; ya bulut kullanılır ya da yerel motor işlemcide çalışır. Hata veren motor bir
 süre atlanır.
@@ -510,6 +516,66 @@ class Chatterbox:
         return audio.polish()
 
 
+# Duyguya göre konuşma hızı/perdesi (Edge sesi stil talimatı almaz).
+EDGE_PROSODY = {"excited": ("+10%", "+4Hz"), "happy": ("+5%", "+2Hz"), "serious": ("-5%", "-2Hz"),
+                "sad": ("-10%", "-4Hz"), "urgent": ("+15%", "+0Hz")}
+
+
+class EdgeTTS:
+    """Microsoft Edge sesleri (pip install edge-tts). MP3 gelir, av ile 24 kHz mono PCM'e çevrilir."""
+
+    def __init__(self, voice: str = "tr-TR-EmelNeural", timeout: float = 15.0):
+        self.voice = voice
+        self.timeout = timeout
+        self.name = f"edge:{voice}"
+
+    def _mp3(self, text: str, emotion: str) -> bytes:
+        import asyncio
+
+        try:
+            import edge_tts
+        except ImportError as e:
+            raise TTSError("edge-tts kurulu değil: pip install edge-tts") from e
+        rate, pitch = EDGE_PROSODY.get(emotion, ("+0%", "+0Hz"))
+
+        async def run() -> bytes:
+            buf = bytearray()
+            async for chunk in edge_tts.Communicate(text, self.voice, rate=rate, pitch=pitch).stream():
+                if chunk.get("type") == "audio":
+                    buf += chunk["data"]
+            return bytes(buf)
+
+        try:
+            return asyncio.run(asyncio.wait_for(run(), self.timeout))
+        except Exception as e:  # noqa: BLE001 - ağ/servis hataları tek türde dönsün
+            raise TTSError(f"edge sesi alınamadı: {type(e).__name__}: {e}") from e
+
+    def synth(self, text: str, emotion: str = "calm") -> Audio:
+        data = self._mp3(text, emotion)
+        if not data:
+            raise TTSError("edge sesi boş döndü")
+        return Audio(decode_mp3(data, 24000), 24000)
+
+
+def decode_mp3(data: bytes, rate: int) -> bytes:
+    """MP3 -> int16 mono PCM (av, faster-whisper ile birlikte gelir)."""
+    import io
+
+    try:
+        import av
+    except ImportError as e:
+        raise TTSError("MP3 çözmek için av gerekli: pip install av") from e
+    out = bytearray()
+    with av.open(io.BytesIO(data)) as box:
+        res = av.AudioResampler(format="s16", layout="mono", rate=rate)
+        for frame in box.decode(audio=0):
+            for f in res.resample(frame):
+                out += bytes(f.planes[0])[: f.samples * 2]
+        for f in res.resample(None):
+            out += bytes(f.planes[0])[: f.samples * 2]
+    return bytes(out)
+
+
 # --------------------------------------------------------------------- seçim
 def core_policy() -> dict[str, Any]:
     from alice.core.service import read_state
@@ -562,9 +628,10 @@ class TTSRouter:
 
     def __init__(self, cloud: TTS | None, local: TTS | None, prefer: str = "cloud",
                  policy: Callable[[], dict[str, Any]] = core_policy, cooldown: float = 300,
-                 cache: SpeechCache | None = None):
+                 cache: SpeechCache | None = None, backup: TTS | None = None):
         self.cloud = cloud
         self.local = local
+        self.backup = backup  # bulut düşünce, yavaş yerel motordan önce denenen hızlı yedek (Edge)
         self.prefer = prefer
         self.policy = policy
         self.cooldown = cooldown
@@ -577,10 +644,11 @@ class TTSRouter:
         return self.last or (self.order()[0].name if self.order() else "yok")
 
     def order(self) -> list[TTS]:
-        engines = [self.local, self.cloud] if self.prefer == "local" else [self.cloud, self.local]
+        engines = ([self.local, self.cloud, self.backup] if self.prefer == "local"
+                   else [self.cloud, self.backup, self.local])
         if self.policy().get("local_gpu") is False and self.local is not None:
             # Uçuşta GPU oyuna kalsın: önce bulut; yerel ancak işlemcide, son çare olarak.
-            engines = [self.cloud, self.local]
+            engines = [self.cloud, self.backup, self.local]
         return [e for e in engines if e is not None]
 
     def synth(self, text: str, emotion: str = "calm") -> Audio:
@@ -649,4 +717,6 @@ def make_local(cfg: Config, name: str | None = None) -> TTS | None:
 
 def make_tts(cfg: Config) -> TTSRouter:
     v = cfg.data.get("voice", {})
-    return TTSRouter(make_cloud(cfg), make_local(cfg), v.get("prefer", "cloud"), cache=SpeechCache())
+    edge = str(v.get("tts_edge", "tr-TR-EmelNeural") or "")
+    return TTSRouter(make_cloud(cfg), make_local(cfg), v.get("prefer", "cloud"), cache=SpeechCache(),
+                     backup=EdgeTTS(edge) if edge else None)

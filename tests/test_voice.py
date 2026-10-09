@@ -787,3 +787,47 @@ def test_local_wake_gate_keeps_non_wake_audio_off_the_cloud():
     stt.wake_gate = Gate(None)
     va.handle_audio(audio, direct=False)  # yerel model yoksa eskisi gibi buluta gider
     assert stt.calls == 2
+
+
+def test_edge_backup_before_slow_local():
+    from alice.voice.audio import Audio
+    from alice.voice.tts import QuotaError, TTSRouter
+
+    class E:
+        def __init__(self, name, fail=None):
+            self.name, self.fail, self.calls = name, fail, 0
+
+        def synth(self, text, emotion="calm"):
+            self.calls += 1
+            if self.fail:
+                raise self.fail
+            return Audio(b"\0\0" * 10, 24000)
+
+    cloud, edge, local = E("gemini", QuotaError("kota", None, True)), E("edge"), E("chatterbox")
+    r = TTSRouter(cloud, local, policy=dict, backup=edge)
+    r.synth("merhaba")
+    assert (cloud.calls, edge.calls, local.calls) == (1, 1, 0) and r.last == "edge"
+
+
+def test_decode_mp3_roundtrip():
+    import io
+    import math
+
+    av = pytest.importorskip("av")
+    from alice.voice.tts import decode_mp3
+
+    buf = io.BytesIO()
+    with av.open(buf, "w", format="mp3") as box:
+        st = box.add_stream("mp3", rate=24000, layout="mono")
+        import array
+
+        samples = array.array("h", (int(8000 * math.sin(i / 10)) for i in range(24000)))
+        frame = av.AudioFrame(format="s16", layout="mono", samples=len(samples))
+        frame.planes[0].update(samples.tobytes())
+        frame.sample_rate = 24000
+        for p in st.encode(frame):
+            box.mux(p)
+        for p in st.encode(None):
+            box.mux(p)
+    pcm = decode_mp3(buf.getvalue(), 24000)
+    assert 0.9 < len(pcm) / 2 / 24000 < 1.2
