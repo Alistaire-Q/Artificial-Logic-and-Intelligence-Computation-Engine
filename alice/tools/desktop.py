@@ -81,10 +81,14 @@ def window_op(title: str, op: str) -> str:
     return w.title
 
 
+def _shortcut_roots() -> list[Path]:
+    return [Path(os.environ.get("ProgramData", r"C:\ProgramData")) / r"Microsoft\Windows\Start Menu\Programs",
+            Path(os.environ.get("APPDATA", "")) / r"Microsoft\Windows\Start Menu\Programs",
+            Path.home() / "Desktop", Path(os.environ.get("PUBLIC", r"C:\Users\Public")) / "Desktop"]
+
+
 def _start_menu_lookup(name: str) -> Path | None:
-    roots = [Path(os.environ.get("ProgramData", r"C:\ProgramData")) / r"Microsoft\Windows\Start Menu\Programs",
-             Path(os.environ.get("APPDATA", "")) / r"Microsoft\Windows\Start Menu\Programs",
-             Path.home() / "Desktop", Path(os.environ.get("PUBLIC", r"C:\Users\Public")) / "Desktop"]
+    roots = _shortcut_roots()
     needle = name.lower()
     best: Path | None = None
     for root in roots:
@@ -101,6 +105,180 @@ def _start_menu_lookup(name: str) -> Path | None:
     return best
 
 
+def _norm(s: str) -> str:
+    return "".join(ch for ch in s.lower() if ch.isalnum())
+
+
+def _resolve_lnks(lnks: list[Path]) -> dict[Path, str]:
+    """Kısayolların hedef exe yollarını tek PowerShell çağrısıyla çöz."""
+    lnks = [p for p in lnks if p.suffix.lower() == ".lnk"]
+    if not lnks:
+        return {}
+    paths = ",".join("'" + str(p).replace("'", "''") + "'" for p in lnks)
+    ps = (f"$w=New-Object -ComObject WScript.Shell;foreach($p in @({paths}))"
+          "{try{Write-Output ($p+'|'+$w.CreateShortcut($p).TargetPath)}catch{}}")
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, timeout=15,
+                           creationflags=0x08000000)
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    out: dict[Path, str] = {}
+    for line in r.stdout.decode("utf-8", errors="replace").splitlines():
+        lnk, _, target = line.strip().partition("|")
+        if target:
+            out[Path(lnk)] = target
+    return out
+
+
+def _steam_libraries() -> list[Path]:
+    import re
+
+    roots = [Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Steam",
+             Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Steam"]
+    libs: list[Path] = []
+    for root in roots:
+        if not root.is_dir():
+            continue
+        libs.append(root / "steamapps" / "common")
+        vdf = root / "steamapps" / "libraryfolders.vdf"
+        try:
+            for m in re.finditer(r'"path"\s+"([^"]+)"', vdf.read_text(encoding="utf-8", errors="replace")):
+                libs.append(Path(m.group(1).replace("\\\\", "\\")) / "steamapps" / "common")
+        except OSError:
+            pass
+    return [p for p in dict.fromkeys(libs) if p.is_dir()]
+
+
+def _exes_in(folder: Path, needle: str, depth: int = 3) -> list[Path]:
+    """Klasörde adı aranan kelimeyi içeren exe'ler (yoksa klasördeki tüm exe'ler), sığ arama."""
+    found: list[Path] = []
+    stack = [(folder, 0)]
+    while stack and len(found) < 40:
+        d, lvl = stack.pop()
+        try:
+            entries = list(d.iterdir())
+        except OSError:
+            continue
+        for e in entries:
+            if e.is_file() and e.suffix.lower() == ".exe":
+                found.append(e)
+            elif e.is_dir() and lvl < depth:
+                stack.append((e, lvl + 1))
+    named = [f for f in found if needle in _norm(f.stem)]
+    skip = ("unins", "setup", "crash", "update", "helper")
+    return [f for f in (named or found) if not any(k in f.stem.lower() for k in skip)]
+
+
+def find_installed_apps(name: str, limit: int = 15) -> list[str]:
+    """Kurulu bir programın yerini bul: Başlat menüsü, kayıt defteri (Uninstall, App Paths),
+    Program Files, LOCALAPPDATA\\Programs ve Steam kütüphaneleri. Satır başına 'kaynak: yol'."""
+    if not IS_WIN:
+        exe = shutil.which(name)
+        return [f"PATH: {exe}"] if exe else []
+    needle = _norm(name)
+    if not needle:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(src: str, path: str) -> None:
+        path = path.strip().strip('"')
+        if path and path.lower() not in seen and Path(path).exists():
+            seen.add(path.lower())
+            out.append(f"{src}: {path}")
+
+    w = shutil.which(name)
+    if w:
+        add("PATH", w)
+
+    # Başlat menüsü / masaüstü kısayolları (hedef exe'leriyle birlikte)
+    roots = _shortcut_roots()
+    lnks: list[Path] = []
+    for root in roots:
+        if root.is_dir():
+            lnks += [p for p in root.rglob("*") if p.suffix.lower() in (".lnk", ".url", ".appref-ms")
+                     and needle in _norm(p.stem)]
+    targets = _resolve_lnks(lnks[:20])
+    for lnk in lnks[:20]:
+        t = targets.get(lnk, "")
+        if t.lower().endswith(".exe"):
+            add("kısayol hedefi", t)
+        add("kısayol", str(lnk))
+
+    # Kayıt defteri
+    try:
+        import winreg
+
+        hives = [(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+                 (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+                 (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall")]
+        for hive, path in hives:
+            try:
+                root = winreg.OpenKey(hive, path)
+            except OSError:
+                continue
+            for i in range(winreg.QueryInfoKey(root)[0]):
+                try:
+                    sub = winreg.OpenKey(root, winreg.EnumKey(root, i))
+                    disp = str(winreg.QueryValueEx(sub, "DisplayName")[0])
+                except OSError:
+                    continue
+                if needle not in _norm(disp):
+                    continue
+                for val in ("DisplayIcon", "InstallLocation"):
+                    try:
+                        v = str(winreg.QueryValueEx(sub, val)[0]).split(",")[0].strip('"')
+                    except OSError:
+                        continue
+                    if v.lower().endswith(".exe"):
+                        add(f"kayıt ({disp})", v)
+                    elif v and Path(v).is_dir():
+                        for exe in _exes_in(Path(v), needle, depth=2)[:3]:
+                            add(f"kayıt ({disp})", str(exe))
+        for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+            try:
+                root = winreg.OpenKey(hive, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths")
+            except OSError:
+                continue
+            for i in range(winreg.QueryInfoKey(root)[0]):
+                key = winreg.EnumKey(root, i)
+                if needle in _norm(Path(key).stem):
+                    try:
+                        add("App Paths", str(winreg.QueryValue(root, key)))
+                    except OSError:
+                        pass
+    except ImportError:
+        pass
+
+    # Program klasörleri ve Steam: adı eşleşen klasörlerin içindeki exe'ler
+    bases = [Path(os.environ.get(k, "")) for k in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432")]
+    bases.append(Path(os.environ.get("LOCALAPPDATA", "")) / "Programs")
+    bases += _steam_libraries()
+    for base in dict.fromkeys(bases):
+        if not str(base) or not base.is_dir():
+            continue
+        try:
+            subs = list(base.iterdir())
+        except OSError:
+            continue
+        for d in subs:
+            if not d.is_dir():
+                continue
+            # "Blender Foundation\Blender 4.2" gibi bir alt seviyeye de bak
+            cands = [d] if needle in _norm(d.name) else []
+            if not cands:
+                try:
+                    cands = [c for c in d.iterdir() if c.is_dir() and needle in _norm(c.name)]
+                except OSError:
+                    cands = []
+            for c in cands:
+                for exe in _exes_in(c, needle)[:3]:
+                    add("klasör", str(exe))
+        if len(out) >= limit:
+            break
+    return out[:limit]
+
+
 def open_app(target: str) -> str:
     """Uygulama adı, exe yolu, dosya ya da URL aç."""
     if IS_WIN:
@@ -112,9 +290,15 @@ def open_app(target: str) -> str:
         if lnk:
             os.startfile(str(lnk))  # type: ignore[attr-defined]
             return f"açıldı: {lnk.stem} ({lnk})"
+        for line in find_installed_apps(target):
+            path = line.split(": ", 1)[1]
+            if path.lower().endswith(".exe"):
+                os.startfile(path)  # type: ignore[attr-defined]
+                return f"açıldı: {path}"
         # Son çare: shell'in kendi çözümlemesi (App Paths kayıtları dahil).
         subprocess.Popen(["cmd", "/c", "start", "", target], creationflags=0x08000000)
-        return f"başlatma komutu gönderildi: {target}"
+        return (f"'{target}' kurulu programlarda bulunamadı; başlatma komutu yine de gönderildi. "
+                "Pencere açılmadıysa program kurulu değildir ya da adı farklıdır.")
     if IS_MAC:
         if Path(target).expanduser().exists() or "://" in target:
             subprocess.Popen(["open", target])
@@ -253,21 +437,31 @@ def ui_act(ctx: ToolContext, element_id: int, action: str, text: str | None = No
 # ----------------------------------------------------------------------- araçlar
 class Windows(Tool):
     name = "windows"
-    description = ("Pencere yönetimi ve uygulama açma. action: list | focus | minimize | maximize | restore | close | open. "
-                   "open için target: uygulama adı (ör. 'Discord', 'notepad', 'steam'), exe yolu, dosya ya da URL.")
+    description = ("Pencere yönetimi, kurulu program bulma ve uygulama açma. "
+                   "action: list | focus | minimize | maximize | restore | close | open | find. "
+                   "open için target: uygulama adı (ör. 'Discord', 'notepad', 'blender'), exe yolu, dosya ya da URL. "
+                   "find: kurulu bir programın exe yolunu bulur (Başlat menüsü, kayıt defteri, Program Files, Steam); "
+                   "bir programın kurulu olup olmadığını ya da exe yolunu (ör. komut satırından script çalıştırmak için) "
+                   "öğrenmek için shell'de arama yapmak yerine bunu kullan.")
     parameters = obj({
-        "action": {"type": "string", "enum": ["list", "focus", "minimize", "maximize", "restore", "close", "open"]},
+        "action": {"type": "string", "enum": ["list", "focus", "minimize", "maximize", "restore", "close", "open", "find"]},
         "title": {"type": "string", "description": "pencere başlığının bir parçası"},
         "target": {"type": "string"},
     }, ["action"])
     risk = COMPUTER
 
     def risk_for(self, args: dict[str, Any]) -> str:
-        return READ if args.get("action") == "list" else COMPUTER
+        return READ if args.get("action") in ("list", "find") else COMPUTER
 
     def run(self, ctx: ToolContext, action: str, title: str | None = None, target: str | None = None) -> ToolResult:
         if action == "list":
             return ToolResult("\n".join(list_windows()) or "pencere yok")
+        if action == "find":
+            if not target:
+                raise ToolError("find için target gerekli")
+            hits = find_installed_apps(target)
+            return ToolResult("\n".join(hits) if hits else f"'{target}' kurulu programlarda bulunamadı "
+                              "(Başlat menüsü, kayıt defteri, Program Files, Steam tarandı).")
         if action == "open":
             if not target:
                 raise ToolError("open için target gerekli")
