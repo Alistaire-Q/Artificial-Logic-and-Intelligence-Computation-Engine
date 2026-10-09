@@ -164,7 +164,8 @@ class GeminiTTS:
         self.voice = voice
         self.models = [models] if isinstance(models, str) else list(models or DEFAULT_GEMINI_MODELS)
         self.name = f"gemini:{voice}"
-        self.client = client or httpx.Client(timeout=60)
+        # Uzun cümlelerde ses üretimi yavaş olabiliyor; bağlantı kurulamazsa hızlı vazgeç.
+        self.client = client or httpx.Client(timeout=httpx.Timeout(45, connect=10))
         self.verify = verify
         self.formats_file = formats_file or formats_path()
         self.down: dict[str, float] = {}  # model -> bu ana kadar atla
@@ -215,6 +216,9 @@ class GeminiTTS:
         }
         try:
             r = self.client.post(self.URL.format(model=model), json=body, headers={"x-goog-api-key": self.api_key})
+        except httpx.TimeoutException:
+            # Model o an yavaş/takıldı: bu cümle için sıradaki modele geç.
+            return "slow", f"{model}: zaman aşımı"
         except httpx.HTTPError as e:
             raise TTSError(f"gemini bağlantı hatası: {e}") from e
         if r.status_code == 429:
@@ -255,6 +259,11 @@ class GeminiTTS:
                 if kind == "missing":
                     # Model yok, bu hesapta açık değil ya da ses/dil desteklenmiyor: bir gün atla.
                     self.down[model] = now + 86400
+                    self.reason[model] = "error"
+                    errors.append(res)
+                    break
+                if kind == "slow":
+                    self.down[model] = now + 120  # iki dakika diğer modellerle devam et
                     self.reason[model] = "error"
                     errors.append(res)
                     break

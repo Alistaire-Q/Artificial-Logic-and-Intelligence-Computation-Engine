@@ -465,3 +465,17 @@ def test_leak_detection_and_format_fallback(tmp_path):
     eng2 = GeminiTTS("k", "Kore", ["m1"], client=httpx.Client(transport=httpx.MockTransport(handler)), formats_file=f)
     eng2.synth("Merhaba.", "calm")
     assert eng2.last_format == "tag" and prompts[-1].startswith("[calm")  # kayıtlı iyi biçim, tek istek
+
+
+def test_gemini_timeout_moves_to_next_model():
+    pcm = tone(0.1, 24000).pcm
+
+    def handler(req):
+        if "m1" in req.url.path:
+            raise httpx.ReadTimeout("yavaş", request=req)
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"inlineData": {
+            "mimeType": "audio/L16;rate=24000", "data": base64.b64encode(pcm).decode()}}]}}]})
+
+    eng = GeminiTTS("k", "Kore", ["m1", "m2"], client=httpx.Client(transport=httpx.MockTransport(handler)))
+    eng.synth("Merhaba.")
+    assert eng.last_model == "m2" and eng.down["m1"] > 0
