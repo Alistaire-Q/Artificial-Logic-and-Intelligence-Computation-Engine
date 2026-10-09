@@ -211,6 +211,148 @@ Terminalde cevap akarak geliyor, dosya düzenlemeleri renkli diff olarak görün
 
 REPL komutları: `/help`, `/plan`, `/mode plan|ask|auto|yolo` (Shift+Tab ile de döner), `/model` (zincir durumları), `/model brain groq:openai/gpt-oss-120b` (sabitle), `/rewind`, `/init`, `/usage`, `/compact`, `/clear`, `/sessions`, `/resume`, `/cwd`, `/tools`, `/mcp`, `/memory`, `/exit`. Özel komutlar ve `@dosya` terminalde de çalışıyor.
 
+## Arka plan çekirdeği
+
+ALICE'in altında, sen yazmasan da çalışan küçük bir servis var. Bilgisayarı izliyor, uzun süren sorunlarda haber veriyor, ortama göre mod değiştiriyor ve zamanlanmış görevleri çalıştırıyor.
+
+```powershell
+pip install -e ".[core]"     # sistem tepsisi simgesi için (opsiyonel)
+alice core install           # Windows açılınca tepside sessizce başlasın
+alice core run --tray        # şimdi başlat (ya da sadece: alice core run)
+alice core status            # çalışıyor mu, hangi mod, son bildirimler
+alice core mode flight       # modu elle sabitle; alice core mode auto ile otomatiğe dön
+alice core stats "pc.gpu.*" 1d
+```
+
+**Veri.** Her 15 saniyede CPU, RAM, disk, en çok kaynak kullanan programlar, öndeki pencere ve (NVIDIA kartta) GPU sıcaklığı/kullanımı `~/.alice/core.db` dosyasına yazılır, 30 gün saklanır. Windows'ta CPU sıcaklığı için [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) açık olmalı (psutil Windows'ta sıcaklık vermiyor). ALICE'e "dün DCS oynarken GPU kaç dereceydi?" diye sorabilirsin; `metrics` aracıyla uçuş modundaki aralıklara bakar.
+
+**Modlar.** DCS ya da War Thunder açıkken *uçuş*: sadece uçuşla ilgili ve kritik bildirimler geçer, ALICE yerel GPU'yu kullanmaz. Unity ya da editör açıkken *geliştirme*, gece (varsayılan 00:30-08:00) *sessiz*: sadece uyarılar, ses yok. Susturulan bildirimler kaybolmaz, `alice core status` ya da "ben oyundayken ne oldu?" ile görülür. Program listeleri ve politikalar `config.toml` içindeki `[core]` bölümünde.
+
+**Kurallar.** Hazır kurallar: GPU/CPU birkaç dakika çok ısınırsa, RAM uzun süre doluysa, disk dolmak üzereyse, bir program belleği şişirirse. Kendi kuralını cümleyle kurarsın:
+
+```powershell
+alice rules add "GPU 80 dereceyi 5 dakika geçerse ve DCS açık değilse söyle"
+alice rules                  # liste;  alice rules off gpu-hot  /  alice rules rm <id>
+```
+
+Ya da ALICE'e direkt "nabzım uzun süre yüksek kalırsa beni uyar" demen yeter. Karar ucuzdan pahalıya gider: önce kural, durum belirsizse hızlı karar modeli (Jev), gerçekten araştırma gerekiyorsa ALICE'in kendisi.
+
+**Zamanlanmış görevler.**
+
+```powershell
+alice tasks add "her pazar gece D:\Unity altındaki projeleri E:\Yedek'e zip'le"
+alice tasks                  # liste ve son sonuçlar;  alice tasks run <id>  /  alice tasks rm <id>
+```
+
+ALICE cümleyi zamanlamaya çevirip gösterir, onaylarsan kurar. Bilgisayar kapalıyken kaçırılan görev açılışta bir kez telafi edilir. Görevler gözetimsiz çalıştığı için onay gerektiren adımlar (auto modda tehlikeli komutlar) reddedilir; sonuç bildirim olarak gelir.
+
+**Kişilik.** ALICE'in sana nasıl hitap edeceği, ne kadar uzun konuşacağı ve ne sıklıkla şaka yapacağı `~/.alice/personality.md` dosyasında (`alice init` oluşturur), her oturumda okunur.
+
+## Ses
+
+ALICE'in sesi ve kulağı. Önce paketleri kur:
+
+```powershell
+pip install -e ".[voice]"          # mikrofon, ses çalma, bas-konuş, konuşma algılama
+pip install -e ".[voice-local]"    # opsiyonel: bilgisayarda Whisper ve "Hey Alice" modeli
+alice voice status                 # neyin hazır olduğunu gösterir
+```
+
+**1. Sesi seç (dinleme testi).** Aday sesler aynı Türkçe cümleleri beş tonda (sakin, neşeli, ciddi, acil, şakacı) seslendirir, sonuç tarayıcıda yan yana açılır:
+
+```powershell
+alice voice audition                                   # Gemini sesleri (GEMINI_API_KEY gerekir)
+alice voice audition --local xtts,chatterbox           # yerel motorlar da (önce: pip install coqui-tts / chatterbox-tts)
+alice voice use gemini:Aoede                           # beğendiğini seç
+alice voice library                                    # bu sesle duygu kütüphanesini oluştur
+alice voice say "Bingo yakıt, eve dön." --emotion urgent
+```
+
+Yerel motorlar sesi duygu kütüphanesindeki kayıtlardan klonlar. Bu yüzden DCS açıkken buluttan, kapalıyken bilgisayardan konuşsa da aynı ALICE duyulur. Uçuş modunda ALICE ekran kartına dokunmaz: önce bulut, yerel motor ancak son çare olarak işlemcide.
+
+**2. Konuş.**
+
+```powershell
+alice voice           # sesli asistan: bas-konuş (Scroll Lock) ve "Hey Alice"
+alice voice test      # mikrofonu dene
+```
+
+* **Bas-konuş:** tuşu basılı tut, konuş, bırak. Tuş `config.toml` içinde `[voice] ptt_key`.
+* **"Hey Alice":** el gerektirmez. [openWakeWord](https://github.com/dscripka/openWakeWord) ile kendi eğittiğin bir model (`wake_model`) verirsen tamamen yerelde dinler. Vermezsen konuşma algılanınca Whisper'a çevrilip "Alice" ile başlayıp başlamadığına bakılır.
+* ALICE cevap verdikten sonra 8 saniye boyunca "Hey Alice" demeden devam edebilirsin.
+* ALICE konuşurken araya girersen susar ve yarım kalan işi durdurur. Hoparlör yerine kulaklık kullanırsan yankı yüzünden yanlışlıkla susmaz.
+* Cevabın tamamını beklemez, ilk cümle hazır olunca söyler. Bir araç çalışacaksa önce "hemen bakıyorum" der. Kod ve uzun yolları okumaz, ekrana yazdığını söyler.
+* Onay gereken bir işte sesli sorar, "evet" dersen yapar.
+* Konuşma tanıma: Groq'taki `whisper-large-v3-turbo` (GROQ_API_KEY), yedek olarak bilgisayarda `faster-whisper`.
+
+`[voice] enabled = true` yaparsan çekirdek (`alice core run`) sesli asistanı da başlatır ve bildirimleri seslendirir. Sessiz modda bildirimler sadece yazılı gelir.
+
+## Hızlı bar
+
+Hangi programdayken olursan ol:
+
+* **Ctrl+Alt+A:** ekranın ortasında küçük bir ALICE kutusu açılır. Yaz ya da mikrofon tuşunu (veya Ctrl+Boşluk) basılı tutup konuş.
+* **Ctrl+Alt+S:** ekran kararır, fareyle bir alan seçersin (hata mesajı, Unity console...). Seçilen alan soruya eklenir.
+* **Ctrl+Alt+C:** panoya kopyaladığın hatayı açıklatır.
+
+Çekirdekle birlikte başlar (`[quick] enabled = true`); tek başına çalıştırmak için `alice quick`. Kısayollar `[quick]` bölümünde. 10 dakika kullanılmazsa bir sonraki açılış yeni konuşmayla başlar. Esc kapatır, ALICE çalışırken Esc işi durdurur.
+
+## DCS ve War Thunder
+
+ALICE oyuna hiçbir şey göndermez, sadece okur ve konuşur. F-16'nın kendi sesli uyarılarını tekrarlamaz, bir uçuş arkadaşı gibi davranır.
+
+```powershell
+alice dcs install        # Saved Games\DCS\Scripts altına okuma betiği koyar, Export.lua'ya tek satır ekler
+alice core run           # uçuş verisi çekirdek açıkken işlenir (alice core install ile zaten açık)
+alice dcs status
+alice dcs uninstall      # geri al
+```
+
+Betik SRS, TacView ve Helios gibi diğer export betikleriyle birlikte çalışır. Veriyi saniyede 10 kez yerel UDP ile (port 41230) gönderir.
+
+* **Yakıt:** sadece "bingo" demez. Mevcut tüketimle kaç dakika kaldığını, üsse uzaklığı ve eve dönmek için kaç dakika içinde ayrılman gerektiğini söyler. Havada yakıt ikmali yaparsan uyarılar yeniden kurulur.
+* **Yaklaşma:** teker açık, alçak ve yavaşken AoA'ya göre "hızlısın", "yavaşsın, güç ver", "on speed" der. Alçalma hızın fazlaysa uyarır. Doğru giderken susar.
+* **Hatırlatmalar:** uzun süre yüksek G'de kalırsan, chaff ya da flare azalırsa ya da biterse söyler.
+* **Kontrol listeleri:** "Alice, iniş kontrol listesi" dersin, adım adım okur, "tamam" dedikçe devam eder. Paketle basitleştirilmiş F-16C listeleri geliyor. Kendi listelerini `~/.alice/checklists/*.md` olarak koyarsan onlar kullanılır (başlık listenin adı, her `- ` satırı bir adım).
+* **Kneeboard:** "Alice, kneeboard'u hazırla" dersen görev dosyasından grup frekansını, waypoint'leri (irtifa, mesafe, kerteriz) ve brifingi oyun içi kneeboard'a sayfa olarak koyar. Uçuşta "Alice, not al: tanker 251.0" dersen not sayfasına ekler. Elle: `alice dcs kneeboard [görev.miz]`.
+* **Uçuş sonrası:** inince kısa bir sesli değerlendirme yapar: süre, en yüksek G, yakıt, yaklaşmada on speed oranı, teker koyma sertliği. `~/.alice/flights/` altına grafikli bir rapor yazar. Saat verisi varsa nabız da rapora girer. Uçuşta nabzın yüksekse uyarıları acil değil sakin ama net bir tonla söyler.
+* **Çok oyunculu:** sunucu veri paylaşımını kısıtlıyorsa ALICE bunu söyler. Kontrol listeleri, kneeboard ve sesli komutlar çalışmaya devam eder.
+
+Desteklenen profiller: F-16C (AoA 11-15°) ve F/A-18C. Diğer uçaklarda genel değerler kullanılır. Profiller `alice/sims/flight.py` içinde.
+
+**War Thunder:** oyun açıkken yerel göstergelerini (`http://127.0.0.1:8111`) okur. Yakıt, G ve yaklaşma uyarıları ile uçuş sonrası değerlendirme aynı şekilde çalışır. Kurulum gerekmez.
+
+## Akıllı saat ve telefon
+
+Huawei Watch GT 2 Pro'nun kendi nabız yayını olmadığı için veri telefondaki Gadgetbridge üzerinden gelir. İki yol var:
+
+1. **Dışa aktarılan veritabanı (birkaç dakikada bir):** Gadgetbridge'de otomatik dışa aktarmayı aç, dosyayı Syncthing gibi bir araçla bilgisayara senkronla ve `config.toml` içinde `[watch] export_path` olarak o dosyayı ya da klasörü yaz. Çekirdek dosya değiştikçe nabız, adım, stres ve SpO2'yi içe alır. Elle: `alice watch import Gadgetbridge.db`.
+2. **Canlı:** `alice phone` (ya da `[phone] enabled = true`) yerel ağda bir köprü açar. Telefondaki bir otomasyon (Tasker, Automate, HTTP Shortcuts) nabzı şuraya gönderebilir: `POST http://<bilgisayar>:8765/api/watch`, başlık `X-Alice-Token: <anahtar>`, gövde `{"hr": 88}`.
+
+**Gadgetbridge testi:** `alice watch status` verinin ne sıklıkla geldiğini ölçer ve buna göre ne yapılabileceğini söyler. Seçenekler: canlı, birkaç dakikada bir ya da seyrek.
+
+Saat verisi geldiğinde:
+* "Bugün nabzım neden yüksekti?", "bugün kaç adım attım?" gibi sorular sorabilirsin (`metrics` aracı).
+* Nabzın uçuş dışında 10 dakika boyunca 125'in üstünde kalırsa ALICE "iyi misin?" diye sorar. Yanlış alarm olmasın diye önce hızlı karar modeline danışır.
+* Uçuş raporunda nabız grafiği de çıkar.
+
+**Telefondan ALICE:** `alice phone` bir adres ve QR kod gösterir (`pip install qrcode` kuruluysa). Aynı Wi-Fi'deyken telefonun tarayıcısında açınca hızlı bar gelir. Adresteki uzun anahtar olmadan erişilemez, anahtar `~/.alice/phone-token` dosyasında durur (`--new-token` ile değişir). Bağlantı yerel ağda düz HTTP olduğu için sadece güvendiğin ağda aç. Telefonda mikrofon çalışmaz, yazarak sorarsın.
+
+## Küçük eklemeler
+
+```powershell
+alice notes add "Unity'de zıplama hatasına bak"     # ya da: "Alice, not al…"
+alice notes search zıplama 30d                        # ya da: "geçen hafta ne not almıştım?"
+alice brief                                           # sabah özeti şimdi
+alice brief --install 07:45 --weekdays                # her hafta içi sabahı söylesin
+alice report --open                                   # haftalık bilgisayar raporu
+alice report --install 20:00                          # her pazar akşamı
+```
+
+* **Sabah özeti:** hava durumu, bugün okul mu staj mı, gece çalışan görevlerin sonuçları, gece olan uyarılar ve dünden kalan notlar. `config.toml` içinde `[brief]` bölümüne şehrini ve programını yaz: `city = "Istanbul"`, `days = { pazartesi = "okul", salı = "staj" }`.
+* **Pano:** hızlı barda Ctrl+Alt+C.
+* **Müzik ve ses:** "Alice, sonraki şarkı", "sesi yüzde 30 yap", "müziği 20 dakika sonra durdur", "bilgisayarı bir saat sonra kapat" ("kapatmayı iptal et" ile geri alınır). Kapatma onay ister. Windows'ta tam ses seviyesi için `pip install pycaw` önerilir, kurulu değilse ses tuşlarıyla yaklaşık ayarlanır.
+
 ## İzin modları ve güvenlik
 
 * **plan:** sadece okur ve araştırır; dosya değiştiren, komut çalıştıran ya da ekrana dokunan her şey reddedilir, ALICE plan yazıp onayını bekler

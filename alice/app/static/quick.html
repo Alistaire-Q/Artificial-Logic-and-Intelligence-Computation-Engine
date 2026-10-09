@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="alice-token" content="{{TOKEN}}">
+<title>ALICE</title>
+<link rel="icon" href="/static/icon.svg">
+<link rel="stylesheet" href="/static/quick.css">
+<script src="/static/marked.min.js"></script>
+<script src="/static/purify.min.js"></script>
+<script src="/static/quick.js" defer></script>
+</head>
+<body>
+<div id="bar">
+  <img src="/static/icon.svg" alt="" class="logo">
+  <div id="attach" hidden><img alt="seçilen alan"><button id="dropImg" title="Görseli kaldır">×</button></div>
+  <textarea id="q" rows="1" placeholder="ALICE'e sor… (Enter gönder, Esc kapat)" autofocus></textarea>
+  <button id="mic" title="Basılı tut ve konuş (ya da Ctrl+Boşluk)" aria-label="Konuş">
+    <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+  </button>
+</div>
+<div id="out" hidden></div>
+<div id="foot"><span id="status"></span><span class="keys">Ctrl+N yeni · Esc kapat</span></div>
+</body>
+</html>

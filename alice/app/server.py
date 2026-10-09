@@ -33,7 +33,8 @@ from alice.tools.base import ToolResult
 
 STATIC = Path(__file__).parent / "static"
 STATIC_FILES = {"app.js": "text/javascript", "app.css": "text/css", "marked.min.js": "text/javascript",
-                "purify.min.js": "text/javascript", "icon.svg": "image/svg+xml"}
+                "purify.min.js": "text/javascript", "icon.svg": "image/svg+xml", "quick.js": "text/javascript",
+                "quick.css": "text/css"}
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
        "connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 
@@ -191,6 +192,10 @@ class AppState:
         self.ui.agent = self.agent
         self.sid = sess.new_session_id()
         self.token = secrets.token_urlsafe(24)
+        self.allowed_hosts = {"127.0.0.1", "localhost"}  # telefon sunucusunda LAN adresi eklenir
+        self.watch_store = None  # telefon sunucusu: saat verisi buraya yazılır
+        self.quick_pending: dict[str, Any] | None = None  # hızlı bar açılırken doldurulacak metin/görsel
+        self._stt = None
         # Tüm ajan işleri tek bir kalıcı thread'de çalışır: Playwright tarayıcısı ve UI Automation
         # nesneleri oluşturuldukları thread'e bağlı, her mesajda yeni thread açmak onları bozar.
         self._jobs: queue.Queue = queue.Queue()
@@ -288,6 +293,14 @@ class AppState:
         self.run_in_worker(run)
         return True, None
 
+    def transcribe(self, data: bytes, filename: str) -> str:
+        """Arayüzün mikrofon kaydını yazıya çevir (Whisper)."""
+        if self._stt is None:
+            from alice.voice.stt import make_stt
+
+            self._stt = make_stt(self.cfg)
+        return self._stt.transcribe_file(data, filename)
+
     def rewind(self, mi: int) -> dict[str, Any]:
         text, restored = self.agent.rewind(mi)
         try:
@@ -338,7 +351,7 @@ def make_handler(state: AppState):
         # ------------------------------------------------------------ yardımcı
         def _host_ok(self) -> bool:
             host = (self.headers.get("Host") or "").split(":")[0]
-            return host in ("127.0.0.1", "localhost")
+            return host in state.allowed_hosts
 
         def _token_ok(self, query: dict[str, list[str]]) -> bool:
             tok = self.headers.get("X-Alice-Token") or (query.get("t") or [""])[0]
@@ -382,6 +395,13 @@ def make_handler(state: AppState):
                     return self._deny()
                 html = (STATIC / "index.html").read_text(encoding="utf-8").replace("{{TOKEN}}", state.token)
                 return self._send(200, html.encode("utf-8"), "text/html; charset=utf-8", {"Content-Security-Policy": CSP})
+            if u.path == "/quick":
+                if not self._token_ok(q):
+                    return self._deny()
+                html = (STATIC / "quick.html").read_text(encoding="utf-8").replace("{{TOKEN}}", state.token)
+                return self._send(200, html.encode("utf-8"), "text/html; charset=utf-8",
+                                  {"Content-Security-Policy": CSP.replace("img-src 'self' data:",
+                                                                          "img-src 'self' data:; media-src 'self' blob:")})
             if u.path.startswith("/static/"):
                 name = u.path[len("/static/"):]
                 if name not in STATIC_FILES:
@@ -391,6 +411,9 @@ def make_handler(state: AppState):
                 return self._deny()
             if u.path == "/api/events":
                 return self._events()
+            if u.path == "/api/quick/pending":
+                pending, state.quick_pending = state.quick_pending, None
+                return self._json(pending or {})
             if u.path == "/api/state":
                 return self._json(state.status())
             if u.path == "/api/history":
@@ -455,6 +478,23 @@ def make_handler(state: AppState):
                         return self._json({"ok": False, "error": "boş mesaj"}, 400)
                     ok, err = state.send(text or "Bu görsele bak.", images)
                     return self._json({"ok": ok, "error": err}, 200 if ok else 409)
+                if p == "/api/watch":
+                    if state.watch_store is None:
+                        return self._json({"ok": False, "error": "saat verisi bu sunucuda kapalı"}, 404)
+                    from alice.health.watch import ingest
+
+                    return self._json({"ok": True, "added": ingest(state.watch_store, d)})
+                if p == "/api/transcribe":
+                    import base64
+
+                    from alice.voice.stt import STTError
+
+                    try:
+                        data = base64.b64decode(str(d.get("audio", "")))
+                        ext = "ogg" if "ogg" in str(d.get("mime", "")) else "webm"
+                        return self._json({"ok": True, "text": state.transcribe(data, f"speech.{ext}")})
+                    except (STTError, ValueError) as e:
+                        return self._json({"ok": False, "error": str(e)}, 502)
                 if p == "/api/stop":
                     state.agent.stop()
                     return self._json({"ok": True})
@@ -519,9 +559,9 @@ def make_handler(state: AppState):
 
 
 class AppServer:
-    def __init__(self, state: AppState, port: int = 0):
+    def __init__(self, state: AppState, port: int = 0, host: str = "127.0.0.1"):
         self.state = state
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(state))
+        self.httpd = ThreadingHTTPServer((host, port), make_handler(state))
         self.httpd.daemon_threads = True
         self._thread = threading.Thread(target=self.httpd.serve_forever, daemon=True, name="alice-http")
 

@@ -8,6 +8,15 @@
   alice reflex "hedef"       Jev/System One reflex döngüsünü tek başına çalıştır
   alice app                  masaüstü uygulamasını aç
   alice shortcut             masaüstüne ALICE kısayolu koy (Windows)
+  alice core run|install|status|mode|stats   arka plan çekirdeği (izleme, kurallar, modlar, görevler)
+  alice rules [add "cümle"]  uyarı kuralları ("GPU uzun süre ısınırsa söyle")
+  alice tasks [add "cümle"]  zamanlanmış görevler ("her pazar gece projelerimi yedekle")
+  alice voice [audition|use|library|say|test|status]   sesli asistan ve ses seçimi
+  alice quick [--open]       hızlı bar kısayolları (Ctrl+Alt+A / S / C)
+  alice dcs install|status|kneeboard   DCS bağlantısı
+  alice watch [status|import <db>]     akıllı saat verisi ve ne sıklıkla geldiği
+  alice phone                telefon köprüsü (telefondan ALICE, canlı nabız)
+  alice notes | brief | report         notlar, sabah özeti, haftalık bilgisayar raporu
 """
 
 from __future__ import annotations
@@ -645,6 +654,30 @@ def main(argv: list[str] | None = None) -> int:
 
             log_error()
             raise
+    if argv and argv[0] in ("core", "rules", "tasks"):
+        from alice.core import cli as core_cli
+
+        return {"core": core_cli.core_cmd, "rules": core_cli.rules_cmd, "tasks": core_cli.tasks_cmd}[argv[0]](argv[1:])
+    if argv and argv[0] in ("notes", "brief", "report"):
+        from alice.extras import cli as extras_cli
+
+        return getattr(extras_cli, f"{argv[0]}_cmd")(argv[1:])
+    if argv and argv[0] in ("watch", "phone"):
+        from alice.app import phone
+
+        return (phone.watch_cmd if argv[0] == "watch" else phone.phone_cmd)(argv[1:])
+    if argv and argv[0] == "dcs":
+        from alice.sims.dcs import dcs_cmd
+
+        return dcs_cmd(argv[1:])
+    if argv and argv[0] == "quick":
+        from alice.app.quick import quick_cmd
+
+        return quick_cmd(argv[1:])
+    if argv and argv[0] == "voice":
+        from alice.voice.cli import voice_cmd
+
+        return voice_cmd(argv[1:])
     if argv and argv[0] == "shortcut":
         return shortcut_cmd()
     if argv and argv[0] == "reflex":

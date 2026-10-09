@@ -1,0 +1,76 @@
+"""Ekleme komutları.
+
+  alice notes [add "metin" | search "kelime" [süre] | undo]
+  alice brief [--install 08:00] [--weekdays]     sabah özeti (şimdi göster ya da her sabah kur)
+  alice report [--days 7] [--install 20:00]       haftalık bilgisayar raporu (pazar akşamı kurulur)
+"""
+
+from __future__ import annotations
+
+import webbrowser
+
+from rich.console import Console
+from rich.markup import escape
+
+console = Console(highlight=False)
+
+
+def notes_cmd(argv: list[str]) -> int:
+    from alice.core.store import parse_time
+    from alice.extras import notes
+
+    sub = argv[0] if argv else "list"
+    if sub == "add" and len(argv) > 1:
+        notes.add(" ".join(argv[1:]))
+        console.print("[green]not alındı[/]")
+        return 0
+    if sub == "undo":
+        n = notes.remove_last()
+        console.print(f"silindi: {escape(n.text)}" if n else "[dim]not yok[/]")
+        return 0
+    if sub == "search" and len(argv) > 1:
+        found = notes.search(argv[1], parse_time(argv[2]) if len(argv) > 2 else None)
+    else:
+        found = notes.all_notes()[-30:]
+    for n in found:
+        console.print(escape(n.line()))
+    if not found:
+        console.print("[dim]not yok[/]")
+    return 0
+
+
+def brief_cmd(argv: list[str]) -> int:
+    from alice.config import load_config
+    from alice.core.schedule import TaskStore
+    from alice.core.store import Store
+    from alice.extras import brief
+
+    if "--install" in argv:
+        i = argv.index("--install")
+        at = argv[i + 1] if len(argv) > i + 1 and ":" in argv[i + 1] else "08:00"
+        t = brief.install(at, weekdays_only="--weekdays" in argv)
+        console.print(f"[green]kuruldu:[/] {escape(t.summary())}")
+        return 0
+    cfg = load_config()
+    console.print(escape(brief.render(brief.gather(cfg.data.get("brief", {}), Store(), TaskStore()))))
+    return 0
+
+
+def report_cmd(argv: list[str]) -> int:
+    from alice.core.store import Store
+    from alice.extras import report
+
+    if "--install" in argv:
+        i = argv.index("--install")
+        at = argv[i + 1] if len(argv) > i + 1 and ":" in argv[i + 1] else "20:00"
+        t = report.install(at)
+        console.print(f"[green]kuruldu:[/] {escape(t.summary())}")
+        return 0
+    days = int(argv[argv.index("--days") + 1]) if "--days" in argv else 7
+    r = report.build(Store(), days)
+    console.print(escape(report.text(r)))
+    page = report.save_html(r)
+    console.print(f"[dim]{page}[/]")
+    if "--open" in argv:
+        webbrowser.open(page.as_uri())
+    return 0

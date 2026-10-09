@@ -46,6 +46,81 @@ screenshot_max_width = 1366
 browser_headless = false
 browser_executable = ""
 
+# Arka plan çekirdeği (`alice core run`): veri toplar, kuralları değerlendirir, görevleri çalıştırır.
+[core]
+# Kaç saniyede bir veri toplanır.
+interval = 15
+# Veriler kaç gün saklanır.
+retention_days = 30
+# Bu saatlerde sessiz mod: sadece uyarı ve üstü, sesli konuşma yok. Boş = kapalı.
+quiet_hours = "00:30-08:00"
+desktop_notifications = true
+# Zamanlanmış görevler ve araştırma kurallarındaki gözetimsiz ALICE'in izin modu.
+# Onay gerektiren adımlar (auto'da tehlikeli komutlar) gözetimsizken reddedilir.
+task_permission_mode = "auto"
+
+# Mod program listeleri (küçük harf, süreç adı). Politika alanları da ezilebilir:
+# min_severity (info|warn|critical), topics, voice, local_gpu.
+[core.modes.flight]
+programs = ["dcs.exe", "dcs_server.exe", "aces.exe"]
+[core.modes.dev]
+programs = ["unity.exe", "unity hub.exe", "code.exe", "devenv.exe", "rider64.exe"]
+
+# ALICE'in sesi ve kulağı (`alice voice`). Ses seçimi: `alice voice audition`.
+[voice]
+# true: çekirdek (alice core run) sesli asistanı da başlatır, bildirimleri seslendirir.
+enabled = false
+# Bulut sesi "gemini:<ses>"; yerel motor "xtts" ya da "chatterbox" (boş = yok).
+tts_cloud = "gemini:Aoede"
+tts_local = ""
+# cloud: önce bulut, local: önce yerel. Uçuşta (local_gpu = false) her zaman önce bulut.
+prefer = "cloud"
+gemini_tts_model = "gemini-2.5-flash-preview-tts"
+# Konuşma tanıma zinciri: groq:<model>, local:<faster-whisper modeli>
+stt = ["groq:whisper-large-v3-turbo", "local:large-v3-turbo"]
+stt_cpu_model = "small"
+language = "tr"
+# Bas-konuş tuşu (pynput adı: <scroll_lock>, <f13>, <pause>...). Boş = kapalı.
+ptt_key = "<scroll_lock>"
+# openWakeWord modeli (.onnx). Boşsa "Hey Alice" Whisper ile, konuşma algılanınca anlaşılır.
+wake_model = ""
+wake_phrase = true
+# ALICE konuşurken konuşmaya başlarsan susar.
+barge_in = true
+# ALICE cevap verdikten sonra bu kadar saniye "Hey Alice" demeden devam edebilirsin.
+follow_up = 8
+
+# Uçuş simülasyonları (çekirdekle çalışır). DCS için önce: alice dcs install
+[sims]
+dcs = true
+dcs_port = 41230
+warthunder = true
+
+# Akıllı saat (Gadgetbridge). export_path: Gadgetbridge'in otomatik dışa aktardığı veritabanı
+# (Syncthing vb. ile bilgisayara gelen dosya ya da klasör). Boş = kapalı.
+[watch]
+export_path = ""
+
+# Telefon köprüsü (`alice phone`): telefondan tarayıcıyla ALICE'e ulaşma ve canlı saat verisi.
+# Yerel ağa açılır; adresteki uzun rastgele anahtar olmadan erişilemez. Sadece güvendiğin ağda aç.
+[phone]
+enabled = false
+port = 8765
+
+# Sabah özeti (`alice brief`, kurmak için `alice brief --install 08:00`).
+# days: haftanın günlerine göre program, ör. pazartesi = "okul", salı = "staj".
+[brief]
+city = ""
+days = {}
+
+# Hızlı bar: her programın üstünde kısayolla açılan küçük ALICE kutusu (pynput gerekir).
+[quick]
+# true: çekirdek (alice core run) hızlı barı da başlatır.
+enabled = true
+hotkey = "<ctrl>+<alt>+a"
+region_hotkey = "<ctrl>+<alt>+s"
+clipboard_hotkey = "<ctrl>+<alt>+c"
+
 # Rol başına model zinciri. Soldan sağa denenir; 429, quota, 5xx, model yok gibi
 # durumlarda bir sonrakine geçilir. `alice models --refresh` bu listeleri
 # canlı ücretsiz model kataloğuna göre güncellemene yardım eder.
@@ -159,6 +234,17 @@ TYPESAFE_API_KEY=
 """
 
 
+PERSONALITY_TEMPLATE = """# ALICE'in kişiliği
+
+Bu dosya her oturumda ALICE'e okunur. İstediğin gibi değiştir.
+
+- Hitap: bana adımla ya da "sen" diye hitap et, resmî olma.
+- Ton: sakin ve sıcak; gerektiğinde şakacı. Acil durumlarda (uçuş uyarısı, hata) espri yapma, net ve kısa ol.
+- Uzunluk: sesli cevaplarda 1-3 cümle; yazılı cevaplarda gerektiği kadar.
+- Şaka sıklığı: ara sıra, işin önüne geçmeyecek kadar.
+"""
+
+
 def _deep_merge(base: dict, over: dict) -> dict:
     out = copy.deepcopy(base)
     for k, v in over.items():
@@ -245,6 +331,29 @@ class Config:
         return dict(self.data.get("models", {}).get(ref, {}).get("extra", {}))
 
 
+def set_config_value(section: str, key: str, value: Any) -> Path:
+    """~/.alice/config.toml'da [section] altındaki key'i yaz (yoksa ekle). value TOML'a çevrilir."""
+    import json
+    import re
+
+    init_home()
+    path = alice_home() / "config.toml"
+    text = path.read_text(encoding="utf-8")
+    line = f"{key} = {json.dumps(value, ensure_ascii=False)}"
+    sec = re.search(rf"(?m)^\[{re.escape(section)}\]\s*$", text)
+    if not sec:
+        text = text.rstrip() + f"\n\n[{section}]\n{line}\n"
+    else:
+        nxt = re.search(r"(?m)^\[", text[sec.end():])
+        end = sec.end() + (nxt.start() if nxt else len(text) - sec.end())
+        body = text[sec.end():end]
+        rx = re.compile(rf"(?m)^{re.escape(key)}\s*=.*$")
+        body = rx.sub(lambda _m: line, body, count=1) if rx.search(body) else f"\n{line}" + body
+        text = text[:sec.end()] + body + text[end:]
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
 def default_config_dict() -> dict[str, Any]:
     return tomllib.loads(DEFAULT_CONFIG_TOML)
 
@@ -277,6 +386,10 @@ def init_home(force: bool = False) -> list[Path]:
         written.append(env)
     for sub in ("sessions", "browser-profile"):
         (home / sub).mkdir(exist_ok=True)
+    pers = home / "personality.md"
+    if not pers.exists():
+        pers.write_text(PERSONALITY_TEMPLATE, encoding="utf-8")
+        written.append(pers)
     mem = home / "ALICE.md"
     if not mem.exists():
         mem.write_text(
