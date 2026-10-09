@@ -90,6 +90,14 @@ barge_in = true
 # ALICE cevap verdikten sonra bu kadar saniye "Hey Alice" demeden devam edebilirsin.
 follow_up = 8
 
+# Hızlı bar: her programın üstünde kısayolla açılan küçük ALICE kutusu (pynput gerekir).
+[quick]
+# true: çekirdek (alice core run) hızlı barı da başlatır.
+enabled = true
+hotkey = "<ctrl>+<alt>+a"
+region_hotkey = "<ctrl>+<alt>+s"
+clipboard_hotkey = "<ctrl>+<alt>+c"
+
 # Rol başına model zinciri. Soldan sağa denenir; 429, quota, 5xx, model yok gibi
 # durumlarda bir sonrakine geçilir. `alice models --refresh` bu listeleri
 # canlı ücretsiz model kataloğuna göre güncellemene yardım eder.

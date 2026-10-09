@@ -40,6 +40,7 @@ def core_cmd(argv: list[str]) -> int:
         router = Router(cfg)
         core = service.Core(cfg, decider=Decider.from_config(cfg, router), run_agent=service.make_agent_runner(cfg))
         voice = _start_voice(cfg, core) if cfg.data.get("voice", {}).get("enabled") and "--once" not in argv else None
+        quick = _start_quick(cfg) if cfg.data.get("quick", {}).get("enabled", True) and "--once" not in argv else None
         try:
             if "--once" in argv:
                 core.tick()
@@ -56,6 +57,8 @@ def core_cmd(argv: list[str]) -> int:
         finally:
             if voice is not None:
                 voice.stop()
+            if quick is not None:
+                quick.stop()
             service.release_lock()
         return 0
     if sub == "install":
@@ -108,6 +111,21 @@ def core_cmd(argv: list[str]) -> int:
         return 0
     console.print(__doc__)
     return 2
+
+
+def _start_quick(cfg):
+    """Hızlı bar kısayollarını çekirdekle birlikte başlat (pynput yoksa sessizce atla)."""
+    import importlib.util
+
+    if importlib.util.find_spec("pynput") is None:
+        return None
+    from alice.app.quick import QuickBar
+
+    qb = QuickBar(cfg)
+    if not qb.start_hotkeys():
+        qb.stop()
+        return None
+    return qb
 
 
 def _start_voice(cfg, core):

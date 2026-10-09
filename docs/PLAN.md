@@ -117,12 +117,15 @@ Sıra ihtiyaca göre değişebilir. Bir şey beklediğimiz gibi çıkmazsa ya da
 * **1. Çekirdek: yapıldı.** `alice core`: arka plan servisi, sistem tepsisi, Windows açılışında otomatik başlama, veri deposu, kurallar (kural → Jev → ALICE), bildirimler, modlar ve mod politikası (uçuşta yerel GPU kapalı). Ayrıntı README'de.
 * **3. Bilgisayar izleme ve zamanlanmış görevler: yapıldı.** Sıcaklık, bellek, disk ve program izleme, hazır uyarılar, geçmişe dönük sorular (`metrics` aracı), doğal dille kural ve görev kurma, kaçırılan görevleri telafi.
 * **Kişilik dosyası: yapıldı** (`~/.alice/personality.md`).
-* **2. Ses ve hızlı bar: sırada.** Önce dinleme testi için aday seslerle örnekler hazırlanacak, seçim senin. Dinleme tarafı: Groq'ta Whisper large-v3-turbo, yedek olarak bilgisayarda faster-whisper; önünde openWakeWord ("Hey Alice") ve Silero VAD.
+* **2. Ses ve hızlı bar: kod hazır, ses seçimi seni bekliyor.** `alice voice audition` dinleme testi; Gemini, XTTS ve Chatterbox motorları; duygu kütüphanesi; tona göre konuşma; Groq Whisper ve yerel faster-whisper; bas-konuş, "Hey Alice", araya girince susma, ilk cümleyle konuşmaya başlama. Hızlı bar: Ctrl+Alt+A kutu, Ctrl+Alt+S alan seç ve sor, Ctrl+Alt+C panodakini açıklat. Bunlar gerçek mikrofon ve hoparlörle henüz denenmedi.
+* **6'dan erken gelen: pano açıklatma** hızlı barla birlikte yapıldı.
 * **4-6:** DCS, saat ve eklemeler çekirdeğin üstüne aynı gözlemci yapısıyla eklenecek.
 
 ## Şu an seni bekleyenler
 
 * Gadgetbridge testinin sonucu: nabız ve adım geliyor mu, ne sıklıkla?
+* Dinleme testi: `alice voice audition` (istersen `--local xtts,chatterbox` ile), beğendiğin sesi `alice voice use ...` ile seç, sonra `alice voice library`.
+* "Hey Alice"i tamamen yerelde istiyorsan openWakeWord ile kendi sesinden bir model eğitmek (kaynaklarda rehber var). Eğitmezsen Whisper ile çalışır, sadece biraz daha fazla Groq isteği harcar.
 * Windows'ta `alice core install` ile çekirdeği kurup birkaç gün açık bırakman; yanlış alarmları ve eksik gördüğün uyarıları not etmen. CPU sıcaklığı için LibreHardwareMonitor'ın açık olması gerekiyor.
 * ALICE'i birkaç gün gerçek işlerde kullanıp takıldığın yerleri not etmen. Sıradaki adımları gerçek ihtiyaca göre şekillendirmenin en iyi yolu bu.
 

@@ -248,6 +248,55 @@ ALICE cümleyi zamanlamaya çevirip gösterir, onaylarsan kurar. Bilgisayar kapa
 
 **Kişilik.** ALICE'in sana nasıl hitap edeceği, ne kadar uzun konuşacağı ve ne sıklıkla şaka yapacağı `~/.alice/personality.md` dosyasında (`alice init` oluşturur), her oturumda okunur.
 
+## Ses
+
+ALICE'in sesi ve kulağı. Önce paketleri kur:
+
+```powershell
+pip install -e ".[voice]"          # mikrofon, ses çalma, bas-konuş, konuşma algılama
+pip install -e ".[voice-local]"    # opsiyonel: bilgisayarda Whisper ve "Hey Alice" modeli
+alice voice status                 # neyin hazır olduğunu gösterir
+```
+
+**1. Sesi seç (dinleme testi).** Aday sesler aynı Türkçe cümleleri beş tonda (sakin, neşeli, ciddi, acil, şakacı) seslendirir, sonuç tarayıcıda yan yana açılır:
+
+```powershell
+alice voice audition                                   # Gemini sesleri (GEMINI_API_KEY gerekir)
+alice voice audition --local xtts,chatterbox           # yerel motorlar da (önce: pip install coqui-tts / chatterbox-tts)
+alice voice use gemini:Aoede                           # beğendiğini seç
+alice voice library                                    # bu sesle duygu kütüphanesini oluştur
+alice voice say "Bingo yakıt, eve dön." --emotion urgent
+```
+
+Yerel motorlar sesi duygu kütüphanesindeki kayıtlardan klonlar. Bu yüzden DCS açıkken buluttan, kapalıyken bilgisayardan konuşsa da aynı ALICE duyulur. Uçuş modunda ALICE ekran kartına dokunmaz: önce bulut, yerel motor ancak son çare olarak işlemcide.
+
+**2. Konuş.**
+
+```powershell
+alice voice           # sesli asistan: bas-konuş (Scroll Lock) ve "Hey Alice"
+alice voice test      # mikrofonu dene
+```
+
+* **Bas-konuş:** tuşu basılı tut, konuş, bırak. Tuş `config.toml` içinde `[voice] ptt_key`.
+* **"Hey Alice":** el gerektirmez. [openWakeWord](https://github.com/dscripka/openWakeWord) ile kendi eğittiğin bir model (`wake_model`) verirsen tamamen yerelde dinler. Vermezsen konuşma algılanınca Whisper'a çevrilip "Alice" ile başlayıp başlamadığına bakılır.
+* ALICE cevap verdikten sonra 8 saniye boyunca "Hey Alice" demeden devam edebilirsin.
+* ALICE konuşurken araya girersen susar ve yarım kalan işi durdurur. Hoparlör yerine kulaklık kullanırsan yankı yüzünden yanlışlıkla susmaz.
+* Cevabın tamamını beklemez, ilk cümle hazır olunca söyler. Bir araç çalışacaksa önce "hemen bakıyorum" der. Kod ve uzun yolları okumaz, ekrana yazdığını söyler.
+* Onay gereken bir işte sesli sorar, "evet" dersen yapar.
+* Konuşma tanıma: Groq'taki `whisper-large-v3-turbo` (GROQ_API_KEY), yedek olarak bilgisayarda `faster-whisper`.
+
+`[voice] enabled = true` yaparsan çekirdek (`alice core run`) sesli asistanı da başlatır ve bildirimleri seslendirir. Sessiz modda bildirimler sadece yazılı gelir.
+
+## Hızlı bar
+
+Hangi programdayken olursan ol:
+
+* **Ctrl+Alt+A:** ekranın ortasında küçük bir ALICE kutusu açılır. Yaz ya da mikrofon tuşunu (veya Ctrl+Boşluk) basılı tutup konuş.
+* **Ctrl+Alt+S:** ekran kararır, fareyle bir alan seçersin (hata mesajı, Unity console...). Seçilen alan soruya eklenir.
+* **Ctrl+Alt+C:** panoya kopyaladığın hatayı açıklatır.
+
+Çekirdekle birlikte başlar (`[quick] enabled = true`); tek başına çalıştırmak için `alice quick`. Kısayollar `[quick]` bölümünde. 10 dakika kullanılmazsa bir sonraki açılış yeni konuşmayla başlar. Esc kapatır, ALICE çalışırken Esc işi durdurur.
+
 ## İzin modları ve güvenlik
 
 * **plan:** sadece okur ve araştırır; dosya değiştiren, komut çalıştıran ya da ekrana dokunan her şey reddedilir, ALICE plan yazıp onayını bekler

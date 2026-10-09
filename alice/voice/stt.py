@@ -54,6 +54,19 @@ class GroqWhisper:
             raise STTError(f"groq {r.status_code}: {r.text[:200]}")
         return str(r.json().get("text", "")).strip()
 
+    def transcribe_file(self, data: bytes, filename: str) -> str:
+        """Tarayıcıdan gelen webm/ogg gibi kayıtlar (Groq kendisi çözer)."""
+        try:
+            r = self.client.post(self.URL, headers={"Authorization": f"Bearer {self.api_key}"},
+                                 data={"model": self.model, "language": self.language, "response_format": "json",
+                                       "temperature": "0", **({"prompt": self.prompt} if self.prompt else {})},
+                                 files={"file": (filename, data, "application/octet-stream")})
+        except httpx.HTTPError as e:
+            raise STTError(f"groq bağlantı hatası: {e}") from e
+        if r.status_code != 200:
+            raise STTError(f"groq {r.status_code}: {r.text[:200]}")
+        return str(r.json().get("text", "")).strip()
+
 
 class LocalWhisper:
     """faster-whisper. GPU izinliyse large-v3-turbo, değilse işlemcide küçük model."""
@@ -89,10 +102,13 @@ class LocalWhisper:
         return self._models[key]
 
     def transcribe(self, audio: Audio) -> str:
+        return self.transcribe_file(audio.resample(16000).to_wav(), "speech.wav")
+
+    def transcribe_file(self, data: bytes, filename: str) -> str:
+        # faster-whisper, PyAV ile wav/webm/ogg hepsini çözer.
         with self._lock:
-            segments, _ = self._model().transcribe(io.BytesIO(audio.resample(16000).to_wav()),
-                                                   language=self.language, vad_filter=True, beam_size=1,
-                                                   initial_prompt=self.prompt or None)
+            segments, _ = self._model().transcribe(io.BytesIO(data), language=self.language, vad_filter=True,
+                                                   beam_size=1, initial_prompt=self.prompt or None)
             return " ".join(s.text.strip() for s in segments).strip()
 
 
@@ -104,13 +120,19 @@ class STTRouter:
         self.last = ""
 
     def transcribe(self, audio: Audio) -> str:
+        return self._try(lambda e: e.transcribe(audio))
+
+    def transcribe_file(self, data: bytes, filename: str) -> str:
+        return self._try(lambda e: e.transcribe_file(data, filename))
+
+    def _try(self, fn) -> str:
         errors = []
         now = time.monotonic()
         for e in self.engines:
             if self.down.get(e.name, 0) > now:
                 continue
             try:
-                text = e.transcribe(audio)
+                text = fn(e)
                 self.last = e.name
                 return text
             except STTError as ex:
