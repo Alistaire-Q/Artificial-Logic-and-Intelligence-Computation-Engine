@@ -479,3 +479,21 @@ def test_gemini_timeout_moves_to_next_model():
     eng = GeminiTTS("k", "Kore", ["m1", "m2"], client=httpx.Client(transport=httpx.MockTransport(handler)))
     eng.synth("Merhaba.")
     assert eng.last_model == "m2" and eng.down["m1"] > 0
+
+
+def test_list_models_and_status_detail():
+    from alice.voice.tts import QuotaError, list_gemini_tts_models
+
+    pages = {"": {"models": [{"name": "models/gemini-2.5-flash"}, {"name": "models/gemini-2.5-flash-preview-tts"}],
+                  "nextPageToken": "p2"},
+             "p2": {"models": [{"name": "models/gemini-3.8-flash-tts"}]}}
+    c = httpx.Client(transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, json=pages[r.url.params.get("pageToken", "")])))
+    assert list_gemini_tts_models("k", c) == ["gemini-2.5-flash-preview-tts", "gemini-3.8-flash-tts"]
+
+    daily = GEMINI_429.replace("PerMinute", "PerDay")
+    eng = GeminiTTS("k", "Kore", ["yok", "dolu"], client=httpx.Client(transport=httpx.MockTransport(
+        lambda r: httpx.Response(404, text="nf") if "yok" in r.url.path else httpx.Response(429, text=daily))))
+    with pytest.raises(QuotaError) as ei:
+        eng.synth("x")
+    assert "yok: bulunamadı" in str(ei.value) and "dolu: günlük kota" in str(ei.value)

@@ -244,8 +244,11 @@ class GeminiTTS:
         now = time.monotonic()
         quota: list[QuotaError] = []
         errors: list[str] = []
+        status: dict[str, str] = {}
         for model in self.models:
             if self.down.get(model, 0) > now:
+                status[model] = {"daily": "günlük kota", "minute": "dakikalık kota"}.get(self.reason.get(model, ""),
+                                                                                         "bekletiliyor")
                 continue
             fallback: Audio | None = None
             for fmt in self.formats_for(model):
@@ -255,20 +258,24 @@ class GeminiTTS:
                     self.down[model] = now + (6 * 3600 if res.daily else (res.retry_after or 60))
                     self.reason[model] = "daily" if res.daily else "minute"
                     quota.append(res)
+                    status[model] = "günlük kota" if res.daily else "dakikalık kota"
                     break
                 if kind == "missing":
                     # Model yok, bu hesapta açık değil ya da ses/dil desteklenmiyor: bir gün atla.
                     self.down[model] = now + 86400
                     self.reason[model] = "error"
                     errors.append(res)
+                    status[model] = "bulunamadı/desteklenmiyor (" + res.rsplit(" ", 1)[-1] + ")"
                     break
                 if kind == "slow":
                     self.down[model] = now + 120  # iki dakika diğer modellerle devam et
                     self.reason[model] = "error"
                     errors.append(res)
+                    status[model] = "zaman aşımı"
                     break
                 if kind == "error":
                     errors.append(res)
+                    status[model] = res.split(": ", 1)[-1][:60]
                     break
                 if self.verify is not None and fmt != "plain" and not self.verify(res, text):
                     self._mark_bad(model, fmt)  # model talimatı da okudu: bu biçimi bu modelde bir daha kullanma
@@ -288,8 +295,26 @@ class GeminiTTS:
             kind = "günlük" if daily else "dakikalık"
             retry = None if daily else min(minute)
             wait = f", {retry:.0f} sn sonra tekrar denenebilir" if retry else ""
-            raise QuotaError(f"gemini {kind} ses kotası doldu ({len(self.models)} model denendi){wait}", retry, daily)
-        raise TTSError("gemini: " + ("; ".join(errors) if errors else "kullanılabilir model yok"))
+            detail = "; ".join(f"{m}: {st}" for m, st in status.items())
+            raise QuotaError(f"gemini {kind} ses kotası doldu{wait} [{detail}]", retry, daily)
+        raise TTSError("gemini: " + ("; ".join(f"{m}: {st}" for m, st in status.items()) or "kullanılabilir model yok"))
+
+
+def list_gemini_tts_models(api_key: str, client: httpx.Client | None = None) -> list[str]:
+    """Bu anahtarla erişilebilen ses (TTS) modelleri. Model listesi kota harcamaz."""
+    c = client or httpx.Client(timeout=15)
+    out, token = [], ""
+    for _ in range(10):
+        r = c.get("https://generativelanguage.googleapis.com/v1beta/models",
+                  params={"pageSize": 1000, **({"pageToken": token} if token else {})},
+                  headers={"x-goog-api-key": api_key})
+        r.raise_for_status()
+        data = r.json()
+        out += [m["name"].split("/", 1)[-1] for m in data.get("models", []) if "tts" in m.get("name", "").lower()]
+        token = data.get("nextPageToken", "")
+        if not token:
+            break
+    return sorted(out)
 
 
 def _fold(s: str) -> list[str]:

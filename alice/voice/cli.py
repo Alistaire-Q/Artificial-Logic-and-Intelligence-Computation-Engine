@@ -8,6 +8,7 @@
   alice voice say "metin" [--emotion urgent] [--engine cloud|local]
   alice voice test                    mikrofonu 5 sn dinle, seviyeyi ve duyulanı göster
   alice voice status                  motorlar, kütüphane, opsiyonel paketler
+  alice voice models                  hesabında hangi Gemini ses modelleri var (kota harcamaz)
 """
 
 from __future__ import annotations
@@ -33,12 +34,36 @@ def voice_cmd(argv: list[str]) -> int:
     sub = argv[0] if argv and not argv[0].startswith("-") else "run"
     rest = argv[1:] if argv and not argv[0].startswith("-") else argv
     cfg = load_config()
-    fn = {"run": _run, "audition": _audition, "use": _use, "library": _library, "say": _say, "test": _test,
+    fn = {"models": _models, "run": _run, "audition": _audition, "use": _use, "library": _library, "say": _say, "test": _test,
           "status": _status}.get(sub)
     if fn is None:
         console.print(__doc__)
         return 2
     return fn(cfg, rest)
+
+
+def _models(cfg, argv) -> int:
+    import httpx
+
+    from alice.voice.tts import list_gemini_tts_models, make_cloud
+
+    eng = make_cloud(cfg)
+    if eng is None:
+        console.print("[red]GEMINI_API_KEY yok[/]")
+        return 1
+    try:
+        avail = list_gemini_tts_models(eng.api_key)
+    except httpx.HTTPError as e:
+        console.print(f"[red]model listesi alınamadı:[/] {escape(str(e))}")
+        return 1
+    console.print("[bold]Hesabındaki ses modelleri:[/] " + (", ".join(avail) or "[red]hiç yok[/]"))
+    console.print("[bold]ALICE'in sırası:[/]")
+    for m in eng.models:
+        console.print(f"  {'[green]✓[/]' if m in avail else '[red]✗ yok[/]'} {m}")
+    missing = [m for m in avail if m not in eng.models]
+    if missing:
+        console.print(f"[dim]Sırada olmayan ama hesabında olanlar: {', '.join(missing)}[/]")
+    return 0
 
 
 def _status(cfg, argv) -> int:
