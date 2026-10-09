@@ -47,7 +47,7 @@ EXCLUDE = ("openrouter/free", "openrouter/auto", "tts", "image", "embed", "live"
 RANDOM_ROUTERS = ("openrouter:openrouter/free", "openrouter:openrouter/auto")
 
 CACHE_MAX_AGE = 24 * 3600
-PROBE_TIMEOUT = 45.0
+PROBE_TIMEOUT = 20.0  # 20 sn içinde araç çağrısı yapamayan model zaten günlük kullanıma uygun değil
 PER_PROVIDER = 15
 SLOW = 20.0  # saniye: beyin rolünde bundan yavaş modeller geri itilir
 
