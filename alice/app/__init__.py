@@ -1,0 +1,1 @@
+"""ALICE masaüstü uygulaması."""

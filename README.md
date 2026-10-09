@@ -13,6 +13,9 @@ Neler yapabiliyor:
 * Web arama (anahtarsız) ve sayfa okuma
 * **Reflex modu:** net bir arayüz hedefini System One kararlarıyla adım başına ~100-500 ms'de yürütme
 * Alt ajan, todo planı, oturumlar arası hafıza, oturum kaydetme/devam ettirme, otomatik context özetleme
+* **İki arayüz:** masaüstü uygulaması (Claude Code / Codex masaüstü gibi) ve terminal. İkisinde de akışlı cevap, renkli diff, durum çubuğu ve çok satırlı yazma var
+
+![ALICE uygulaması](docs/app-koyu.png)
 
 ## Mimari
 
@@ -107,7 +110,25 @@ alice doctor          # her sağlayıcıya test isteği atar, karar motorunu den
 alice models --write  # canlı ücretsiz katalogdan rol zincirlerini günceller (opsiyonel)
 ```
 
-## Kullanım
+## Masaüstü uygulaması
+
+`install.ps1` masaüstüne **ALICE** kısayolu koyuyor, çift tıklayınca konsol penceresi olmadan uygulama açılıyor. Elle açmak için `alice app`, kısayolu yeniden oluşturmak için `alice shortcut`.
+
+* **Akışlı cevap:** model yazdıkça metin ekrana akıyor, Markdown ve kod blokları canlı çiziliyor
+* **Araç kartları:** her araç çağrısı ayrı bir kart; tıklayınca çıktısı açılıyor, ekran görüntüleri küçük resim olarak görünüyor
+* **Diff:** dosya düzenlemelerinde kırmızı/yeşil satır farkı ve +/- sayıları
+* **İzin kartı:** tehlikeli işlemde sohbetin içinde "İzin ver / Reddet / Bu araca hep izin ver" butonları
+* **Durum çubuğu:** cevap veren model, context doluluğu, bugünkü istek sayısı, karar motoru, çalışıyor/hazır
+* **Üst çubuk:** çalışma klasörü (tıklayıp değiştirilebilir) ve izin modu (Sor / Otomatik / Tam erişim)
+* **Kenar çubuğu:** yeni sohbet, geçmiş oturumlar, Modeller paneli (zincir durumu, tek modele sabitleme)
+* **Kısayollar:** Enter gönder, Shift+Enter yeni satır, Esc durdur
+* Açık ve koyu tema Windows ayarını takip ediyor
+
+Pencere sırasıyla şöyle açılıyor: pywebview kuruluysa gerçek bir uygulama penceresi (Windows'ta Edge WebView2), değilse Edge/Chrome'un adres çubuğu olmayan uygulama modu, o da yoksa varsayılan tarayıcı. Arayüz sadece `127.0.0.1`'de çalışıyor ve her açılışta değişen rastgele bir token istiyor. Böylece tarayıcıda açık başka bir site ALICE'e komut gönderemiyor. Model çıktısı ekrana basılmadan önce DOMPurify ile temizleniyor.
+
+![Açık tema](docs/app-acik.png)
+
+## Terminal
 
 ```powershell
 alice                                   # etkileşimli oturum
@@ -125,6 +146,8 @@ alice reflex "Ayarlar sayfasını açıp Gizlilik sekmesine geç" --target brows
 alice reflex "Kaydet butonuna bas" --target desktop --title "Not Defteri"
 alice reflex "hava durumunu ara" --target browser --url https://duckduckgo.com --input "ara=ankara hava durumu"
 ```
+
+Terminalde cevap akarak geliyor, dosya düzenlemeleri renkli diff olarak görünüyor, altta model, izin modu, context doluluğu ve bugünkü istek sayısını gösteren bir durum çubuğu var. Çok satırlı yazmak için **Alt+Enter** ya da satırı `\` ile bitirip Enter (her terminalde çalışır); Enter tek başına gönderir.
 
 REPL komutları: `/help`, `/mode ask|auto|yolo`, `/model` (zincir durumları), `/model brain groq:openai/gpt-oss-120b` (sabitle), `/usage` (bugünkü istek/token), `/compact`, `/clear`, `/sessions`, `/resume`, `/cwd`, `/tools`, `/exit`.
 

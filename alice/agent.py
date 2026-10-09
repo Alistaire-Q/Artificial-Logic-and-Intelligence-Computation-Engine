@@ -8,32 +8,29 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from typing import Any, Protocol
 
 from alice.config import Config
 from alice.decider import Decider
 from alice.permissions import Permissions
 from alice.prompts import COMPACT_PROMPT, build_system_prompt
-from alice.providers.openai_compat import ChatResult
+from alice.providers.openai_compat import ChatResult, StreamCancelled
 from alice.providers.router import AllProvidersFailed, Router, estimate_tokens, strip_images
 from alice.tools.base import Tool, ToolContext, ToolError, ToolResult, truncate
 
 
 class UI(Protocol):
-    def assistant_text(self, text: str, source: str) -> None: ...
-    def tool_start(self, name: str, summary: str) -> None: ...
-    def tool_end(self, name: str, result: ToolResult) -> None: ...
+    """Arayüzün (terminal ya da masaüstü uygulaması) ajan olaylarını gösterme sözleşmesi."""
+
+    def stream_start(self) -> None: ...  # model cevabı başlıyor (ilk parça gelene kadar "düşünüyor")
+    def stream_delta(self, text: str) -> None: ...
+    def stream_reset(self) -> None: ...  # model akış ortasında düştü, yedek model baştan yazacak
+    def stream_end(self, text: str, source: str) -> None: ...
+    def tool_start(self, call_id: str, name: str, summary: str) -> None: ...
+    def tool_end(self, call_id: str, name: str, result: ToolResult) -> None: ...
     def ask_permission(self, name: str, summary: str, risk: str) -> str: ...  # y | n | a
     def info(self, msg: str) -> None: ...
-    def thinking(self, label: str) -> Any: ...  # context manager
-
-
-class _Null:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
 
 
 class NullUI:
@@ -41,13 +38,23 @@ class NullUI:
         self.approve = approve
         self.events: list[tuple[str, Any]] = []
 
-    def assistant_text(self, text, source):
-        self.events.append(("text", text))
+    def stream_start(self):
+        self.events.append(("start", None))
 
-    def tool_start(self, name, summary):
+    def stream_delta(self, text):
+        self.events.append(("delta", text))
+
+    def stream_reset(self):
+        self.events.append(("reset", None))
+
+    def stream_end(self, text, source):
+        if text:
+            self.events.append(("text", text))
+
+    def tool_start(self, call_id, name, summary):
         self.events.append(("tool", name))
 
-    def tool_end(self, name, result):
+    def tool_end(self, call_id, name, result):
         self.events.append(("result", result.text))
 
     def ask_permission(self, name, summary, risk):
@@ -57,8 +64,27 @@ class NullUI:
     def info(self, msg):
         self.events.append(("info", msg))
 
-    def thinking(self, label):
-        return _Null()
+
+class Cancelled(Exception):
+    pass
+
+
+class _Sink:
+    def __init__(self, ui: UI, cancel: threading.Event):
+        self.ui = ui
+        self.cancel = cancel
+        self.parts: list[str] = []
+
+    def on_delta(self, text: str) -> None:
+        self.parts.append(text)
+        self.ui.stream_delta(text)
+
+    def on_reset(self) -> None:
+        self.parts.clear()
+        self.ui.stream_reset()
+
+    def cancelled(self) -> bool:
+        return self.cancel.is_set()
 
 
 def parse_args(raw: str | dict | None) -> dict[str, Any]:
@@ -107,6 +133,9 @@ class Agent:
         self.compact_at = int(a.get("compact_at_tokens", 48000))
         self.output_limit = int(a.get("tool_output_chars", 12000))
         self.keep_images = int(a.get("keep_images", 2))
+        self.stream = bool(a.get("stream", True))
+        self.cancel = threading.Event()
+        self.busy = False
         if not is_child:
             ctx.state["agent"] = self
 
@@ -122,37 +151,60 @@ class Agent:
         self.messages.append({"role": "user", "content": user_text})
         final = ""
         steps = max_steps or self.max_steps
+        self.cancel.clear()
+        self.busy = True
+        sink = _Sink(self.ui, self.cancel)
         try:
             for _ in range(steps):
+                if self.cancel.is_set():
+                    raise Cancelled
                 self._maybe_compact()
                 self._prune_images()
-                with self.ui.thinking("düşünüyor"):
-                    res = self.router.chat("brain", self.messages, tools=self.tool_specs())
+                sink.parts.clear()
+                self.ui.stream_start()
+                res = self.router.chat("brain", self.messages, tools=self.tool_specs(),
+                                       stream=sink if self.stream else None)
                 msg = res.message
+                if not self.stream and msg.get("content"):
+                    self.ui.stream_delta(msg["content"])
                 self.messages.append(msg)
+                self.ui.stream_end(msg.get("content") or "", f"{res.provider}:{res.model}")
                 if msg.get("content"):
                     final = msg["content"]
-                    self.ui.assistant_text(msg["content"], f"{res.provider}:{res.model}")
                 if not msg.get("tool_calls"):
                     return final
                 self._run_tools(msg["tool_calls"])
             self.ui.info(f"adım limiti ({steps}) doldu; devam etmek için yeni mesaj yaz")
             return final
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, Cancelled, StreamCancelled):
+            partial = "".join(sink.parts)
+            if partial and not (self.messages[-1]["role"] == "assistant" and self.messages[-1].get("content") == partial):
+                self.messages.append({"role": "assistant", "content": partial + " [durduruldu]"})
+                self.ui.stream_end(partial, "")
             self._repair_after_interrupt()
             self.ui.info("durduruldu")
             return final
         except AllProvidersFailed as e:
+            self.ui.stream_end("", "")
             self._repair_after_interrupt()
             self.ui.info(str(e))
             return final
+        finally:
+            self.busy = False
+
+    def stop(self) -> None:
+        """Başka bir thread'den (ör. uygulamadaki Durdur butonu) mevcut turu durdur."""
+        self.cancel.set()
 
     # ------------------------------------------------------------------- tools
     def _run_tools(self, calls: list[dict[str, Any]]) -> None:
         pending_images: list[tuple[str, list[str]]] = []
         for call in calls:
             name = call["function"]["name"]
-            result = self._run_one(call)
+            if self.cancel.is_set():
+                result = ToolResult("durduruldu (kullanıcı kesti)", is_error=True)
+            else:
+                result = self._run_one(call)
             text = truncate(result.text, self.output_limit)
             if result.is_error:
                 text = f"HATA: {text}"
@@ -185,7 +237,7 @@ class Agent:
             elif ans != "y":
                 return ToolResult("Kullanıcı bu çağrıyı reddetti. Aynı şeyi tekrar deneme; başka yol bul ya da kullanıcıya sor.",
                                   is_error=True)
-        self.ui.tool_start(name, summary)
+        self.ui.tool_start(call["id"], name, summary)
         try:
             result = tool.run(self.ctx, **args)
         except ToolError as e:
@@ -196,7 +248,7 @@ class Agent:
             raise
         except Exception as e:  # noqa: BLE001 - araç hatası ajanı düşürmesin, modele dönsün
             result = ToolResult(f"{type(e).__name__}: {e}", is_error=True)
-        self.ui.tool_end(name, result)
+        self.ui.tool_end(call["id"], name, result)
         return result
 
     # ----------------------------------------------------------------- vision

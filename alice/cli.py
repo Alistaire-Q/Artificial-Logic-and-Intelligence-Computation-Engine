@@ -6,6 +6,8 @@
   alice doctor               anahtarları, modelleri ve opsiyonel bağımlılıkları test et
   alice models [--write]     canlı ücretsiz model kataloğunu tara, rol zinciri öner
   alice reflex "hedef"       Jev/System One reflex döngüsünü tek başına çalıştır
+  alice app                  masaüstü uygulamasını aç
+  alice shortcut             masaüstüne ALICE kısayolu koy (Windows)
 """
 
 from __future__ import annotations
@@ -15,11 +17,11 @@ import importlib.util
 import re
 import sys
 import time
-from contextlib import contextmanager
 from pathlib import Path
 
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.table import Table
 
 from alice import __version__
@@ -50,30 +52,104 @@ HELP = """[bold]Komutlar[/]
 Çalışırken [bold]Ctrl+C[/] mevcut işi durdurur. Fareyi ekranın sol üst köşesine götürmek fare/klavye kontrolünü keser."""
 
 
+class _Tail:
+    """Uzun cevap akarken ekrana sığan son kısmı göster (Live taşınca satırlar kopyalanmasın)."""
+
+    def __init__(self, text: str):
+        self.text = text
+
+    def __rich_console__(self, cons, options):
+        from rich.segment import Segment
+
+        lines = cons.render_lines(Markdown(self.text), options, pad=False)
+        height = max(6, cons.size.height - 4)
+        for line in lines[-height:]:
+            yield from line
+            yield Segment.line()
+
+
 class RichUI:
-    def __init__(self, verbose: bool = False):
+    def __init__(self, verbose: bool = False, model_label=lambda: ""):
         self.verbose = verbose
+        self.model_label = model_label
+        self._live = None
+        self._spin = None
+        self._buf = ""
 
-    def assistant_text(self, text: str, source: str) -> None:
-        console.print(Markdown(text))
-        if self.verbose:
-            console.print(f"[dim]  ({source})[/]")
+    # ------------------------------------------------------------ yardımcılar
+    def _spin_start(self, label: str) -> None:
+        self._spin_stop()
+        self._spin = console.status(f"[dim]{label}[/]", spinner="dots")
+        self._spin.start()
 
-    def tool_start(self, name: str, summary: str) -> None:
-        console.print(f"[cyan]●[/] [bold]{name}[/] [dim]{summary}[/]")
+    def _spin_stop(self) -> None:
+        if self._spin is not None:
+            self._spin.stop()
+            self._spin = None
 
-    def tool_end(self, name: str, result: ToolResult) -> None:
-        lines = result.text.strip().splitlines()
-        shown = "\n".join(f"  ⎿ {line[:200]}" if i == 0 else f"    {line[:200]}" for i, line in enumerate(lines[:6]))
+    def _live_stop(self) -> None:
+        if self._live is not None:
+            self._live.stop()
+            self._live = None
+
+    # ------------------------------------------------------------------ akış
+    def stream_start(self) -> None:
+        self._buf = ""
+        m = self.model_label()
+        self._spin_start(f"düşünüyor{' · ' + m if m else ''}...")
+
+    def stream_delta(self, text: str) -> None:
+        from rich.live import Live
+
+        self._spin_stop()
+        self._buf += text
+        if self._live is None:
+            self._live = Live(_Tail(self._buf), console=console, refresh_per_second=12, transient=True)
+            self._live.start()
+        else:
+            self._live.update(_Tail(self._buf))
+
+    def stream_reset(self) -> None:
+        self._live_stop()
+        self._buf = ""
+        console.print("[dim]  ↪ model akış ortasında düştü, yedek model baştan yazıyor[/]")
+        self._spin_start("yeniden deneniyor...")
+
+    def stream_end(self, text: str, source: str) -> None:
+        self._spin_stop()
+        self._live_stop()
+        if text:
+            console.print(Markdown(text))
+            if self.verbose and source:
+                console.print(f"[dim]  ({source})[/]")
+
+    # ----------------------------------------------------------------- araçlar
+    def tool_start(self, call_id: str, name: str, summary: str) -> None:
+        self._spin_stop()
+        console.print(f"[cyan]●[/] [bold]{name}[/] [dim]{escape(summary)}[/]")
+        self._spin_start(f"{name} çalışıyor...")
+
+    def tool_end(self, call_id: str, name: str, result: ToolResult) -> None:
+        self._spin_stop()
+        if result.diff:
+            print_diff(result.diff)
+            if result.is_error:
+                console.print(f"  [red]⎿ {escape(result.text[:300])}[/]")
+            return
+        lines = result.text.strip().splitlines() or [""]
+        style = "red" if result.is_error else "dim"
+        out = [f"  ⎿ {escape(lines[0][:200])}"] + [f"    {escape(line[:200])}" for line in lines[1:6]]
         if len(lines) > 6:
-            shown += f"\n    [dim]... +{len(lines) - 6} satır[/]"
+            out.append(f"    … +{len(lines) - 6} satır")
         if result.images:
-            shown += f"\n    [dim](+{len(result.images)} görüntü)[/]"
-        console.print(shown, style="red" if result.is_error else "dim", markup=True)
+            out.append(f"    (+{len(result.images)} görüntü)")
+        console.print(f"[{style}]" + "\n".join(out) + "[/]")
 
     def ask_permission(self, name: str, summary: str, risk: str) -> str:
+        self._spin_stop()
+        self._live_stop()
         color = "red" if risk == "danger" else "yellow"
-        console.print(f"[{color}]? İzin gerekiyor[/] [bold]{name}[/] ({risk})\n  {summary}")
+        console.print(f"[{color}]? İzin gerekiyor[/] [bold]{name}[/] ({risk})\n  {escape(summary)}")
         while True:
             ans = console.input("  [bold][y][/]evet  [bold][n][/]hayır  [bold][a][/]bu araca hep izin ver > ").strip().lower()
             if ans in ("y", "e", "evet", "yes", ""):
@@ -84,17 +160,33 @@ class RichUI:
                 return "a"
 
     def info(self, msg: str) -> None:
-        console.print(f"[yellow]{msg}[/]")
+        self._spin_stop()
+        console.print(f"[yellow]{escape(msg)}[/]")
 
-    @contextmanager
-    def thinking(self, label: str):
-        with console.status(f"[dim]{label}...[/]", spinner="dots"):
-            yield
+
+def print_diff(diff: str, max_lines: int = 40) -> None:
+    lines = diff.splitlines()
+    files = [ln[6:] for ln in lines if ln.startswith("+++ b/")]
+    added = sum(1 for ln in lines if ln.startswith("+") and not ln.startswith("+++"))
+    removed = sum(1 for ln in lines if ln.startswith("-") and not ln.startswith("---"))
+    console.print(f"  [dim]⎿ {escape(files[0] if files else '')}[/] [green]+{added}[/] [red]-{removed}[/]")
+    body = [ln for ln in lines if not ln.startswith(("---", "+++"))]
+    for ln in body[:max_lines]:
+        if ln.startswith("+"):
+            console.print(f"    [green on #0f2a17]{escape(ln)}[/]", soft_wrap=True)
+        elif ln.startswith("-"):
+            console.print(f"    [red on #2d1215]{escape(ln)}[/]", soft_wrap=True)
+        elif ln.startswith("@@"):
+            console.print(f"    [cyan]{escape(ln)}[/]")
+        else:
+            console.print(f"    [dim]{escape(ln)}[/]", soft_wrap=True)
+    if len(body) > max_lines:
+        console.print(f"    [dim]… +{len(body) - max_lines} satır[/]")
 
 
 def build(cfg: Config, cwd: Path, mode: str, verbose: bool = False) -> tuple[Agent, Router, ToolContext]:
-    ui = RichUI(verbose)
     router = Router(cfg, on_event=(lambda s: console.print(f"[dim]  ↪ {s}[/]")) if verbose else None)
+    ui = RichUI(verbose, model_label=lambda: (router.last_ref.get("brain") or router.first_available("brain") or ""))
     decider = Decider.from_config(cfg, router, on_event=lambda s: console.print(f"[dim]  ↪ {s}[/]"))
     ctx = ToolContext(cwd=cwd, config=cfg, router=router, decider=decider,
                       emit=lambda s: console.print(f"[dim]  {s}[/]"))
@@ -111,10 +203,53 @@ def _check_ready(router: Router) -> bool:
 
 
 # ----------------------------------------------------------------------- REPL
-def repl(agent: Agent, router: Router, ctx: ToolContext, cfg: Config, resume: str | None) -> None:
+def status_line(agent: Agent, router: Router, ctx: ToolContext) -> str:
+    from alice.providers.router import estimate_tokens
+
+    model = router.last_ref.get("brain") or router.first_available("brain") or "model yok"
+    toks = estimate_tokens(agent.messages)
+    req = sum(r["requests"] for r in router.usage.today().values())
+    dec = agent.decider.names[0] if agent.decider else "-"
+    cwd = str(ctx.cwd)
+    if len(cwd) > 40:
+        cwd = "…" + cwd[-39:]
+    return (f" {model} │ izin: {agent.permissions.mode} │ context {toks / 1000:.1f}k/{agent.compact_at // 1000}k │ "
+            f"bugün {req} istek │ karar: {dec} │ {cwd} ")
+
+
+def make_prompt_session(agent: Agent, router: Router, ctx: ToolContext):
     from prompt_toolkit import PromptSession
     from prompt_toolkit.history import FileHistory
+    from prompt_toolkit.key_binding import KeyBindings
 
+    kb = KeyBindings()
+
+    @kb.add("enter")
+    def _(event):
+        buf = event.current_buffer
+        # Satır sonu "\" ile bitiyorsa alt satıra geç (her terminalde çalışan yöntem).
+        if buf.document.text_before_cursor.endswith("\\"):
+            buf.delete_before_cursor(1)
+            buf.insert_text("\n")
+        else:
+            buf.validate_and_handle()
+
+    @kb.add("escape", "enter")  # Alt+Enter
+    @kb.add("c-j")              # Ctrl+J
+    def _(event):
+        event.current_buffer.insert_text("\n")
+
+    alice_home().mkdir(parents=True, exist_ok=True)
+    return PromptSession(
+        history=FileHistory(str(alice_home() / "history")),
+        multiline=True,
+        key_bindings=kb,
+        prompt_continuation=lambda width, line_number, wrap_count: "  ",
+        bottom_toolbar=lambda: status_line(agent, router, ctx),
+    )
+
+
+def repl(agent: Agent, router: Router, ctx: ToolContext, cfg: Config, resume: str | None) -> None:
     from alice import session as sess
 
     sid = sess.new_session_id()
@@ -127,11 +262,9 @@ def repl(agent: Agent, router: Router, ctx: ToolContext, cfg: Config, resume: st
         else:
             console.print("[yellow]yüklenecek oturum bulunamadı[/]")
 
-    alice_home().mkdir(parents=True, exist_ok=True)
-    ps: PromptSession = PromptSession(history=FileHistory(str(alice_home() / "history")))
-    brain = router.first_available("brain") or "yok"
-    console.print(f"[bold magenta]ALICE[/] v{__version__}  [dim]beyin: {brain} | karar: {', '.join(agent.decider.names) if agent.decider else '-'} "
-                  f"| izin: {agent.permissions.mode} | {ctx.cwd}[/]\n[dim]/help ile komutlar[/]")
+    ps = make_prompt_session(agent, router, ctx)
+    console.print(f"[bold magenta]ALICE[/] v{__version__}  [dim]/help komutlar · Enter gönder · Alt+Enter ya da "
+                  "satır sonu \\ ile yeni satır · Ctrl+C durdur[/]")
     while True:
         try:
             text = ps.prompt("\n› ").strip()
@@ -353,9 +486,59 @@ def reflex_cmd(cfg: Config, a: argparse.Namespace) -> int:
     return 0 if res.status == "done" else 1
 
 
+# ---------------------------------------------------------------------- app
+def app_cmd(argv: list[str]) -> int:
+    from alice.app.server import AppServer, AppState
+    from alice.app.window import open_window
+
+    ap = argparse.ArgumentParser(prog="alice app")
+    ap.add_argument("--cwd", type=Path, help="başlangıç çalışma klasörü (varsayılan: ev klasörün)")
+    ap.add_argument("--port", type=int, default=0, help="sabit port (varsayılan: rastgele)")
+    ap.add_argument("--mode", choices=MODES)
+    ap.add_argument("--window", choices=["auto", "webview", "app", "browser", "none"], default="auto",
+                    help="none: pencere açma, sadece adresi yaz")
+    a = ap.parse_args(argv)
+    cwd = (a.cwd or Path.home()).resolve()
+    cfg = load_config(cwd=cwd)
+    state = AppState(cfg, cwd, a.mode or cfg.agent.get("permission_mode", "auto"))
+    server = AppServer(state, a.port).start()
+    console.print(f"[bold magenta]ALICE[/] uygulaması: {server.url}")
+    if not state.router.first_available("brain"):
+        state.ui.info(f"Kullanılabilir model yok. {alice_home() / '.env'} dosyasına bir API anahtarı ekleyip uygulamayı yeniden aç.")
+    try:
+        if a.window == "none":
+            console.print("[dim]Durdurmak için Ctrl+C[/]")
+            while True:
+                time.sleep(3600)
+        else:
+            open_window(server.url, prefer=a.window)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.stop()
+    return 0
+
+
+def shortcut_cmd() -> int:
+    from alice.app.window import create_shortcut
+
+    init_home()
+    lnk = create_shortcut()
+    console.print(f"[green]kısayol oluşturuldu:[/] {lnk}")
+    return 0
+
+
 # --------------------------------------------------------------------- main
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if sys.stdout is None or sys.stderr is None:
+        # pythonw.exe (konsolsuz kısayol) altında stdout yok; çıktıyı yut.
+        import os
+
+        devnull = open(os.devnull, "w", encoding="utf-8")
+        sys.stdout = sys.stdout or devnull
+        sys.stderr = sys.stderr or devnull
+        console.file = sys.stdout
     if sys.platform == "win32":
         try:
             sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
@@ -371,6 +554,17 @@ def main(argv: list[str] | None = None) -> int:
         return doctor(load_config())
     if argv and argv[0] == "models":
         return models_cmd(load_config(), "--write" in argv)
+    if argv and argv[0] == "app":
+        try:
+            return app_cmd(argv[1:])
+        except Exception:
+            # Kısayoldan (konsolsuz) açılınca hata görünmez; dosyaya yaz.
+            from alice.app.server import log_error
+
+            log_error()
+            raise
+    if argv and argv[0] == "shortcut":
+        return shortcut_cmd()
     if argv and argv[0] == "reflex":
         rp = argparse.ArgumentParser(prog="alice reflex")
         rp.add_argument("goal")

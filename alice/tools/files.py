@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from alice.tools.base import WRITE, Tool, ToolContext, ToolError, ToolResult, obj
+from alice.tools.base import WRITE, Tool, ToolContext, ToolError, ToolResult, make_diff, obj
 
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache", ".pytest_cache",
              "dist", "build", ".idea", ".vs", "bin", "obj", "Library", "Temp", ".gradle"}
@@ -76,8 +76,10 @@ class WriteFile(Tool):
         p = ctx.resolve(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         existed = p.exists()
+        before = _read_text(p) if existed and not _is_binary(p) else ""
         p.write_text(content, encoding="utf-8", newline="")
-        return ToolResult(f"{'güncellendi' if existed else 'oluşturuldu'}: {p} ({len(content.splitlines())} satır)")
+        return ToolResult(f"{'güncellendi' if existed else 'oluşturuldu'}: {p} ({len(content.splitlines())} satır)",
+                          diff=make_diff(path, before, content))
 
 
 class EditFile(Tool):
@@ -113,9 +115,11 @@ class EditFile(Tool):
             raise ToolError("old_string dosyada bulunamadı. Dosyayı read_file ile tekrar oku ve birebir kopyala.")
         if count > 1 and not replace_all:
             raise ToolError(f"old_string {count} kez geçiyor; bağlam ekle ya da replace_all=true kullan")
+        before = text
         text = text.replace(old_string, new_string) if replace_all else text.replace(old_string, new_string, 1)
         p.write_text(text, encoding="utf-8", newline="")
-        return ToolResult(f"düzenlendi: {p} ({count if replace_all else 1} değişiklik)")
+        return ToolResult(f"düzenlendi: {p} ({count if replace_all else 1} değişiklik)",
+                          diff=make_diff(path, before.replace("\r\n", "\n"), text.replace("\r\n", "\n")))
 
 
 class ListDir(Tool):

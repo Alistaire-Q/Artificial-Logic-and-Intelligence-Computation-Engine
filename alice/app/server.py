@@ -1,0 +1,450 @@
+"""ALICE masaüstü uygulamasının yerel sunucusu.
+
+Ajan bir thread'de çalışır, olaylar Server-Sent Events ile arayüze akar, arayüz
+komutları POST ile gelir. Sadece 127.0.0.1'e bağlanır ve her istek oturuma özel
+rastgele bir token ister: bu sunucu bilgisayarı tam kontrol eden bir ajana bağlı
+olduğu için tarayıcıdaki başka bir sitenin ona istek atabilmesi kabul edilemez.
+Token özel bir header'da gittiği için çapraz site istekleri CORS preflight'ta
+takılır; Host kontrolü de DNS rebinding'i keser.
+"""
+
+from __future__ import annotations
+
+import json
+import queue
+import secrets
+import threading
+import time
+import traceback
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, urlparse
+
+from alice import __version__
+from alice import session as sess
+from alice.agent import Agent, parse_args
+from alice.config import Config, alice_home
+from alice.decider import Decider
+from alice.permissions import MODES, Permissions
+from alice.providers.router import Router, estimate_tokens, parse_ref
+from alice.tools import ToolContext, all_tools, cleanup
+from alice.tools.base import ToolResult
+
+STATIC = Path(__file__).parent / "static"
+STATIC_FILES = {"app.js": "text/javascript", "app.css": "text/css", "marked.min.js": "text/javascript",
+                "purify.min.js": "text/javascript", "icon.svg": "image/svg+xml"}
+CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+       "connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+
+
+# ----------------------------------------------------------------------- olaylar
+class EventBus:
+    def __init__(self) -> None:
+        self._subs: list[queue.Queue] = []
+        self._lock = threading.Lock()
+
+    def subscribe(self) -> queue.Queue:
+        q: queue.Queue = queue.Queue(maxsize=5000)
+        with self._lock:
+            self._subs.append(q)
+        return q
+
+    def unsubscribe(self, q: queue.Queue) -> None:
+        with self._lock:
+            if q in self._subs:
+                self._subs.remove(q)
+
+    def publish(self, event: dict[str, Any]) -> None:
+        with self._lock:
+            subs = list(self._subs)
+        for q in subs:
+            try:
+                q.put_nowait(event)
+            except queue.Full:
+                pass
+
+
+class AppUI:
+    """Agent'ın UI sözleşmesini olay yayınına çevirir. İzin soruları cevap gelene kadar bekler."""
+
+    def __init__(self, bus: EventBus):
+        self.bus = bus
+        self.pending: dict[str, dict[str, Any]] = {}
+        self._answers: dict[str, str] = {}
+        self._events: dict[str, threading.Event] = {}
+        self.agent: Agent | None = None
+
+    def stream_start(self) -> None:
+        self.bus.publish({"type": "stream_start"})
+
+    def stream_delta(self, text: str) -> None:
+        self.bus.publish({"type": "delta", "text": text})
+
+    def stream_reset(self) -> None:
+        self.bus.publish({"type": "stream_reset"})
+
+    def stream_end(self, text: str, source: str) -> None:
+        self.bus.publish({"type": "stream_end", "text": text, "source": source})
+
+    def tool_start(self, call_id: str, name: str, summary: str) -> None:
+        self.bus.publish({"type": "tool_start", "id": call_id, "name": name, "summary": summary})
+
+    def tool_end(self, call_id: str, name: str, result: ToolResult) -> None:
+        self.bus.publish({"type": "tool_end", "id": call_id, "name": name, "text": result.text[:20000],
+                          "is_error": result.is_error, "diff": result.diff, "images": result.images[:4]})
+
+    def ask_permission(self, name: str, summary: str, risk: str) -> str:
+        pid = secrets.token_hex(6)
+        ev = threading.Event()
+        self._events[pid] = ev
+        self.pending[pid] = {"type": "permission", "id": pid, "name": name, "summary": summary, "risk": risk}
+        self.bus.publish(self.pending[pid])
+        while not ev.wait(0.25):
+            if self.agent is not None and self.agent.cancel.is_set():
+                self._answers[pid] = "n"
+                break
+        self.pending.pop(pid, None)
+        self._events.pop(pid, None)
+        ans = self._answers.pop(pid, "n")
+        self.bus.publish({"type": "permission_done", "id": pid, "answer": ans})
+        return ans
+
+    def answer(self, pid: str, ans: str) -> bool:
+        ev = self._events.get(pid)
+        if ev is None:
+            return False
+        self._answers[pid] = ans if ans in ("y", "n", "a") else "n"
+        ev.set()
+        return True
+
+    def info(self, msg: str) -> None:
+        self.bus.publish({"type": "info", "text": msg})
+
+
+def _summary(tools: dict[str, Any], name: str, raw: str) -> str:
+    tool = tools.get(name)
+    if tool is not None:
+        try:
+            return tool.summary(parse_args(raw))
+        except Exception:  # noqa: BLE001 - bozuk argüman: ham metni göster
+            pass
+    return raw if len(raw) < 160 else raw[:157] + "..."
+
+
+def display_history(messages: list[dict[str, Any]], tools: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Kayıtlı mesaj geçmişini arayüzün çizebileceği öğelere çevir."""
+    results = {m.get("tool_call_id"): m.get("content", "") for m in messages if m.get("role") == "tool"}
+    items: list[dict[str, Any]] = []
+    for m in messages:
+        role = m.get("role")
+        content = m.get("content")
+        if role == "user" and isinstance(content, str):
+            if content.startswith("[Önceki konuşmanın özeti]"):
+                items.append({"type": "info", "text": "önceki konuşma özetlendi"})
+            elif not content.startswith("[eski ekran görüntüsü"):
+                items.append({"type": "user", "text": content})
+        elif role == "assistant":
+            if content and content != "Özeti aldım, kaldığım yerden devam ediyorum.":
+                items.append({"type": "assistant", "text": content})
+            for tc in m.get("tool_calls") or []:
+                res = results.get(tc["id"], "")
+                args = tc["function"].get("arguments", "")
+                items.append({"type": "tool", "id": tc["id"], "name": tc["function"]["name"],
+                              "summary": _summary(tools or {}, tc["function"]["name"], args),
+                              "text": res, "is_error": res.startswith("HATA:")})
+    return items
+
+
+# ------------------------------------------------------------------------ durum
+class AppState:
+    def __init__(self, cfg: Config, cwd: Path, mode: str, provider_factory=None):
+        self.cfg = cfg
+        self.bus = EventBus()
+        self.ui = AppUI(self.bus)
+        self.router = Router(cfg, provider_factory=provider_factory,
+                             on_event=lambda s: self.bus.publish({"type": "route", "text": s}))
+        self.decider = Decider.from_config(cfg, self.router)
+        self.ctx = ToolContext(cwd=cwd, config=cfg, router=self.router, decider=self.decider,
+                               emit=lambda s: self.bus.publish({"type": "info", "text": s}))
+        self.agent = Agent(cfg, self.router, all_tools(), self.ctx, Permissions(mode), self.ui, self.decider)
+        self.ui.agent = self.agent
+        self.sid = sess.new_session_id()
+        self.token = secrets.token_urlsafe(24)
+        # Tüm ajan işleri tek bir kalıcı thread'de çalışır: Playwright tarayıcısı ve UI Automation
+        # nesneleri oluşturuldukları thread'e bağlı, her mesajda yeni thread açmak onları bozar.
+        self._jobs: queue.Queue = queue.Queue()
+        self._queued = False
+        self._worker = threading.Thread(target=self._work, daemon=True, name="alice-agent")
+        self._worker.start()
+
+    def _work(self) -> None:
+        while True:
+            job = self._jobs.get()
+            if job is None:
+                return
+            fn, done = job
+            try:
+                fn()
+            except Exception:  # noqa: BLE001
+                log_error()
+            finally:
+                if done is not None:
+                    done.set()
+
+    def run_in_worker(self, fn, wait: float | None = None) -> None:
+        done = threading.Event()
+        self._jobs.put((fn, done))
+        if wait is not None:
+            done.wait(wait)
+
+    def shutdown(self) -> None:
+        self.agent.stop()
+        self.run_in_worker(lambda: cleanup(self.ctx), wait=10)
+        self._jobs.put(None)
+
+    def status(self) -> dict[str, Any]:
+        a = self.agent
+        return {
+            "version": __version__,
+            "model": self.router.last_ref.get("brain") or self.router.first_available("brain") or "",
+            "mode": a.permissions.mode,
+            "ctx_tokens": estimate_tokens(a.messages),
+            "ctx_limit": a.compact_at,
+            "today_requests": sum(r["requests"] for r in self.router.usage.today().values()),
+            "decider": self.decider.names[0] if self.decider.names else "",
+            "cwd": str(self.ctx.cwd),
+            "busy": a.busy or self._queued,
+            "session": self.sid,
+            "pending": list(self.ui.pending.values()),
+        }
+
+    def send(self, text: str) -> bool:
+        if self.agent.busy or self._queued:
+            return False
+        self._queued = True
+        self.bus.publish({"type": "user", "text": text})
+
+        def run() -> None:
+            try:
+                self.bus.publish({"type": "busy", "value": True})
+                self.agent.run_turn(text)
+            except Exception as e:  # noqa: BLE001 - thread içinde hata uygulamayı düşürmesin
+                self.bus.publish({"type": "info", "text": f"beklenmeyen hata: {e}"})
+                log_error()
+            finally:
+                try:
+                    sess.save(self.sid, self.agent.messages, self.ctx.cwd)
+                except OSError:
+                    pass
+                self._queued = False
+                self.bus.publish({"type": "busy", "value": False})
+                self.bus.publish({"type": "status", **self.status()})
+
+        self.run_in_worker(run)
+        return True
+
+    def new_session(self) -> None:
+        self.agent.reset()
+        self.sid = sess.new_session_id()
+
+    def resume(self, sid: str) -> bool:
+        loaded = sess.load(sid)
+        if not loaded:
+            return False
+        self.sid, msgs = loaded
+        self.agent.messages = self.agent.messages[:1] + msgs
+        return True
+
+
+def log_error() -> None:
+    try:
+        with open(alice_home() / "app.log", "a", encoding="utf-8") as f:
+            f.write(f"--- {time.strftime('%Y-%m-%d %H:%M:%S')}\n{traceback.format_exc()}\n")
+    except OSError:
+        pass
+
+
+# ----------------------------------------------------------------------- HTTP
+def make_handler(state: AppState):
+    class Handler(BaseHTTPRequestHandler):
+        server_version = "ALICE"
+
+        def log_message(self, *args: Any) -> None:  # sessiz
+            pass
+
+        # ------------------------------------------------------------ yardımcı
+        def _host_ok(self) -> bool:
+            host = (self.headers.get("Host") or "").split(":")[0]
+            return host in ("127.0.0.1", "localhost")
+
+        def _token_ok(self, query: dict[str, list[str]]) -> bool:
+            tok = self.headers.get("X-Alice-Token") or (query.get("t") or [""])[0]
+            return secrets.compare_digest(tok, state.token)
+
+        def _send(self, code: int, body: bytes, ctype: str, extra: dict[str, str] | None = None) -> None:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            for k, v in (extra or {}).items():
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _json(self, obj: Any, code: int = 200) -> None:
+            self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+
+        def _body(self) -> dict[str, Any]:
+            n = int(self.headers.get("Content-Length") or 0)
+            if n <= 0 or n > 2_000_000:
+                return {}
+            try:
+                data = json.loads(self.rfile.read(n))
+            except json.JSONDecodeError:
+                return {}
+            return data if isinstance(data, dict) else {}
+
+        def _deny(self) -> None:
+            self._send(403, b"forbidden", "text/plain")
+
+        # --------------------------------------------------------------- GET
+        def do_GET(self) -> None:  # noqa: N802
+            u = urlparse(self.path)
+            q = parse_qs(u.query)
+            if not self._host_ok():
+                return self._deny()
+            if u.path == "/":
+                if not self._token_ok(q):
+                    return self._deny()
+                html = (STATIC / "index.html").read_text(encoding="utf-8").replace("{{TOKEN}}", state.token)
+                return self._send(200, html.encode("utf-8"), "text/html; charset=utf-8", {"Content-Security-Policy": CSP})
+            if u.path.startswith("/static/"):
+                name = u.path[len("/static/"):]
+                if name not in STATIC_FILES:
+                    return self._send(404, b"not found", "text/plain")
+                return self._send(200, (STATIC / name).read_bytes(), STATIC_FILES[name])
+            if not self._token_ok(q):
+                return self._deny()
+            if u.path == "/api/events":
+                return self._events()
+            if u.path == "/api/state":
+                return self._json(state.status())
+            if u.path == "/api/history":
+                return self._json(display_history(state.agent.messages[1:], state.agent.tools))
+            if u.path == "/api/sessions":
+                return self._json([{"id": i, "cwd": c, "title": t} for i, c, t in sess.list_sessions(40)])
+            if u.path == "/api/models":
+                return self._json({role: [{"ref": r, "status": st} for r, st in rows]
+                                   for role, rows in state.router.status().items()})
+            return self._send(404, b"not found", "text/plain")
+
+        def _events(self) -> None:
+            q = state.bus.subscribe()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            try:
+                self.wfile.write(f"data: {json.dumps({'type': 'status', **state.status()})}\n\n".encode())
+                self.wfile.flush()
+                while True:
+                    try:
+                        ev = q.get(timeout=15)
+                        self.wfile.write(f"data: {json.dumps(ev, ensure_ascii=False)}\n\n".encode("utf-8"))
+                    except queue.Empty:
+                        self.wfile.write(b": ping\n\n")
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            finally:
+                state.bus.unsubscribe(q)
+
+        # -------------------------------------------------------------- POST
+        def do_POST(self) -> None:  # noqa: N802
+            u = urlparse(self.path)
+            if not self._host_ok() or not self._token_ok({}):
+                return self._deny()
+            d = self._body()
+            p = u.path
+            try:
+                if p == "/api/send":
+                    text = str(d.get("text", "")).strip()
+                    if not text:
+                        return self._json({"ok": False, "error": "boş mesaj"}, 400)
+                    ok = state.send(text)
+                    return self._json({"ok": ok, "error": None if ok else "ALICE şu an çalışıyor"}, 200 if ok else 409)
+                if p == "/api/stop":
+                    state.agent.stop()
+                    return self._json({"ok": True})
+                if p == "/api/permission":
+                    return self._json({"ok": state.ui.answer(str(d.get("id")), str(d.get("answer")))})
+                if p == "/api/open":
+                    url = str(d.get("url", ""))
+                    if url.startswith(("http://", "https://")):
+                        import webbrowser
+
+                        webbrowser.open(url)
+                        return self._json({"ok": True})
+                    return self._json({"ok": False}, 400)
+                if p == "/api/mode":
+                    mode = d.get("mode")
+                    if mode not in MODES:
+                        return self._json({"ok": False}, 400)
+                    state.agent.permissions.mode = mode
+                    return self._json({"ok": True, **state.status()})
+                if (state.agent.busy or state._queued) and p in ("/api/new", "/api/resume", "/api/cwd", "/api/compact"):
+                    return self._json({"ok": False, "error": "önce mevcut işi durdur"}, 409)
+                if p == "/api/new":
+                    state.new_session()
+                    return self._json({"ok": True, **state.status()})
+                if p == "/api/resume":
+                    ok = state.resume(str(d.get("id", "")))
+                    return self._json({"ok": ok, "history": display_history(state.agent.messages[1:], state.agent.tools), **state.status()})
+                if p == "/api/cwd":
+                    path = state.ctx.resolve(str(d.get("path", "")))
+                    if not path.is_dir():
+                        return self._json({"ok": False, "error": f"klasör yok: {path}"}, 400)
+                    state.ctx.cwd = path
+                    return self._json({"ok": True, **state.status()})
+                if p == "/api/compact":
+                    ok = state.agent.compact()
+                    return self._json({"ok": ok, **state.status()})
+                if p == "/api/model":
+                    role, ref = str(d.get("role", "")), str(d.get("ref", ""))
+                    if ref == "reset":
+                        state.router.role_overrides.pop(role, None)
+                    else:
+                        parse_ref(ref)
+                        state.router.role_overrides[role] = [ref]
+                    return self._json({"ok": True})
+            except Exception as e:  # noqa: BLE001
+                log_error()
+                return self._json({"ok": False, "error": str(e)}, 500)
+            return self._send(404, b"not found", "text/plain")
+
+    return Handler
+
+
+class AppServer:
+    def __init__(self, state: AppState, port: int = 0):
+        self.state = state
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(state))
+        self.httpd.daemon_threads = True
+        self._thread = threading.Thread(target=self.httpd.serve_forever, daemon=True, name="alice-http")
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.httpd.server_address[1]}/?t={self.state.token}"
+
+    def start(self) -> "AppServer":
+        self._thread.start()
+        return self
+
+    def stop(self) -> None:
+        self.state.shutdown()
+        self.httpd.shutdown()
+        self.httpd.server_close()
+

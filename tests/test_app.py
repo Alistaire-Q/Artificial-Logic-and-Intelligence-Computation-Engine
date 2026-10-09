@@ -1,0 +1,148 @@
+from __future__ import annotations
+
+import json
+import threading
+import time
+
+import httpx
+import pytest
+
+from alice.app.server import AppServer, AppState, display_history
+from tests.conftest import FakeProvider, make_config, tool_call
+
+
+@pytest.fixture
+def app(workdir):
+    cfg = make_config({"brain": ["a:m"], "fast": ["a:m"], "vision": ["a:m"]})
+    prov = FakeProvider("a", [])
+    state = AppState(cfg, workdir, "auto", provider_factory=lambda pc: prov)
+    srv = AppServer(state).start()
+    base = srv.url.split("/?")[0]
+    client = httpx.Client(base_url=base, headers={"X-Alice-Token": state.token}, timeout=10)
+    yield state, srv, client, prov
+    srv.stop()
+
+
+def collect(state, until, timeout=10):
+    q = state.bus.subscribe()
+    out = []
+
+    def run():
+        end = time.time() + timeout
+        while time.time() < end:
+            try:
+                ev = q.get(timeout=0.2)
+            except Exception:  # noqa: BLE001
+                continue
+            out.append(ev)
+            if until(ev):
+                return
+
+    t = threading.Thread(target=run)
+    t.start()
+    return out, t
+
+
+def test_requires_token_and_local_host(app):
+    state, srv, client, _ = app
+    base = str(client.base_url)
+    assert httpx.get(base + "/api/state").status_code == 403
+    assert httpx.get(base + "/").status_code == 403
+    assert httpx.post(base + "/api/send", json={"text": "x"}).status_code == 403
+    assert httpx.get(base + "/api/state", headers={"X-Alice-Token": state.token, "Host": "evil.com"}).status_code == 403
+    r = httpx.get(srv.url)
+    assert r.status_code == 200 and state.token in r.text and "Content-Security-Policy" in r.headers
+    assert client.get("/static/app.js").status_code == 200
+    assert client.get("/static/../server.py").status_code == 404
+
+
+def test_send_streams_events_and_saves_session(app):
+    state, srv, client, prov = app
+    prov.script.extend([tool_call("write_file", {"path": "a.txt", "content": "selam\n"}), "tamamdır"])
+    events, t = collect(state, lambda e: e["type"] == "status")
+    assert client.post("/api/send", json={"text": "dosya yaz"}).json()["ok"]
+    t.join()
+    types = [e["type"] for e in events]
+    for needed in ("user", "busy", "stream_start", "tool_start", "tool_end", "stream_end", "status"):
+        assert needed in types, needed
+    tool_end = next(e for e in events if e["type"] == "tool_end")
+    assert "+selam" in tool_end["diff"]
+    assert next(e for e in events if e["type"] == "status")["today_requests"] == 2
+    hist = client.get("/api/history").json()
+    assert [h["type"] for h in hist] == ["user", "tool", "assistant"]
+    assert hist[1]["summary"].startswith("a.txt")
+    assert client.get("/api/sessions").json()[0]["title"] == "dosya yaz"
+
+
+def test_permission_via_api(app, workdir):
+    state, srv, client, prov = app
+    (workdir / "eski").mkdir()
+    prov.script.extend([tool_call("run_command", {"command": "rm -rf eski"}), "sildim"])
+    events, t = collect(state, lambda e: e["type"] == "permission")
+    client.post("/api/send", json={"text": "sil"})
+    t.join()
+    perm = events[-1]
+    assert perm["risk"] == "danger"
+    assert client.get("/api/state").json()["pending"][0]["id"] == perm["id"]
+    assert client.post("/api/send", json={"text": "başka"}).status_code == 409  # meşgulken yeni iş yok
+    done, t2 = collect(state, lambda e: e["type"] == "status")
+    assert client.post("/api/permission", json={"id": perm["id"], "answer": "y"}).json()["ok"]
+    t2.join()
+    assert not (workdir / "eski").exists()
+
+
+def test_stop_denies_pending_permission(app, workdir):
+    state, srv, client, prov = app
+    prov.script.extend([tool_call("run_command", {"command": "rm -rf x"})])
+    events, t = collect(state, lambda e: e["type"] == "permission")
+    client.post("/api/send", json={"text": "sil"})
+    t.join()
+    done, t2 = collect(state, lambda e: e["type"] == "status")
+    client.post("/api/stop", json={})
+    t2.join()
+    assert any(e["type"] == "permission_done" and e["answer"] == "n" for e in done)
+    assert not state.agent.busy
+
+
+def test_mode_cwd_new_and_model(app, workdir):
+    state, srv, client, _ = app
+    assert client.post("/api/mode", json={"mode": "yolo"}).json()["mode"] == "yolo"
+    assert client.post("/api/mode", json={"mode": "bad"}).status_code == 400
+    sub = workdir / "proje"
+    sub.mkdir()
+    assert client.post("/api/cwd", json={"path": str(sub)}).json()["cwd"] == str(sub)
+    assert client.post("/api/cwd", json={"path": str(workdir / "yok")}).status_code == 400
+    assert client.post("/api/model", json={"role": "brain", "ref": "a:other"}).json()["ok"]
+    assert client.get("/api/models").json()["brain"][0]["ref"] == "a:other"
+    assert client.post("/api/new", json={}).json()["ok"]
+
+
+def test_sse_endpoint_streams(app):
+    state, srv, client, _ = app
+    with client.stream("GET", "/api/events", params={"t": state.token}) as r:
+        assert r.headers["content-type"] == "text/event-stream"
+        first = next(r.iter_lines())
+        assert json.loads(first[5:])["type"] == "status"
+
+
+def test_display_history_skips_internal():
+    msgs = [{"role": "user", "content": "[Önceki konuşmanın özeti]\n..."},
+            {"role": "assistant", "content": "Özeti aldım, kaldığım yerden devam ediyorum."},
+            {"role": "user", "content": "selam"}]
+    assert [h["type"] for h in display_history(msgs)] == ["info", "user"]
+
+
+def test_all_turns_run_on_same_worker_thread(app):
+    state, srv, client, prov = app
+    seen = []
+
+    def script(model, messages, tools, **kw):
+        seen.append(threading.current_thread().name)
+        return "ok"
+
+    prov.script = script
+    for text in ("bir", "iki"):
+        events, t = collect(state, lambda e: e["type"] == "status")
+        assert client.post("/api/send", json={"text": text}).json()["ok"]
+        t.join()
+    assert seen == ["alice-agent", "alice-agent"]

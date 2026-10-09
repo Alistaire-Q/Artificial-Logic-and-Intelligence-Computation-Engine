@@ -24,7 +24,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
 from alice.config import Config, ProviderConfig, alice_home
 from alice.providers.openai_compat import ChatResult, OpenAICompatProvider, ProviderError
@@ -78,6 +78,12 @@ def strip_images(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def clean_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """ALICE'in iç işaretlerini ("_" ile başlayan anahtarlar) sağlayıcıya göndermeden önce temizle."""
     return [{k: v for k, v in m.items() if not k.startswith("_")} for m in messages]
+
+
+class StreamSink(Protocol):
+    def on_delta(self, text: str) -> None: ...
+    def on_reset(self) -> None: ...
+    def cancelled(self) -> bool: ...
 
 
 class AllProvidersFailed(Exception):
@@ -203,7 +209,10 @@ class Router:
         temperature: float | None = None,
         max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
+        stream: "StreamSink | None" = None,
     ) -> ChatResult:
+        """stream verilirse cevap parça parça stream.on_delta'ya akar. Bir model akışın ortasında
+        düşerse stream.on_reset() çağrılır ve sıradaki model baştan dener."""
         chain = self.chain(role)
         est = estimate_tokens(messages, tools)
         attempts = 0
@@ -224,12 +233,26 @@ class Router:
                     errors.append(f"{ref}: tool desteklemiyor")
                     continue
                 msgs = clean_messages(messages if pc.supports_vision(model) else strip_images(messages))
+                client = self.client(p)
+                kw = dict(tools=tools, temperature=temperature, max_tokens=max_tokens,
+                          response_format=response_format, extra=self.config.model_extra(ref) or None)
+                emitted = [False]
                 try:
-                    res = self.client(p).chat(
-                        model, msgs, tools=tools, temperature=temperature, max_tokens=max_tokens,
-                        response_format=response_format, extra=self.config.model_extra(ref) or None,
-                    )
+                    if stream is not None and hasattr(client, "chat_stream"):
+                        def on_delta(piece: str, _flag=emitted, _sink=stream) -> None:
+                            _flag[0] = True
+                            _sink.on_delta(piece)
+
+                        res = client.chat_stream(model, msgs, on_delta, cancel=stream.cancelled, **kw)
+                        if not res.usage:
+                            res.usage = {"prompt_tokens": est, "completion_tokens": int(len(res.text) / 3.5)}
+                    else:
+                        res = client.chat(model, msgs, **kw)
+                        if stream is not None and res.text:
+                            stream.on_delta(res.text)
                 except ProviderError as e:
+                    if emitted[0]:
+                        stream.on_reset()
                     self.usage.record(ref, {}, ok=False)
                     errors.append(f"{ref}: {e}")
                     self._penalize(ref, p, e, tools is not None, response_format is not None)

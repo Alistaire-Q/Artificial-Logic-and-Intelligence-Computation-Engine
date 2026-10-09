@@ -19,6 +19,7 @@ class ToolResult:
     text: str
     images: list[str] = field(default_factory=list)  # base64 PNG
     is_error: bool = False
+    diff: str = ""  # arayüzde gösterilecek unified diff (modele gitmez)
 
 
 class ToolError(Exception):
@@ -65,6 +66,16 @@ class Tool:
 
 def obj(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
     return {"type": "object", "properties": properties, "required": required or []}
+
+
+def make_diff(path: str, before: str, after: str, context: int = 3, max_lines: int = 400) -> str:
+    import difflib
+
+    lines = list(difflib.unified_diff(before.splitlines(), after.splitlines(),
+                                      fromfile=f"a/{path}", tofile=f"b/{path}", n=context, lineterm=""))
+    if len(lines) > max_lines:
+        lines = lines[:max_lines] + [f"... ({len(lines) - max_lines} satır daha)"]
+    return "\n".join(lines)
 
 
 def truncate(text: str, limit: int) -> str:

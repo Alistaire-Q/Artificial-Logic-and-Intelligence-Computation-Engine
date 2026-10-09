@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -26,6 +26,10 @@ class ProviderError(Exception):
         self.kind = kind
         self.status = status
         self.retry_after = retry_after
+
+
+class StreamCancelled(Exception):
+    """Kullanıcı akışı durdurdu."""
 
 
 @dataclass
@@ -104,16 +108,8 @@ class OpenAICompatProvider:
             h["Authorization"] = f"Bearer {self.cfg.api_key}"
         return h
 
-    def chat(
-        self,
-        model: str,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        temperature: float | None = None,
-        max_tokens: int | None = None,
-        response_format: dict[str, Any] | None = None,
-        extra: dict[str, Any] | None = None,
-    ) -> ChatResult:
+    @staticmethod
+    def _body(model, messages, tools, temperature, max_tokens, response_format, extra) -> dict[str, Any]:
         body: dict[str, Any] = {"model": model, "messages": messages}
         if tools:
             body["tools"] = tools
@@ -126,7 +122,19 @@ class OpenAICompatProvider:
             body["response_format"] = response_format
         if extra:
             body.update(extra)
+        return body
 
+    def chat(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        response_format: dict[str, Any] | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> ChatResult:
+        body = self._body(model, messages, tools, temperature, max_tokens, response_format, extra)
         t0 = time.monotonic()
         try:
             r = self._client.post(f"{self.cfg.base_url}/chat/completions", headers=self._headers(), json=body)
@@ -169,12 +177,102 @@ class OpenAICompatProvider:
             latency=latency,
         )
 
+    def chat_stream(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        on_delta: Callable[[str], None],
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        response_format: dict[str, Any] | None = None,
+        extra: dict[str, Any] | None = None,
+        cancel: Callable[[], bool] | None = None,
+    ) -> ChatResult:
+        """SSE ile akışlı cevap. Metin parçaları on_delta'ya gider, tool_call parçaları birleştirilir."""
+        body = self._body(model, messages, tools, temperature, max_tokens, response_format, extra)
+        body["stream"] = True
+        t0 = time.monotonic()
+        text_parts: list[str] = []
+        calls: dict[int, dict[str, Any]] = {}
+        usage: dict[str, Any] = {}
+        served_model = model
+        finish = None
+        try:
+            with self._client.stream("POST", f"{self.cfg.base_url}/chat/completions",
+                                     headers=self._headers(), json=body) as r:
+                if r.status_code != 200:
+                    r.read()
+                    raise classify_error(r.status_code, r.text, dict(r.headers))
+                for line in r.iter_lines():
+                    if cancel and cancel():
+                        raise StreamCancelled()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    payload = line[5:].strip()
+                    if payload == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(payload)
+                    except json.JSONDecodeError:
+                        continue
+                    if chunk.get("error"):
+                        err = chunk["error"]
+                        code = err.get("code") if isinstance(err, dict) else None
+                        raise classify_error(code if isinstance(code, int) else 500, json.dumps(err)[:400])
+                    served_model = chunk.get("model") or served_model
+                    if chunk.get("usage"):
+                        usage = chunk["usage"]
+                    for ch in chunk.get("choices") or []:
+                        delta = ch.get("delta") or {}
+                        piece = delta.get("content")
+                        if piece:
+                            text_parts.append(piece)
+                            on_delta(piece)
+                        for tc in delta.get("tool_calls") or []:
+                            _merge_tool_delta(calls, tc)
+                        finish = ch.get("finish_reason") or finish
+        except httpx.TimeoutException as e:
+            raise ProviderError("network", f"timeout: {e}") from e
+        except httpx.ConnectError as e:
+            raise ProviderError("unreachable", str(e)) from e
+        except httpx.HTTPError as e:
+            raise ProviderError("network", str(e)) from e
+
+        text = "".join(text_parts)
+        msg: dict[str, Any] = {"content": text}
+        if calls:
+            msg["tool_calls"] = [calls[i] for i in sorted(calls)]
+        if not text and not calls and finish == "length":
+            raise ProviderError("too_large", "cevap max_tokens'a takıldı, içerik yok")
+        return ChatResult(normalize_message(msg), self.name, served_model, usage, time.monotonic() - t0)
+
     def list_models(self) -> list[dict[str, Any]]:
         r = self._client.get(f"{self.cfg.base_url}/models", headers=self._headers())
         if r.status_code != 200:
             raise classify_error(r.status_code, r.text, dict(r.headers))
         data = r.json()
         return data.get("data", data if isinstance(data, list) else [])
+
+
+def _merge_tool_delta(calls: dict[int, dict[str, Any]], tc: dict[str, Any]) -> None:
+    """Akışta parça parça gelen tool_call'ları birleştir. Gemini index göndermeyebiliyor."""
+    idx = tc.get("index")
+    if idx is None:
+        tid = tc.get("id")
+        existing = [i for i, c in calls.items() if tid and c.get("id") == tid]
+        idx = existing[0] if existing else (len(calls) if tid or not calls else max(calls))
+    cur = calls.setdefault(idx, {"id": None, "type": "function", "function": {"name": "", "arguments": ""}})
+    if tc.get("id"):
+        cur["id"] = tc["id"]
+    fn = tc.get("function") or {}
+    if fn.get("name") and not cur["function"]["name"]:
+        cur["function"]["name"] = fn["name"]
+    args = fn.get("arguments")
+    if isinstance(args, dict):
+        cur["function"]["arguments"] = json.dumps(args, ensure_ascii=False)
+    elif args:
+        cur["function"]["arguments"] += args
 
 
 def normalize_message(msg: dict[str, Any]) -> dict[str, Any]:

@@ -128,3 +128,13 @@ def test_write_roles_updates_config(isolated_home):
     assert cfg.roles["brain"] == ["groq:new-model", "gemini:x"]
     assert cfg.roles["vision"] == ["gemini:v"]
     assert cfg.roles["fast"][0] == "groq:openai/gpt-oss-20b"  # boş öneri dokunulmadı
+
+
+def test_cli_status_line_and_prompt_session(workdir):
+    from alice.cli import build, make_prompt_session, status_line
+
+    cfg = make_config({"brain": ["a:m"], "fast": ["a:m"]})
+    agent, router, ctx = build(cfg, workdir, "auto")
+    line = status_line(agent, router, ctx)
+    assert "a:m" in line and "izin: auto" in line and "context" in line
+    assert make_prompt_session(agent, router, ctx).multiline
