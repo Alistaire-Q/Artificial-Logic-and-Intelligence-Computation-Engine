@@ -42,13 +42,15 @@ class Stats:
     avg: float | None
     last: float | None
     max_ts: float | None = None
+    total: float | None = None
 
     def line(self) -> str:
         if not self.count:
             return f"{self.key}: veri yok"
         when = f" ({datetime.fromtimestamp(self.max_ts):%d.%m %H:%M})" if self.max_ts else ""
+        total = f", toplam {self.total:.0f}" if self.key.endswith("steps") and self.total is not None else ""
         return (f"{self.key}: ort {self.avg:.1f}, en düşük {self.min:.1f}, en yüksek {self.max:.1f}{when}, "
-                f"son {self.last:.1f} ({self.count} ölçüm)")
+                f"son {self.last:.1f} ({self.count} ölçüm{total})")
 
 
 @dataclass
@@ -178,7 +180,7 @@ class Store:
             return Stats(key, 0, None, None, None, None)
         vals = [v for _, v in pts]
         mx = max(pts, key=lambda p: p[1])
-        return Stats(key, len(vals), min(vals), mx[1], sum(vals) / len(vals), vals[-1], mx[0])
+        return Stats(key, len(vals), min(vals), mx[1], sum(vals) / len(vals), vals[-1], mx[0], sum(vals))
 
     def mode_spans(self, mode: str, since: float | None = None, until: float | None = None) -> list[tuple[float, float]]:
         """Verilen modun açık olduğu [başlangıç, bitiş) aralıkları."""

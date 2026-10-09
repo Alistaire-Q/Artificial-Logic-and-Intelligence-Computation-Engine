@@ -41,6 +41,7 @@ def core_cmd(argv: list[str]) -> int:
         core = service.Core(cfg, decider=Decider.from_config(cfg, router), run_agent=service.make_agent_runner(cfg))
         voice = _start_voice(cfg, core) if cfg.data.get("voice", {}).get("enabled") and "--once" not in argv else None
         sims = _start_sims(cfg, core) if "--once" not in argv else None
+        phone = _start_phone(cfg, core) if cfg.data.get("phone", {}).get("enabled") and "--once" not in argv else None
         quick = _start_quick(cfg) if cfg.data.get("quick", {}).get("enabled", True) and "--once" not in argv else None
         try:
             if "--once" in argv:
@@ -62,6 +63,8 @@ def core_cmd(argv: list[str]) -> int:
                 quick.stop()
             if sims is not None:
                 sims.stop()
+            if phone is not None:
+                phone.stop()
             service.release_lock()
         return 0
     if sub == "install":
@@ -114,6 +117,18 @@ def core_cmd(argv: list[str]) -> int:
         return 0
     console.print(__doc__)
     return 2
+
+
+def _start_phone(cfg, core):
+    from alice.app.phone import PhoneServer
+
+    try:
+        ps = PhoneServer(cfg, core.store)
+    except OSError as e:
+        console.print(f"[yellow]telefon köprüsü açılamadı:[/] {e}")
+        return None
+    console.print(f"telefon: {ps.url}")
+    return ps
 
 
 def _start_sims(cfg, core):

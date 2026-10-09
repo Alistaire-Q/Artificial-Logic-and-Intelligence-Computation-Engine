@@ -93,6 +93,11 @@ DEFAULT_RULES = [
          description="disk dolmak üzereyse söyle", id="disk-full"),
     Rule("pc.proc.*.mem_mb", ">", 8000, "{match} {value:.0f} MB bellek kullanıyor ve düşmüyor.", duration=600,
          cooldown=3 * 3600, description="bir program belleği şişirirse söyle", id="proc-bloat"),
+    Rule("watch.hr", ">", 125, "Nabzın {value:.0f}, bir süredir yüksek. İyi misin?", duration=600, cooldown=2 * 3600,
+         topic="health", modes=["normal", "dev", "quiet"],
+         confirm="The user is likely sitting at the computer (not exercising). Is this sustained high heart rate "
+                 "worth a gentle check-in?",
+         description="nabzım uzun süre yüksek kalırsa beni uyar", id="hr-high"),
 ]
 
 

@@ -98,7 +98,14 @@ class Core:
         self.retention_days = float(c.get("retention_days", 30))
         self.store = store or Store()
         self.pc = PCMonitor()
-        self.monitors: list[Monitor] = monitors if monitors is not None else [self.pc]
+        if monitors is None:
+            monitors = [self.pc]
+            export = cfg.data.get("watch", {}).get("export_path", "")
+            if export:
+                from alice.health.watch import WatchMonitor
+
+                monitors.append(WatchMonitor(self.store, export))
+        self.monitors: list[Monitor] = monitors
         self.modes = ModeManager(c)
         self.notifier = notifier or Notifier(self.store, lambda: self.modes.policy,
                                              desktop=bool(c.get("desktop_notifications", True)))

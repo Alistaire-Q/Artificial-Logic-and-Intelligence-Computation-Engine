@@ -96,6 +96,17 @@ dcs = true
 dcs_port = 41230
 warthunder = true
 
+# Akıllı saat (Gadgetbridge). export_path: Gadgetbridge'in otomatik dışa aktardığı veritabanı
+# (Syncthing vb. ile bilgisayara gelen dosya ya da klasör). Boş = kapalı.
+[watch]
+export_path = ""
+
+# Telefon köprüsü (`alice phone`): telefondan tarayıcıyla ALICE'e ulaşma ve canlı saat verisi.
+# Yerel ağa açılır; adresteki uzun rastgele anahtar olmadan erişilemez. Sadece güvendiğin ağda aç.
+[phone]
+enabled = false
+port = 8765
+
 # Hızlı bar: her programın üstünde kısayolla açılan küçük ALICE kutusu (pynput gerekir).
 [quick]
 # true: çekirdek (alice core run) hızlı barı da başlatır.

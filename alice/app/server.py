@@ -192,6 +192,8 @@ class AppState:
         self.ui.agent = self.agent
         self.sid = sess.new_session_id()
         self.token = secrets.token_urlsafe(24)
+        self.allowed_hosts = {"127.0.0.1", "localhost"}  # telefon sunucusunda LAN adresi eklenir
+        self.watch_store = None  # telefon sunucusu: saat verisi buraya yazılır
         self.quick_pending: dict[str, Any] | None = None  # hızlı bar açılırken doldurulacak metin/görsel
         self._stt = None
         # Tüm ajan işleri tek bir kalıcı thread'de çalışır: Playwright tarayıcısı ve UI Automation
@@ -349,7 +351,7 @@ def make_handler(state: AppState):
         # ------------------------------------------------------------ yardımcı
         def _host_ok(self) -> bool:
             host = (self.headers.get("Host") or "").split(":")[0]
-            return host in ("127.0.0.1", "localhost")
+            return host in state.allowed_hosts
 
         def _token_ok(self, query: dict[str, list[str]]) -> bool:
             tok = self.headers.get("X-Alice-Token") or (query.get("t") or [""])[0]
@@ -476,6 +478,12 @@ def make_handler(state: AppState):
                         return self._json({"ok": False, "error": "boş mesaj"}, 400)
                     ok, err = state.send(text or "Bu görsele bak.", images)
                     return self._json({"ok": ok, "error": err}, 200 if ok else 409)
+                if p == "/api/watch":
+                    if state.watch_store is None:
+                        return self._json({"ok": False, "error": "saat verisi bu sunucuda kapalı"}, 404)
+                    from alice.health.watch import ingest
+
+                    return self._json({"ok": True, "added": ingest(state.watch_store, d)})
                 if p == "/api/transcribe":
                     import base64
 
@@ -551,9 +559,9 @@ def make_handler(state: AppState):
 
 
 class AppServer:
-    def __init__(self, state: AppState, port: int = 0):
+    def __init__(self, state: AppState, port: int = 0, host: str = "127.0.0.1"):
         self.state = state
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(state))
+        self.httpd = ThreadingHTTPServer((host, port), make_handler(state))
         self.httpd.daemon_threads = True
         self._thread = threading.Thread(target=self.httpd.serve_forever, daemon=True, name="alice-http")
 
