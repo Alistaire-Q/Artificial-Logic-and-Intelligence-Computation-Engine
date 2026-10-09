@@ -24,8 +24,13 @@ def _skip_dir(name: str) -> bool:
 
 
 def _limit_note(reason: str) -> str:
-    return (f"\n[arama yarıda kesildi: {reason}. Daha dar bir klasör (path) ya da dosya filtresi (glob) vererek "
-            "tekrar ara.]")
+    return (f"[ARAMA YARIDA KESİLDİ: {reason}. Sonuç eksik; 'eşleşme yok' aranan şeyin olmadığı anlamına GELMEZ. "
+            "Daha dar bir klasör (path) ya da dosya filtresi (glob) vererek tekrar ara.]\n")
+
+
+def _with_note(body: str, note: str) -> ToolResult:
+    # Kesilen aramada notu başa koy ki zayıf modeller "eşleşme yok"u kesin sonuç sanmasın.
+    return ToolResult(note + body, is_error=bool(note))
 
 
 def _is_binary(path: Path) -> bool:
@@ -257,7 +262,7 @@ class Glob(Tool):
                 break
         hits.sort(key=lambda x: x.stat().st_mtime if x.exists() else 0, reverse=True)
         out = [str(h.relative_to(base)) for h in hits[:300]]
-        return ToolResult(("\n".join(out) if out else "eşleşme yok") + note)
+        return _with_note("\n".join(out) if out else "eşleşme yok", note)
 
 
 class Grep(Tool):
@@ -331,7 +336,7 @@ class Grep(Tool):
                             return ToolResult("\n".join(out))
             except OSError:
                 continue
-        return ToolResult(("\n".join(out) if out else "eşleşme yok") + note)
+        return _with_note("\n".join(out) if out else "eşleşme yok", note)
 
     @staticmethod
     def _walk(base: Path):
