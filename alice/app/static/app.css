@@ -233,6 +233,12 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: r
 .tool.err .verb { color: var(--err); }
 .tool.running .verb { animation: none; }
 .tool-body { display: none; margin: 4px 0 8px 25px; }
+.tool-group { margin: 2px 0; }
+.group-body { display: none; margin: 2px 0 6px 25px; padding-left: 4px; border-left: 1px solid var(--line); }
+.tool-group.open .group-body { display: block; }
+.tool-group.open > .tool-row .tchev { transform: rotate(90deg); }
+.tool-group > .tool-row .tchev { transition: transform .15s; }
+.tool-group .meta .d { color: var(--err); }
 .tool.open .tool-body { display: block; }
 .out {
   margin: 0; padding: 10px 12px; background: var(--code); border: 1px solid var(--line); border-radius: 9px; font-size: 12.5px;

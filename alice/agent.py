@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -264,13 +265,10 @@ class Agent:
 
     # ------------------------------------------------------------------- tools
     def _run_tools(self, calls: list[dict[str, Any]]) -> None:
+        results = self._execute_calls(calls)
         pending_images: list[tuple[str, list[str]]] = []
-        for call in calls:
+        for call, result in zip(calls, results, strict=True):
             name = call["function"]["name"]
-            if self.cancel.is_set():
-                result = ToolResult("durduruldu (kullanıcı kesti)", is_error=True)
-            else:
-                result = self._run_one(call)
             text = truncate(result.text, self.output_limit)
             if result.is_error:
                 text = f"HATA: {text}"
@@ -285,7 +283,50 @@ class Agent:
             parts += [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b}"}} for b in images]
             self.messages.append({"role": "user", "content": parts, "_image": True})
 
-    def _run_one(self, call: dict[str, Any]) -> ToolResult:
+    def _execute_calls(self, calls: list[dict[str, Any]]) -> list[ToolResult]:
+        """Çağrıları sırayla işle; art arda gelen, izin gerektirmeyen ve paralel güvenli (salt okuma)
+        çağrıları aynı anda çalıştır. Arayüz olayları hep bu thread'den ve çağrı sırasıyla gider."""
+        results: list[ToolResult | None] = [None] * len(calls)
+        i = 0
+        while i < len(calls):
+            if self.cancel.is_set():
+                results[i] = ToolResult("durduruldu (kullanıcı kesti)", is_error=True)
+                i += 1
+                continue
+            prep = self._prepare(calls[i])
+            if isinstance(prep, ToolResult):
+                results[i] = prep
+                i += 1
+                continue
+            batch = [(i, prep)]
+            j = i + 1
+            if self._parallel_ok(prep):
+                while j < len(calls) and not self.cancel.is_set():
+                    nxt = self._prepare(calls[j], quiet=True)
+                    if isinstance(nxt, ToolResult) or not self._parallel_ok(nxt):
+                        break
+                    batch.append((j, nxt))
+                    j += 1
+            if len(batch) == 1:
+                results[i] = self._execute(calls[i], *prep)
+            else:
+                for idx, (tool, _args, summary) in batch:
+                    self.ui.tool_start(calls[idx]["id"], tool.name, summary)
+                with ThreadPoolExecutor(max_workers=min(8, len(batch))) as pool:
+                    futures = {idx: pool.submit(self._run_tool, tool, args) for idx, (tool, args, _) in batch}
+                    for idx, (tool, _, _) in batch:
+                        results[idx] = futures[idx].result()
+                        self.ui.tool_end(calls[idx]["id"], tool.name, results[idx])
+            i = j
+        return [r if r is not None else ToolResult("çalıştırılmadı", is_error=True) for r in results]
+
+    def _parallel_ok(self, prep: tuple[Tool, dict[str, Any], str]) -> bool:
+        tool, args, _ = prep
+        return bool(getattr(tool, "parallel_safe", False)) and self.permissions.decide(tool, args, self.ctx) == "allow"
+
+    def _prepare(self, call: dict[str, Any], quiet: bool = False) -> ToolResult | tuple[Tool, dict[str, Any], str]:
+        """Aracı bul, argümanları çöz, izni al. Hata ya da ret varsa ToolResult döner.
+        quiet=True iken izin sorulmaz (paralel gruba alınabilir mi diye bakarken)."""
         name = call["function"]["name"]
         tool = self.tools.get(name)
         if tool is None:
@@ -295,6 +336,8 @@ class Agent:
         except json.JSONDecodeError as e:
             return ToolResult(f"argümanlar geçerli JSON değil ({e}). Tekrar dene.", is_error=True)
         summary = tool.summary(args)
+        if quiet:
+            return tool, args, summary
         verdict = self.permissions.decide(tool, args, self.ctx)
         if verdict == "deny":
             res = ToolResult("Plan modundasın: bu araç değişiklik yapıyor ve şu an kapalı. Önce planını yaz; kullanıcı "
@@ -309,19 +352,25 @@ class Agent:
             elif ans != "y":
                 return ToolResult("Kullanıcı bu çağrıyı reddetti. Aynı şeyi tekrar deneme; başka yol bul ya da kullanıcıya sor.",
                                   is_error=True)
-        self.ui.tool_start(call["id"], name, summary)
+        return tool, args, summary
+
+    def _execute(self, call: dict[str, Any], tool: Tool, args: dict[str, Any], summary: str) -> ToolResult:
+        self.ui.tool_start(call["id"], tool.name, summary)
+        result = self._run_tool(tool, args)
+        self.ui.tool_end(call["id"], tool.name, result)
+        return result
+
+    def _run_tool(self, tool: Tool, args: dict[str, Any]) -> ToolResult:
         try:
-            result = tool.run(self.ctx, **args)
+            return tool.run(self.ctx, **args)
         except ToolError as e:
-            result = ToolResult(str(e), is_error=True)
+            return ToolResult(str(e), is_error=True)
         except TypeError as e:
-            result = ToolResult(f"geçersiz parametre: {e}", is_error=True)
+            return ToolResult(f"geçersiz parametre: {e}", is_error=True)
         except KeyboardInterrupt:
             raise
         except Exception as e:  # noqa: BLE001 - araç hatası ajanı düşürmesin, modele dönsün
-            result = ToolResult(f"{type(e).__name__}: {e}", is_error=True)
-        self.ui.tool_end(call["id"], name, result)
-        return result
+            return ToolResult(f"{type(e).__name__}: {e}", is_error=True)
 
     # ----------------------------------------------------------------- vision
     def _brain_sees_images(self) -> bool:

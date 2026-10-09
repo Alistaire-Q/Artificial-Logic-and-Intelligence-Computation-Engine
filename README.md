@@ -157,6 +157,9 @@ alice models --write  # canlı ücretsiz katalogdan rol zincirlerini günceller 
 | Proje talimatları | `ALICE.md`, `CLAUDE.md`, `AGENTS.md` ve `~/.alice/ALICE.md` otomatik okunur |
 | Alt ajan, todo, hafıza, context özetleme, oturuma devam | var |
 | Mesaj kuyruğu, görsel yapıştırma, düşünme gösterimi | var (uygulamada) |
+| Çoklu düzenleme (MultiEdit) | `multi_edit`: bir dosyada birden fazla değişiklik tek çağrıda; biri bile tutmazsa dosyaya hiçbir şey yazılmaz |
+| Paralel araç çağrıları | Model tek cevapta birkaç okuma/arama isterse (`read_file`, `grep`, `glob`, `list_dir`, `web_search`, `web_fetch`, salt okuma MCP araçları) aynı anda çalışır; sonuçlar sırayla modele döner |
+| Araç gruplama | Art arda gelen okumalar uygulamada "2 dosya okundu, 1 arama yapıldı" diye tek açılır satır olur, terminalde her biri tek satır |
 | Hook'lar | yok |
 
 **Özel komut örneği**, `~/.alice/commands/incele.md`:

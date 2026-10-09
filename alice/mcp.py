@@ -159,6 +159,7 @@ class MCPTool(Tool):
         self.parameters = schema
         ann = spec.get("annotations") or {}
         self.risk = READ if ann.get("readOnlyHint") else EXEC
+        self.parallel_safe = self.risk == READ  # istemci thread-safe, salt okuma araçları paralel çalışabilir
 
     def run(self, ctx: ToolContext, **args: Any) -> ToolResult:
         try:

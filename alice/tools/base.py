@@ -47,6 +47,8 @@ class Tool:
     description: str = ""
     parameters: dict[str, Any] = {"type": "object", "properties": {}}
     risk: str = READ
+    # True: yan etkisi olmayan, thread'e bağlı nesne kullanmayan araç; art arda gelirse paralel çalışır.
+    parallel_safe: bool = False
 
     def risk_for(self, args: dict[str, Any]) -> str:
         return self.risk

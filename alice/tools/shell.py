@@ -133,6 +133,7 @@ class RunCommand(Tool):
 
 class ProcessOutput(Tool):
     name = "process_output"
+    parallel_safe = True
     description = "run_command(background=true) ile başlatılan süreçlerin durumunu ve son çıktısını göster. pid verilmezse hepsini listeler."
     parameters = obj({"pid": {"type": "integer"}, "tail_chars": {"type": "integer"}})
 

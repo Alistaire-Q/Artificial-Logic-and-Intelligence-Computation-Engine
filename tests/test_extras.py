@@ -100,3 +100,70 @@ def test_mcp_client_roundtrip(workdir):
     finally:
         for s in servers:
             s.close()
+
+
+def test_multi_edit_atomic(workdir):
+    from alice.tools.files import MultiEdit
+
+    ctx = ToolContext(cwd=workdir, config=make_config({"brain": ["a:m"]}))
+    f = workdir / "m.py"
+    f.write_text("a = 1\nb = 2\nc = 3\n")
+    r = MultiEdit().run(ctx, path="m.py", edits=[{"old_string": "a = 1", "new_string": "a = 10"},
+                                                 {"old_string": "a = 10\nb = 2", "new_string": "a = 10\nb = 20"}])
+    assert f.read_text() == "a = 10\nb = 20\nc = 3\n" and "+b = 20" in r.diff
+    import pytest
+
+    from alice.tools.base import ToolError
+    with pytest.raises(ToolError, match="edit 2/2"):
+        MultiEdit().run(ctx, path="m.py", edits=[{"old_string": "c = 3", "new_string": "c = 30"},
+                                                 {"old_string": "yok", "new_string": "x"}])
+    assert f.read_text() == "a = 10\nb = 20\nc = 3\n"  # hiçbiri yazılmadı
+
+
+def test_parallel_read_only_calls(workdir):
+    import threading
+    import time
+
+    from alice.tools.base import Tool, ToolResult
+
+    seen = {"active": 0, "max": 0}
+    lock = threading.Lock()
+
+    class SlowRead(Tool):
+        name = "slow_read"
+        description = "x"
+        parallel_safe = True
+
+        def run(self, ctx, n=0):
+            with lock:
+                seen["active"] += 1
+                seen["max"] = max(seen["max"], seen["active"])
+            time.sleep(0.3)
+            with lock:
+                seen["active"] -= 1
+            return ToolResult(f"sonuç {n}")
+
+    calls = {"content": "", "tool_calls": [
+        {"id": f"c{n}", "type": "function", "function": {"name": "slow_read", "arguments": f'{{"n": {n}}}'}}
+        for n in range(4)] + [{"id": "w", "type": "function",
+                                "function": {"name": "write_file", "arguments": '{"path": "x.txt", "content": "1"}'}}]}
+    agent, _, ui = make_agent([calls, "bitti"], workdir)
+    agent.tools["slow_read"] = SlowRead()
+    t0 = time.monotonic()
+    agent.run_turn("oku")
+    assert time.monotonic() - t0 < 1.0 and seen["max"] == 4  # 4 x 0.3 sn sırayla olsa 1.2 sn sürerdi
+    tool_msgs = [m for m in agent.messages if m["role"] == "tool"]
+    assert [m["tool_call_id"] for m in tool_msgs] == ["c0", "c1", "c2", "c3", "w"]  # sıra korunur
+    assert [m["content"] for m in tool_msgs[:4]] == [f"sonuç {n}" for n in range(4)]
+    order = [e for e in ui.events if e[0] in ("tool", "result")]
+    assert order[:4] == [("tool", "slow_read")] * 4  # önce hepsi başladı
+    assert (workdir / "x.txt").exists()
+
+
+def test_parallel_skips_tools_needing_permission(workdir):
+    calls = {"content": "", "tool_calls": [
+        {"id": "a", "type": "function", "function": {"name": "list_dir", "arguments": "{}"}},
+        {"id": "b", "type": "function", "function": {"name": "run_command", "arguments": '{"command": "rm -rf yok"}'}}]}
+    agent, _, ui = make_agent([calls, "tamam"], workdir)
+    agent.run_turn("x")
+    assert ("ask", "run_command") in ui.events

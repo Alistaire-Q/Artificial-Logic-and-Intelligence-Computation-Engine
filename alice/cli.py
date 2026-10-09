@@ -57,6 +57,10 @@ Mesajda [bold]@dosya/yolu[/] yazarsan dosyanın içeriği mesaja eklenir.
 Çalışırken [bold]Ctrl+C[/] mevcut işi durdurur. Fareyi ekranın sol üst köşesine götürmek fare/klavye kontrolünü keser."""
 
 
+COMPACT_TOOLS = {"read_file", "list_dir", "glob", "grep", "web_search", "web_fetch", "system_info", "process_list",
+                 "process_output"}
+
+
 class _Tail:
     """Uzun cevap akarken ekrana sığan son kısmı göster (Live taşınca satırlar kopyalanmasın)."""
 
@@ -138,11 +142,23 @@ class RichUI:
     # ----------------------------------------------------------------- araçlar
     def tool_start(self, call_id: str, name: str, summary: str) -> None:
         self._spin_stop()
-        console.print(f"[cyan]●[/] [bold]{name}[/] [dim]{escape(summary)}[/]")
+        if name in COMPACT_TOOLS:
+            # Salt okuma araçları (paralel de çalışabilir) bitince tek satır olarak yazılır.
+            self._pending_summary = getattr(self, "_pending_summary", {})
+            self._pending_summary[call_id] = summary
+        else:
+            console.print(f"[cyan]●[/] [bold]{name}[/] [dim]{escape(summary)}[/]")
         self._spin_start(f"{name} çalışıyor...")
 
     def tool_end(self, call_id: str, name: str, result: ToolResult) -> None:
         self._spin_stop()
+        if name in COMPACT_TOOLS:
+            summary = getattr(self, "_pending_summary", {}).pop(call_id, "")
+            lines = result.text.strip().splitlines()
+            tail = lines[0][:90] if len(lines) == 1 else f"{len(lines)} satır"
+            color = "red" if result.is_error else "dim"
+            console.print(f"[cyan]●[/] [bold]{name}[/] [dim]{escape(summary)}[/]  [{color}]⎿ {escape(tail)}[/]")
+            return
         if result.diff:
             print_diff(result.diff)
             if result.is_error:

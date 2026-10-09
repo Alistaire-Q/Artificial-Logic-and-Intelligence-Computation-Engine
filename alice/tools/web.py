@@ -7,6 +7,8 @@ import re
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, unquote, urlparse
 
+from typing import Any
+
 import httpx
 
 from alice.tools.base import NETWORK, Tool, ToolContext, ToolError, ToolResult, obj, truncate
@@ -61,9 +63,13 @@ def html_to_text(raw: str) -> str:
 
 class WebFetch(Tool):
     name = "web_fetch"
+    parallel_safe = True
     description = "URL'yi indir, HTML ise okunabilir metne çevir. JS gerektiren sayfalar için browser aracını kullan."
     parameters = obj({"url": {"type": "string"}, "raw": {"type": "boolean", "description": "HTML'i dönüştürmeden döndür"}}, ["url"])
     risk = NETWORK
+
+    def summary(self, args: dict[str, Any]) -> str:
+        return str(args.get("url", ""))
 
     def run(self, ctx: ToolContext, url: str, raw: bool = False) -> ToolResult:
         if "://" not in url:
@@ -102,9 +108,13 @@ def ddg_search(query: str, max_results: int = 8) -> list[dict[str, str]]:
 
 class WebSearch(Tool):
     name = "web_search"
+    parallel_safe = True
     description = "İnternette ara (DuckDuckGo, anahtar gerekmez). Başlık, URL ve özet döner; detay için web_fetch kullan."
     parameters = obj({"query": {"type": "string"}, "max_results": {"type": "integer"}}, ["query"])
     risk = NETWORK
+
+    def summary(self, args: dict[str, Any]) -> str:
+        return str(args.get("query", ""))
 
     def run(self, ctx: ToolContext, query: str, max_results: int = 8) -> ToolResult:
         try:

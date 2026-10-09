@@ -29,6 +29,7 @@ def _gpu() -> str:
 
 class SystemInfo(Tool):
     name = "system_info"
+    parallel_safe = True
     description = "İşletim sistemi, CPU, RAM, diskler, GPU, ağ ve pil durumu."
     parameters = obj({})
 
@@ -57,6 +58,7 @@ class SystemInfo(Tool):
 
 class ProcessList(Tool):
     name = "process_list"
+    parallel_safe = True
     description = "Çalışan süreçleri listele (isim filtresi opsiyonel), CPU/RAM'e göre sıralı."
     parameters = obj({"name": {"type": "string"}, "sort": {"type": "string", "enum": ["cpu", "memory"]},
                       "limit": {"type": "integer"}})

@@ -279,6 +279,7 @@ function addNote(text, kind) { add(el("div", "note" + (kind ? " " + kind : ""), 
 /* =================================================================== araçlar */
 const VERBS = {
   read_file: ["Okundu", IC.file], write_file: ["Yazıldı", IC.pen], edit_file: ["Düzenlendi", IC.pen],
+  multi_edit: ["Düzenlendi", IC.pen],
   list_dir: ["Klasör", IC.folder], glob: ["Dosya arandı", IC.search], grep: ["Arandı", IC.search],
   run_command: ["Komut", IC.term], process_output: ["Süreç çıktısı", IC.term], process_stop: ["Süreç durduruldu", IC.term],
   web_fetch: ["Sayfa okundu", IC.globe], web_search: ["Web'de arandı", IC.globe], browser: ["Tarayıcı", IC.globe],
@@ -293,6 +294,52 @@ function verbFor(name) {
     return [`${srv} · ${tool}`, IC.plug];
   }
   return VERBS[name] || [name, IC.bolt];
+}
+
+// Art arda gelen salt okuma çağrıları tek satırda toplanır: "3 dosya okundu, 2 arama yapıldı".
+const GROUP_KIND = {
+  read_file: "file", list_dir: "dir", glob: "search", grep: "search", web_search: "web", web_fetch: "page",
+  system_info: "sys", process_list: "sys", process_output: "sys",
+};
+const GROUP_TEXT = {
+  file: (n) => `${n} dosya okundu`, dir: (n) => `${n} klasör listelendi`, search: (n) => `${n} arama yapıldı`,
+  web: (n) => `${n} web araması`, page: (n) => `${n} sayfa okundu`, sys: (n) => `${n} sistem sorgusu`,
+};
+function lastContent() {
+  let n = list.lastElementChild;
+  if (n && n === S.working) n = n.previousElementSibling;
+  return n;
+}
+function makeGroup() {
+  const g = el("div", "tool-group");
+  const row = el("div", "tool-row");
+  row.appendChild(svg(IC.list, "ti"));
+  const v = el("span", "verb");
+  const meta = el("span", "meta");
+  row.append(v, el("span", "arg"), meta, svg(IC.chev, "tchev"));
+  const body = el("div", "group-body");
+  g.append(row, body);
+  row.addEventListener("click", () => g.classList.toggle("open"));
+  g._v = v; g._meta = meta; g._body = body;
+  return g;
+}
+function updateGroup(g) {
+  if (!g) return;
+  const members = Array.from(g._body.children);
+  const counts = {};
+  let running = 0, errors = 0;
+  for (const m of members) {
+    const k = GROUP_KIND[m._name] || "sys";
+    counts[k] = (counts[k] || 0) + 1;
+    if (m.classList.contains("running")) running++;
+    if (m.classList.contains("err")) errors++;
+  }
+  const order = ["file", "dir", "search", "web", "page", "sys"];
+  const text = order.filter((k) => counts[k]).map((k) => GROUP_TEXT[k](counts[k])).join(", ");
+  g._v.textContent = text.charAt(0).toUpperCase() + text.slice(1);
+  g._v.classList.toggle("shimmer", running > 0);
+  g._meta.replaceChildren();
+  if (errors) g._meta.appendChild(el("span", "d", `${errors} hata`));
 }
 
 function toolRow(id, name, summary, running) {
@@ -311,6 +358,22 @@ function toolRow(id, name, summary, running) {
   row.addEventListener("click", () => t.classList.toggle("open"));
   t._v = v; t._meta = meta; t._body = body; t._name = name;
   if (id) S.tools.set(id, t);
+  if (GROUP_KIND[name]) {
+    const last = lastContent();
+    let g = null;
+    if (last && last.classList.contains("tool-group")) g = last;
+    else if (last && last.classList.contains("tool") && GROUP_KIND[last._name]) {
+      g = makeGroup();
+      list.insertBefore(g, last);
+      g._body.appendChild(last);
+    }
+    if (g) {
+      g._body.appendChild(t);
+      updateGroup(g);
+      toBottom();
+      return t;
+    }
+  }
   return add(t);
 }
 
@@ -355,6 +418,8 @@ function finishTool(t, ev) {
   t.classList.remove("running");
   t._v.classList.remove("shimmer");
   if (ev.is_error) t.classList.add("err");
+  const group = t.parentElement && t.parentElement.closest(".tool-group");
+  if (group) setTimeout(() => updateGroup(group), 0);
   const body = t._body;
   body.replaceChildren();
   if (t._name === "todo_write" && !ev.is_error) {
@@ -431,6 +496,7 @@ function markFinals() {
       const k = kids[j];
       if (k.classList.contains("turn-user")) break;
       if (k.classList.contains("turn-ai") || k.classList.contains("tool") || k.classList.contains("todo") ||
+          k.classList.contains("tool-group") ||
           k.classList.contains("perm")) { final = false; break; }
     }
     n.classList.toggle("final", final && !(S.busy && i === kids.length - 1 - (S.working ? 1 : 0)));

@@ -47,6 +47,7 @@ def snapshot(ctx: ToolContext, p: Path) -> None:
 
 class ReadFile(Tool):
     name = "read_file"
+    parallel_safe = True
     description = ("Dosya oku. Satır numaralarıyla döner. Büyük dosyalarda offset/limit kullan. "
                    "Görseller (png/jpg) görüntü olarak döner.")
     parameters = obj({
@@ -54,6 +55,10 @@ class ReadFile(Tool):
         "offset": {"type": "integer", "description": "1'den başlayan ilk satır"},
         "limit": {"type": "integer", "description": "okunacak satır sayısı (varsayılan 2000)"},
     }, ["path"])
+
+    def summary(self, args: dict[str, Any]) -> str:
+        extra = f" (satır {args['offset']}+)" if args.get("offset") else ""
+        return f"{args.get('path', '')}{extra}"
 
     def run(self, ctx: ToolContext, path: str, offset: int = 1, limit: int = 2000) -> ToolResult:
         p = ctx.resolve(path)
@@ -96,10 +101,33 @@ class WriteFile(Tool):
                           diff=make_diff(path, before, content))
 
 
+def _apply_edit(text: str, old: str, new: str, replace_all: bool, where: str = "") -> tuple[str, int]:
+    """Bir değişikliği bellekteki metne uygula. Bulunamazsa ya da belirsizse ToolError."""
+    if old == new:
+        raise ToolError(f"{where}old_string ve new_string aynı")
+    if not old:
+        raise ToolError(f"{where}old_string boş olamaz")
+    count = text.count(old)
+    if count == 0 and "\r\n" in text:
+        # CRLF dosyalarda modelin LF göndermesi çok yaygın.
+        old_crlf = old.replace("\r\n", "\n").replace("\n", "\r\n")
+        if old_crlf in text:
+            old, new = old_crlf, new.replace("\r\n", "\n").replace("\n", "\r\n")
+            count = text.count(old)
+    if count == 0:
+        raise ToolError(f"{where}old_string dosyada bulunamadı. Dosyayı read_file ile tekrar oku ve birebir kopyala.")
+    if count > 1 and not replace_all:
+        raise ToolError(f"{where}old_string {count} kez geçiyor; bağlam ekle ya da replace_all=true kullan")
+    if replace_all:
+        return text.replace(old, new), count
+    return text.replace(old, new, 1), 1
+
+
 class EditFile(Tool):
     name = "edit_file"
     description = ("Dosyada birebir metin değiştir. old_string dosyada tam olarak (boşluklar dahil) ve "
-                   "tek bir kez geçmeli; birden fazla geçiyorsa daha fazla bağlam ekle ya da replace_all=true ver.")
+                   "tek bir kez geçmeli; birden fazla geçiyorsa daha fazla bağlam ekle ya da replace_all=true ver. "
+                   "Aynı dosyada birden fazla değişiklik için multi_edit kullan.")
     parameters = obj({
         "path": {"type": "string"},
         "old_string": {"type": "string"},
@@ -115,32 +143,61 @@ class EditFile(Tool):
         p = ctx.resolve(path)
         if not p.is_file():
             raise ToolError(f"dosya yok: {p}")
-        text = _read_text(p)
-        if old_string == new_string:
-            raise ToolError("old_string ve new_string aynı")
-        count = text.count(old_string)
-        if count == 0:
-            # CRLF dosyalarda modelin LF göndermesi çok yaygın.
-            if "\r\n" in text and old_string.replace("\r\n", "\n").replace("\n", "\r\n") in text:
-                old_string = old_string.replace("\r\n", "\n").replace("\n", "\r\n")
-                new_string = new_string.replace("\r\n", "\n").replace("\n", "\r\n")
-                count = text.count(old_string)
-        if count == 0:
-            raise ToolError("old_string dosyada bulunamadı. Dosyayı read_file ile tekrar oku ve birebir kopyala.")
-        if count > 1 and not replace_all:
-            raise ToolError(f"old_string {count} kez geçiyor; bağlam ekle ya da replace_all=true kullan")
+        before = _read_text(p)
+        text, n = _apply_edit(before, old_string, new_string, replace_all)
         snapshot(ctx, p)
-        before = text
-        text = text.replace(old_string, new_string) if replace_all else text.replace(old_string, new_string, 1)
         p.write_text(text, encoding="utf-8", newline="")
-        return ToolResult(f"düzenlendi: {p} ({count if replace_all else 1} değişiklik)",
+        return ToolResult(f"düzenlendi: {p} ({n} değişiklik)",
+                          diff=make_diff(path, before.replace("\r\n", "\n"), text.replace("\r\n", "\n")))
+
+
+class MultiEdit(Tool):
+    name = "multi_edit"
+    description = ("Tek dosyada birden fazla değişikliği tek seferde yap. edits sırayla uygulanır (her biri bir öncekinin "
+                   "sonucuna); biri bile başarısız olursa dosyaya HİÇBİR şey yazılmaz. Her edit edit_file kurallarına "
+                   "uyar: old_string birebir ve tek olmalı ya da replace_all=true. Yeni dosya için write_file kullan.")
+    parameters = obj({
+        "path": {"type": "string"},
+        "edits": {"type": "array", "minItems": 1, "items": obj({
+            "old_string": {"type": "string"},
+            "new_string": {"type": "string"},
+            "replace_all": {"type": "boolean"},
+        }, ["old_string", "new_string"])},
+    }, ["path", "edits"])
+    risk = WRITE
+
+    def summary(self, args: dict[str, Any]) -> str:
+        return f"{args.get('path')} ({len(args.get('edits') or [])} değişiklik)"
+
+    def run(self, ctx: ToolContext, path: str, edits: list[dict[str, Any]]) -> ToolResult:
+        p = ctx.resolve(path)
+        if not p.is_file():
+            raise ToolError(f"dosya yok: {p}")
+        if not edits:
+            raise ToolError("edits boş")
+        before = _read_text(p)
+        text = before
+        total = 0
+        for i, e in enumerate(edits, 1):
+            if not isinstance(e, dict) or "old_string" not in e or "new_string" not in e:
+                raise ToolError(f"edit {i}: old_string ve new_string gerekli")
+            text, n = _apply_edit(text, str(e["old_string"]), str(e["new_string"]), bool(e.get("replace_all")),
+                                  where=f"edit {i}/{len(edits)}: ")
+            total += n
+        snapshot(ctx, p)
+        p.write_text(text, encoding="utf-8", newline="")
+        return ToolResult(f"düzenlendi: {p} ({len(edits)} edit, {total} değişiklik)",
                           diff=make_diff(path, before.replace("\r\n", "\n"), text.replace("\r\n", "\n")))
 
 
 class ListDir(Tool):
     name = "list_dir"
+    parallel_safe = True
     description = "Klasör içeriğini listele (boyut ve tür ile)."
     parameters = obj({"path": {"type": "string", "description": "varsayılan: çalışma klasörü"}})
+
+    def summary(self, args: dict[str, Any]) -> str:
+        return str(args.get("path") or ".")
 
     def run(self, ctx: ToolContext, path: str = ".") -> ToolResult:
         p = ctx.resolve(path)
@@ -157,8 +214,12 @@ class ListDir(Tool):
 
 class Glob(Tool):
     name = "glob"
+    parallel_safe = True
     description = "Desene uyan dosyaları bul, ör. '**/*.py' ya da 'src/**/*.cs'. Son değiştirilen önce."
     parameters = obj({"pattern": {"type": "string"}, "path": {"type": "string"}}, ["pattern"])
+
+    def summary(self, args: dict[str, Any]) -> str:
+        return str(args.get("pattern", ""))
 
     def run(self, ctx: ToolContext, pattern: str, path: str = ".") -> ToolResult:
         base = ctx.resolve(path)
@@ -176,6 +237,7 @@ class Glob(Tool):
 
 class Grep(Tool):
     name = "grep"
+    parallel_safe = True
     description = "Dosya içeriklerinde regex ara. ripgrep varsa onu kullanır."
     parameters = obj({
         "pattern": {"type": "string"},
@@ -184,6 +246,10 @@ class Grep(Tool):
         "ignore_case": {"type": "boolean"},
         "max_results": {"type": "integer"},
     }, ["pattern"])
+
+    def summary(self, args: dict[str, Any]) -> str:
+        where = f" ({args['glob']})" if args.get("glob") else ""
+        return f"{args.get('pattern', '')}{where}"
 
     def run(self, ctx: ToolContext, pattern: str, path: str = ".", glob: str | None = None,
             ignore_case: bool = False, max_results: int = 200) -> ToolResult:
@@ -195,8 +261,10 @@ class Grep(Tool):
                 cmd.append("-i")
             if glob:
                 cmd += ["-g", glob]
-            cmd += ["-e", pattern, str(base)]
-            r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+            # Göreli yollar: hem okunaklı hem modele daha az token.
+            cmd += ["-e", pattern, "." if base.is_dir() else str(base)]
+            r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+                               cwd=base if base.is_dir() else None)
             lines = r.stdout.splitlines()[:max_results]
             return ToolResult("\n".join(lines) if lines else "eşleşme yok")
         try:
@@ -213,7 +281,8 @@ class Grep(Tool):
             try:
                 for i, line in enumerate(_read_text(f).splitlines(), 1):
                     if rx.search(line):
-                        out.append(f"{f}:{i}:{line[:300]}")
+                        shown = f.relative_to(base) if base.is_dir() else f
+                        out.append(f"{shown}:{i}:{line[:300]}")
                         if len(out) >= max_results:
                             return ToolResult("\n".join(out))
             except OSError:
@@ -228,4 +297,4 @@ class Grep(Tool):
                 yield Path(root) / name
 
 
-TOOLS = [ReadFile(), WriteFile(), EditFile(), ListDir(), Glob(), Grep()]
+TOOLS = [ReadFile(), WriteFile(), EditFile(), MultiEdit(), ListDir(), Glob(), Grep()]
