@@ -142,3 +142,18 @@ def test_manual_models_missing_from_catalog_are_skipped():
     cache["catalog"] = {"n": ["still-here", "other"]}
     r = Router(cfg, provider_factory=lambda pc: None, auto_cache=cache)
     assert r.chain("brain") == ["n:still-here", "o:not-fetched"]
+
+
+def test_voice_chain_prefers_low_ttft():
+    res = [Probe("n:glm", True, 95, latency=12, ttft=5.5), Probe("g:flash", True, 90, latency=3, ttft=0.8),
+           Probe("q:tiny", True, 90, latency=1, ttft=0.3)]
+    ch = build_chains(res, pcs())
+    assert ch["brain"][0] == "n:glm"
+    assert ch["voice"] == ["g:flash", "n:glm"]  # q: bağlamı küçük, beyne/sese girmez
+
+
+def test_voice_chain_from_old_cache_sorts_brain_by_ttft():
+    cache = {"probed_ts": time.time(), "chains": {"brain": ["n:glm", "g:flash"]},
+             "results": {"n:glm": {"quality": 95, "ttft": 5.5}, "g:flash": {"quality": 90, "ttft": 0.8}}}
+    r = Router(make_config({"voice": ["auto"]}, PROVIDERS), auto_cache=cache)
+    assert r.auto_chain("voice") == ["g:flash", "n:glm"]

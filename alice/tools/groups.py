@@ -13,7 +13,7 @@ from typing import Any
 from alice.tools.base import READ, Tool, ToolContext, ToolError, ToolResult, obj
 
 CORE = {"read_file", "write_file", "edit_file", "multi_edit", "list_dir", "glob", "grep", "run_command",
-        "process_output", "process_stop", "web_fetch", "web_search", "windows", "todo_write", "memory", "task",
+        "process_output", "process_stop", "web_fetch", "web_search", "windows", "todo_write", "memory", "task", "weather",
         "load_tools"}
 
 # grup -> (araçlar, kısa açıklama, anahtar kelime regex'i)

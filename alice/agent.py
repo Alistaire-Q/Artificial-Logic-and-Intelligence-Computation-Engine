@@ -158,6 +158,7 @@ class Agent:
         self.ui = ui or NullUI()
         self.decider = decider
         self.is_child = is_child
+        self.role = "brain"  # sesli asistan "voice" kullanır: ilk kelimesi en çabuk gelen modeller
         self.messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt or build_system_prompt(ctx.cwd)}]
         a = config.agent
         self.max_steps = int(a.get("max_steps", 80))
@@ -234,7 +235,7 @@ class Agent:
                 self._prune_images()
                 sink.parts.clear()
                 self.ui.stream_start()
-                res = self._interruptible(self.router.chat, "brain", list(self.messages), tools=self.tool_specs(),
+                res = self._interruptible(self.router.chat, self.role, list(self.messages), tools=self.tool_specs(),
                                           stream=sink if self.stream else None)
                 msg = res.message
                 if not self.stream and msg.get("content"):
@@ -471,7 +472,7 @@ class Agent:
 
     # ----------------------------------------------------------------- vision
     def _brain_sees_images(self) -> bool:
-        ref = self.router.first_available("brain")
+        ref = self.router.first_available(self.role)
         return bool(ref and self.router.supports_vision(ref))
 
     def _describe_images(self, images: list[str]) -> str:

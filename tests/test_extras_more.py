@@ -101,3 +101,18 @@ def test_report_tool(tmp_path):
     ctx.state["core_store"] = Store(":memory:")
     assert "bugün:" in Report().run(ctx, kind="morning").text
     assert "Rapor:" in Report().run(ctx, kind="pc").text
+
+
+def test_weather_tool_uses_config_city(monkeypatch):
+    from alice.extras import brief
+    from alice.tools.extras import Weather
+
+    seen = {}
+    monkeypatch.setattr(brief, "weather", lambda city, auto=False: seen.update(city=city, auto=auto) or "ok")
+
+    class Ctx:
+        class config:
+            data = {"brief": {"city": "Ankara"}}
+
+    assert Weather().run(Ctx(), "").text == "ok"
+    assert seen == {"city": "Ankara", "auto": True}
