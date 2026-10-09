@@ -13,6 +13,7 @@
   alice tasks [add "cümle"]  zamanlanmış görevler ("her pazar gece projelerimi yedekle")
   alice voice [audition|use|library|say|test|status]   sesli asistan ve ses seçimi
   alice quick [--open]       hızlı bar kısayolları (Ctrl+Alt+A / S / C)
+  alice dcs install|status|kneeboard   DCS bağlantısı
 """
 
 from __future__ import annotations
@@ -654,6 +655,10 @@ def main(argv: list[str] | None = None) -> int:
         from alice.core import cli as core_cli
 
         return {"core": core_cli.core_cmd, "rules": core_cli.rules_cmd, "tasks": core_cli.tasks_cmd}[argv[0]](argv[1:])
+    if argv and argv[0] == "dcs":
+        from alice.sims.dcs import dcs_cmd
+
+        return dcs_cmd(argv[1:])
     if argv and argv[0] == "quick":
         from alice.app.quick import quick_cmd
 

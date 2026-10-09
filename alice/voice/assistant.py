@@ -25,7 +25,9 @@ VOICE_PROMPT = """# Voice mode
 You are speaking out loud through text-to-speech. The user hears you, they may not be looking at the screen.
 - Answer in Turkish, in 1-3 short spoken sentences unless asked for detail. No markdown, lists, tables or emojis.
 - Never read code, paths or long numbers aloud; say you put it on screen.
-- In urgent situations (flight warnings, errors) be clear and brief, no jokes."""
+- In urgent situations (flight warnings, errors) be clear and brief, no jokes.
+- Checklists (checklist tool): read only the current step, then wait; on "tamam", "devam" or "sonraki" call next.
+- "Not al" during a flight goes to the kneeboard (kneeboard tool, action note); otherwise to the notes tool."""
 
 FILLERS = ["Hemen bakıyorum.", "Bir saniye, bakıyorum.", "Tamam, bakıyorum."]
 YES = ("evet", "tamam", "olur", "onay", "yap", "devam", "peki")

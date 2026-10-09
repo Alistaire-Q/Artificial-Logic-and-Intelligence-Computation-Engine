@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from alice.tools import browser, computer, core, desktop, files, meta, shell, system, web
+from alice.tools import browser, computer, core, desktop, flight, files, meta, shell, system, web
 from alice.tools.base import Tool, ToolContext, ToolError, ToolResult
 
 
 def all_tools() -> list[Tool]:
     return [*files.TOOLS, *shell.TOOLS, *web.TOOLS, *system.TOOLS, *computer.TOOLS, *desktop.TOOLS,
-            *browser.TOOLS, *meta.TOOLS, *core.TOOLS]
+            *browser.TOOLS, *meta.TOOLS, *core.TOOLS, *flight.TOOLS]
 
 
 def attach_mcp(agent, ctx: ToolContext, emit=lambda s: None) -> int:

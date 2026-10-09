@@ -42,6 +42,7 @@ include = ["alice*"]
 
 [tool.setuptools.package-data]
 "alice.app" = ["static/*"]
+"alice.sims" = ["*.lua", "checklists/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

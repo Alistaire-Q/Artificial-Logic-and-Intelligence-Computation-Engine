@@ -40,6 +40,7 @@ def core_cmd(argv: list[str]) -> int:
         router = Router(cfg)
         core = service.Core(cfg, decider=Decider.from_config(cfg, router), run_agent=service.make_agent_runner(cfg))
         voice = _start_voice(cfg, core) if cfg.data.get("voice", {}).get("enabled") and "--once" not in argv else None
+        sims = _start_sims(cfg, core) if "--once" not in argv else None
         quick = _start_quick(cfg) if cfg.data.get("quick", {}).get("enabled", True) and "--once" not in argv else None
         try:
             if "--once" in argv:
@@ -59,6 +60,8 @@ def core_cmd(argv: list[str]) -> int:
                 voice.stop()
             if quick is not None:
                 quick.stop()
+            if sims is not None:
+                sims.stop()
             service.release_lock()
         return 0
     if sub == "install":
@@ -113,6 +116,13 @@ def core_cmd(argv: list[str]) -> int:
     return 2
 
 
+def _start_sims(cfg, core):
+    """DCS ve War Thunder dinleyicilerini başlat."""
+    from alice.sims.hub import SimHub
+
+    return SimHub(cfg.data.get("sims", {}), core.store, core.notifier, processes=lambda: core.pc.processes).start()
+
+
 def _start_quick(cfg):
     """Hızlı bar kısayollarını çekirdekle birlikte başlat (pynput yoksa sessizce atla)."""
     import importlib.util
@@ -142,7 +152,7 @@ def _start_voice(cfg, core):
     def speak(n, pol):
         # Sessiz modda (voice = false) bildirim sadece yazılı gelir.
         if pol.voice:
-            speaker.say(n.body or n.title, severity=n.severity, topic=n.topic)
+            speaker.say(n.body or n.title, n.emotion or None, severity=n.severity, topic=n.topic)
 
     core.notifier.channels.append(speak)
     if not mic_available():

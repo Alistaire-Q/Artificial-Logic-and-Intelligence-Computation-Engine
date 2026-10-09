@@ -24,7 +24,8 @@ class Notification:
     body: str = ""
     severity: str = "info"  # info | warn | critical
     topic: str = ""         # ör. "flight", "pc", "task", "health"
-    kind: str = "alert"     # alert | task | mode | info
+    kind: str = "alert"     # alert | task | mode | info | flight
+    emotion: str = ""       # boşsa ses, önem ve konudan tonu kendisi seçer
 
 
 def _ps_quote(s: str) -> str:

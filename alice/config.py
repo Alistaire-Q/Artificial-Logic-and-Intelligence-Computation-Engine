@@ -90,6 +90,12 @@ barge_in = true
 # ALICE cevap verdikten sonra bu kadar saniye "Hey Alice" demeden devam edebilirsin.
 follow_up = 8
 
+# Uçuş simülasyonları (çekirdekle çalışır). DCS için önce: alice dcs install
+[sims]
+dcs = true
+dcs_port = 41230
+warthunder = true
+
 # Hızlı bar: her programın üstünde kısayolla açılan küçük ALICE kutusu (pynput gerekir).
 [quick]
 # true: çekirdek (alice core run) hızlı barı da başlatır.
