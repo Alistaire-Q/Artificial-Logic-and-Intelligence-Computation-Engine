@@ -117,6 +117,25 @@ def test_refresh_writes_cache(monkeypatch, tmp_path):
     assert any("gemini-3.8-flash" in line for line in ranking.format_table(cache))
 
 
+def test_openrouter_probing_stops_at_daily_quota(monkeypatch):
+    cfg = make_config({"brain": ["auto"]}, PROVIDERS)
+    r = Router(cfg, provider_factory=lambda pc: None, auto_cache={})
+    calls = []
+
+    def fake_probe(router, ref, specs=None, timeout=20):
+        calls.append(ref)
+        return Probe(ref, False, 80, error_kind="quota")
+
+    monkeypatch.setattr(ranking, "probe", fake_probe)
+    monkeypatch.setattr(ranking, "_probe_specs", lambda: [])
+    refs = [f"openrouter:m{i}:free" for i in range(5)] + ["g:a", "g:b"]
+    res = ranking.probe_all(r, refs)
+    assert len(res) == 7
+    assert [c for c in calls if c.startswith("openrouter:")] == ["openrouter:m0:free"]  # sadece ilki gerçekten denendi
+    assert sum(1 for c in calls if c.startswith("g:")) == 2  # kota model başına olan sağlayıcıda hepsi denenir
+    assert all(p.error_kind == "quota" for p in res)
+
+
 def test_manual_models_missing_from_catalog_are_skipped():
     cfg = make_config({"brain": ["n:gone-model", "n:still-here", "o:not-fetched"]}, PROVIDERS, auto_models=False)
     cache = cache_with({})

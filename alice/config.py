@@ -214,13 +214,6 @@ api_key_env = "SAMBANOVA_API_KEY"
 vision_models = ["*vision*", "llama-4-*"]
 max_input_tokens = 64000
 
-# GitHub Models: ücretsiz katmanda istek başına ~8K token girdi, beyin için küçük; hızlı rolde işe yarar.
-[providers.github]
-base_url = "https://models.github.ai/inference"
-api_key_env = "GITHUB_MODELS_TOKEN"
-vision_models = ["openai/gpt-4*", "meta/llama-4-*"]
-max_input_tokens = 8000
-
 [providers.ollama]
 base_url = "http://localhost:11434/v1"
 api_key_env = ""
@@ -254,8 +247,6 @@ CEREBRAS_API_KEY=
 MISTRAL_API_KEY=
 # SambaNova         -> https://cloud.sambanova.ai/apis
 SAMBANOVA_API_KEY=
-# GitHub Models     -> https://github.com/settings/personal-access-tokens  (izin: Models, read)
-GITHUB_MODELS_TOKEN=
 # TypeSafe Jev (opsiyonel, ücretli ama çok ucuz) -> https://typesafe.ai
 TYPESAFE_API_KEY=
 """

@@ -49,6 +49,11 @@ RANDOM_ROUTERS = ("openrouter:openrouter/free", "openrouter:openrouter/auto")
 CACHE_MAX_AGE = 24 * 3600
 PROBE_TIMEOUT = 20.0  # 20 sn içinde araç çağrısı yapamayan model zaten günlük kullanıma uygun değil
 PER_PROVIDER = 15
+# OpenRouter'ın ücretsiz modelleri hesap başına günlük ortak bir sınırı paylaşıyor (kredisiz hesapta ~50 istek):
+# günlük ölçüm bunun küçük bir kısmını harcasın.
+PROVIDER_CAP = {"openrouter": 6}
+# Kota hesap genelinde olan sağlayıcılar: bir modelde kota hatası gelince diğerleri denenmez (hepsi aynı kotada).
+ACCOUNT_QUOTA = ("openrouter",)
 SLOW = 20.0  # saniye: beyin rolünde bundan yavaş modeller geri itilir
 
 # Önbellek yokken (ilk açılış, ölçüm henüz bitmemişken) kullanılan sıra: 9 Ekim 2026 ölçümü.
@@ -147,9 +152,9 @@ def candidates(router, per_provider: int = PER_PROVIDER) -> tuple[list[str], dic
             if q > 0 and f.tools is not False:
                 by_provider.setdefault(name, []).append((q, f.ref))
     out = []
-    for items in by_provider.values():
+    for name, items in by_provider.items():
         items.sort(key=lambda x: -x[0])
-        out += [ref for _, ref in items[:per_provider]]
+        out += [ref for _, ref in items[:min(per_provider, PROVIDER_CAP.get(name, per_provider))]]
     return out, errors, catalog
 
 
@@ -223,8 +228,21 @@ def probe_all(router, refs: list[str], emit: Callable[[str], None] = lambda s: N
 
     def run_group(provider: str, items: list[str]) -> None:
         workers = {"gemini": 2, "groq": 1, "cerebras": 2}.get(provider, 4)
+        if provider in ACCOUNT_QUOTA:
+            workers = 1  # sırayla: kota dolunca kalanlara istek gitmesin
+        quota_hit: list[Probe] = []
+
+        def one(ref: str) -> Probe:
+            if quota_hit:
+                return Probe(ref, False, quality(ref), error_kind="quota",
+                             error="denenmedi: sağlayıcının günlük ücretsiz kotası dolu")
+            pr = probe(router, ref, specs, timeout)
+            if pr.error_kind == "quota" and provider in ACCOUNT_QUOTA:
+                quota_hit.append(pr)
+            return pr
+
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            for pr in pool.map(lambda ref: probe(router, ref, specs, timeout), items):
+            for pr in pool.map(one, items):
                 with lock:
                     results.append(pr)
                 state = f"OK {pr.latency:.1f}s" if pr.ok else f"{pr.error_kind}"
