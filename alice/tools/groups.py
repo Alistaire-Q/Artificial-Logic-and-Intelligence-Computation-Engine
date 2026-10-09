@@ -45,15 +45,38 @@ TOOL_TO_GROUP = {name: g for g, (names, _, _) in GROUPS.items() for name in name
 _RX = {g: re.compile(rx, re.I) for g, (_, _, rx) in GROUPS.items()}
 
 
-def groups_for_text(text: str) -> set[str]:
-    return {g for g, rx in _RX.items() if rx.search(text or "")}
+# MCP sunucularının araçları (mcp__<sunucu>__<araç>) "mcp:<sunucu>" grubunda; sunucu adı geçince ya da
+# aşağıdaki ek kelimelerle açılır. Bilinen sunucular için ek anahtar kelimeler:
+MCP_KEYWORDS = {"github": r"git ?hub|\brepo|issue|pull request|\bpr\b|commit|release|branch"}
+
+
+def group_of(name: str) -> str | None:
+    if name in TOOL_TO_GROUP:
+        return TOOL_TO_GROUP[name]
+    if name.startswith("mcp__"):
+        return "mcp:" + name.split("__")[1]
+    return None
+
+
+def mcp_servers(tool_names) -> set[str]:
+    return {n.split("__")[1] for n in tool_names if n.startswith("mcp__") and n.count("__") >= 2}
+
+
+def groups_for_text(text: str, tool_names=()) -> set[str]:
+    text = text or ""
+    out = {g for g, rx in _RX.items() if rx.search(text)}
+    for srv in mcp_servers(tool_names):
+        rx = re.escape(srv) + ("|" + MCP_KEYWORDS[srv] if srv in MCP_KEYWORDS else "")
+        if re.search(rx, text, re.I):
+            out.add("mcp:" + srv)
+    return out
 
 
 def visible_tools(tools: dict[str, Tool], enabled: set[str]) -> list[Tool]:
     """Temel araçlar + açık gruplar + gruba ait olmayanlar (MCP vb.)."""
     out = []
     for name, t in tools.items():
-        g = TOOL_TO_GROUP.get(name)
+        g = group_of(name)
         if name in CORE or g is None or g in enabled:
             out.append(t)
     return out
@@ -64,20 +87,24 @@ class LoadTools(Tool):
     parallel_safe = True
     description = ("Ek araç grubu aç (sonraki adımdan itibaren kullanılabilir). Gruplar: "
                    + "; ".join(f"{g}: {desc}" for g, (_, desc, _) in GROUPS.items())
-                   + ". Hepsi için 'all'.")
+                   + "; MCP sunucuları için 'mcp:<sunucu>' (ör. mcp:github). Hepsi için 'all'.")
     parameters = obj({"groups": {"type": "array", "items": {"type": "string"}}}, ["groups"])
     risk = READ
 
     def run(self, ctx: ToolContext, groups: list[str] | str) -> ToolResult:
         if isinstance(groups, str):
             groups = [g.strip() for g in groups.split(",")]
-        wanted = set(GROUPS) if "all" in groups else set(groups)
-        unknown = wanted - set(GROUPS)
+        servers = mcp_servers(ctx.state.get("tool_names", ()))
+        known = set(GROUPS) | {"mcp:" + s for s in servers}
+        groups = ["mcp:" + g if g in servers else g for g in groups]
+        wanted = known if "all" in groups else set(groups)
+        unknown = wanted - known
         if unknown:
             raise ToolError(f"bilinmeyen grup: {', '.join(sorted(unknown))}. Gruplar: {', '.join(GROUPS)}")
         enabled: set[str] = ctx.state.setdefault("tool_groups", set())
         enabled |= wanted
-        names = sorted(n for g in wanted for n in GROUPS[g][0])
+        names = sorted(n for g in wanted if g in GROUPS for n in GROUPS[g][0])
+        names += sorted(g for g in wanted if g.startswith("mcp:"))
         return ToolResult(f"açıldı: {', '.join(names)}")
 
 

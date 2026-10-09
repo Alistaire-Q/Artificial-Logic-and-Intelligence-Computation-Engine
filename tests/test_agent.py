@@ -216,3 +216,20 @@ def test_tool_groups_keep_requests_small(workdir):
     full = len(json.dumps([t.spec() for t in agent.tools.values()]))
     small = len(json.dumps(agent.tool_specs()))
     assert small < full
+
+
+def test_mcp_tools_grouped_by_server():
+    import os
+
+    from alice.mcp import MCPServer
+    from alice.tools.groups import groups_for_text, visible_tools
+
+    names = ["read_file", "mcp__github__list_issues", "mcp__github__create_pr", "mcp__db__query"]
+    assert "mcp:github" in groups_for_text("GitHub'daki repolarımı listele", names)
+    assert groups_for_text("db tablosuna bak", names) == {"mcp:db"}
+    assert groups_for_text("merhaba", names) == set()
+    tools = {n: object() for n in names}
+    assert len(visible_tools(tools, set())) == 1
+    assert len(visible_tools(tools, {"mcp:github"})) == 3
+    os.environ["ALICE_TEST_TOK"] = "abc"
+    assert MCPServer("x", "cmd", env={"T": "${ALICE_TEST_TOK}"}).env == {"T": "abc"}
