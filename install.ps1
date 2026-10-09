@@ -1,4 +1,4 @@
-# ALICE Windows kurulumu. Repo klasöründe çalıştır:
+﻿# ALICE Windows kurulumu. Repo klasöründe çalıştır:
 #   powershell -ExecutionPolicy Bypass -File install.ps1
 $ErrorActionPreference = "Stop"
 
@@ -6,7 +6,7 @@ $ErrorActionPreference = "Stop"
 $ver = $null
 try { $ver = & python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null } catch {}
 if (-not $ver) {
-    throw "Python bulunamadı. 'winget install Python.Python.3.12' çalıştır (ya da python.org'dan kur, 'Add to PATH' işaretli), PowerShell'i kapatıp aç, tekrar dene."
+    throw "Python bulunamadı. 'winget install -e --id Python.Python.3.11' çalıştır (ya da python.org'dan kur, 'Add to PATH' işaretli), PowerShell'i kapatıp aç, tekrar dene."
 }
 if ([version]$ver -lt [version]"3.10") { throw "Python $ver çok eski, 3.10+ gerekli." }
 
