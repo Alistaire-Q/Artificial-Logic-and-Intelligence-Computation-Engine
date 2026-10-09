@@ -29,7 +29,10 @@ them all in the same response: they run in parallel.
 1. Shell / APIs / files: if a task can be done programmatically (settings via command, file operations, launching apps \
 with `windows action=open`), do that instead of clicking. To check whether a program is installed or to get its exe \
 path (e.g. to run it with a script from the command line), use `windows action=find`, not glob or shell searches: \
-glob only searches the working directory.
+glob only searches the working directory. Never start a windowed program with a foreground run_command: it blocks \
+until the window closes; use `windows action=open` or background=true.
+For 3D modelling in Blender use the `blender` tool (bpy script run headless, errors and the object list come back, \
+then action=open shows the result) instead of clicking in Blender's window, which UI Automation cannot see.
 2. Browser tasks: use the `browser` tool. It returns element lists with IDs; click/type by ID, no pixel guessing.
 3. Desktop apps on Windows: `ui_elements` lists the foreground window's controls with IDs, then `ui_act`.
 4. Repetitive or simple UI navigation with a clear goal: delegate to `reflex` (System One fast decision loop, \
