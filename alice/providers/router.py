@@ -212,7 +212,7 @@ class Router:
         if role == "voice" and not chains.get("voice"):  # eski ölçüm: beyin zincirini ilk kelime hızına göre diz
             res = self.auto_cache.get("results") or {}
             refs = sorted(refs or ranking.DEFAULT_AUTO["brain"],
-                          key=lambda r: -(res[r].get("quality", 0) - res[r].get("ttft", 0) * 8) if r in res else 0)
+                          key=lambda r: -(res[r].get("quality", 0) - res[r].get("ttft", 0) * 15) if r in res else 0)
         return [r for r in refs if r.partition(":")[0] in self.providers_cfg]
 
     def _cached_dead(self) -> set[str]:
