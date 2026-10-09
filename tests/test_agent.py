@@ -1,0 +1,154 @@
+from __future__ import annotations
+
+from alice.agent import Agent, NullUI, parse_args
+from alice.permissions import Permissions
+from alice.providers.router import Router
+from alice.tools import ToolContext, all_tools
+from alice.tools.base import Tool, ToolResult
+from tests.conftest import FakeProvider, make_config, tool_call
+
+
+def make_agent(script, workdir, mode="auto", approve="y", providers=None, **agent_cfg):
+    cfg = make_config({"brain": ["a:m"], "fast": ["a:m"], "vision": ["b:v"]}, providers=providers, **agent_cfg)
+    provs = {"a": FakeProvider("a", script), "b": FakeProvider("b", ["bir buton var (100,200)"])}
+    router = Router(cfg, provider_factory=lambda pc: provs[pc.name], sleep=lambda s: None)
+    ctx = ToolContext(cwd=workdir, config=cfg, router=router)
+    ui = NullUI(approve)
+    agent = Agent(cfg, router, all_tools(), ctx, Permissions(mode), ui, system_prompt="sys")
+    return agent, provs, ui
+
+
+def test_tool_loop_writes_file_and_finishes(workdir):
+    script = [tool_call("write_file", {"path": "hello.py", "content": "print('selam')\n"}),
+              tool_call("run_command", {"command": "python3 hello.py || python hello.py"}, cid="c2"),
+              "Bitti, dosya çalışıyor."]
+    agent, provs, ui = make_agent(script, workdir)
+    out = agent.run_turn("hello.py yaz ve çalıştır")
+    assert out == "Bitti, dosya çalışıyor."
+    assert (workdir / "hello.py").read_text() == "print('selam')\n"
+    tool_msgs = [m for m in agent.messages if m["role"] == "tool"]
+    assert "selam" in tool_msgs[1]["content"]
+    # Her tool_call'un cevabı geçmişte olmalı
+    assert [m["tool_call_id"] for m in tool_msgs] == ["c1", "c2"]
+
+
+def test_edit_file_roundtrip(workdir):
+    (workdir / "a.txt").write_text("alpha\nbeta\n")
+    script = [tool_call("edit_file", {"path": "a.txt", "old_string": "beta", "new_string": "gamma"}), "ok"]
+    agent, _, _ = make_agent(script, workdir)
+    agent.run_turn("düzenle")
+    assert (workdir / "a.txt").read_text() == "alpha\ngamma\n"
+
+
+def test_dangerous_command_asks_and_denial_is_reported(workdir):
+    (workdir / "keep").mkdir()
+    script = [tool_call("run_command", {"command": "rm -rf keep"}), "tamam, silmedim"]
+    agent, provs, ui = make_agent(script, workdir, approve="n")
+    agent.run_turn("klasörü sil")
+    assert ("ask", "run_command") in ui.events
+    assert (workdir / "keep").exists()
+    denied = [m for m in agent.messages if m["role"] == "tool"][0]["content"]
+    assert "reddetti" in denied
+
+
+def test_yolo_never_asks(workdir):
+    (workdir / "gone").mkdir()
+    script = [tool_call("run_command", {"command": "rm -rf gone"}), "silindi"]
+    agent, _, ui = make_agent(script, workdir, mode="yolo")
+    agent.run_turn("sil")
+    assert not any(e[0] == "ask" for e in ui.events)
+    assert not (workdir / "gone").exists()
+
+
+def test_bad_json_and_unknown_tool_are_returned_to_model(workdir):
+    bad = {"content": "", "tool_calls": [
+        {"id": "x1", "type": "function", "function": {"name": "read_file", "arguments": "{not json"}},
+        {"id": "x2", "type": "function", "function": {"name": "nope", "arguments": "{}"}}]}
+    agent, _, _ = make_agent([bad, "ok"], workdir)
+    agent.run_turn("dene")
+    res = [m["content"] for m in agent.messages if m["role"] == "tool"]
+    assert "JSON" in res[0] and "bilinmeyen araç" in res[1]
+
+
+def test_images_described_when_brain_lacks_vision(workdir):
+    class Shot(Tool):
+        name = "shot"
+        description = "fake screenshot"
+
+        def run(self, ctx, **a):
+            return ToolResult("ekran", images=["AAAA"])
+
+    agent, provs, _ = make_agent([tool_call("shot", {}), "gördüm"], workdir)
+    agent.tools["shot"] = Shot()
+    agent.run_turn("ekrana bak")
+    tool_msg = [m for m in agent.messages if m["role"] == "tool"][0]["content"]
+    assert "bir buton var" in tool_msg  # vision rolü açıkladı
+    assert provs["b"].calls, "vision rolü çağrılmalıydı"
+
+
+def test_images_attached_when_brain_has_vision(workdir):
+    class Shot(Tool):
+        name = "shot"
+        description = "fake"
+
+        def run(self, ctx, **a):
+            return ToolResult("ekran", images=["AAAA"])
+
+    providers = {"a": {"base_url": "http://a", "api_key_env": "", "vision_models": ["*"]},
+                 "b": {"base_url": "http://b", "api_key_env": ""}}
+    agent, provs, _ = make_agent([tool_call("shot", {}), tool_call("shot", {}, "c2"), tool_call("shot", {}, "c3"), "ok"],
+                                 workdir, providers=providers, keep_images=1)
+    agent.tools["shot"] = Shot()
+    agent.run_turn("bak")
+    imgs = [m for m in agent.messages if m.get("_image")]
+    assert len(imgs) == 1  # eski görüntüler budandı
+    assert not provs["b"].calls
+
+
+def test_compaction_summarizes_old_turns(workdir):
+    def script(model, messages, tools, **kw):
+        if messages[0]["content"].startswith("Summarize"):
+            return "ÖZET: kullanıcı dosyalarla uğraşıyor"
+        return "cevap " + "x" * 400
+
+    agent, _, ui = make_agent(script, workdir, compact_at_tokens=400)
+    for i in range(6):
+        agent.run_turn(f"mesaj {i} " + "y" * 300)
+    joined = " ".join(str(m.get("content")) for m in agent.messages)
+    assert "ÖZET" in joined
+    assert len(agent.messages) < 14
+
+
+def test_interrupt_repairs_history(workdir):
+    class Boom(Tool):
+        name = "boom"
+        description = "x"
+
+        def run(self, ctx, **a):
+            raise KeyboardInterrupt
+
+    agent, _, _ = make_agent([tool_call("boom", {})], workdir)
+    agent.tools["boom"] = Boom()
+    agent.run_turn("patlat")
+    last = agent.messages[-1]
+    assert last["role"] == "tool" and "durduruldu" in last["content"]
+
+
+def test_subagent_task(workdir):
+    def script(model, messages, tools, **kw):
+        last = messages[-1]
+        if last["role"] == "user" and last["content"] == "alt görev":
+            return "alt sonuç"
+        if last["role"] == "tool":
+            return "ana bitti"
+        return tool_call("task", {"prompt": "alt görev"})
+
+    agent, _, _ = make_agent(script, workdir)
+    assert agent.run_turn("başla") == "ana bitti"
+    assert "alt sonuç" in [m for m in agent.messages if m["role"] == "tool"][0]["content"]
+
+
+def test_parse_args_tolerant():
+    assert parse_args('```json\n{"a": 1}\n```') == {"a": 1}
+    assert parse_args("") == {}
+    assert parse_args({"b": 2}) == {"b": 2}

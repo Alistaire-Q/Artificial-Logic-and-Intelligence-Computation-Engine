@@ -1,0 +1,75 @@
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from alice.config import Config
+    from alice.decider import Decider
+    from alice.providers.router import Router
+
+# Risk sınıfları izin sistemi tarafından kullanılır.
+READ, WRITE, EXEC, COMPUTER, NETWORK, DANGER = "read", "write", "exec", "computer", "network", "danger"
+
+
+@dataclass
+class ToolResult:
+    text: str
+    images: list[str] = field(default_factory=list)  # base64 PNG
+    is_error: bool = False
+
+
+class ToolError(Exception):
+    """Araç içinde kullanıcıya/modele anlamlı bir hata mesajı döndürmek için."""
+
+
+@dataclass
+class ToolContext:
+    cwd: Path
+    config: "Config"
+    router: "Router | None" = None
+    decider: "Decider | None" = None
+    state: dict[str, Any] = field(default_factory=dict)  # araçlar arası paylaşılan durum (tarayıcı, süreçler, todo)
+    emit: Callable[[str], None] = lambda s: None
+
+    def resolve(self, path: str) -> Path:
+        p = Path(path).expanduser()
+        if not p.is_absolute():
+            p = self.cwd / p
+        return p.resolve()
+
+
+class Tool:
+    name: str = ""
+    description: str = ""
+    parameters: dict[str, Any] = {"type": "object", "properties": {}}
+    risk: str = READ
+
+    def risk_for(self, args: dict[str, Any]) -> str:
+        return self.risk
+
+    def summary(self, args: dict[str, Any]) -> str:
+        """Ekranda gösterilecek kısa özet."""
+        s = json.dumps(args, ensure_ascii=False)
+        return s if len(s) < 160 else s[:157] + "..."
+
+    def run(self, ctx: ToolContext, **args: Any) -> ToolResult:
+        raise NotImplementedError
+
+    def spec(self) -> dict[str, Any]:
+        return {"type": "function", "function": {
+            "name": self.name, "description": self.description, "parameters": self.parameters}}
+
+
+def obj(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
+    return {"type": "object", "properties": properties, "required": required or []}
+
+
+def truncate(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    head = int(limit * 0.6)
+    tail = limit - head
+    return f"{text[:head]}\n\n... [{len(text) - limit} karakter kesildi] ...\n\n{text[-tail:]}"
