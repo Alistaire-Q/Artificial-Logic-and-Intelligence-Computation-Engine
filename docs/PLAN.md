@@ -118,12 +118,16 @@ Sıra ihtiyaca göre değişebilir. Bir şey beklediğimiz gibi çıkmazsa ya da
 * **3. Bilgisayar izleme ve zamanlanmış görevler: yapıldı.** Sıcaklık, bellek, disk ve program izleme, hazır uyarılar, geçmişe dönük sorular (`metrics` aracı), doğal dille kural ve görev kurma, kaçırılan görevleri telafi.
 * **Kişilik dosyası: yapıldı** (`~/.alice/personality.md`).
 * **2. Ses ve hızlı bar: kod hazır, ses seçimi seni bekliyor.** `alice voice audition` dinleme testi; Gemini, XTTS ve Chatterbox motorları; duygu kütüphanesi; tona göre konuşma; Groq Whisper ve yerel faster-whisper; bas-konuş, "Hey Alice", araya girince susma, ilk cümleyle konuşmaya başlama. Hızlı bar: Ctrl+Alt+A kutu, Ctrl+Alt+S alan seç ve sor, Ctrl+Alt+C panodakini açıklat. Bunlar gerçek mikrofon ve hoparlörle henüz denenmedi.
-* **6'dan erken gelen: pano açıklatma** hızlı barla birlikte yapıldı.
-* **4-6:** DCS, saat ve eklemeler çekirdeğin üstüne aynı gözlemci yapısıyla eklenecek.
+* **4. DCS ve War Thunder: kod hazır, oyunda denenmedi.** `alice dcs install`. Yakıt ve eve dönüş hesabı, yaklaşma geri bildirimi, G ve chaff/flare hatırlatmaları, sesli kontrol listeleri, görev dosyasından ve sesli notlardan kneeboard, uçuş sonrası sesli değerlendirme ve grafikli rapor, kısıtlı sunucu davranışı. War Thunder yerel göstergelerden. Export betiği DCS'in Lua sürümünde (LuaJIT) sahte oyun fonksiyonlarıyla, çekirdek de sahte bir uçuşla uçtan uca test edildi.
+* **5. Akıllı saat ve telefon: kod hazır, Gadgetbridge testi bekliyor.** Dışa aktarılan veritabanından içe alma, `alice phone` ile canlı nabız ve telefondan erişim, `alice watch status` ile veri sıklığı ölçümü, yüksek nabız kuralı, uçuşta nabza göre ton ve rapordaki nabız grafiği.
+* **6. Eklemeler: yapıldı.** Sesli notlar, sabah özeti, haftalık bilgisayar raporu, pano açıklatma, müzik/ses ve kapatma zamanlayıcısı.
+
+Bu adımlarda gelen yeni araçlar her model isteğine yaklaşık 1.400 token ekliyor. Araç tanımları bu oturumdan önce yaklaşık 3.800 tokendı, şimdi 5.200. Groq'un 8.000 tokenlık ücretsiz sınırında bu yer daralıyor. Groq zaten büyük konuşmalarda atlanıyordu, şimdi daha erken atlanır.
 
 ## Şu an seni bekleyenler
 
-* Gadgetbridge testinin sonucu: nabız ve adım geliyor mu, ne sıklıkla?
+* Gadgetbridge testinin sonucu: Gadgetbridge'de otomatik dışa aktarmayı açıp dosyayı bilgisayara senkronla, `[watch] export_path` ayarla, bir gün sonra `alice watch status` çalıştır. Canlı veri için telefonda nabzı `alice phone` köprüsüne gönderen bir otomasyon gerekiyor; Gadgetbridge'in bunu nasıl dışarı verdiğine birlikte bakarız.
+* DCS'te: `alice dcs install`, bir görev uç, yakıt/yaklaşma/değerlendirme cümlelerinin zamanlamasını ve tonunu not et. F-16C AoA aralığı ve yedek yakıt (450 kg) `alice/sims/flight.py` içinde ayarlanabilir.
 * Dinleme testi: `alice voice audition` (istersen `--local xtts,chatterbox` ile), beğendiğin sesi `alice voice use ...` ile seç, sonra `alice voice library`.
 * "Hey Alice"i tamamen yerelde istiyorsan openWakeWord ile kendi sesinden bir model eğitmek (kaynaklarda rehber var). Eğitmezsen Whisper ile çalışır, sadece biraz daha fazla Groq isteği harcar.
 * Windows'ta `alice core install` ile çekirdeği kurup birkaç gün açık bırakman; yanlış alarmları ve eksik gördüğün uyarıları not etmen. CPU sıcaklığı için LibreHardwareMonitor'ın açık olması gerekiyor.

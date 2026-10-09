@@ -1,4 +1,4 @@
-"""Uçuş araçları: kontrol listesi, kneeboard, uçuş durumu ve son değerlendirme."""
+"""Uçuş aracı (tek araç, context'e az yük): canlı durum, son değerlendirme, kontrol listesi, kneeboard."""
 
 from __future__ import annotations
 
@@ -8,17 +8,52 @@ from typing import Any
 
 from alice.tools.base import READ, WRITE, Tool, ToolContext, ToolError, ToolResult, obj
 
+ACTIONS = ["status", "last_debrief", "checklist_list", "checklist_start", "checklist_next", "checklist_prev",
+           "checklist_stop", "kneeboard_build", "kneeboard_note", "kneeboard_clear", "kneeboard_show"]
 
-class Checklist(Tool):
-    name = "checklist"
-    description = (
-        "Uçuş kontrol listeleri (DCS). action: list | start (name: ör. 'iniş', 'kalkış', 'iniş sonrası') | next | "
-        "prev | stop | current. Sesli kullanımda SADECE dönen adımı oku ve kullanıcının 'tamam/devam' demesini "
-        "bekle; sonra next çağır.")
-    parameters = obj({"action": {"type": "string", "enum": ["list", "start", "next", "prev", "stop", "current"]},
-                      "name": {"type": "string"}}, ["action"])
 
-    def run(self, ctx: ToolContext, action: str, name: str = "") -> ToolResult:
+class Flight(Tool):
+    name = "flight"
+    description = ("DCS/War Thunder. status: canlı yakıt/kalan dk/eve dönüş. checklist_start (name: iniş, kalkış...): "
+                   "sesliyken sadece dönen adımı oku, 'tamam/devam' gelince checklist_next. kneeboard_note (text): "
+                   "uçuşta not. kneeboard_build (mission: .miz, boşsa son görev).")
+    parameters = obj({"action": {"type": "string", "enum": ACTIONS}, "name": {"type": "string"},
+                      "text": {"type": "string"}, "mission": {"type": "string"}}, ["action"])
+    risk = READ
+
+    def risk_for(self, args: dict[str, Any]) -> str:
+        a = args.get("action", "")
+        return WRITE if a in ("kneeboard_build", "kneeboard_note", "kneeboard_clear") else READ
+
+    def run(self, ctx: ToolContext, action: str, name: str = "", text: str = "", mission: str = "") -> ToolResult:
+        if action.startswith("checklist_"):
+            return self._checklist(ctx, action[len("checklist_"):], name)
+        if action.startswith("kneeboard_"):
+            return self._kneeboard(action[len("kneeboard_"):], mission, text)
+        return self._status(action)
+
+    # ----------------------------------------------------------- durum
+    @staticmethod
+    def _status(action: str) -> ToolResult:
+        from alice.sims import hub
+        from alice.sims.flight import Debrief, flights_dir
+
+        if action == "status":
+            if hub.ACTIVE is None:
+                return ToolResult("uçuş takibi bu süreçte çalışmıyor (alice core run ile başlar)")
+            return ToolResult(hub.ACTIVE.status())
+        if hub.ACTIVE is not None and hub.ACTIVE.last_debrief:
+            d, page = hub.ACTIVE.last_debrief
+            return ToolResult(f"{d.summary()}\nRapor: {page}")
+        files = sorted(flights_dir().glob("*.json")) if flights_dir().is_dir() else []
+        if not files:
+            return ToolResult("kayıtlı uçuş yok")
+        d = Debrief(**json.loads(files[-1].read_text(encoding="utf-8")))
+        return ToolResult(f"{d.summary()}\nRapor: {files[-1].with_suffix('.html')}")
+
+    # -------------------------------------------------- kontrol listesi
+    @staticmethod
+    def _checklist(ctx: ToolContext, action: str, name: str) -> ToolResult:
         from alice.sims.checklists import Runner, find, load_all
 
         if action == "list":
@@ -32,29 +67,18 @@ class Checklist(Tool):
             return ToolResult(f"{cl.title}. {ctx.state['checklist'].current()}")
         run = ctx.state.get("checklist")
         if run is None:
-            raise ToolError("açık kontrol listesi yok (önce start)")
+            raise ToolError("açık kontrol listesi yok (önce checklist_start)")
         if action == "stop":
             ctx.state.pop("checklist")
             return ToolResult("kontrol listesi kapatıldı")
-        text = {"next": run.next, "prev": run.prev, "current": run.current}[action]()
+        text = {"next": run.next, "prev": run.prev}[action]()
         if run.done:
             ctx.state.pop("checklist")
         return ToolResult(text)
 
-
-class Kneeboard(Tool):
-    name = "kneeboard"
-    description = (
-        "DCS kneeboard sayfaları. action: build (görev dosyasından frekans ve waypoint sayfası; mission = .miz yolu, "
-        "boşsa en son görev) | note (text: sesle not ekle, sayfa güncellenir) | clear_notes | show (notları listele).")
-    parameters = obj({"action": {"type": "string", "enum": ["build", "note", "clear_notes", "show"]},
-                      "mission": {"type": "string"}, "text": {"type": "string"}}, ["action"])
-    risk = WRITE
-
-    def risk_for(self, args: dict[str, Any]) -> str:
-        return READ if args.get("action") == "show" else WRITE
-
-    def run(self, ctx: ToolContext, action: str, mission: str = "", text: str = "") -> ToolResult:
+    # -------------------------------------------------------- kneeboard
+    @staticmethod
+    def _kneeboard(action: str, mission: str, text: str) -> ToolResult:
         from alice.sims import kneeboard as kb
         from alice.sims.dcs import latest_mission, read_mission, saved_games_dirs
 
@@ -64,7 +88,7 @@ class Kneeboard(Tool):
             if not text:
                 raise ToolError("text gerekli")
             kb.add_note(text)
-        elif action == "clear_notes":
+        elif action == "clear":
             kb.clear_notes()
         dirs = saved_games_dirs()
         if not dirs:
@@ -79,33 +103,7 @@ class Kneeboard(Tool):
                     raise ToolError(f"görev okunamadı: {e}") from e
         written = kb.write(kb.render(info, kb.load_notes()), kb.kneeboard_dirs(dirs))
         what = f"görev: {info.name}, {len(info.waypoints)} waypoint" if info else "görev yok"
-        return ToolResult(f"kneeboard güncellendi ({len(written)} sayfa; {what}). Oyunda kneeboard'u açınca görünür.")
+        return ToolResult(f"kneeboard güncellendi ({len(written)} sayfa; {what}).")
 
 
-class Flight(Tool):
-    name = "flight"
-    description = ("Canlı uçuş durumu (DCS/War Thunder): irtifa, hız, yakıt, kalan dakika, eve dönüş payı, chaff/flare. "
-                   "action: status | last_debrief (son uçuşun değerlendirmesi).")
-    parameters = obj({"action": {"type": "string", "enum": ["status", "last_debrief"]}}, ["action"])
-
-    def run(self, ctx: ToolContext, action: str) -> ToolResult:
-        from alice.sims import hub
-        from alice.sims.flight import flights_dir
-
-        if action == "status":
-            if hub.ACTIVE is None:
-                return ToolResult("uçuş takibi bu süreçte çalışmıyor (alice core run ile başlar)")
-            return ToolResult(hub.ACTIVE.status())
-        if hub.ACTIVE is not None and hub.ACTIVE.last_debrief:
-            d, page = hub.ACTIVE.last_debrief
-            return ToolResult(f"{d.summary()}\nRapor: {page}")
-        files = sorted(flights_dir().glob("*.json")) if flights_dir().is_dir() else []
-        if not files:
-            return ToolResult("kayıtlı uçuş yok")
-        from alice.sims.flight import Debrief
-
-        d = Debrief(**json.loads(files[-1].read_text(encoding="utf-8")))
-        return ToolResult(f"{d.summary()}\nRapor: {files[-1].with_suffix('.html')}")
-
-
-TOOLS = [Checklist(), Kneeboard(), Flight()]
+TOOLS = [Flight()]

@@ -152,7 +152,7 @@ class FlightCompanion:
         self.last_state: FlightState | None = None
         self.takeoff: FlightState | None = None
         self.stats = {"max_g": 0.0, "max_ias": 0.0, "max_alt": 0.0, "min_fuel": None}
-        self.series: dict[str, list] = {"t": [], "alt_ft": [], "g": [], "ias_kt": [], "fuel_kg": []}
+        self.series: dict[str, list] = {"t": [], "wall": [], "alt_ft": [], "g": [], "ias_kt": [], "fuel_kg": []}
         self._series_t = -1e9
         self.restricted_said = False
         self._touchdown_vv: float | None = None
@@ -223,7 +223,8 @@ class FlightCompanion:
         if s.t - self._series_t >= 1.0:
             self._series_t = s.t
             ser = self.series
-            ser["t"].append(round(s.wall, 1))
+            ser["t"].append(round(s.t, 1))
+            ser["wall"].append(round(s.wall, 1))
             ser["alt_ft"].append(round((s.alt or 0) / FT))
             ser["g"].append(round(s.g or 0, 2))
             ser["ias_kt"].append(round((s.ias or 0) / KT))
@@ -288,7 +289,7 @@ class FlightCompanion:
                          f"üs {st['home_nm']:.0f} mil uzakta.", "critical", self._urgent())
             elif m <= 5 and "joker" not in self.fuel_flags:
                 self.fuel_flags.add("joker")
-                self.say(f"Yakıt: {fmt_min(left)}lık kaldı. Eve dönmek için yaklaşık {fmt_min(m)} içinde "
+                self.say(f"{fmt_min(left).capitalize()}lık yakıtın kaldı. Eve dönmek için yaklaşık {fmt_min(m)} içinde "
                          f"ayrılman gerekiyor.", "warn", self._urgent())
         else:
             for limit, flag in ((10, "low10"), (5, "low5")):
@@ -387,7 +388,7 @@ class FlightCompanion:
         touchdown = self._touchdown_vv if landed else None
         d = Debrief(
             aircraft=self.profile.name if self.profile.name != "uçak" else (self.aircraft or "uçak"),
-            source=s.source, start_wall=t0.wall, end_wall=s.wall, duration_s=s.wall - t0.wall,
+            source=s.source, start_wall=t0.wall, end_wall=s.wall, duration_s=s.t - t0.t,  # oyun zamanı (duraklatma dahil değil)
             max_g=self.stats["max_g"], max_ias_kt=self.stats["max_ias"] / KT, max_alt_ft=self.stats["max_alt"] / FT,
             fuel_used_kg=fuel_used, min_fuel_kg=self.stats["min_fuel"], approach_on_speed_pct=pct,
             max_sink_final_ms=self.max_sink_final, touchdown_vv_ms=touchdown, chaff_used=cm_used["chaff"],
@@ -429,7 +430,9 @@ def _svg_line(xs: list[float], ys: list, w: int = 720, h: int = 140, color: str 
         return ""
     x0, x1 = pts[0][0], pts[-1][0]
     lo, hi = min(y for _, y in pts), max(y for _, y in pts)
-    span_x, span_y = (x1 - x0) or 1, (hi - lo) or 1
+    if hi - lo < 1e-9:  # sabit değer: çizgiyi ortala
+        lo, hi = lo - 1, hi + 1
+    span_x, span_y = (x1 - x0) or 1, hi - lo
     path = " ".join(f"{'M' if i == 0 else 'L'}{(x - x0) / span_x * (w - 50) + 45:.1f},"
                     f"{h - 18 - (y - lo) / span_y * (h - 30):.1f}" for i, (x, y) in enumerate(pts))
     return (f'<figure><figcaption>{label}</figcaption><svg viewBox="0 0 {w} {h}" role="img" aria-label="{label}">'
@@ -447,8 +450,10 @@ def save_debrief(d: Debrief, hr_series: list[tuple[float, float]] | None = None,
     charts = [_svg_line(ser["t"], ser["alt_ft"], label="İrtifa (ft)"), _svg_line(ser["t"], ser["g"], label="G"),
               _svg_line(ser["t"], ser["ias_kt"], label="Hız (knot)"),
               _svg_line(ser["t"], ser["fuel_kg"], label="Yakıt (kg)")]
-    if hr_series:
-        charts.append(_svg_line([t for t, _ in hr_series], [v for _, v in hr_series], color="var(--hr)",
+    if hr_series and ser.get("wall"):
+        # Nabız duvar saatiyle gelir; uçuşun oyun zamanı eksenine taşı.
+        w0, t0 = ser["wall"][0], ser["t"][0]
+        charts.append(_svg_line([t0 + (t - w0) for t, _ in hr_series], [v for _, v in hr_series], color="var(--hr)",
                                 label="Nabız"))
     rows = [("Süre", fmt_min(d.duration_s / 60)), ("En yüksek G", f"{d.max_g:.1f}"),
             ("En yüksek hız", f"{d.max_ias_kt:.0f} kt"), ("En yüksek irtifa", f"{d.max_alt_ft:,.0f} ft")]

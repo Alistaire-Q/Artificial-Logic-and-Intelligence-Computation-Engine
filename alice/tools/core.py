@@ -25,13 +25,9 @@ def _store(ctx: ToolContext):
 class Metrics(Tool):
     name = "metrics"
     parallel_safe = False  # sqlite bağlantısı ctx.state'te paylaşılıyor
-    description = (
-        "ALICE çekirdeğinin kaydettiği geçmiş veriler (bilgisayar sıcaklıkları, CPU/GPU/RAM/disk, süreçler; ileride "
-        "DCS ve saat). action: status (servis durumu ve mod) | keys (anahtar listesi, pattern glob) | "
-        "stats (ort/min/max) | series (zaman serisi, en fazla 60 nokta) | events (bildirimler, susturulanlar, görev "
-        "sonuçları) | modes (bir modun açık olduğu aralıklar). since/until: '2h', '3d', 'dün', 'bugün' ya da ISO "
-        "tarih. mode: sadece o mod açıkken (flight = DCS/War Thunder, dev, quiet, normal). "
-        "Ör. 'dün DCS oynarken GPU kaç derece' -> stats key=pc.gpu.temp since=dün until=bugün mode=flight.")
+    description = ("Kayıtlı geçmiş veriler (pc.*, dcs.*, watch.hr...). status: çekirdek ve mod. keys: anahtarlar. "
+                   "since/until: '2h', '3d', 'dün', ISO. mode: sadece o mod açıkken (flight = DCS/War Thunder). "
+                   "Ör. dün DCS'te GPU: stats key=pc.gpu.temp since=dün until=bugün mode=flight.")
     parameters = obj({
         "action": {"type": "string", "enum": ["status", "keys", "stats", "series", "events", "modes"]},
         "key": {"type": "string"}, "pattern": {"type": "string"},
@@ -86,13 +82,9 @@ class Metrics(Tool):
 
 class Rules(Tool):
     name = "rules"
-    description = (
-        "Çekirdeğin uyarı kuralları. action: list | add | remove | enable | disable. Kullanıcı 'X olursa beni uyar' "
-        "dediğinde add ile kural kur: metric (anahtar ya da glob, mevcutlar için metrics keys), op, threshold, "
-        "duration (sn, koşulun kesintisiz sürmesi gereken süre), message (Türkçe, {value} {match} kullanılabilir), "
-        "severity, topic (pc|flight|health), modes (boş = her mod), confirm (yanlış alarm riski varsa hızlı karar "
-        "modeline sorulacak evet/hayır sorusu), action=agent + prompt (tetiklenince ALICE araştırsın). "
-        "description'a kullanıcının cümlesini yaz.")
+    description = ("Uyarı kuralları ('X olursa beni uyar'). add: metric (anahtar/glob), op, threshold, duration "
+                   "(sn, kesintisiz), message ({value} {match}), confirm (yanlış alarm riskinde hızlı modele evet/hayır "
+                   "sorusu), rule_action=agent+prompt (ALICE araştırsın), description=kullanıcının cümlesi.")
     parameters = obj({
         "action": {"type": "string", "enum": ["list", "add", "remove", "enable", "disable"]},
         "id": {"type": "string"}, "metric": {"type": "string"},
@@ -137,12 +129,9 @@ class Rules(Tool):
 
 class Schedule(Tool):
     name = "schedule"
-    description = (
-        "Zamanlanmış görevler (çekirdek servis çalıştırır). action: list | add | remove | run_now. add: cron "
-        "(5 alan: dakika saat gün ay haftanın_günü, 0=pazar), prompt (o saatte ALICE'in gözetimsiz yapacağı işin "
-        "eksiksiz Türkçe tarifi, yollar dahil), description (kullanıcının cümlesi), catch_up (bilgisayar kapalıyken "
-        "kaçırılırsa açılışta telafi). Kurmadan önce kullanıcıya ne zaman ve ne yapılacağını söyle; onay sistemi "
-        "de ayrıca sorar.")
+    description = ("Zamanlanmış görevler. add: cron (dk sa gün ay hgünü, 0=pazar), prompt (o saatte gözetimsiz "
+                   "yapılacak işin eksiksiz tarifi), description, catch_up (kaçırılırsa açılışta yap). Kurmadan önce "
+                   "ne zaman ve ne yapılacağını kullanıcıya söyle.")
     parameters = obj({
         "action": {"type": "string", "enum": ["list", "add", "remove", "run_now"]},
         "id": {"type": "string"}, "cron": {"type": "string"}, "prompt": {"type": "string"},

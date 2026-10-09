@@ -107,6 +107,12 @@ export_path = ""
 enabled = false
 port = 8765
 
+# Sabah özeti (`alice brief`, kurmak için `alice brief --install 08:00`).
+# days: haftanın günlerine göre program, ör. pazartesi = "okul", salı = "staj".
+[brief]
+city = ""
+days = {}
+
 # Hızlı bar: her programın üstünde kısayolla açılan küçük ALICE kutusu (pynput gerekir).
 [quick]
 # true: çekirdek (alice core run) hızlı barı da başlatır.

@@ -16,6 +16,7 @@
   alice dcs install|status|kneeboard   DCS bağlantısı
   alice watch [status|import <db>]     akıllı saat verisi ve ne sıklıkla geldiği
   alice phone                telefon köprüsü (telefondan ALICE, canlı nabız)
+  alice notes | brief | report         notlar, sabah özeti, haftalık bilgisayar raporu
 """
 
 from __future__ import annotations
@@ -657,6 +658,10 @@ def main(argv: list[str] | None = None) -> int:
         from alice.core import cli as core_cli
 
         return {"core": core_cli.core_cmd, "rules": core_cli.rules_cmd, "tasks": core_cli.tasks_cmd}[argv[0]](argv[1:])
+    if argv and argv[0] in ("notes", "brief", "report"):
+        from alice.extras import cli as extras_cli
+
+        return getattr(extras_cli, f"{argv[0]}_cmd")(argv[1:])
     if argv and argv[0] in ("watch", "phone"):
         from alice.app import phone
 

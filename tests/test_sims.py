@@ -264,13 +264,15 @@ def test_checklists(isolated_home):
 def test_checklist_tool(tmp_path):
     from alice.config import Config, default_config_dict
     from alice.tools import ToolContext
-    from alice.tools.flight import Checklist
+    from alice.tools.flight import Flight
 
     ctx = ToolContext(cwd=tmp_path, config=Config(default_config_dict()))
-    tool = Checklist()
-    assert "Adım 1/" in tool.run(ctx, action="start", name="kalkış").text
-    assert "Adım 2/" in tool.run(ctx, action="next").text
-    assert "Adım 1/" in tool.run(ctx, action="prev").text
+    tool = Flight()
+    assert "Adım 1/" in tool.run(ctx, action="checklist_start", name="kalkış").text
+    assert "Adım 2/" in tool.run(ctx, action="checklist_next").text
+    assert "Adım 1/" in tool.run(ctx, action="checklist_prev").text
+    assert tool.risk_for({"action": "kneeboard_note"}) == "write" and tool.risk_for({"action": "status"}) == "read"
+    assert "çalışmıyor" in tool.run(ctx, action="status").text
 
 
 # ------------------------------------------------------------- War Thunder
