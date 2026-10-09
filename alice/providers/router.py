@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from alice.config import Config, ProviderConfig, alice_home
+from alice.providers import ranking
 from alice.providers.openai_compat import ChatResult, OpenAICompatProvider, ProviderError, StreamCancelled
 
 COOLDOWNS = {"rate_limit": 20.0, "quota": 3600.0, "server": 30.0, "network": 30.0, "unreachable": 600.0}
@@ -158,10 +159,13 @@ class Router:
         sleep: Callable[[float], None] = time.sleep,
         max_wait: float = 65.0,
         on_event: Callable[[str], None] | None = None,
+        auto_cache: dict[str, Any] | None = None,
     ):
         self.config = config
         self.providers_cfg = config.providers()
         self._factory = provider_factory or (lambda pc: OpenAICompatProvider(pc))
+        self._real_clients = provider_factory is None
+        self._probe_checked = False
         self._clients: dict[str, Any] = {}
         self.cooldown_until: dict[str, float] = {}
         self.cooldown_kind: dict[str, str] = {}
@@ -175,17 +179,66 @@ class Router:
         self.on_event = on_event or (lambda s: None)
         self.last_ref: dict[str, str] = {}
         self.role_overrides: dict[str, list[str]] = {}
+        self.log_path: Path | None = (usage_path.parent if usage_path else alice_home()) / "logs" / "providers.log"
+        self.auto_cache: dict[str, Any] = ranking.load_cache() if auto_cache is None else auto_cache
 
     # ------------------------------------------------------------------ helpers
     def chain(self, role: str) -> list[str]:
+        """Rolün model sırası. "auto" ölçülmüş en iyi ücretsiz modellere açılır; ölçümde kalıcı hata veren
+        (kalkmış, bu anahtarla kapalı) modeller atlanır; rastgele model seçen router'lar en sona itilir."""
         if role in self.role_overrides:
             return self.role_overrides[role]
         if ":" in role and role.split(":", 1)[0] in self.providers_cfg:
             return [role]  # doğrudan model referansı
-        chain = self.config.roles.get(role)
-        if chain is None:
+        raw = self.config.roles.get(role)
+        if raw is None:
             raise KeyError(f"tanımsız rol: {role}")
-        return list(chain)
+        if "auto" not in raw and self.config.agent.get("auto_models", True):
+            # Elle yazılmış zincirler de ölçülen modellerle desteklenir: elle yazılanlar önce, sonra ölçülenler.
+            raw = list(raw) + ["auto"]
+        expanded: list[str] = []
+        for ref in raw:
+            expanded += self.auto_chain(role) if ref == "auto" else [ref]
+        dead = self._cached_dead()
+        out: list[str] = []
+        for ref in expanded:
+            if ref not in out and ref not in dead:
+                out.append(ref)
+        return [r for r in out if r not in ranking.RANDOM_ROUTERS] + [r for r in out if r in ranking.RANDOM_ROUTERS]
+
+    def auto_chain(self, role: str) -> list[str]:
+        refs = (self.auto_cache.get("chains") or {}).get(role) or ranking.DEFAULT_AUTO.get(role, [])
+        return [r for r in refs if r.partition(":")[0] in self.providers_cfg]
+
+    def _cached_dead(self) -> set[str]:
+        if ranking.cache_age(self.auto_cache) > 7 * 24 * 3600:
+            return set()
+        dead = {ref for ref, r in (self.auto_cache.get("results") or {}).items()
+                if r.get("error_kind") in ("not_found", "auth")}
+        # Sağlayıcının kataloğunda artık olmayan (kalkmış, adı değişmiş) elle yazılmış modeller.
+        catalog = self.auto_cache.get("catalog") or {}
+        for chain in self.config.roles.values():
+            for ref in chain or []:
+                p, _, model = ref.partition(":")
+                if catalog.get(p) and model not in catalog[p]:
+                    dead.add(ref)
+        return dead
+
+    def reload_auto(self, cache: dict[str, Any] | None = None) -> None:
+        self.auto_cache = ranking.load_cache() if cache is None else cache
+
+    def _log(self, line: str) -> None:
+        """Sağlayıcı hatalarını ~/.alice/providers.log'a yaz (1 MB'ı geçince bir eskisi saklanır)."""
+        if self.log_path is None:
+            return
+        try:
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            if self.log_path.exists() and self.log_path.stat().st_size > 1_000_000:
+                self.log_path.replace(self.log_path.with_suffix(".log.1"))
+            with open(self.log_path, "a", encoding="utf-8") as f:
+                f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {' '.join(line.split())}\n")
+        except OSError:
+            pass
 
     def client(self, provider: str) -> Any:
         if provider not in self._clients:
@@ -236,9 +289,15 @@ class Router:
     ) -> ChatResult:
         """stream verilirse cevap parça parça stream.on_delta'ya akar. Bir model akışın ortasında
         düşerse stream.on_reset() çağrılır ve sıradaki model baştan dener."""
+        if not self._probe_checked:
+            # Gerçek sağlayıcılarla çalışırken model ölçümü bir günden eskiyse arka planda yenilenir.
+            self._probe_checked = True
+            if self._real_clients:
+                ranking.refresh_in_background(self, emit=self.on_event)
         chain = self.chain(role)
         est = estimate_tokens(messages, tools)
         attempts = 0
+        failed: list[str] = []
         while True:
             errors: list[str] = []
             now = time.monotonic()
@@ -286,8 +345,15 @@ class Router:
                     self.usage.record(ref, {}, ok=False)
                     errors.append(f"{ref}: {e}")
                     self._penalize(ref, p, e, tools is not None, response_format is not None, est)
+                    self._log(f"{role} {ref} ~{est}tk HATA {e}")
+                    failed.append(f"{ref} ({e.status or e.kind})")
                     continue
                 self.usage.record(ref, res.usage, ok=True)
+                if failed:
+                    # Arayüz bunu not olarak gösterir: hangi model düştü, kim devraldı.
+                    msg = f"{role}: {', '.join(failed[-3:])} hata verdi, {ref} modeline geçildi"
+                    self.on_event(msg)
+                    self._log(msg)
                 if self.last_ref.get(role) != ref:
                     self.on_event(f"{role} -> {ref}")
                 self.last_ref[role] = ref
@@ -303,6 +369,7 @@ class Router:
                 self.on_event(f"tüm modeller meşgul, {w:.0f} sn bekleniyor")
                 self.sleep(w)
                 continue
+            self._log(f"{role} TÜM MODELLER BAŞARISIZ: " + " | ".join(errors))
             raise AllProvidersFailed(role, errors)
 
     def _penalize(self, ref: str, provider: str, e: ProviderError, had_tools: bool, had_format: bool,

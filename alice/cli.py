@@ -4,7 +4,7 @@
   alice -p "görev"           tek seferlik çalıştır, sonucu yaz, çık
   alice init                 ~/.alice altında config ve .env oluştur
   alice doctor               anahtarları, modelleri ve opsiyonel bağımlılıkları test et
-  alice models [--write]     canlı ücretsiz model kataloğunu tara, rol zinciri öner
+  alice models [--refresh] [--write]  ücretsiz modelleri canlı ölç/sırala; --write rolleri auto yapar
   alice reflex "hedef"       Jev/System One reflex döngüsünü tek başına çalıştır
   alice app                  masaüstü uygulamasını aç
   alice shortcut             masaüstüne ve Başlat menüsüne ALICE kısayolu koy (Windows)
@@ -510,30 +510,38 @@ def doctor(cfg: Config) -> int:
 
 
 # ------------------------------------------------------------------- models
-def models_cmd(cfg: Config, write: bool) -> int:
-    from alice.providers.discovery import discover, suggest_chains
+def models_cmd(cfg: Config, refresh: bool, write: bool) -> int:
+    """Ücretsiz modelleri canlı ölç ve sırala (sonuç ~/.alice/models.json, "auto" zincirleri bunu kullanır)."""
+    from alice.providers import ranking
 
     router = Router(cfg)
-    with console.status("modeller taranıyor..."):
-        found, errors = discover(router)
-    t = Table(title=f"Bulunan modeller ({len(found)})")
-    for c in ("ref", "context", "tools", "vision"):
-        t.add_column(c)
-    for f in found[:80]:
-        yn = lambda v: "?" if v is None else ("✓" if v else "✗")  # noqa: E731
-        t.add_row(f.ref, str(f.context or "?"), yn(f.tools), yn(f.vision))
+    cache = ranking.load_cache()
+    if refresh or not cache:
+        with console.status("modeller ölçülüyor (her biri gerçek bir araç çağrısıyla, ~1-2 dk)...") as st:
+            cache = ranking.refresh(router, emit=lambda s: st.update(f"modeller ölçülüyor... {s}"))
+        router.reload_auto(cache)
+    t = Table(title=f"Ücretsiz modeller (ölçüm: {cache.get('probed_at', '?')})")
+    for c in ("model", "durum", "kalite", "süre sn", "ilk token sn", "token", "token/sn"):
+        t.add_column(c, justify="left" if c in ("model", "durum") else "right")
+    for r in cache.get("results", {}).values():
+        state = "[green]çalışıyor[/]" if r["ok"] else f"[red]{r['error_kind']}[/]"
+        t.add_row(r["ref"], state, str(r["quality"]), f"{r['latency']:.1f}", f"{r['ttft']:.1f}",
+                  str(r["tokens"]), f"{r['tps']:.0f}")
     console.print(t)
-    for p, e in errors.items():
+    for p, e in (cache.get("catalog_errors") or {}).items():
         console.print(f"[dim]{p}: {e}[/]")
-    chains = suggest_chains(found)
-    console.print("[bold]Önerilen zincirler:[/]")
-    for role, refs in chains.items():
-        console.print(f"  {role}: {refs}")
+    console.print("[bold]Otomatik sıra (\"auto\"):[/]")
+    for role, refs in (cache.get("chains") or {}).items():
+        console.print(f"  {role}: {', '.join(refs) or '-'}")
+    console.print("[bold]Şu anki zincirler:[/]")
+    for role in ("brain", "fast", "vision"):
+        console.print(f"  {role}: {', '.join(router.chain(role))}")
     if write:
-        path = write_roles(chains)
-        console.print(f"[green]yazıldı:[/] {path}")
-    else:
-        console.print("[dim]config'e yazmak için: alice models --write[/]")
+        path = write_roles({"brain": ["auto", "ollama:qwen3:8b"], "fast": ["auto", "ollama:qwen3:8b"],
+                            "vision": ["auto", "gemini:gemini-flash-lite-latest"]})
+        console.print(f"[green]config rolleri \"auto\" yapıldı:[/] {path}")
+    elif any("auto" not in (cfg.roles.get(r) or []) for r in ("brain", "fast", "vision")):
+        console.print("[dim]Zincirlerin tamamen ölçüme göre kurulması için: alice models --write[/]")
     return 0
 
 
@@ -545,8 +553,8 @@ def write_roles(chains: dict[str, list[str]]) -> Path:
     for role, refs in chains.items():
         if not refs:
             continue
-        block = f"{role} = [\n" + "".join(f'    "{r}",\n' for r in refs) + "]"
-        rx = re.compile(rf"(?ms)^{role}\s*=\s*\[.*?^\]")
+        block = f"{role} = [" + ", ".join(f'"{r}"' for r in refs) + "]"
+        rx = re.compile(rf"(?ms)^{role}\s*=\s*\[.*?\]")
         if rx.search(text):
             text = rx.sub(lambda _m, b=block: b, text, count=1)
         else:
@@ -678,7 +686,7 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[0] == "doctor":
         return doctor(load_config())
     if argv and argv[0] == "models":
-        return models_cmd(load_config(), "--write" in argv)
+        return models_cmd(load_config(), "--refresh" in argv, "--write" in argv)
     if argv and argv[0] == "app":
         try:
             return app_cmd(argv[1:])
