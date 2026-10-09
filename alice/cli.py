@@ -11,6 +11,7 @@
   alice core run|install|status|mode|stats   arka plan çekirdeği (izleme, kurallar, modlar, görevler)
   alice rules [add "cümle"]  uyarı kuralları ("GPU uzun süre ısınırsa söyle")
   alice tasks [add "cümle"]  zamanlanmış görevler ("her pazar gece projelerimi yedekle")
+  alice voice [audition|use|library|say|test|status]   sesli asistan ve ses seçimi
 """
 
 from __future__ import annotations
@@ -652,6 +653,10 @@ def main(argv: list[str] | None = None) -> int:
         from alice.core import cli as core_cli
 
         return {"core": core_cli.core_cmd, "rules": core_cli.rules_cmd, "tasks": core_cli.tasks_cmd}[argv[0]](argv[1:])
+    if argv and argv[0] == "voice":
+        from alice.voice.cli import voice_cmd
+
+        return voice_cmd(argv[1:])
     if argv and argv[0] == "shortcut":
         return shortcut_cmd()
     if argv and argv[0] == "reflex":

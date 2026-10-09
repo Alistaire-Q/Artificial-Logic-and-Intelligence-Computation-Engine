@@ -1,0 +1,257 @@
+"""Ses komutları.
+
+  alice voice                         sesli asistanı başlat (bas-konuş + "Hey Alice")
+  alice voice audition [--voices Aoede,Kore] [--local xtts,chatterbox] [--emotions calm,urgent]
+                                      dinleme testi: örnekleri üretir, HTML sayfasını açar
+  alice voice use <aday>              sesi seç: gemini:Aoede, xtts, chatterbox
+  alice voice library                 seçili bulut sesiyle duygu kütüphanesini oluştur (yerel motorlar için)
+  alice voice say "metin" [--emotion urgent] [--engine cloud|local]
+  alice voice test                    mikrofonu 5 sn dinle, seviyeyi ve duyulanı göster
+  alice voice status                  motorlar, kütüphane, opsiyonel paketler
+"""
+
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import webbrowser
+
+from rich.console import Console
+from rich.markup import escape
+
+from alice.config import load_config, set_config_value
+
+console = Console(highlight=False)
+
+OPTIONAL = (("sounddevice", "mikrofon ve ses çalma", "voice"), ("pynput", "bas-konuş ve kısayollar", "voice"),
+            ("webrtcvad", "daha iyi konuşma algılama", "voice"), ("faster_whisper", "yerel Whisper", "voice-local"),
+            ("openwakeword", "yerel 'Hey Alice'", "voice-local"), ("TTS", "XTTS v2 (coqui-tts)", "elle"),
+            ("chatterbox", "Chatterbox (chatterbox-tts)", "elle"))
+
+
+def voice_cmd(argv: list[str]) -> int:
+    sub = argv[0] if argv and not argv[0].startswith("-") else "run"
+    rest = argv[1:] if argv and not argv[0].startswith("-") else argv
+    cfg = load_config()
+    fn = {"run": _run, "audition": _audition, "use": _use, "library": _library, "say": _say, "test": _test,
+          "status": _status}.get(sub)
+    if fn is None:
+        console.print(__doc__)
+        return 2
+    return fn(cfg, rest)
+
+
+def _status(cfg, argv) -> int:
+    from alice.voice.audio import Player, mic_available
+    from alice.voice.stt import make_stt
+    from alice.voice.tts import EmotionLibrary, make_cloud, make_local
+
+    v = cfg.data.get("voice", {})
+    cloud, local = make_cloud(cfg), make_local(cfg)
+    console.print(f"[bold]Bulut sesi:[/] {v.get('tts_cloud')} "
+                  f"{'[green]hazır[/]' if cloud else '[red]GEMINI_API_KEY yok[/]'}")
+    console.print(f"[bold]Yerel ses:[/] {v.get('tts_local') or '[dim]yok[/]'}")
+    lib = EmotionLibrary()
+    console.print(f"[bold]Duygu kütüphanesi:[/] "
+                  f"{('[green]var[/] (' + lib.source + ')') if lib.exists() else '[dim]yok (alice voice library)[/]'}")
+    stt = make_stt(cfg)
+    console.print(f"[bold]Konuşma tanıma:[/] {', '.join(e.name for e in stt.engines) or '[red]yok[/]'}")
+    console.print(f"[bold]Ses çalma:[/] {Player().backend}   [bold]Mikrofon:[/] "
+                  f"{'[green]var[/]' if mic_available() else '[red]yok[/]'}")
+    console.print("[bold]Opsiyonel paketler:[/]")
+    for mod, why, extra in OPTIONAL:
+        ok = importlib.util.find_spec(mod) is not None
+        hint = f"pip install 'alice-harness[{extra}]'" if extra != "elle" else ""
+        console.print(f"  {'[green]✓[/]' if ok else '[red]✗[/]'} {mod:<15} {why} [dim]{'' if ok else escape(hint)}[/]")
+    return 0
+
+
+def _audition(cfg, argv) -> int:
+    from alice.voice.audition import run_audition
+    from alice.voice.tts import GEMINI_VOICES, EmotionLibrary, make_cloud, make_local
+
+    ap = argparse.ArgumentParser(prog="alice voice audition")
+    ap.add_argument("--voices", default="Aoede,Kore,Leda,Sulafat,Despina,Achernar",
+                    help=f"Gemini sesleri, virgülle. Hepsi: {','.join(GEMINI_VOICES)}")
+    ap.add_argument("--local", default="", help="xtts,chatterbox (kuruluysa)")
+    ap.add_argument("--ref", help="yerel motorlar için referans WAV (varsayılan: duygu kütüphanesi ya da ilk Gemini sesi)")
+    ap.add_argument("--emotions", default="", help="calm,happy,serious,urgent,playful")
+    ap.add_argument("--no-open", action="store_true")
+    a = ap.parse_args(argv)
+    engines = []
+    for name in filter(None, a.voices.split(",")):
+        eng = make_cloud(cfg, f"gemini:{name.strip()}")
+        if eng is None:
+            console.print("[red]GEMINI_API_KEY yok[/], bulut sesleri atlanıyor")
+            break
+        engines.append(eng)
+    for name in filter(None, a.local.split(",")):
+        eng = make_local(cfg, name.strip())
+        if eng is None:
+            console.print(f"[yellow]bilinmeyen yerel motor: {name}[/]")
+            continue
+        lib = EmotionLibrary()
+        if a.ref:
+            from pathlib import Path
+
+            eng.library = _single_ref_library(Path(a.ref))
+        elif not lib.exists() and engines:
+            # Referans yoksa ilk bulut sesinin "sakin" örneği referans olur.
+            from alice.voice.audition import audition_dir
+
+            run_audition(engines[:1], ["calm"], emit=lambda s: console.print(f"[dim]{s}[/]"))
+            eng.library = _single_ref_library(audition_dir() / f"{engines[0].name.replace(':', '_')}_calm.wav")
+        engines.append(eng)
+    if not engines:
+        console.print("[red]denenecek ses yok[/]")
+        return 1
+    emotions = [e.strip() for e in a.emotions.split(",") if e.strip()] or None
+    with console.status("örnekler hazırlanıyor..."):
+        page = run_audition(engines, emotions, emit=lambda s: console.print(f"[dim]{escape(s)}[/]"))
+    console.print(f"[green]hazır:[/] {page}")
+    if not a.no_open:
+        webbrowser.open(page.as_uri())
+    return 0
+
+
+def _single_ref_library(path):
+    from alice.voice.tts import EmotionLibrary
+
+    class One(EmotionLibrary):
+        def clip(self, emotion):
+            return path if path.exists() else None
+
+    return One(path.parent)
+
+
+def _use(cfg, argv) -> int:
+    if not argv:
+        console.print("kullanım: alice voice use gemini:Aoede | xtts | chatterbox")
+        return 2
+    ref = argv[0]
+    if ref.startswith("gemini:"):
+        p = set_config_value("voice", "tts_cloud", ref)
+        console.print(f"[green]bulut sesi:[/] {ref}  [dim]({p})[/]")
+        console.print("Yerel motor da kullanacaksan şimdi: [bold]alice voice library[/] (bu sesle duygu kütüphanesi)")
+    elif ref in ("xtts", "chatterbox", ""):
+        set_config_value("voice", "tts_local", ref)
+        console.print(f"[green]yerel ses:[/] {ref or 'kapalı'}")
+    else:
+        console.print("[red]bilinmeyen aday[/]")
+        return 2
+    return 0
+
+
+def _library(cfg, argv) -> int:
+    from alice.voice.tts import build_library, make_cloud
+
+    eng = make_cloud(cfg)
+    if eng is None:
+        console.print("[red]bulut sesi yok (GEMINI_API_KEY)[/]")
+        return 1
+    with console.status("duygu kütüphanesi hazırlanıyor..."):
+        out = build_library(eng, emit=lambda s: console.print(f"[dim]{s}[/]"))
+    console.print(f"[green]hazır:[/] {out}")
+    return 0
+
+
+def _say(cfg, argv) -> int:
+    from alice.voice.audio import Player
+    from alice.voice.tone import pick
+    from alice.voice.tts import TTSError, TTSRouter, make_cloud, make_local, make_tts
+
+    ap = argparse.ArgumentParser(prog="alice voice say")
+    ap.add_argument("text", nargs="+")
+    ap.add_argument("--emotion")
+    ap.add_argument("--engine", choices=["cloud", "local"])
+    ap.add_argument("--out", help="çalmak yerine WAV olarak kaydet")
+    a = ap.parse_args(argv)
+    text = " ".join(a.text)
+    tts = make_tts(cfg)
+    if a.engine:
+        tts = TTSRouter(make_cloud(cfg) if a.engine == "cloud" else None,
+                        make_local(cfg) if a.engine == "local" else None)
+    emo = a.emotion or pick(text)
+    try:
+        with console.status(f"sentezleniyor ({emo})..."):
+            audio = tts.synth(text, emo)
+    except TTSError as e:
+        console.print(f"[red]{escape(str(e))}[/]")
+        return 1
+    console.print(f"[dim]{tts.last} · {emo} · {audio.seconds:.1f} sn[/]")
+    if a.out:
+        audio.save(a.out)
+        return 0
+    player = Player()
+    if not player.available:
+        console.print("[red]ses çalınamıyor[/] (pip install sounddevice)")
+        return 1
+    player.play(audio)
+    return 0
+
+
+def _test(cfg, argv) -> int:
+    import time
+
+    from alice.voice.audio import Audio, Microphone, rms
+    from alice.voice.stt import STTError, make_stt
+
+    try:
+        mic = Microphone()
+    except Exception as e:
+        console.print(f"[red]mikrofon açılamadı:[/] {e}  [dim](pip install sounddevice)[/]")
+        return 1
+    console.print("5 saniye konuş...")
+    frames = []
+    with mic:
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < 5:
+            f = mic.read()
+            frames.append(f)
+            lvl = rms(f)
+            console.print(f"\r{'█' * int(min(lvl * 400, 40)):<40} {lvl:.3f}", end="")
+    console.print()
+    audio = Audio(b"".join(frames), Microphone.RATE)
+    try:
+        stt = make_stt(cfg)
+        t0 = time.monotonic()
+        text = stt.transcribe(audio)
+        console.print(f"duyulan ({stt.last}, {time.monotonic() - t0:.1f} sn): [bold]{escape(text)}[/]")
+    except STTError as e:
+        console.print(f"[red]{escape(str(e))}[/]")
+        return 1
+    return 0
+
+
+def _run(cfg, argv) -> int:
+    from alice.voice.assistant import VoiceAssistant, build_voice_agent
+    from alice.voice.audio import mic_available
+    from alice.voice.stt import make_stt
+
+    ap = argparse.ArgumentParser(prog="alice voice")
+    ap.add_argument("--ptt", help="bas-konuş tuşu (varsayılan config: voice.ptt_key)")
+    ap.add_argument("--no-wake", action="store_true", help="'Hey Alice' kapalı, sadece bas-konuş")
+    a = ap.parse_args(argv)
+    if not mic_available():
+        console.print("[red]mikrofon yok[/] (pip install 'alice-harness[voice]')")
+        return 1
+    from alice.cli import RichUI
+
+    v = cfg.data.get("voice", {})
+    agent, speaker, ctx = build_voice_agent(cfg, RichUI())
+    va = VoiceAssistant(agent, speaker, make_stt(cfg), ptt_key=a.ptt or v.get("ptt_key", ""),
+                        wake_model=v.get("wake_model", ""), wake_phrase=not a.no_wake and v.get("wake_phrase", True),
+                        barge_in=v.get("barge_in", True), follow_up=float(v.get("follow_up", 8)),
+                        emit=lambda s: console.print(f"[dim]  {escape(s)}[/]"))
+    keys = f"bas-konuş: {va.ptt_key}" if va.ptt_key else ""
+    wake = "'Hey Alice'" if va.wake_phrase or va.wake_model else ""
+    console.print(f"[bold magenta]ALICE[/] dinliyor ({', '.join(filter(None, [keys, wake]))}). [dim]Ctrl+C çık[/]")
+    try:
+        va.run()
+    except KeyboardInterrupt:
+        va.stop()
+    finally:
+        from alice.tools import cleanup
+
+        cleanup(ctx)
+    return 0

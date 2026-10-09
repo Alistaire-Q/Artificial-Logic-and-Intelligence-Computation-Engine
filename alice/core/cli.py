@@ -39,6 +39,7 @@ def core_cmd(argv: list[str]) -> int:
 
         router = Router(cfg)
         core = service.Core(cfg, decider=Decider.from_config(cfg, router), run_agent=service.make_agent_runner(cfg))
+        voice = _start_voice(cfg, core) if cfg.data.get("voice", {}).get("enabled") and "--once" not in argv else None
         try:
             if "--once" in argv:
                 core.tick()
@@ -53,6 +54,8 @@ def core_cmd(argv: list[str]) -> int:
         except KeyboardInterrupt:
             core.stop()
         finally:
+            if voice is not None:
+                voice.stop()
             service.release_lock()
         return 0
     if sub == "install":
@@ -105,6 +108,33 @@ def core_cmd(argv: list[str]) -> int:
         return 0
     console.print(__doc__)
     return 2
+
+
+def _start_voice(cfg, core):
+    """Sesli asistanı çekirdekle aynı süreçte başlat; bildirimler de seslendirilsin."""
+    import threading
+
+    from alice.voice.assistant import VoiceAssistant, build_voice_agent
+    from alice.voice.audio import mic_available
+    from alice.voice.stt import make_stt
+
+    v = cfg.data.get("voice", {})
+    agent, speaker, _ = build_voice_agent(cfg)
+
+    def speak(n, pol):
+        # Sessiz modda (voice = false) bildirim sadece yazılı gelir.
+        if pol.voice:
+            speaker.say(n.body or n.title, severity=n.severity, topic=n.topic)
+
+    core.notifier.channels.append(speak)
+    if not mic_available():
+        console.print("[yellow]mikrofon yok;[/] ALICE sadece bildirimleri seslendirecek")
+        return None
+    va = VoiceAssistant(agent, speaker, make_stt(cfg), ptt_key=v.get("ptt_key", ""),
+                        wake_model=v.get("wake_model", ""), wake_phrase=v.get("wake_phrase", True),
+                        barge_in=v.get("barge_in", True), follow_up=float(v.get("follow_up", 8)))
+    threading.Thread(target=va.run, daemon=True, name="alice-voice").start()
+    return va
 
 
 def rules_cmd(argv: list[str]) -> int:
