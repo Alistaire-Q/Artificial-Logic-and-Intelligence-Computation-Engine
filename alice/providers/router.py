@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from alice.config import Config, ProviderConfig, alice_home
-from alice.providers.openai_compat import ChatResult, OpenAICompatProvider, ProviderError
+from alice.providers.openai_compat import ChatResult, OpenAICompatProvider, ProviderError, StreamCancelled
 
 COOLDOWNS = {"rate_limit": 20.0, "quota": 3600.0, "server": 30.0, "network": 30.0, "unreachable": 600.0}
 
@@ -220,6 +220,8 @@ class Router:
             errors: list[str] = []
             now = time.monotonic()
             for ref in chain:
+                if stream is not None and stream.cancelled():
+                    raise StreamCancelled()
                 ok, why = self.available(ref, now)
                 if not ok:
                     errors.append(f"{ref}: {why}")

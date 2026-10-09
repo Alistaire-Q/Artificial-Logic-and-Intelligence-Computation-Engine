@@ -152,3 +152,45 @@ def test_parse_args_tolerant():
     assert parse_args('```json\n{"a": 1}\n```') == {"a": 1}
     assert parse_args("") == {}
     assert parse_args({"b": 2}) == {"b": 2}
+
+
+def test_stop_returns_quickly_during_slow_model_call(workdir):
+    import threading
+    import time
+
+    release = threading.Event()
+
+    def slow(model, messages, tools, **kw):
+        release.wait(10)  # cevap vermeyen model
+        return "geç cevap"
+
+    agent, _, ui = make_agent(slow, workdir, stream=False)
+    threading.Timer(0.3, agent.stop).start()
+    t0 = time.monotonic()
+    agent.run_turn("merhaba")
+    assert time.monotonic() - t0 < 3
+    assert ("info", "durduruldu") in ui.events
+    release.set()
+
+
+def test_stop_kills_running_command(workdir):
+    import threading
+    import time
+
+    script = [tool_call("run_command", {"command": "sleep 30", "timeout": 60}), "bitti"]
+    agent, _, _ = make_agent(script, workdir, mode="yolo")
+    threading.Timer(0.8, agent.stop).start()
+    t0 = time.monotonic()
+    agent.run_turn("bekle")
+    assert time.monotonic() - t0 < 5
+    assert "durduruldu" in agent.messages[-1]["content"] or "HATA" in agent.messages[-1]["content"]
+
+
+def test_repeated_failing_call_gets_a_nudge(workdir):
+    bad = {"path": "yok.txt"}
+    script = [tool_call("read_file", bad, cid="c1"), tool_call("read_file", bad, cid="c2"), "pes"]
+    agent, _, _ = make_agent(script, workdir)
+    agent.run_turn("oku")
+    tool_msgs = [m["content"] for m in agent.messages if m["role"] == "tool"]
+    assert "ALICE notu" not in tool_msgs[0]
+    assert "2. kez başarısız" in tool_msgs[1]
