@@ -309,7 +309,8 @@ class GeminiTTS:
                     break
                 if fmt != "plain" and (too_long(res, text) or (self.verify is not None and not self.verify(res, text))):
                     self._mark_bad(model, fmt)  # model talimatı da okudu: bu biçimi bu modelde bir daha kullanma
-                    fallback = res
+                    if not too_long(res, text):  # talimatı sesli okuyan (fazla uzun) ses asla çalınmaz
+                        fallback = res
                     continue
                 self.last_model, self.last_format = model, fmt
                 return res

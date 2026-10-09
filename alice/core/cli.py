@@ -157,7 +157,7 @@ def _start_voice(cfg, core):
     """Sesli asistanı çekirdekle aynı süreçte başlat; bildirimler de seslendirilsin."""
     import threading
 
-    from alice.voice.assistant import VoiceAssistant, build_voice_agent
+    from alice.voice.assistant import VoiceAssistant, build_voice_agent, make_live
     from alice.voice.audio import mic_available
     from alice.voice.stt import make_stt
 
@@ -175,7 +175,8 @@ def _start_voice(cfg, core):
         return None
     va = VoiceAssistant(agent, speaker, make_stt(cfg), ptt_key=v.get("ptt_key", ""),
                         wake_model=v.get("wake_model", ""), wake_phrase=v.get("wake_phrase", True),
-                        barge_in=v.get("barge_in", True), follow_up=float(v.get("follow_up", 8)))
+                        barge_in=v.get("barge_in", True), follow_up=float(v.get("follow_up", 8)),
+                        live=make_live(cfg, agent))
     threading.Thread(target=va.run, daemon=True, name="alice-voice").start()
     return va
 

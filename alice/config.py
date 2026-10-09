@@ -74,6 +74,13 @@ programs = ["unity.exe", "unity hub.exe", "code.exe", "devenv.exe", "rider64.exe
 [voice]
 # true: çekirdek (alice core run) sesli asistanı da başlatır, bildirimleri seslendirir.
 enabled = false
+# live: "Hey Alice"ten sonra Gemini Live ile canlı, sesten sese konuşma (~0,5 sn, araya girilebilir, doğal ses).
+# classic: yazıya çevir -> model -> ses. Live açılamazsa (internet/kota) 5 dk classic'e döner.
+mode = "live"
+live_voice = "Kore"
+live_models = ["gemini-3.8-live", "gemini-3.1-flash-live-preview", "gemini-2.5-flash-native-audio-latest"]
+# Bu kadar saniye kimse konuşmazsa canlı konuşma kapanır, yeniden "Hey Alice" beklenir.
+live_idle = 20
 # Bulut sesi "gemini:<ses>"; yerel motor "xtts" ya da "chatterbox" (boş = yok).
 tts_cloud = "gemini:Aoede"
 tts_local = ""
