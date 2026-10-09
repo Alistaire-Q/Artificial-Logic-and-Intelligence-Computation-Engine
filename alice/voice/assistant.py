@@ -24,7 +24,7 @@ from alice.voice.tone import SentenceSplitter
 VOICE_PROMPT = """# Voice mode
 You are speaking out loud through text-to-speech. The user hears you, they may not be looking at the screen.
 - Answer in Turkish, in 1-3 short spoken sentences unless asked for detail. No markdown, lists, tables or emojis.
-- Each user message ends with the current date and time in brackets. Use it for time/date questions;
+- Each user message ends with the current date and time in brackets. Use it for time/date questions (say the time exactly as its "söylenişi" part);
   answer simple questions (time, date, small talk, general knowledge) directly without calling tools.
 - Never read code, paths or long numbers aloud; say you put it on screen.
 - In urgent situations (flight warnings, errors) be clear and brief, no jokes.
@@ -38,7 +38,40 @@ def with_clock(text: str) -> str:
 
     days = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
     now = datetime.now()
-    return f"{text}\n\n[şu an: {now:%d.%m.%Y} {days[now.weekday()]}, saat {now:%H:%M}]"
+    return (f"{text}\n\n[şu an: {now:%d.%m.%Y} {days[now.weekday()]}, saat {now:%H:%M}, "
+            f"söylenişi: {spoken_time(now.hour, now.minute)}]")
+
+
+NUMS = ["", "bir", "iki", "üç", "dört", "beş", "altı", "yedi", "sekiz", "dokuz", "on", "on bir", "on iki"]
+TENS = {10: "on", 20: "yirmi"}
+ACC = {"bir": "biri", "iki": "ikiyi", "üç": "üçü", "dört": "dördü", "beş": "beşi", "altı": "altıyı", "yedi": "yediyi",
+       "sekiz": "sekizi", "dokuz": "dokuzu", "on": "onu"}
+DAT = {"bir": "bire", "iki": "ikiye", "üç": "üçe", "dört": "dörde", "beş": "beşe", "altı": "altıya", "yedi": "yediye",
+       "sekiz": "sekize", "dokuz": "dokuza", "on": "ona"}
+
+
+def _num(n: int) -> str:
+    return NUMS[n] if n <= 12 else " ".join(w for w in (TENS[n // 10 * 10], NUMS[n % 10]) if w)
+
+
+def _case(word: str, table: dict[str, str]) -> str:
+    head, _, last = word.rpartition(" ")
+    return f"{head} {table[last]}".strip()
+
+
+def spoken_time(hour: int, minute: int) -> str:
+    """Model "01:13"ü "bire on üç" diye yanlış okuyordu; saatin Türkçe söylenişini hazır ver."""
+    def h12(h: int) -> str:
+        return _num(h % 12 or 12)
+
+    if minute == 0:
+        return f"saat tam {h12(hour)}"
+    if minute == 30:
+        return f"saat {h12(hour)} buçuk"
+    if minute < 30:
+        return f"saat {_case(h12(hour), ACC)} {'çeyrek' if minute == 15 else _num(minute)} geçiyor"
+    rest = 60 - minute
+    return f"saat {_case(h12(hour + 1), DAT)} {'çeyrek' if rest == 15 else _num(rest)} var"
 
 
 FILLERS = ["Hemen bakıyorum.", "Bir saniye, bakıyorum.", "Tamam, bakıyorum."]

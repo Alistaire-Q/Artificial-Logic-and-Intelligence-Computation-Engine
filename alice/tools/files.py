@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from alice.tools.shell import NO_WINDOW
 from alice.tools.base import WRITE, Tool, ToolContext, ToolError, ToolResult, make_diff, obj
 
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache", ".pytest_cache",
@@ -294,7 +295,7 @@ class Grep(Tool):
             # Göreli yollar: hem okunaklı hem modele daha az token.
             cmd += ["-e", pattern, "." if base.is_dir() else str(base)]
             r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
-                               cwd=base if base.is_dir() else None)
+                               cwd=base if base.is_dir() else None, creationflags=NO_WINDOW)
             lines = r.stdout.splitlines()[:max_results]
             return ToolResult("\n".join(lines) if lines else "eşleşme yok")
         try:
