@@ -23,7 +23,7 @@ GROUPS: dict[str, tuple[set[str], str, str]] = {
                 r"tıkla|ekran|pencere|fare|mouse|klavye|screenshot|buton|düğme|menü|click|screen|pano|kopyala|"
                 r"yapıştır|clipboard|oyun|ayarlar|uygulamada|arayüz|simge|ikon"),
     "browser": ({"browser"}, "web sitelerinde gezinme, form doldurma, tıklama (Playwright)",
-                r"site|tarayıcı|browser|chrome|edge|firefox|youtube|google|sayfa|link|https?://|www\.|\.com|"
+                r"site|tarayıcı|browser|chrome|edge|firefox|opera|youtube|google|sayfa|link|https?://|www\.|\.com|"
                 r"giriş yap|login|online|internetten|instagram|twitter|github|e-?posta|mail"),
     "system": ({"system_info", "process_list", "process_kill", "metrics"},
                "CPU/RAM/GPU/disk durumu, çalışan işlemler, geçmiş ölçümler",
