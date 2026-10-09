@@ -215,8 +215,16 @@ def _library(cfg, argv) -> int:
         console.print("[red]bulut sesi yok (GEMINI_API_KEY)[/]")
         return 1
     _attach_verifier(cfg, [eng])
+    from alice.voice.tone import NAMES_TR
+
+    console.print(f"ses: [bold]{eng.name}[/] [dim](değiştirmek için: alice voice use gemini:<ses>)[/]")
     with console.status("duygu kütüphanesi hazırlanıyor..."):
-        out = build_library(eng, emit=lambda s: console.print(f"[dim]{s}[/]"))
+        out, missing = build_library(eng, emit=lambda s: console.print(f"[dim]{escape(s)}[/]"),
+                                     redo="--redo" in argv)
+    if missing:
+        console.print(f"[yellow]eksik kaldı:[/] {', '.join(NAMES_TR[m] for m in missing)}. Kota yenilenince aynı "
+                      "komut sadece eksikleri tamamlar; o zamana kadar bu tonlar sakin kaydı kullanır.")
+        return 0
     console.print(f"[green]hazır:[/] {out}")
     return 0
 

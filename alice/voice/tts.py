@@ -121,14 +121,38 @@ LIBRARY_TEXT = {
 }
 
 
-def build_library(engine: "TTS", out: Path | None = None, emit: Callable[[str], None] = lambda s: None) -> Path:
+def build_library(engine: "TTS", out: Path | None = None, emit: Callable[[str], None] = lambda s: None,
+                  redo: bool = False) -> tuple[Path, list[str]]:
+    """Her duygu için referans kaydı üret. Var olanlar (redo değilse) atlanır, kota dolarsa kalanlar
+    sonraki çalıştırmaya kalır. (klasör, eksik kalan duygular) döndürür."""
     out = out or library_dir()
     out.mkdir(parents=True, exist_ok=True)
+    meta_path = out / "meta.json"
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        meta = {}
+    if meta.get("source") and meta["source"] != engine.name:
+        redo = True  # başka bir sesle yapılmış kütüphaneyi karıştırma
+        emit(f"önceki kütüphane {meta['source']} sesiyle yapılmış, {engine.name} ile yeniden yapılıyor")
+    missing: list[str] = []
     for emo, text in LIBRARY_TEXT.items():
+        path = out / f"{emo}.wav"
+        if path.exists() and not redo:
+            continue
         emit(f"{NAMES_TR[emo]} kaydı hazırlanıyor")
-        engine.synth(text, emo).save(out / f"{emo}.wav")
-    (out / "meta.json").write_text(json.dumps({"source": engine.name, "created": time.time()}), encoding="utf-8")
-    return out
+        try:
+            engine.synth(text, emo).save(path)
+        except QuotaError as e:
+            emit(f"  {e}")
+            rest = list(LIBRARY_TEXT)[list(LIBRARY_TEXT).index(emo):]
+            missing += [m for m in rest if redo or not (out / f"{m}.wav").exists()]
+            break
+        except TTSError as e:
+            emit(f"  atlandı: {e}")
+            missing.append(emo)
+    meta_path.write_text(json.dumps({"source": engine.name, "created": time.time()}), encoding="utf-8")
+    return out, sorted(set(missing), key=list(LIBRARY_TEXT).index)
 
 
 # ------------------------------------------------------------------- Gemini

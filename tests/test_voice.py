@@ -124,7 +124,8 @@ def test_tts_router_fallback_and_flight_policy():
 
 
 def test_emotion_library(tmp_path):
-    out = build_library(FakeTTS("gemini:Aoede"), tmp_path / "lib")
+    out, missing = build_library(FakeTTS("gemini:Aoede"), tmp_path / "lib")
+    assert missing == []
     lib = EmotionLibrary(tmp_path / "lib")
     assert lib.exists() and lib.source == "gemini:Aoede" and lib.clip("urgent").name == "urgent.wav"
     (out / "urgent.wav").unlink()
@@ -718,3 +719,28 @@ def test_server_assess():
     assert end == 1.3 and 0.5 < q < 1.0
     q2, end2 = srv.assess([("tamamen", 0, 1), ("başka", 1, 2)], "Merhaba, ben ALICE.")
     assert q2 == 0 and end2 is None
+
+
+def test_library_resumes_after_quota(tmp_path):
+    from alice.voice.tts import QuotaError
+
+    class Limited(FakeTTS):
+        def __init__(self, name, budget):
+            super().__init__(name)
+            self.budget = budget
+
+        def synth(self, text, emotion="calm"):
+            if self.budget <= 0:
+                raise QuotaError("günlük", None, True)
+            self.budget -= 1
+            return super().synth(text, emotion)
+
+    lib = tmp_path / "lib"
+    _, missing = build_library(Limited("gemini:Kore", 4), lib)
+    assert missing == ["playful"] and len(list(lib.glob("*.wav"))) == 4
+    e = Limited("gemini:Kore", 5)
+    _, missing = build_library(e, lib)
+    assert missing == [] and e.calls == [(e.calls[0][0], "playful")]   # sadece eksik olan
+    e2 = Limited("gemini:Aoede", 10)
+    build_library(e2, lib)                                               # ses değişti: hepsi yeniden
+    assert len(e2.calls) == 5 and EmotionLibrary(lib).source == "gemini:Aoede"
