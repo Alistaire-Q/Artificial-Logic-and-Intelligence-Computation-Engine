@@ -77,7 +77,7 @@ tts_local = ""
 prefer = "cloud"
 # Gemini ses modelleri, sırayla: kota model başına sayılır, biri dolunca sıradakine geçilir.
 gemini_tts_models = ["gemini-3.8-flash-lite-tts", "gemini-3.8-flash-tts", "gemini-3.1-flash-tts-preview",
-                     "gemini-2.5-flash-preview-tts"]
+                     "gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts"]
 # Konuşma tanıma zinciri: groq:<model>, local:<faster-whisper modeli>
 stt = ["groq:whisper-large-v3-turbo", "local:large-v3-turbo"]
 stt_cpu_model = "small"
