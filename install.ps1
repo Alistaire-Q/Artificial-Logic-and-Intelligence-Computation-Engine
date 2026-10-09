@@ -2,15 +2,49 @@
 #   powershell -ExecutionPolicy Bypass -File install.ps1
 $ErrorActionPreference = "Stop"
 
-# Windows'taki "python" Microsoft Store kısayolu gerçek Python değil, gerçekten çalışıyor mu diye bak.
-$ver = $null
-try { $ver = & python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null } catch {}
-if (-not $ver) {
-    throw "Python bulunamadı. 'winget install -e --id Python.Python.3.11' çalıştır (ya da python.org'dan kur, 'Add to PATH' işaretli), PowerShell'i kapatıp aç, tekrar dene."
+# Python'u bul. "python" komutu çoğu zaman Microsoft Store'un sahte kısayolu oluyor ya da winget'ten
+# sonra PATH güncellenmemiş oluyor; bu yüzden önce bilinen kurulum klasörlerine ve py başlatıcısına bak.
+function Test-Py([string]$exe, [string[]]$pre) {
+    try {
+        $out = & $exe @pre -c "import sys; print(sys.executable if sys.version_info[:2] >= (3, 10) else '')" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $out) {
+            $path = ([string]($out | Select-Object -Last 1)).Trim()
+            if ($path -and (Test-Path $path)) { return $path }
+        }
+    } catch {}
+    return $null
 }
-if ([version]$ver -lt [version]"3.10") { throw "Python $ver çok eski, 3.10+ gerekli." }
 
-if (-not (Test-Path ".venv")) { python -m venv .venv }
+function Find-Python {
+    $known = @(
+        "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python310\python.exe",
+        "$env:ProgramFiles\Python311\python.exe",
+        "$env:ProgramFiles\Python312\python.exe"
+    )
+    foreach ($k in $known) {
+        if (Test-Path $k) { $r = Test-Py $k @(); if ($r) { return $r } }
+    }
+    if (Get-Command py -ErrorAction SilentlyContinue) {
+        foreach ($v in @("-3.11", "-3.12", "-3.10")) { $r = Test-Py "py" @($v); if ($r) { return $r } }
+    }
+    return (Test-Py "python" @())
+}
+
+$py = Find-Python
+if (-not $py -and (Get-Command winget -ErrorAction SilentlyContinue)) {
+    Write-Host "Python bulunamadı, Python 3.11 kuruluyor (winget)..." -ForegroundColor Yellow
+    winget install -e --id Python.Python.3.11 --scope user --accept-package-agreements --accept-source-agreements
+    $py = Find-Python
+}
+if (-not $py) {
+    throw "Python bulunamadı. python.org'dan Python 3.11 kur ('Add python.exe to PATH' işaretli), PowerShell'i kapatıp aç, tekrar dene."
+}
+Write-Host "Python: $py"
+
+if (-not (Test-Path ".venv")) { & $py -m venv .venv }
+if (-not (Test-Path ".\.venv\Scripts\python.exe")) { throw "Sanal ortam (.venv) oluşturulamadı." }
 & .\.venv\Scripts\python.exe -m pip install --upgrade pip | Out-Null
 & .\.venv\Scripts\python.exe -m pip install -e ".[computer,browser]"
 if ($LASTEXITCODE -ne 0) { throw "Paket kurulumu başarısız oldu, yukarıdaki hatayı kontrol et." }
@@ -18,6 +52,10 @@ if ($LASTEXITCODE -ne 0) { throw "Paket kurulumu başarısız oldu, yukarıdaki 
 # Uygulama penceresi (pywebview). Kurulamazsa sorun değil: ALICE Edge'in uygulama moduyla açılır.
 & .\.venv\Scripts\python.exe -m pip install -e ".[app]"
 if ($LASTEXITCODE -ne 0) { Write-Host "pywebview kurulamadı, uygulama Edge penceresinde açılacak." -ForegroundColor Yellow }
+
+# Çekirdek tepsi simgesi, ses (mikrofon, bas-konuş, konuşma algılama) ve kısayollar.
+& .\.venv\Scripts\python.exe -m pip install -e ".[core,voice]"
+if ($LASTEXITCODE -ne 0) { Write-Host "Ses paketleri kurulamadı; yazılı kullanım çalışır." -ForegroundColor Yellow }
 
 # Chrome ya da Edge kuruluysa ALICE onları kullanır; ikisi de yoksa Playwright Chromium indir.
 $chrome = Test-Path "$env:ProgramFiles\Google\Chrome\Application\chrome.exe"

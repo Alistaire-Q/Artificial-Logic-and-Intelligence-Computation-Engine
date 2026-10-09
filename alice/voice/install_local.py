@@ -40,7 +40,13 @@ def _out(cmd: list[str]) -> str | None:
 
 def find_python() -> tuple[list[str], str] | None:
     """(çalıştırma komutu, sürüm). 3.11 tercih edilir."""
+    import os
+
     cands: list[list[str]] = []
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Python"
+        cands += [[str(base / f"Python{v}" / "python.exe")] for v in ("311", "312", "310")
+                  if (base / f"Python{v}" / "python.exe").exists()]
     if sys.platform == "win32" and shutil.which("py"):
         cands += [["py", "-3.11"], ["py", "-3.12"], ["py", "-3.10"]]
     for name in ("python3.11", "python3.12", "python3.10"):
