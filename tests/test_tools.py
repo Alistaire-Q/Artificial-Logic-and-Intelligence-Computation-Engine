@@ -180,3 +180,38 @@ def test_find_installed_apps_scans_program_folders(tmp_path, monkeypatch):
     assert str(app / "blender.exe") in paths
     assert not any("uninstall" in p or "other.exe" in p for p in paths)
     assert desktop.find_installed_apps("photoshop") == []
+
+
+def test_blender_tool_parses_error_and_scene(tmp_path, monkeypatch):
+    import sys as _sys
+
+    from alice.tools import blender as bl
+    from alice.tools.base import ToolContext
+
+    # Gerçek Blender yerine çıktıyı taklit eden küçük bir betik.
+    fake = tmp_path / "fake_blender.py"
+    fake.write_text(
+        "print('Blender 5.2.1 LTS')\n"
+        "print('kullanici ciktisi')\n"
+        "print('@@ALICE@@HATA')\n"
+        "print('AttributeError: World has no attribute gas_color')\n"
+        "print('@@ALICE@@SAHNE')\n"
+        "print('Cube [MESH] konum=(0, 0, 0) boyut=(2, 2, 2)')\n"
+        "print('@@ALICE@@SON')\n"
+        "raise SystemExit(1)\n", encoding="utf-8")
+    exe = tmp_path / "fake_blender.sh"
+    exe.write_text(f"#!/bin/sh\nexec {_sys.executable} {fake}\n")
+    exe.chmod(0o755)
+    monkeypatch.setattr(bl, "find_blender", lambda ctx=None: str(exe))
+    monkeypatch.setattr(bl, "alice_home", lambda: tmp_path)
+
+    class Cfg:
+        data: dict = {}
+        agent: dict = {}
+
+    ctx = ToolContext(cwd=tmp_path, config=Cfg(), router=None)
+    res = bl.Blender().run(ctx, action="run", code="import bpy", new=True)
+    assert res.is_error
+    assert "gas_color" in res.text and "BETİK HATASI" in res.text
+    assert "Cube [MESH]" in res.text and "kullanici ciktisi" in res.text
+    assert "Blender 5.2.1" not in res.text

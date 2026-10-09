@@ -117,13 +117,25 @@ class RunCommand(Tool):
             state = "çalışıyor" if pop.poll() is None else f"bitti (kod {pop.returncode})"
             return ToolResult(f"arka planda başlatıldı pid={pop.pid}, durum: {state}\nlog: {log}\n{head}")
         timeout = max(1, min(int(timeout), 1800))
-        try:
-            r = subprocess.run(argv, cwd=wd, capture_output=True, stdin=subprocess.DEVNULL, timeout=timeout, env=_env())
-        except subprocess.TimeoutExpired as e:
-            out = (e.stdout or b"").decode("utf-8", errors="replace") + (e.stderr or b"").decode("utf-8", errors="replace")
-            return ToolResult(f"ZAMAN AŞIMI ({timeout} sn). Uzun işler için background=true kullan.\n{truncate(out, limit)}", is_error=True)
-        out = r.stdout.decode("utf-8", errors="replace")
-        err = r.stderr.decode("utf-8", errors="replace")
+        # Çıktı boru yerine geçici dosyaya yazılır: komutun başlattığı pencereli bir program (ör. Blender)
+        # boruları devralırsa subprocess.run zaman aşımından sonra bile sonsuza kadar bekliyordu.
+        with tempfile.TemporaryFile() as fo, tempfile.TemporaryFile() as fe:
+            pop = subprocess.Popen(argv, cwd=wd, stdout=fo, stderr=fe, stdin=subprocess.DEVNULL, env=_env())
+            try:
+                returncode = pop.wait(timeout=timeout)
+                timed_out = False
+            except subprocess.TimeoutExpired:
+                pop.kill()  # sadece kabuğu öldür; açtığı pencereli program açık kalsın
+                pop.wait()
+                returncode, timed_out = -1, True
+            fo.seek(0)
+            fe.seek(0)
+            out = fo.read().decode("utf-8", errors="replace")
+            err = fe.read().decode("utf-8", errors="replace")
+        if timed_out:
+            return ToolResult(f"ZAMAN AŞIMI ({timeout} sn). Uzun işler için background=true kullan. Pencereli bir "
+                              "program açıyorsan run_command yerine windows action=open kullan; Blender için blender aracını "
+                              f"kullan.\n{truncate(out + err, limit)}", is_error=True)
         body = out
         if err.strip():
             body += ("\n[stderr]\n" if out.strip() else "[stderr]\n") + err
@@ -131,7 +143,7 @@ class RunCommand(Tool):
         if IS_WIN and "is not a valid statement separator" in err:
             body += ("\n[ipucu] Bu Windows PowerShell 5.1: '&&' ve '||' yok. Komutları ';' ile ayır, "
                      "koşul için 'if ($?) { ... }' ya da 'if (-not $?) { ... }' kullan.")
-        return ToolResult(f"çıkış kodu {r.returncode}\n{body}", is_error=r.returncode != 0)
+        return ToolResult(f"çıkış kodu {returncode}\n{body}", is_error=returncode != 0)
 
 
 class ProcessOutput(Tool):
