@@ -77,11 +77,14 @@ def test_gemini_tts_request_and_decode():
 
     eng = GeminiTTS("k", "Kore", client=httpx.Client(transport=httpx.MockTransport(handler)))
     audio = eng.synth("Yakıt az.", "urgent")
-    assert audio.pcm == pcm and audio.rate == 24000
+    assert audio.rate == 24000 and audio.pcm.startswith(b"\x00\x00") and len(audio.pcm) > len(pcm)
     assert seen["key"] == "k" and "gemini-3.8-flash-lite-tts:generateContent" in seen["url"]
     cfg = seen["body"]["generationConfig"]
     assert cfg["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"] == "Kore"
-    assert seen["body"]["contents"][0]["parts"][0]["text"].endswith("acil bir tonla, kısa ve kararlı söyle: Yakıt az.")
+    prompt = seen["body"]["contents"][0]["parts"][0]["text"]
+    # Yönerge ayrı başlıkta, konuşulacak metin sadece TRANSCRIPT altında
+    assert prompt.endswith("#### TRANSCRIPT\nYakıt az.") and "DIRECTOR'S NOTES\nStyle: Clear, firm and urgent" in prompt
+    assert prompt.index("Do NOT speak them") < prompt.index("#### TRANSCRIPT")
 
     bad = GeminiTTS("k", client=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(429, text="quota"))))
     with pytest.raises(TTSError):
@@ -389,7 +392,7 @@ def test_gemini_rotates_models_on_quota():
         return httpx.Response(429, text=r)
 
     eng = GeminiTTS("k", "Aoede", ["m1", "m2", "m3"], client=httpx.Client(transport=httpx.MockTransport(handler)))
-    assert eng.synth("a").pcm == pcm and eng.last_model == "m3" and hits == ["m1", "m2", "m3"]
+    assert eng.synth("a").rate == 24000 and eng.last_model == "m3" and hits == ["m1", "m2", "m3"]
     eng.synth("b")
     assert hits[3:] == ["m3"]  # dolan ve olmayan modeller atlanıyor
 
@@ -416,3 +419,20 @@ def test_speech_cache(tmp_path):
     r.synth("uzun " * 40, "calm")
     r.synth("uzun " * 40, "calm")
     assert len(cloud.calls) == 4  # farklı ton ve uzun cümle önbelleğe alınmaz
+
+
+def test_polish_removes_click_and_noisy_tail():
+    import array as arr
+
+    rate = 24000
+    body = tone(0.3, rate, amp=0.5)
+    noise = arr.array("h", [(i * 37 % 200) - 100 for i in range(int(0.2 * rate))]).tobytes()  # ~%0.3 cızırtı
+    raw = Audio(body.pcm + noise, rate)
+    out = raw.polish()
+    a = arr.array("h", out.pcm)
+    speech_end = int(0.3 * rate)
+    assert abs(a[0]) <= 1                                   # başta tık yok
+    assert all(x == 0 for x in a[speech_end + int(0.03 * rate):])  # kuyruk kesildi, sonrası sessiz
+    cut = speech_end + int(0.03 * rate)
+    assert all(abs(x) < 50 for x in a[cut - 5:cut])            # kesildiği yerde sıfıra iniyor (tık yok)
+    assert len(a) >= speech_end + int(0.15 * rate)          # sonda boşluk var

@@ -25,7 +25,7 @@ import httpx
 
 from alice.config import Config, alice_home
 from alice.voice.audio import Audio
-from alice.voice.tone import CHATTERBOX, EMOTIONS, NAMES_TR, STYLE
+from alice.voice.tone import CHATTERBOX, DIRECTION, EMOTIONS, NAMES_TR
 
 # Gemini'nin kadın sesleri (Google'ın tanımlarıyla). Dinleme testinde bunlardan seçilir.
 GEMINI_VOICES = {
@@ -153,9 +153,21 @@ class GeminiTTS:
         self.reason: dict[str, str] = {}  # model -> daily | minute | error
         self.last_model = ""
 
+    @staticmethod
+    def prompt(text: str, emotion: str) -> str:
+        # Yönerge ile konuşulacak metin ayrı başlıklarda: yoksa yeni modeller yönergeyi de sesli okuyor.
+        return (
+            "Synthesize speech for the performance defined below. The audio profile and director's notes are "
+            "direction only. Do NOT speak them. Speak ONLY the lines under #### TRANSCRIPT, exactly as written, "
+            "in Turkish.\n\n"
+            "# AUDIO PROFILE\nALICE: a young adult female AI assistant with a calm, warm voice, native Turkish "
+            "speaker.\n\n"
+            f"### DIRECTOR'S NOTES\nStyle: {DIRECTION.get(emotion, DIRECTION['calm'])}\n\n"
+            f"#### TRANSCRIPT\n{text}")
+
     def synth(self, text: str, emotion: str = "calm") -> Audio:
         body = {
-            "contents": [{"parts": [{"text": f"{STYLE.get(emotion, STYLE['calm'])}: {text}"}]}],
+            "contents": [{"parts": [{"text": self.prompt(text, emotion)}]}],
             "generationConfig": {"responseModalities": ["AUDIO"], "speechConfig": {
                 "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": self.voice}}}},
         }
@@ -198,7 +210,7 @@ class GeminiTTS:
                 except ValueError:
                     pass
             self.last_model = model
-            return Audio(base64.b64decode(part["data"]), rate)
+            return Audio(base64.b64decode(part["data"]), rate).polish()
         # Hiçbir model ses vermedi. Sadece kota yüzündense QuotaError (dinleme testi buna göre bekler/durur).
         skipped = [m for m in self.models if self.down.get(m, 0) > now and self.reason.get(m) != "error"]
         if quota or skipped:  # var olmayan modellerin hataları önemsiz; kota belirleyici
@@ -254,7 +266,7 @@ class XTTS:
             raise TTSError("duygu kütüphanesi yok: alice voice library")
         with self._lock:
             wav = self._load().tts(text=text, speaker_wav=str(ref), language="tr")
-        return Audio.from_floats(wav, 24000)
+        return Audio.from_floats(wav, 24000).polish()
 
 
 class Chatterbox:
@@ -289,7 +301,7 @@ class Chatterbox:
             wav = model.generate(text, language_id="tr", audio_prompt_path=str(ref), exaggeration=exaggeration,
                                  cfg_weight=cfg_weight)
         samples = wav.squeeze().detach().cpu().tolist() if hasattr(wav, "squeeze") else list(wav)
-        return Audio.from_floats(samples, int(getattr(model, "sr", 24000)))
+        return Audio.from_floats(samples, int(getattr(model, "sr", 24000))).polish()
 
 
 # --------------------------------------------------------------------- seçim
@@ -312,7 +324,7 @@ class SpeechCache:
     def _file(self, engine: str, emotion: str, text: str) -> Path:
         import hashlib
 
-        key = hashlib.sha1(f"{engine}|{emotion}|{text.strip().lower()}".encode("utf-8")).hexdigest()
+        key = hashlib.sha1(f"v2|{engine}|{emotion}|{text.strip().lower()}".encode("utf-8")).hexdigest()
         return self.path / f"{key}.wav"
 
     def get(self, engine: str, emotion: str, text: str) -> Audio | None:
