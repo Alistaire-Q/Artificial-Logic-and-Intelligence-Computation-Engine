@@ -75,7 +75,7 @@ enabled = false
 # Bulut sesi "gemini:<ses>"; yerel motor "xtts" ya da "chatterbox" (boş = yok).
 tts_cloud = "gemini:Aoede"
 tts_local = ""
-# Bulut sesi kota/hatayla düşerse ücretsiz, anahtarsız Microsoft Edge sesi (edge-tts): ~1 sn'de hazır.
+# Bulut ve yerel ses düşerse (kota, hata, takılma) ücretsiz, anahtarsız Microsoft Edge sesi (edge-tts): ~1 sn.
 # Türkçe kadın sesi tr-TR-EmelNeural, erkek tr-TR-AhmetNeural. Boş = kapalı.
 tts_edge = "tr-TR-EmelNeural"
 # Yerel ses sunucusunun Python'u ve portu (`alice voice install-local` doldurur).

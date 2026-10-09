@@ -789,9 +789,9 @@ def test_local_wake_gate_keeps_non_wake_audio_off_the_cloud():
     assert stt.calls == 2
 
 
-def test_edge_backup_before_slow_local():
+def test_local_voice_before_edge_backup():
     from alice.voice.audio import Audio
-    from alice.voice.tts import QuotaError, TTSRouter
+    from alice.voice.tts import QuotaError, TTSError, TTSRouter
 
     class E:
         def __init__(self, name, fail=None):
@@ -806,7 +806,10 @@ def test_edge_backup_before_slow_local():
     cloud, edge, local = E("gemini", QuotaError("kota", None, True)), E("edge"), E("chatterbox")
     r = TTSRouter(cloud, local, policy=dict, backup=edge)
     r.synth("merhaba")
-    assert (cloud.calls, edge.calls, local.calls) == (1, 1, 0) and r.last == "edge"
+    assert (cloud.calls, local.calls, edge.calls) == (1, 1, 0) and r.last == "chatterbox"
+    local.fail = TTSError("zaman aşımı")
+    r.synth("nasılsın")
+    assert edge.calls == 1 and r.last == "edge"
 
 
 def test_decode_mp3_roundtrip():
@@ -831,3 +834,37 @@ def test_decode_mp3_roundtrip():
             box.mux(p)
     pcm = decode_mp3(buf.getvalue(), 24000)
     assert 0.9 < len(pcm) / 2 / 24000 < 1.2
+
+
+def test_tts_server_chunks_and_token_cap():
+    import importlib.util
+    from pathlib import Path
+
+    import alice.voice
+
+    path = Path(alice.voice.__file__).with_name("tts_server.py")
+    spec = importlib.util.spec_from_file_location("alice_tts_server_test", path)
+    srv = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(srv)
+    assert srv.chunks("Merhaba. Bugün hava çok güzel, dışarı çıkalım mı?") == [
+        "Merhaba. Bugün hava çok güzel, dışarı çıkalım mı?"]
+    long = "Birinci uzun cümle burada biraz daha uzuyor ve devam ediyor. " * 6
+    parts = srv.chunks(long.strip())
+    assert len(parts) > 1 and all(len(p) <= 160 for p in parts)
+    assert srv.max_tokens_for("Saat on dokuz.") < 200 and srv.max_tokens_for("x" * 5000) == 1000
+
+    calls = []
+
+    class T3:
+        def inference(self, *a, **kw):
+            calls.append(kw["max_new_tokens"])
+
+    class M:
+        t3 = T3()
+
+    m = M()
+    srv.cap_tokens(m)
+    srv.TOKENS["max"] = 150
+    m.t3.inference(max_new_tokens=1000)
+    m.t3.inference()
+    assert calls == [150, 150]

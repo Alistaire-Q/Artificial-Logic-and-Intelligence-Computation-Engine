@@ -32,7 +32,7 @@ import wave  # noqa: E402
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LOCK = threading.Lock()
-STATE = {"model": None, "device": None}
+STATE = {"model": None, "device": None, "ref": None}
 
 
 def load(device: str):
@@ -48,9 +48,66 @@ def load(device: str):
         STATE["model"] = None
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-    STATE["model"] = ChatterboxMultilingualTTS.from_pretrained(device=device)
+    model = ChatterboxMultilingualTTS.from_pretrained(device=device)
+    cap_tokens(model)
+    STATE["model"] = model
     STATE["device"] = device
+    STATE["ref"] = None
     return STATE["model"]
+
+
+# Chatterbox her cümleye 1000 konuşma tokenı (~40 sn ses) sınırı veriyor. Model bazen cümle sonunu
+# bulamayıp döngüye giriyor ve bu sınıra kadar üretiyor ("forcing EOS"): tek cümle 40-120 sn sürüyordu.
+# Sınırı metnin uzunluğuna göre koy: Türkçe ~14 harf/sn, model ~25 token/sn; iki katı pay + kısa cümle tabanı.
+TOKENS = {"max": 1000}
+
+
+def max_tokens_for(text: str) -> int:
+    return int(min(1000, max(120, len(text) / 14 * 25 * 2 + 60)))
+
+
+def cap_tokens(model) -> None:
+    t3 = getattr(model, "t3", None)
+    inner = getattr(t3, "inference", None)
+    if inner is None or getattr(inner, "_alice_capped", False):
+        return
+
+    def inference(*args, **kwargs):
+        if "max_new_tokens" in kwargs:
+            kwargs["max_new_tokens"] = min(int(kwargs["max_new_tokens"]), TOKENS["max"])
+        else:
+            kwargs["max_new_tokens"] = TOKENS["max"]
+        return inner(*args, **kwargs)
+
+    inference._alice_capped = True
+    t3.inference = inference
+
+
+def chunks(text: str, limit: int = 160) -> list:
+    """Uzun metni cümlelere, cümle de çok uzunsa virgüllerden böl: kısa parçada model daha az döngüye girer."""
+    import re
+
+    parts = [p.strip() for p in re.split(r"(?<=[.!?…])\s+", text) if p.strip()]
+    out = []
+    for p in parts:
+        while len(p) > limit:
+            cut = max(p.rfind(", ", 0, limit), p.rfind("; ", 0, limit))
+            if cut < limit // 3:
+                cut = p.rfind(" ", 0, limit)
+            if cut <= 0:
+                break
+            out.append(p[: cut + 1].strip())
+            p = p[cut + 1:].strip()
+        if p:
+            out.append(p)
+    # Çok kısa parçaları bir öncekine ekle ("Tamam." tek başına tuhaf tonlanıyor).
+    merged = []
+    for p in out:
+        if merged and (len(p) < 25 or len(merged[-1]) < 25) and len(merged[-1]) + len(p) < limit:
+            merged[-1] += " " + p
+        else:
+            merged.append(p)
+    return merged or [text]
 
 
 WHISPER = {"model": None, "key": None}
@@ -123,7 +180,31 @@ def transcribe_words(samples, rate: int, name: str, device: str):
 
 
 def synth(d: dict) -> tuple:
-    """(wav baytları, ek başlıklar)."""
+    """(wav baytları, ek başlıklar). Uzun metin parçalara bölünüp ayrı ayrı üretilir ve birleştirilir."""
+    import numpy as np
+
+    text = str(d["text"]).strip()
+    pieces = chunks(text)
+    if len(pieces) == 1:
+        return synth_one(d)
+    rate, out, headers = 24000, [], {}
+    for p in pieces:
+        wav, h = synth_one({**d, "text": p})
+        with wave.open(io.BytesIO(wav), "rb") as w:
+            rate = w.getframerate()
+            out.append(np.frombuffer(w.readframes(w.getnframes()), dtype="<i2"))
+        out.append(np.zeros(int(rate * 0.12), dtype="<i2"))  # cümleler arası kısa nefes
+        headers = h
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(np.concatenate(out[:-1]).tobytes())
+    return buf.getvalue(), headers
+
+
+def synth_one(d: dict) -> tuple:
     import inspect
 
     import numpy as np
@@ -139,8 +220,12 @@ def synth(d: dict) -> tuple:
         device = STATE["device"]
         rate = int(getattr(model, "sr", 24000))
         wanted = {"language_id": d.get("language") or "tr"}
-        if d.get("ref"):
+        TOKENS["max"] = max_tokens_for(text)
+        # Referans ses her istekte yeniden işlenmesin: aynı kayıt ve duygu seviyesiyse modelin hazır koşulları kullanılır.
+        ref_key = (d.get("ref") or "", d.get("exaggeration"))
+        if d.get("ref") and (STATE.get("ref") != ref_key or getattr(model, "conds", None) is None):
             wanted["audio_prompt_path"] = d["ref"]
+        STATE["ref"] = ref_key
         for k in ("exaggeration", "cfg_weight", "temperature", "repetition_penalty", "min_p", "top_p"):
             if d.get(k) is not None:
                 wanted[k] = float(d[k])
