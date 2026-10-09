@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 
 import httpx
 import pytest
@@ -131,6 +132,10 @@ def test_agent_streams_and_stop_from_other_thread(workdir):
                   system_prompt="s")
     t = threading.Thread(target=agent.run_turn, args=("uzun iş",))
     t.start()
+    for _ in range(200):  # tur başlamadan durdurulursa run_turn bayrağı sıfırlar; akış başlayınca durdur
+        if ("delta", "başlıyorum") in ui.events:
+            break
+        time.sleep(0.01)
     agent.stop()
     gate.set()
     t.join(5)

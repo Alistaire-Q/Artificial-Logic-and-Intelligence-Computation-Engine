@@ -11,7 +11,26 @@ from typing import Any
 from alice.tools.base import WRITE, Tool, ToolContext, ToolError, ToolResult, make_diff, obj
 
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cache", ".pytest_cache",
-             "dist", "build", ".idea", ".vs", "bin", "obj", "Library", "Temp", ".gradle"}
+             "dist", "build", ".idea", ".vs", "bin", "obj", "Library", "Temp", ".gradle", "AppData",
+             "site-packages"}
+# Dosya araması sınırları: ev klasörü gibi büyük bir yerde aranınca ajan dakikalarca takılmasın.
+SEARCH_SECONDS = 20.0
+SEARCH_MAX_FILES = 20000
+SEARCH_MAX_BYTES = 2_000_000
+
+
+def _skip_dir(name: str) -> bool:
+    return name in SKIP_DIRS or name.startswith(".")
+
+
+def _limit_note(reason: str) -> str:
+    return (f"[ARAMA YARIDA KESİLDİ: {reason}. Sonuç eksik; 'eşleşme yok' aranan şeyin olmadığı anlamına GELMEZ. "
+            "Daha dar bir klasör (path) ya da dosya filtresi (glob) vererek tekrar ara.]\n")
+
+
+def _with_note(body: str, note: str) -> ToolResult:
+    # Kesilen aramada notu başa koy ki zayıf modeller "eşleşme yok"u kesin sonuç sanmasın.
+    return ToolResult(note + body, is_error=bool(note))
 
 
 def _is_binary(path: Path) -> bool:
@@ -222,17 +241,28 @@ class Glob(Tool):
         return str(args.get("pattern", ""))
 
     def run(self, ctx: ToolContext, pattern: str, path: str = ".") -> ToolResult:
+        import time
+
         base = ctx.resolve(path)
         hits = []
-        for p in base.glob(pattern):
-            if any(part in SKIP_DIRS for part in p.relative_to(base).parts):
+        note = ""
+        deadline = time.monotonic() + SEARCH_SECONDS
+        for n, p in enumerate(base.glob(pattern)):
+            if n % 200 == 0:
+                if ctx.cancelled():
+                    note = _limit_note("kullanıcı durdurdu")
+                    break
+                if time.monotonic() > deadline:
+                    note = _limit_note(f"{SEARCH_SECONDS:.0f} sn doldu")
+                    break
+            if any(_skip_dir(part) for part in p.relative_to(base).parts[:-1]):
                 continue
             hits.append(p)
             if len(hits) >= 2000:
                 break
         hits.sort(key=lambda x: x.stat().st_mtime if x.exists() else 0, reverse=True)
         out = [str(h.relative_to(base)) for h in hits[:300]]
-        return ToolResult("\n".join(out) if out else "eşleşme yok")
+        return _with_note("\n".join(out) if out else "eşleşme yok", note)
 
 
 class Grep(Tool):
@@ -271,10 +301,29 @@ class Grep(Tool):
             rx = re.compile(pattern, re.I if ignore_case else 0)
         except re.error as e:
             raise ToolError(f"geçersiz regex: {e}") from e
+        import time
+
         out: list[str] = []
+        note = ""
+        deadline = time.monotonic() + SEARCH_SECONDS
         files = [base] if base.is_file() else self._walk(base)
-        for f in files:
+        for n, f in enumerate(files):
+            if n % 200 == 0:
+                if ctx.cancelled():
+                    note = _limit_note("kullanıcı durdurdu")
+                    break
+                if time.monotonic() > deadline:
+                    note = _limit_note(f"{SEARCH_SECONDS:.0f} sn doldu")
+                    break
+            if n >= SEARCH_MAX_FILES:
+                note = _limit_note(f"{SEARCH_MAX_FILES} dosyaya bakıldı")
+                break
             if glob and not fnmatch.fnmatch(f.name, glob):
+                continue
+            try:
+                if f.stat().st_size > SEARCH_MAX_BYTES:
+                    continue
+            except OSError:
                 continue
             if _is_binary(f):
                 continue
@@ -287,12 +336,12 @@ class Grep(Tool):
                             return ToolResult("\n".join(out))
             except OSError:
                 continue
-        return ToolResult("\n".join(out) if out else "eşleşme yok")
+        return _with_note("\n".join(out) if out else "eşleşme yok", note)
 
     @staticmethod
     def _walk(base: Path):
         for root, dirs, files in os.walk(base):
-            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+            dirs[:] = [d for d in dirs if not _skip_dir(d)]
             for name in files:
                 yield Path(root) / name
 

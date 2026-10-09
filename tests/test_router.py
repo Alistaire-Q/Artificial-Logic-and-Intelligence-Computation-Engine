@@ -135,3 +135,32 @@ def test_usage_recorded(isolated_home):
     r = router_with(cfg, {"a": FakeProvider("a", ["ok"])})
     r.chat("brain", [{"role": "user", "content": "x"}])
     assert r.usage.today()["a:m"]["requests"] == 1
+
+
+def test_gemini_gets_thought_signatures_and_others_dont():
+    from alice.providers.openai_compat import _merge_tool_delta, normalize_message
+    from alice.providers.router import GEMINI_DUMMY_SIGNATURE, clean_messages
+
+    calls: dict = {}
+    _merge_tool_delta(calls, {"id": "c1", "function": {"name": "run_command", "arguments": "{}"},
+                              "extra_content": {"google": {"thought_signature": "SIG"}}})
+    own = normalize_message({"content": "", "tool_calls": [calls[0]]})
+    other = normalize_message({"content": "", "tool_calls": [{"id": "c2", "function": {"name": "x", "arguments": "{}"}}]})
+    msgs = [own, other]
+    g = clean_messages(msgs, gemini=True)
+    assert g[0]["tool_calls"][0]["extra_content"]["google"]["thought_signature"] == "SIG"
+    assert g[1]["tool_calls"][0]["extra_content"]["google"]["thought_signature"] == GEMINI_DUMMY_SIGNATURE
+    plain = clean_messages(msgs)
+    assert all("extra_content" not in tc and "_extra_content" not in tc for m in plain for tc in m["tool_calls"])
+
+
+def test_signature_error_does_not_disable_tools_and_too_large_learns_limit():
+    from alice.providers.openai_compat import ProviderError
+    from alice.providers.router import Router
+    from tests.conftest import make_config
+
+    r = Router(make_config({"brain": ["a:m"]}), provider_factory=lambda pc: None, sleep=lambda s: None)
+    r._penalize("a:m", "a", ProviderError("bad_request", "Function call is missing a thought_signature"), True, False)
+    assert "a:m" not in r.no_tools
+    r._penalize("a:m", "a", ProviderError("too_large", "TPM limit 8000"), True, False, est=10000)
+    assert r.size_limit["a:m"] == 9000

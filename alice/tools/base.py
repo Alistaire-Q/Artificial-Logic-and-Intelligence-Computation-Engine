@@ -35,6 +35,12 @@ class ToolContext:
     state: dict[str, Any] = field(default_factory=dict)  # araçlar arası paylaşılan durum (tarayıcı, süreçler, todo)
     emit: Callable[[str], None] = lambda s: None
 
+    def cancelled(self) -> bool:
+        """Kullanıcı Durdur'a bastı mı? Uzun döngüsü olan araçlar bunu ara ara kontrol etmeli."""
+        agent = self.state.get("agent")
+        cancel = getattr(agent, "cancel", None)
+        return bool(cancel is not None and cancel.is_set())
+
     def resolve(self, path: str) -> Path:
         p = Path(path).expanduser()
         if not p.is_absolute():

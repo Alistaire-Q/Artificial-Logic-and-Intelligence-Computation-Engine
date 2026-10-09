@@ -75,7 +75,7 @@ def classify_error(status: int, body: str, headers: dict[str, str] | None = None
         if any(h in low for h in _QUOTA_HINTS):
             return ProviderError("quota", short, status, retry_after)
         return ProviderError("auth", short, status)
-    if status == 404:
+    if status in (404, 410):  # 410: model kullanımdan kaldırıldı
         return ProviderError("not_found", short, status)
     if status == 413:
         return ProviderError("too_large", short, status)
@@ -269,6 +269,8 @@ def _merge_tool_delta(calls: dict[int, dict[str, Any]], tc: dict[str, Any]) -> N
     cur = calls.setdefault(idx, {"id": None, "type": "function", "function": {"name": "", "arguments": ""}})
     if tc.get("id"):
         cur["id"] = tc["id"]
+    if tc.get("extra_content"):  # Gemini: thought_signature geri gönderilmezse sonraki istek 400 alıyor
+        cur["extra_content"] = tc["extra_content"]
     fn = tc.get("function") or {}
     if fn.get("name") and not cur["function"]["name"]:
         cur["function"]["name"] = fn["name"]
@@ -288,11 +290,14 @@ def normalize_message(msg: dict[str, Any]) -> dict[str, Any]:
         args = fn.get("arguments")
         if isinstance(args, dict):
             args = json.dumps(args, ensure_ascii=False)
-        calls.append({
+        call = {
             "id": tc.get("id") or f"call_{int(time.time() * 1000)}_{i}",
             "type": "function",
             "function": {"name": fn.get("name", ""), "arguments": args or "{}"},
-        })
+        }
+        if tc.get("extra_content"):
+            call["_extra_content"] = tc["extra_content"]  # sadece Gemini'ye geri gönderilir
+        calls.append(call)
     if calls:
         out["tool_calls"] = calls
     return out

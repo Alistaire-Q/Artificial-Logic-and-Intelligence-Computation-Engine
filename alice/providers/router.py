@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from alice.config import Config, ProviderConfig, alice_home
-from alice.providers.openai_compat import ChatResult, OpenAICompatProvider, ProviderError
+from alice.providers.openai_compat import ChatResult, OpenAICompatProvider, ProviderError, StreamCancelled
 
 COOLDOWNS = {"rate_limit": 20.0, "quota": 3600.0, "server": 30.0, "network": 30.0, "unreachable": 600.0}
 
@@ -75,9 +75,31 @@ def strip_images(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def clean_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """ALICE'in iç işaretlerini ("_" ile başlayan anahtarlar) sağlayıcıya göndermeden önce temizle."""
-    return [{k: v for k, v in m.items() if not k.startswith("_")} for m in messages]
+# Gemini'nin belgelediği yer tutucu imza: başka bir modelin yaptığı ya da imzası kaybolmuş çağrılar için.
+GEMINI_DUMMY_SIGNATURE = "skip_thought_signature_validator"
+
+
+def is_gemini(pc: ProviderConfig) -> bool:
+    return "generativelanguage.googleapis.com" in pc.base_url or pc.name == "gemini"
+
+
+def clean_messages(messages: list[dict[str, Any]], gemini: bool = False) -> list[dict[str, Any]]:
+    """ALICE'in iç işaretlerini ("_" ile başlayan anahtarlar) sağlayıcıya göndermeden önce temizle.
+    Gemini'ye giderken her tool_call'a thought_signature eklenir (yoksa Gemini 3 isteği 400 ile reddediyor)."""
+    out = []
+    for m in messages:
+        m2 = {k: v for k, v in m.items() if not k.startswith("_")}
+        if m.get("tool_calls"):
+            calls = []
+            for tc in m["tool_calls"]:
+                tc2 = {k: v for k, v in tc.items() if not k.startswith("_")}
+                if gemini:
+                    tc2["extra_content"] = tc.get("_extra_content") or {
+                        "google": {"thought_signature": GEMINI_DUMMY_SIGNATURE}}
+                calls.append(tc2)
+            m2["tool_calls"] = calls
+        out.append(m2)
+    return out
 
 
 class StreamSink(Protocol):
@@ -146,6 +168,7 @@ class Router:
         self.dead_models: set[str] = set()
         self.dead_providers: set[str] = set()
         self.no_tools: set[str] = set()
+        self.size_limit: dict[str, int] = {}
         self.usage = UsageTracker(usage_path or alice_home() / "usage.json")
         self.sleep = sleep
         self.max_wait = max_wait
@@ -220,6 +243,8 @@ class Router:
             errors: list[str] = []
             now = time.monotonic()
             for ref in chain:
+                if stream is not None and stream.cancelled():
+                    raise StreamCancelled()
                 ok, why = self.available(ref, now)
                 if not ok:
                     errors.append(f"{ref}: {why}")
@@ -232,7 +257,11 @@ class Router:
                 if tools and ref in self.no_tools:
                     errors.append(f"{ref}: tool desteklemiyor")
                     continue
-                msgs = clean_messages(messages if pc.supports_vision(model) else strip_images(messages))
+                if est > self.size_limit.get(ref, 10**9):
+                    errors.append(f"{ref}: istek ~{est} token, bu model daha önce ~{self.size_limit[ref]} üstünü reddetti")
+                    continue
+                msgs = clean_messages(messages if pc.supports_vision(model) else strip_images(messages),
+                                      gemini=is_gemini(pc))
                 client = self.client(p)
                 kw = dict(tools=tools, temperature=temperature, max_tokens=max_tokens,
                           response_format=response_format, extra=self.config.model_extra(ref) or None)
@@ -256,7 +285,7 @@ class Router:
                         stream.on_reset()
                     self.usage.record(ref, {}, ok=False)
                     errors.append(f"{ref}: {e}")
-                    self._penalize(ref, p, e, tools is not None, response_format is not None)
+                    self._penalize(ref, p, e, tools is not None, response_format is not None, est)
                     continue
                 self.usage.record(ref, res.usage, ok=True)
                 if self.last_ref.get(role) != ref:
@@ -276,18 +305,22 @@ class Router:
                 continue
             raise AllProvidersFailed(role, errors)
 
-    def _penalize(self, ref: str, provider: str, e: ProviderError, had_tools: bool, had_format: bool) -> None:
+    def _penalize(self, ref: str, provider: str, e: ProviderError, had_tools: bool, had_format: bool,
+                  est: int = 0) -> None:
         now = time.monotonic()
+        low = str(e).lower()
         if e.kind == "auth":
             self.dead_providers.add(provider)
         elif e.kind == "not_found":
             self.dead_models.add(ref)
         elif e.kind == "too_large":
-            pass
+            # Ör. Groq ücretsiz katmanı dakikada 8K token: bu büyüklükteki istekleri bir daha bu modele yollama.
+            if est:
+                self.size_limit[ref] = min(self.size_limit.get(ref, 10**9), int(est * 0.9))
         elif e.kind == "bad_request":
-            if had_tools:
+            if had_tools and "thought_signature" not in low and ("tool" in low or "function" in low):
                 self.no_tools.add(ref)
-            elif not had_format:
+            elif not had_format or had_tools:
                 self.cooldown_until[ref] = now + 60
         else:
             base = COOLDOWNS.get(e.kind, 30.0)

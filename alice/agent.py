@@ -76,23 +76,41 @@ class _Sink:
     def __init__(self, ui: UI, cancel: threading.Event):
         self.ui = ui
         self.cancel = cancel
+        self.dead = False  # tur durdurulduysa arkada süren model çağrısı artık arayüze yazmasın
         self.parts: list[str] = []
 
     def on_delta(self, text: str) -> None:
+        if self.dead:
+            return
         self.parts.append(text)
         self.ui.stream_delta(text)
 
     def on_reset(self) -> None:
+        if self.dead:
+            return
         self.parts.clear()
         self.ui.stream_reset()
 
     def on_reasoning(self, text: str) -> None:
         fn = getattr(self.ui, "thinking_delta", None)
-        if fn is not None:
+        if fn is not None and not self.dead:
             fn(text)
 
     def cancelled(self) -> bool:
-        return self.cancel.is_set()
+        return self.dead or self.cancel.is_set()
+
+
+def _call_key(call: dict[str, Any]) -> str:
+    return call["function"]["name"] + ":" + (call["function"].get("arguments") or "").strip()
+
+
+REPEAT_FAIL_NOTE = ("\n\n[ALICE notu] Bu çağrı aynı argümanlarla {n}. kez başarısız oldu. Aynısını tekrarlama: hatayı oku, "
+                    "kök nedeni düşün, farklı bir araç ya da yaklaşım dene; gerçekten yapılamıyorsa kullanıcıya sor.")
+ERROR_STREAK_NOTE = ("\n\n[ALICE notu] Son {n} araç çağrısı hata verdi. Devam etmeden dur ve düşün: hata mesajları ne "
+                     "söylüyor, varsayımların (ortam, kabuk sözdizimi, dosya yolu, programın kurulu olup olmadığı) doğru mu? "
+                     "Yeni bir yol seç ve neden işe yarayacağını kısaca yaz.")
+REPEAT_OK_NOTE = ("\n\n[ALICE notu] Aynı çağrıyı {n} kez yaptın ve sonuç ilerlemiyor gibi. Döngüye girme: farklı bir şey "
+                  "dene ya da elindeki bilgiyle işi bitir.")
 
 
 def parse_args(raw: str | dict | None) -> dict[str, Any]:
@@ -149,6 +167,9 @@ class Agent:
         self.stream = bool(a.get("stream", True))
         self.cancel = threading.Event()
         self.busy = False
+        self._call_counts: dict[str, int] = {}
+        self._fail_counts: dict[str, int] = {}
+        self._error_streak = 0
         # Geri sarma için: kullanıcı mesajının indeksi -> o turda ilk değişen dosyaların eski hali.
         self.checkpoints: dict[int, dict[str, bytes | None]] = {}
         if not is_child:
@@ -185,6 +206,9 @@ class Agent:
         steps = max_steps or self.max_steps
         self.cancel.clear()
         self.busy = True
+        self._call_counts.clear()
+        self._fail_counts.clear()
+        self._error_streak = 0
         sink = _Sink(self.ui, self.cancel)
         try:
             for _ in range(steps):
@@ -194,8 +218,8 @@ class Agent:
                 self._prune_images()
                 sink.parts.clear()
                 self.ui.stream_start()
-                res = self.router.chat("brain", self.messages, tools=self.tool_specs(),
-                                       stream=sink if self.stream else None)
+                res = self._interruptible(self.router.chat, "brain", list(self.messages), tools=self.tool_specs(),
+                                          stream=sink if self.stream else None)
                 msg = res.message
                 if not self.stream and msg.get("content"):
                     self.ui.stream_delta(msg["content"])
@@ -209,6 +233,7 @@ class Agent:
             self.ui.info(f"adım limiti ({steps}) doldu; devam etmek için yeni mesaj yaz")
             return final
         except (KeyboardInterrupt, Cancelled, StreamCancelled):
+            sink.dead = True
             partial = "".join(sink.parts)
             if partial and not (self.messages[-1]["role"] == "assistant" and self.messages[-1].get("content") == partial):
                 self.messages.append({"role": "assistant", "content": partial + " [durduruldu]"})
@@ -225,8 +250,34 @@ class Agent:
             self.busy = False
 
     def stop(self) -> None:
-        """Başka bir thread'den (ör. uygulamadaki Durdur butonu) mevcut turu durdur."""
+        """Başka bir thread'den (ör. uygulamadaki Durdur butonu) mevcut turu durdur. Model ya da araç cevabı
+        beklenmez; çalışan komutlar da sonlandırılır."""
         self.cancel.set()
+        from alice.tools.shell import kill_foreground
+
+        kill_foreground(self.ctx)
+
+    def _interruptible(self, fn, *args: Any, **kwargs: Any) -> Any:
+        """fn'i ayrı bir thread'de çalıştır ve bitmesini beklerken durdurma isteğine bak. Durdurulursa beklemeden
+        Cancelled fırlatır; arkadaki çağrı kendi başına biter ve sonucu atılır."""
+        box: dict[str, Any] = {}
+        done = threading.Event()
+
+        def work() -> None:
+            try:
+                box["res"] = fn(*args, **kwargs)
+            except BaseException as e:  # noqa: BLE001 - çağıran thread'de yeniden fırlatılır
+                box["err"] = e
+            finally:
+                done.set()
+
+        threading.Thread(target=work, daemon=True, name="alice-call").start()
+        while not done.wait(0.1):
+            if self.cancel.is_set():
+                raise Cancelled
+        if "err" in box:
+            raise box["err"]
+        return box["res"]
 
     def rewind(self, msg_index: int) -> tuple[str, list[str]]:
         """Konuşmayı msg_index'teki kullanıcı mesajından öncesine geri sar ve o andan beri
@@ -272,6 +323,7 @@ class Agent:
             text = truncate(result.text, self.output_limit)
             if result.is_error:
                 text = f"HATA: {text}"
+            text += self._loop_note(call, result)
             if result.images:
                 if self._brain_sees_images():
                     pending_images.append((name, result.images))
@@ -282,6 +334,26 @@ class Agent:
             parts: list[dict[str, Any]] = [{"type": "text", "text": f"[{name} aracının döndürdüğü görüntü]"}]
             parts += [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b}"}} for b in images]
             self.messages.append({"role": "user", "content": parts, "_image": True})
+
+    def _loop_note(self, call: dict[str, Any], result: ToolResult) -> str:
+        """Zayıf modeller aynı hatalı çağrıyı tekrar tekrar yapıp takılıyor; bunu fark edip modele söyle."""
+        if self.cancel.is_set():
+            return ""
+        key = _call_key(call)
+        self._call_counts[key] = self._call_counts.get(key, 0) + 1
+        if result.is_error:
+            self._error_streak += 1
+            self._fail_counts[key] = self._fail_counts.get(key, 0) + 1
+            if self._fail_counts[key] >= 2:
+                return REPEAT_FAIL_NOTE.format(n=self._fail_counts[key])
+            if self._error_streak >= 3 and self._error_streak % 3 == 0:
+                return ERROR_STREAK_NOTE.format(n=self._error_streak)
+            return ""
+        self._error_streak = 0
+        n = self._call_counts[key]
+        if n >= 3 and call["function"]["name"] not in ("todo_write",):
+            return REPEAT_OK_NOTE.format(n=n)
+        return ""
 
     def _execute_calls(self, calls: list[dict[str, Any]]) -> list[ToolResult]:
         """Çağrıları sırayla işle; art arda gelen, izin gerektirmeyen ve paralel güvenli (salt okuma)
@@ -361,6 +433,8 @@ class Agent:
         return result
 
     def _run_tool(self, tool: Tool, args: dict[str, Any]) -> ToolResult:
+        # Araçlar bu thread'de çalışır (Playwright ve UI Automation nesneleri thread'e bağlı). Durdurulunca
+        # stop() araçların başlattığı komutları öldürür, böylece bekleyen araç da hemen döner.
         try:
             return tool.run(self.ctx, **args)
         except ToolError as e:

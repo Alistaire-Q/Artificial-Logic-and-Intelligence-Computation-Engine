@@ -19,6 +19,7 @@ from typing import Any
 
 from alice.config import alice_home
 from alice.tools.base import COMPUTER, EXEC, Tool, ToolContext, ToolError, ToolResult, obj, truncate
+from alice.tools.shell import track_foreground
 
 IS_WIN = sys.platform == "win32"
 MARK = "@@ALICE@@"
@@ -181,7 +182,8 @@ class Blender(Tool):
             pop = subprocess.Popen(argv, stdout=fo, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                                    env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"})
             try:
-                rc = pop.wait(timeout=timeout)
+                with track_foreground(ctx, pop):
+                    rc = pop.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 pop.kill()
                 pop.wait()

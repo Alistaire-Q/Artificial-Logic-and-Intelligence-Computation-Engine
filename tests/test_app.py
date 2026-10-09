@@ -135,12 +135,14 @@ def test_display_history_skips_internal():
 def test_all_turns_run_on_same_worker_thread(app):
     state, srv, client, prov = app
     seen = []
+    run_turn = state.agent.run_turn
 
-    def script(model, messages, tools, **kw):
+    def spy(*a, **kw):
         seen.append(threading.current_thread().name)
-        return "ok"
+        return run_turn(*a, **kw)
 
-    prov.script = script
+    state.agent.run_turn = spy
+    prov.script = lambda model, messages, tools, **kw: "ok"
     for text in ("bir", "iki"):
         events, t = collect(state, lambda e: e["type"] == "status")
         assert client.post("/api/send", json={"text": text}).json()["ok"]

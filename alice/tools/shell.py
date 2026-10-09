@@ -6,6 +6,7 @@ karakterler cp857 yüzünden bozuk gelir.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import shutil
@@ -121,13 +122,14 @@ class RunCommand(Tool):
         # boruları devralırsa subprocess.run zaman aşımından sonra bile sonsuza kadar bekliyordu.
         with tempfile.TemporaryFile() as fo, tempfile.TemporaryFile() as fe:
             pop = subprocess.Popen(argv, cwd=wd, stdout=fo, stderr=fe, stdin=subprocess.DEVNULL, env=_env())
-            try:
-                returncode = pop.wait(timeout=timeout)
-                timed_out = False
-            except subprocess.TimeoutExpired:
-                pop.kill()  # sadece kabuğu öldür; açtığı pencereli program açık kalsın
-                pop.wait()
-                returncode, timed_out = -1, True
+            with track_foreground(ctx, pop):
+                try:
+                    returncode = pop.wait(timeout=timeout)
+                    timed_out = False
+                except subprocess.TimeoutExpired:
+                    pop.kill()  # sadece kabuğu öldür; açtığı pencereli program açık kalsın
+                    pop.wait()
+                    returncode, timed_out = -1, True
             fo.seek(0)
             fe.seek(0)
             out = fo.read().decode("utf-8", errors="replace")
@@ -181,6 +183,26 @@ class ProcessStop(Tool):
             raise ToolError(f"pid {pid} ALICE tarafından başlatılmamış; başka süreçler için process_kill kullan")
         kill_tree(pid)
         return ToolResult(f"durduruldu: {pid}")
+
+
+@contextlib.contextmanager
+def track_foreground(ctx: ToolContext, pop: subprocess.Popen):
+    """Ön planda beklenen süreci kaydet ki Durdur tuşu onu (ve alt süreçlerini) sonlandırabilsin."""
+    procs: set = ctx.state.setdefault("fg_procs", set())
+    procs.add(pop)
+    try:
+        yield pop
+    finally:
+        procs.discard(pop)
+
+
+def kill_foreground(ctx: ToolContext) -> None:
+    for pop in list(ctx.state.get("fg_procs", ())):
+        if pop.poll() is None:
+            try:
+                kill_tree(pop.pid)
+            except Exception:  # noqa: BLE001 - durdururken hata yutulur
+                pass
 
 
 def kill_tree(pid: int) -> None:
