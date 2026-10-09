@@ -38,6 +38,43 @@ class TTSError(Exception):
     pass
 
 
+class QuotaError(TTSError):
+    """Kota doldu. daily: günlük kota (yarına kadar yok); retry_after: kaç saniye sonra tekrar denenebilir."""
+
+    def __init__(self, message: str, retry_after: float | None = None, daily: bool = False):
+        super().__init__(message)
+        self.retry_after = retry_after
+        self.daily = daily
+
+
+def gemini_quota_error(body: str) -> QuotaError:
+    """Gemini'nin 429 cevabından kota türünü ve bekleme süresini çıkar."""
+    import re
+
+    retry, daily, limit = None, False, ""
+    try:
+        err = json.loads(body).get("error", {})
+    except ValueError:
+        err = {}
+    for d in err.get("details", []) or []:
+        t = d.get("@type", "")
+        if t.endswith("RetryInfo"):
+            m = re.match(r"([\d.]+)s", str(d.get("retryDelay", "")))
+            retry = float(m.group(1)) if m else None
+        if t.endswith("QuotaFailure"):
+            for v in d.get("violations", []) or []:
+                qid = str(v.get("quotaId", ""))
+                daily = daily or "PerDay" in qid
+                limit = limit or str(v.get("quotaValue", ""))
+    if retry is None:
+        m = re.search(r"retry in ([\d.]+)s", str(err.get("message", "")))
+        retry = float(m.group(1)) if m else None
+    kind = "günlük" if daily else "dakikalık"
+    lim = f" (sınır {limit} istek)" if limit else ""
+    wait = f", {retry:.0f} sn sonra tekrar denenebilir" if retry and not daily else ""
+    return QuotaError(f"gemini {kind} ses kotası doldu{lim}{wait}", retry, daily)
+
+
 class TTS(Protocol):
     name: str
 
@@ -117,6 +154,8 @@ class GeminiTTS:
                                  headers={"x-goog-api-key": self.api_key})
         except httpx.HTTPError as e:
             raise TTSError(f"gemini bağlantı hatası: {e}") from e
+        if r.status_code == 429:
+            raise gemini_quota_error(r.text)
         if r.status_code != 200:
             raise TTSError(f"gemini {r.status_code}: {r.text[:200]}")
         try:
@@ -255,7 +294,10 @@ class TTSRouter:
                 self.last = e.name
                 return audio
             except TTSError as ex:
-                self.down[e.name] = now + self.cooldown
+                wait = self.cooldown
+                if isinstance(ex, QuotaError):
+                    wait = 3600 if ex.daily else (ex.retry_after or self.cooldown)
+                self.down[e.name] = now + wait
                 errors.append(f"{e.name}: {ex}")
         raise TTSError("; ".join(errors) or "ses motoru yok")
 

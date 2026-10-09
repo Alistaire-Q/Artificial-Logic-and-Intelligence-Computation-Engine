@@ -324,3 +324,46 @@ def test_audition_page(tmp_path):
     n = len(engines[0].calls)
     run_audition(engines[:1], ["calm", "urgent"], out=tmp_path)
     assert len(engines[0].calls) == n  # var olanlar yeniden üretilmez
+
+
+GEMINI_429 = json.dumps({"error": {"code": 429, "message": "Quota exceeded... Please retry in 41.9s.", "details": [
+    {"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [
+        {"quotaId": "GenerateRequestsPerMinutePerProjectPerModel-FreeTier", "quotaValue": "3"}]},
+    {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "41s"}]}})
+
+
+def test_gemini_quota_parsing():
+    from alice.voice.tts import QuotaError, gemini_quota_error
+
+    q = gemini_quota_error(GEMINI_429)
+    assert isinstance(q, QuotaError) and q.retry_after == 41 and not q.daily and "dakikalık" in str(q)
+    d = gemini_quota_error(GEMINI_429.replace("PerMinute", "PerDay"))
+    assert d.daily and "günlük" in str(d)
+    eng = GeminiTTS("k", client=httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(429, text=GEMINI_429))))
+    with pytest.raises(QuotaError):
+        eng.synth("x")
+
+
+def test_audition_waits_on_minute_quota_and_stops_on_daily(tmp_path):
+    from alice.voice.tts import QuotaError
+
+    class Flaky(FakeTTS):
+        def __init__(self, name, errors):
+            super().__init__(name)
+            self.errors = list(errors)
+
+        def synth(self, text, emotion="calm"):
+            if self.errors:
+                raise self.errors.pop(0)
+            return super().synth(text, emotion)
+
+    waits = []
+    eng = Flaky("gemini:Kore", [QuotaError("dk", 30, False)])
+    run_audition([eng], ["calm", "urgent"], out=tmp_path, sleep=waits.append)
+    assert waits == [31] and (tmp_path / "gemini_Kore_calm.wav").exists() and (tmp_path / "gemini_Kore_urgent.wav").exists()
+
+    a = Flaky("gemini:Leda", [QuotaError("gün", None, True)])
+    b = FakeTTS("gemini:Aoede")
+    run_audition([a, b], ["calm", "happy"], out=tmp_path / "2", sleep=waits.append)
+    assert len(a.calls) == 0 and b.calls == []  # günlük kota: gemini'nin kalanına hiç istek gitmez
+    assert len(waits) == 1
