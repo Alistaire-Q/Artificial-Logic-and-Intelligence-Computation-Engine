@@ -142,8 +142,6 @@ clipboard_hotkey = "<ctrl>+<alt>+c"
 # Ana beyin (System 2): planlama, kod yazma, araç kullanma.
 brain = [
     "gemini:gemini-flash-latest",
-    "openrouter:openai/gpt-oss-120b:free",
-    "nvidia:qwen/qwen3-coder-480b-a35b-instruct",
     "groq:openai/gpt-oss-120b",
     "cerebras:gpt-oss-120b",
     "openrouter:openrouter/free",
