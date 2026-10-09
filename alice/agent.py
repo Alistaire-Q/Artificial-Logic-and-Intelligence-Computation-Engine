@@ -187,11 +187,12 @@ class Agent:
         return [t.spec() for t in visible_tools(self.tools, self.ctx.state.setdefault("tool_groups", set()))]
 
     def _enable_groups_for(self, text: str = "", tool_names: tuple[str, ...] = ()) -> None:
-        from alice.tools.groups import TOOL_TO_GROUP, groups_for_text
+        from alice.tools.groups import group_of, groups_for_text
 
         enabled: set[str] = self.ctx.state.setdefault("tool_groups", set())
-        enabled |= groups_for_text(text)
-        enabled |= {TOOL_TO_GROUP[n] for n in tool_names if n in TOOL_TO_GROUP}
+        self.ctx.state["tool_names"] = tuple(self.tools)
+        enabled |= groups_for_text(text, self.tools)
+        enabled |= {g for g in map(group_of, tool_names) if g}
 
     def spawn_child(self) -> "Agent":
         return Agent(self.config, self.router, list(self.tools.values()), self.ctx, self.permissions, self.ui,

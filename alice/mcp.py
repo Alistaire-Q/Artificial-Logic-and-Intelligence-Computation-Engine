@@ -6,7 +6,7 @@ MCP sunucuları vb.). config.toml:
     [mcp.servers.dosyalar]
     command = "npx"
     args = ["-y", "@modelcontextprotocol/server-filesystem", "C:/Users/hayat/Projeler"]
-    # env = { TOKEN = "..." }
+    # env = { TOKEN = "${GITHUB_TOKEN}" }   # ${AD} ortamdan / .env'den doldurulur
     # enabled = false
 
 Her sunucunun araçları ajana `mcp__<sunucu>__<araç>` adıyla eklenir.
@@ -40,7 +40,8 @@ class MCPServer:
         self.name = name
         self.command = command
         self.args = list(args or [])
-        self.env = dict(env or {})
+        # "${AD}" değerleri ortamdan doldur: token config.toml'a değil .env'e yazılsın.
+        self.env = {k: os.path.expandvars(str(v)) for k, v in (env or {}).items()}
         self.timeout = timeout
         self.proc: subprocess.Popen | None = None
         self._id = 0
