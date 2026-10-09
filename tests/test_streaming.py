@@ -164,3 +164,17 @@ def test_diff_on_edit_and_write(workdir):
     assert "-y = 2" in r.diff and "+y = 3" in r.diff
     r = WriteFile().run(ctx, path="new.py", content="print(1)\n")
     assert "+print(1)" in r.diff
+
+
+def test_think_tags_are_hidden_from_text_and_speech():
+    from alice.providers.openai_compat import ThinkFilter, normalize_message
+
+    f, shown, thought = ThinkFilter(), "", ""
+    for c in ["<thi", "nk>kullanıcı saati soruyor", "</th", "ink>\n\nSaat on bir", " elli."]:
+        a, b = f.feed(c)
+        shown, thought = shown + a, thought + b
+    assert shown == "Saat on bir elli." and thought == "kullanıcı saati soruyor"
+    f = ThinkFilter()
+    assert f.feed("Merhaba <think> bu metin </think>")[0] == "Merhaba <think> bu metin </think>"
+    assert normalize_message({"content": "<think>plan</think>Cevap"})["content"] == "Cevap"
+    assert normalize_message({"content": "plan</think>Cevap"})["content"] == "Cevap"

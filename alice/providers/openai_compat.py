@@ -9,6 +9,7 @@ buna göre karar veriyor.
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -200,6 +201,7 @@ class OpenAICompatProvider:
         usage: dict[str, Any] = {}
         served_model = model
         finish = None
+        think = ThinkFilter()
         try:
             with self._client.stream("POST", f"{self.cfg.base_url}/chat/completions",
                                      headers=self._headers(), json=body) as r:
@@ -235,6 +237,10 @@ class OpenAICompatProvider:
                         if thought and on_reasoning and isinstance(thought, str):
                             on_reasoning(thought)
                         piece = delta.get("content")
+                        if piece:
+                            piece, thought = think.feed(piece)
+                            if thought and on_reasoning:
+                                on_reasoning(thought)
                         if piece:
                             text_parts.append(piece)
                             on_delta(piece)
@@ -286,9 +292,68 @@ def _merge_tool_delta(calls: dict[int, dict[str, Any]], tc: dict[str, Any]) -> N
         cur["function"]["arguments"] += args
 
 
+class ThinkFilter:
+    """Bazı modeller (Qwen, GLM, Nemotron, DeepSeek...) düşünmesini içeriğin içinde <think>...</think> olarak
+    gönderir. Bu metin ekrana yazılmasın, sesli asistan da okumasın: akıştan ayıklanıp düşünce olarak döner.
+    Etiket parçalar arasında bölünebilir; emin olunana kadar şüpheli kuyruk bekletilir."""
+
+    OPEN, CLOSE = "<think>", "</think>"
+
+    def __init__(self) -> None:
+        self.buf = ""
+        self.inside = False
+        self.started = False  # görünür metin başladı mı (etiket sadece başta beklenir)
+
+    def feed(self, piece: str) -> tuple[str, str]:
+        self.buf += piece
+        shown, thought = [], []
+        while self.buf:
+            if self.inside:
+                i = self.buf.find(self.CLOSE)
+                if i < 0:
+                    keep = _partial_suffix(self.buf, self.CLOSE)
+                    thought.append(self.buf[: len(self.buf) - keep])
+                    self.buf = self.buf[len(self.buf) - keep:]
+                    break
+                thought.append(self.buf[:i])
+                self.buf = self.buf[i + len(self.CLOSE):].lstrip()
+                self.inside = False
+                continue
+            if self.started:
+                shown.append(self.buf)
+                self.buf = ""
+                break
+            stripped = self.buf.lstrip()
+            if stripped.startswith(self.OPEN):
+                self.buf = stripped[len(self.OPEN):]
+                self.inside = True
+                continue
+            if self.OPEN.startswith(stripped):  # "<thi" gibi: devamı gelsin
+                break
+            self.started = True
+        return "".join(shown), "".join(thought)
+
+
+def _partial_suffix(text: str, tag: str) -> int:
+    for n in range(min(len(tag) - 1, len(text)), 0, -1):
+        if text.endswith(tag[:n]):
+            return n
+    return 0
+
+
+def strip_think(text: str) -> str:
+    text = re.sub(r"<think>.*?(</think>|$)", "", text or "", flags=re.S)
+    if "</think>" in text:  # açılış etiketi olmadan gelen düşünce
+        text = text.split("</think>", 1)[1]
+    return text.strip()
+
+
 def normalize_message(msg: dict[str, Any]) -> dict[str, Any]:
     """Sağlayıcıya özel alanları atıp geçmişte güvenle tutulabilecek bir assistant mesajı üret."""
-    out: dict[str, Any] = {"role": "assistant", "content": msg.get("content") or ""}
+    content = msg.get("content") or ""
+    if isinstance(content, str) and "think>" in content:
+        content = strip_think(content)
+    out: dict[str, Any] = {"role": "assistant", "content": content}
     calls = []
     for i, tc in enumerate(msg.get("tool_calls") or []):
         fn = tc.get("function") or {}
