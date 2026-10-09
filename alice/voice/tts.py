@@ -393,38 +393,79 @@ class XTTS:
 
 
 class Chatterbox:
-    """Resemble Chatterbox çok dilli (pip install chatterbox-tts). exaggeration ile duygu yoğunluğu."""
+    """Resemble Chatterbox çok dilli, ayrı sanal ortamdaki yerel ses sunucusu üzerinden (tts_server.py).
 
-    def __init__(self, library: EmotionLibrary | None = None, allow_gpu: Callable[[], bool] = lambda: True):
+    Sunucu çalışmıyorsa ilk istekte arka planda başlatılır (ilk açılışta model ~2 GB indirir).
+    Sesi duygu kütüphanesindeki kayıttan taklit eder; kütüphane yoksa Chatterbox'ın kendi sesiyle konuşur.
+    Uçuşta (local_gpu = false) model işlemciye taşınır, ekran kartı oyuna kalır."""
+
+    def __init__(self, python: str = "", port: int = 8771, library: EmotionLibrary | None = None,
+                 allow_gpu: Callable[[], bool] = lambda: True, client: httpx.Client | None = None,
+                 start_timeout: float = 600):
+        self.python = python
+        self.port = port
         self.library = library or EmotionLibrary()
         self.allow_gpu = allow_gpu
         self.name = "chatterbox"
-        self._model = None
-        self._device = ""
+        self.client = client or httpx.Client(timeout=httpx.Timeout(180, connect=3))
+        self.start_timeout = start_timeout
+        self._proc = None
         self._lock = threading.Lock()
 
-    def _load(self):
-        dev = _device(self.allow_gpu())
-        if self._model is None or dev != self._device:
-            try:
-                from chatterbox.mtl_tts import ChatterboxMultilingualTTS
-            except ImportError as e:
-                raise TTSError("Chatterbox kurulu değil: pip install chatterbox-tts") from e
-            self._model = ChatterboxMultilingualTTS.from_pretrained(device=dev)
-            self._device = dev
-        return self._model
+    @property
+    def base(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+    def healthy(self) -> bool:
+        try:
+            return self.client.get(self.base + "/health", timeout=3).status_code == 200
+        except httpx.HTTPError:
+            return False
+
+    def ensure_server(self) -> None:
+        with self._lock:
+            if self.healthy():
+                return
+            if not self.python or not Path(self.python).exists():
+                raise TTSError("yerel ses kurulu değil: alice voice install-local")
+            import subprocess
+            import sys
+
+            log = alice_home() / "voice" / "tts-server.log"
+            log.parent.mkdir(parents=True, exist_ok=True)
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+            device = "cuda" if self.allow_gpu() else "cpu"
+            self._proc = subprocess.Popen(
+                [self.python, str(Path(__file__).with_name("tts_server.py")), "--port", str(self.port),
+                 "--device", device, "--preload"],
+                stdout=open(log, "a", encoding="utf-8"), stderr=subprocess.STDOUT, creationflags=flags)
+            end = time.monotonic() + 30
+            while time.monotonic() < end:
+                if self._proc.poll() is not None:
+                    raise TTSError(f"yerel ses sunucusu açılamadı, ayrıntı: {log}")
+                if self.healthy():
+                    return
+                time.sleep(0.5)
+            raise TTSError(f"yerel ses sunucusu cevap vermiyor, ayrıntı: {log}")
 
     def synth(self, text: str, emotion: str = "calm") -> Audio:
-        ref = self.library.clip(emotion)
-        if ref is None:
-            raise TTSError("duygu kütüphanesi yok: alice voice library")
+        self.ensure_server()
         exaggeration, cfg_weight = CHATTERBOX.get(emotion, CHATTERBOX["calm"])
-        with self._lock:
-            model = self._load()
-            wav = model.generate(text, language_id="tr", audio_prompt_path=str(ref), exaggeration=exaggeration,
-                                 cfg_weight=cfg_weight)
-        samples = wav.squeeze().detach().cpu().tolist() if hasattr(wav, "squeeze") else list(wav)
-        return Audio.from_floats(samples, int(getattr(model, "sr", 24000))).polish()
+        ref = self.library.clip(emotion)
+        body = {"text": text, "language": "tr", "ref": str(ref) if ref else "", "exaggeration": exaggeration,
+                "cfg_weight": cfg_weight, "device": "cuda" if self.allow_gpu() else "cpu"}
+        try:
+            # İlk istekte model yüklenir/indirilir: uzun sürebilir.
+            r = self.client.post(self.base + "/synth", json=body, timeout=self.start_timeout)
+        except httpx.HTTPError as e:
+            raise TTSError(f"yerel ses sunucusu hatası: {e}") from e
+        if r.status_code != 200:
+            try:
+                msg = r.json().get("error", r.text)
+            except ValueError:
+                msg = r.text
+            raise TTSError(f"chatterbox: {str(msg)[:200]}")
+        return Audio.from_wav(r.content).polish()
 
 
 # --------------------------------------------------------------------- seçim
@@ -549,7 +590,8 @@ def make_local(cfg: Config, name: str | None = None) -> TTS | None:
     if name == "xtts":
         return XTTS(allow_gpu=allow)
     if name == "chatterbox":
-        return Chatterbox(allow_gpu=allow)
+        v = cfg.data.get("voice", {})
+        return Chatterbox(v.get("local_python", ""), int(v.get("local_port", 8771)), allow_gpu=allow)
     return None
 
 

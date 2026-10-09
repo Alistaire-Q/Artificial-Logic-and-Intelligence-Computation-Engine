@@ -9,6 +9,7 @@
   alice voice test                    mikrofonu 5 sn dinle, seviyeyi ve duyulanı göster
   alice voice status                  motorlar, kütüphane, opsiyonel paketler
   alice voice models                  hesabında hangi Gemini ses modelleri var (kota harcamaz)
+  alice voice install-local           yerel ses motorunu (Chatterbox) ayrı ortama kur
 """
 
 from __future__ import annotations
@@ -34,12 +35,28 @@ def voice_cmd(argv: list[str]) -> int:
     sub = argv[0] if argv and not argv[0].startswith("-") else "run"
     rest = argv[1:] if argv and not argv[0].startswith("-") else argv
     cfg = load_config()
-    fn = {"models": _models, "run": _run, "audition": _audition, "use": _use, "library": _library, "say": _say, "test": _test,
+    fn = {"install-local": _install_local, "models": _models, "run": _run, "audition": _audition, "use": _use, "library": _library, "say": _say, "test": _test,
           "status": _status}.get(sub)
     if fn is None:
         console.print(__doc__)
         return 2
     return fn(cfg, rest)
+
+
+def _install_local(cfg, argv) -> int:
+    from alice.voice.install_local import install
+
+    try:
+        py = install(emit=lambda s: console.print(f"[dim]{escape(s)}[/]"))
+    except RuntimeError as e:
+        console.print(f"[red]{escape(str(e))}[/]")
+        return 1
+    console.print(f"[green]yerel ses kuruldu:[/] {py}")
+    console.print('Dene: [bold]alice voice say "Merhaba, ben ALICE." --engine local[/] '
+                  "(ilk seferde model indirilir, birkaç dakika sürebilir)")
+    console.print("Duygu kütüphanesi yoksa Chatterbox kendi sesiyle konuşur; Gemini kotası yenilenince "
+                  "[bold]alice voice library[/] ile seçtiğin sesi ver.")
+    return 0
 
 
 def _models(cfg, argv) -> int:
@@ -75,7 +92,15 @@ def _status(cfg, argv) -> int:
     cloud, local = make_cloud(cfg), make_local(cfg)
     console.print(f"[bold]Bulut sesi:[/] {v.get('tts_cloud')} "
                   f"{'[green]hazır[/]' if cloud else '[red]GEMINI_API_KEY yok[/]'}")
-    console.print(f"[bold]Yerel ses:[/] {v.get('tts_local') or '[dim]yok[/]'}")
+    local_state = ""
+    if v.get("tts_local") == "chatterbox" and local is not None:
+        from pathlib import Path
+
+        if not v.get("local_python") or not Path(v["local_python"]).exists():
+            local_state = " [red]kurulu değil (alice voice install-local)[/]"
+        else:
+            local_state = " [green]sunucu açık[/]" if local.healthy() else " [dim]kurulu, ilk konuşmada açılır[/]"
+    console.print(f"[bold]Yerel ses:[/] {v.get('tts_local') or '[dim]yok (alice voice install-local)[/]'}{local_state}")
     lib = EmotionLibrary()
     console.print(f"[bold]Duygu kütüphanesi:[/] "
                   f"{('[green]var[/] (' + lib.source + ')') if lib.exists() else '[dim]yok (alice voice library)[/]'}")
@@ -276,7 +301,7 @@ def _run(cfg, argv) -> int:
     ap.add_argument("--no-wake", action="store_true", help="'Hey Alice' kapalı, sadece bas-konuş")
     a = ap.parse_args(argv)
     if not mic_available():
-        console.print("[red]mikrofon yok[/] (pip install 'alice-harness[voice]')")
+        console.print("[red]mikrofon yok[/] " + escape("(pip install 'alice-harness[voice]')"))
         return 1
     from alice.cli import RichUI
 

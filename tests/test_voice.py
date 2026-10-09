@@ -497,3 +497,107 @@ def test_list_models_and_status_detail():
     with pytest.raises(QuotaError) as ei:
         eng.synth("x")
     assert "yok: bulunamadı" in str(ei.value) and "dolu: günlük kota" in str(ei.value)
+
+
+FAKE_TORCH = """
+class cuda:
+    @staticmethod
+    def is_available():
+        return False
+    @staticmethod
+    def empty_cache():
+        pass
+"""
+FAKE_CHATTERBOX = """
+import numpy as np
+LOADS = []
+class ChatterboxMultilingualTTS:
+    sr = 24000
+    @classmethod
+    def from_pretrained(cls, device):
+        LOADS.append(device)
+        m = cls(); m.device = device
+        return m
+    def generate(self, text, language_id="en", audio_prompt_path=None, exaggeration=0.5, cfg_weight=0.5):
+        assert language_id == "tr"
+        n = int(0.05 * len(text) * self.sr)
+        t = np.arange(n) / self.sr
+        return (0.3 * np.sin(2 * np.pi * (220 + 400 * exaggeration) * t)).astype("float32")
+"""
+
+
+def test_chatterbox_local_server_end_to_end(tmp_path, monkeypatch):
+    """Gerçek tts_server.py sürecini sahte chatterbox/torch modülleriyle başlatıp konuş."""
+    import socket
+    import sys
+
+    pytest.importorskip("numpy")
+    from alice.voice.tts import Chatterbox, EmotionLibrary
+
+    fake = tmp_path / "fake"
+    (fake / "chatterbox").mkdir(parents=True)
+    (fake / "chatterbox" / "__init__.py").write_text("")
+    (fake / "chatterbox" / "mtl_tts.py").write_text(FAKE_CHATTERBOX)
+    (fake / "torch.py").write_text(FAKE_TORCH)
+    monkeypatch.setenv("PYTHONPATH", str(fake))
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    eng = Chatterbox(sys.executable, port, library=EmotionLibrary(lib), allow_gpu=lambda: True, start_timeout=30)
+    try:
+        a = eng.synth("Merhaba, ben ALICE.", "urgent")
+        assert a.rate == 24000 and a.seconds > 0.5
+        assert eng.healthy()
+        b = eng.synth("Tekrar.", "calm")  # aynı sunucu, yeniden başlatma yok
+        assert b.seconds > 0.2 and eng._proc.poll() is None
+    finally:
+        if eng._proc is not None:
+            eng._proc.kill()
+            eng._proc.wait(5)
+
+
+def test_chatterbox_not_installed():
+    from alice.voice.tts import Chatterbox, TTSError
+
+    with pytest.raises(TTSError, match="install-local"):
+        Chatterbox("", 1).synth("x")
+
+
+def test_install_local_flow(tmp_path, monkeypatch):
+    from alice.voice import install_local as il
+
+    calls = []
+    monkeypatch.setattr(il, "find_python", lambda: (["py", "-3.11"], "3.11"))
+    monkeypatch.setattr(il, "has_nvidia", lambda: True)
+    outs = {"torch": "2.6.0+cpu  False", "torchaudio": "2.6.0", "chatterbox": "ok"}
+
+    def fake_out(cmd):
+        code = cmd[-1]
+        if "import torch;" in code:
+            return outs["torch"]
+        if "torchaudio" in code:
+            return outs["torchaudio"]
+        if "chatterbox" in code:
+            return outs["chatterbox"]
+        return None
+
+    def fake_run(cmd):
+        calls.append(cmd)
+        if cmd[1:3] == ["-m", "venv"] or "venv" in cmd:
+            py = il.venv_python(tmp_path / "v")
+            py.parent.mkdir(parents=True, exist_ok=True)
+            py.write_text("")
+        return 0
+
+    monkeypatch.setattr(il, "_out", fake_out)
+    monkeypatch.setattr(il, "venv_dir", lambda: tmp_path / "v")
+    py = il.install(emit=lambda s: None, run=fake_run)
+    flat = [" ".join(c) for c in calls]
+    assert any("install chatterbox-tts" in c for c in flat)
+    assert any("torch==2.6.0" in c and "whl/cu126" in c for c in flat)
+    from alice.config import load_config
+
+    v = load_config().data["voice"]
+    assert v["tts_local"] == "chatterbox" and v["local_python"] == str(py)

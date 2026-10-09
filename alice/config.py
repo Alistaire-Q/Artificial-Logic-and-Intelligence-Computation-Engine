@@ -73,6 +73,9 @@ enabled = false
 # Bulut sesi "gemini:<ses>"; yerel motor "xtts" ya da "chatterbox" (boş = yok).
 tts_cloud = "gemini:Aoede"
 tts_local = ""
+# Yerel ses sunucusunun Python'u ve portu (`alice voice install-local` doldurur).
+local_python = ""
+local_port = 8771
 # cloud: önce bulut, local: önce yerel. Uçuşta (local_gpu = false) her zaman önce bulut.
 prefer = "cloud"
 # Gemini ses modelleri, sırayla: kota model başına sayılır, biri dolunca sıradakine geçilir.
