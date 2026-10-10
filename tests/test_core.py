@@ -320,3 +320,18 @@ def test_tools(tmp_path, isolated_home):
     tid = TaskStore().tasks[0].id
     s.run(ctx, action="run_now", id=tid)
     assert TaskStore().due()[0][0].id == tid
+
+
+def test_desktop_toasts_skip_flight_and_repeats(monkeypatch, tmp_path):
+    from alice.core import notify
+    from alice.core.modes import Policy
+    from alice.core.notify import Notification, Notifier
+    from alice.core.store import Store
+
+    shown = []
+    monkeypatch.setattr(notify, "desktop_notify", lambda n: shown.append(n.body))
+    n = Notifier(Store(tmp_path / "s.db"), lambda: Policy(mode="normal"))
+    n.send(Notification("Uçuş", "Teker açık", "warn", "flight", kind="flight"))
+    n.send(Notification("PC", "GPU sıcak", "warn", "pc"))
+    n.send(Notification("PC", "GPU sıcak", "warn", "pc"))
+    assert shown == ["GPU sıcak"]
