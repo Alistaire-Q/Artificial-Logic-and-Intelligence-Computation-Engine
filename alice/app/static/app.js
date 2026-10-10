@@ -24,7 +24,24 @@ const S = {
   sent: [],           // yukarı okla geri çağrılacak gönderilmiş mesajlar
   sentIdx: -1,
   online: true,
+  todo: "",           // son plan (todo_write çıktısı)
+  turn: null,         // bu turun sayaçları: araç, hata, değişen dosyalar
+  changes: [],        // oturumdaki dosya değişiklikleri (/api/changes)
+  started: Date.now(),
 };
+
+/* Kullanıcı tercihleri (tema, yazı boyutu, araç ayrıntıları, panel) tarayıcıda saklanır. */
+const PREFS_KEY = "alice.prefs";
+const PREFS = Object.assign({ theme: "system", size: "normal", verbose: false, panel: false, tab: "plan" },
+  (() => { try { return JSON.parse(localStorage.getItem(PREFS_KEY) || "{}"); } catch { return {}; } })());
+function savePrefs() { try { localStorage.setItem(PREFS_KEY, JSON.stringify(PREFS)); } catch { /* yok */ } }
+function applyPrefs() {
+  const root = document.documentElement;
+  if (PREFS.theme === "system") delete root.dataset.theme; else root.dataset.theme = PREFS.theme;
+  root.dataset.size = PREFS.size;
+  app.classList.toggle("verbose", !!PREFS.verbose);
+}
+applyPrefs();
 
 async function api(path, body) {
   const opts = { headers: { "X-Alice-Token": TOKEN } };
@@ -79,6 +96,16 @@ const IC = {
   map: '<path d="M9 4L3 6v14l6-2 6 2 6-2V4l-6 2z"/><path d="M9 4v14M15 6v14"/>',
   hand: '<path d="M8 13V5a1.5 1.5 0 0 1 3 0v6M11 11V4a1.5 1.5 0 0 1 3 0v7M14 11V5.5a1.5 1.5 0 0 1 3 0V14a7 7 0 0 1-7 7 6 6 0 0 1-5.5-3.5L3 14a1.5 1.5 0 0 1 2.6-1.4L8 15"/>',
   unlock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.5-2"/>',
+  gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
+  panel: '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M15 4v16"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+  moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/>',
+  chat: '<path d="M4 5h16v11H8l-4 4z"/>',
+  diff: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 14h6M12 11v6"/>',
+  gauge: '<path d="M4 18a8 8 0 1 1 16 0"/><path d="M12 18l4-6"/>',
+  keyboard: '<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>',
+  expand: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
+  branch: '<circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7v10M18 10c0 4-6 3-11.2 7.3"/>',
 };
 
 marked.setOptions({ gfm: true, breaks: false });
@@ -95,7 +122,12 @@ function renderMd(text) {
     const lang = ((code && code.className.match(/language-([\w+#-]+)/)) || [])[1] || "";
     const box = el("div", "codeblock");
     const head = el("div", "cb-head");
-    head.appendChild(el("span", "", lang || "kod"));
+    const src = code ? code.textContent : pre.textContent;
+    if (code && AliceHL.langOf(lang)) code.innerHTML = AliceHL.highlight(src, lang);
+    const nLines = src.replace(/\n$/, "").split("\n").length;
+    const title = el("span", "cb-lang", lang || "kod");
+    if (nLines > 1) title.appendChild(el("small", "", `${nLines} satır`));
+    head.appendChild(title);
     const cp = el("button", "act");
     cp.dataset.copy = "code";
     cp.appendChild(svg(IC.copy));
@@ -145,6 +177,7 @@ function clearChat() {
   hideWorking();
   list.replaceChildren();
   S.tools.clear(); S.perms.clear(); S.cur = null;
+  setTodo("");
   setEmpty(true);
   greet();
 }
@@ -346,6 +379,7 @@ function makeGroup() {
   const body = el("div", "group-body");
   g.append(row, body);
   row.addEventListener("click", () => g.classList.toggle("open"));
+  if (PREFS.verbose) g.classList.add("open");
   g._v = v; g._meta = meta; g._body = body;
   return g;
 }
@@ -374,15 +408,28 @@ function toolRow(id, name, summary, running) {
   const [verb, icon] = verbFor(name);
   const t = el("div", "tool" + (running ? " running" : ""));
   const row = el("div", "tool-row");
-  row.appendChild(svg(icon, "ti"));
+  // Durum yuvası: çalışırken dönen halka, bitince araç simgesi ve yeşil/kırmızı nokta.
+  const st = el("span", "tstat");
+  st.append(svg(icon, "ti"), el("i", "spin"));
+  row.appendChild(st);
   const v = el("span", "verb" + (running ? " shimmer" : ""), verb);
   row.append(v, el("span", "arg", summary || ""));
   const meta = el("span", "meta");
   row.append(meta, svg(IC.chev, "tchev"));
+  const peek = el("div", "tool-peek");
   const body = el("div", "tool-body");
-  t.append(row, body);
+  t.append(row, peek, body);
   row.addEventListener("click", () => t.classList.toggle("open"));
-  t._v = v; t._meta = meta; t._body = body; t._name = name;
+  t._v = v; t._meta = meta; t._body = body; t._peek = peek; t._name = name; t._summary = summary || "";
+  t._t0 = running ? performance.now() : 0;
+  if (running && S.turn) S.turn.tools++;
+  if (running) {
+    // Uzun süren araçta geçen süre canlı yazsın (Claude Code'daki gibi).
+    t._timer = setInterval(() => {
+      const s = (performance.now() - t._t0) / 1000;
+      if (s >= 2) t._meta.textContent = fmtDur(s);
+    }, 500);
+  }
   if (id) S.tools.set(id, t);
   if (GROUP_KIND[name]) {
     const last = lastContent();
@@ -402,63 +449,146 @@ function toolRow(id, name, summary, running) {
   }
   return add(t);
 }
+function fmtDur(s) { return s < 10 ? `${s.toFixed(1).replace(".", ",")} sn` : fmtSecs(Math.round(s)); }
 
-function renderDiff(diff) {
+// Satır numaralı, renklendirilmiş unified diff (Codex/Claude Code'daki gibi).
+function renderDiff(diff, title) {
   const box = el("div", "diff");
   const head = el("div", "diff-head");
   const lines = diff.split("\n");
-  const file = (lines.find((l) => l.startsWith("+++ b/")) || "").slice(6);
-  let a = 0, d = 0;
+  const file = title || (lines.find((l) => l.startsWith("+++ b/")) || "").slice(6);
+  let a = 0, d = 0, on = 0, nn = 0;
   const body = el("div", "diff-body");
+  const hl = (code) => AliceHL.highlight(code, file);
   for (const line of lines) {
     if (line.startsWith("+++") || line.startsWith("---")) continue;
-    let cls = "";
-    if (line.startsWith("+")) { cls = "add"; a++; }
-    else if (line.startsWith("-")) { cls = "del"; d++; }
-    else if (line.startsWith("@@")) cls = "hunk";
-    body.appendChild(el("div", cls, line || " "));
+    const row = el("div", "dl");
+    const lo = el("span", "ln"), ln = el("span", "ln"), sg = el("span", "dsg"), code = el("span", "code");
+    if (line.startsWith("@@")) {
+      const m = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)/);
+      if (m) { on = +m[1]; nn = +m[2]; }
+      row.className = "dl hunk";
+      code.textContent = line;
+    } else if (line.startsWith("+")) {
+      row.className = "dl add"; a++;
+      ln.textContent = nn++; sg.textContent = "+"; code.innerHTML = hl(line.slice(1));
+    } else if (line.startsWith("-")) {
+      row.className = "dl del"; d++;
+      lo.textContent = on++; sg.textContent = "−"; code.innerHTML = hl(line.slice(1));
+    } else if (line.startsWith("\\")) {
+      row.className = "dl hunk"; code.textContent = line;
+    } else {
+      lo.textContent = on++; ln.textContent = nn++; code.innerHTML = hl(line.slice(1)) || " ";
+    }
+    row.append(lo, ln, sg, code);
+    body.appendChild(row);
   }
-  head.append(el("b", "", file), el("span", "", `+${a} −${d}`));
+  head.append(svg(IC.file), el("b", "", file), el("span", "a", `+${a}`), el("span", "d", `−${d}`));
   box.append(head, body);
-  return { box, a, d };
+  return { box, a, d, file };
 }
 
-function renderTodo(text) {
-  const box = el("div", "todo");
-  box.appendChild(el("div", "todo-title", "Görevler"));
-  const ul = el("ul");
-  for (const line of text.split("\n")) {
+function parseTodo(text) {
+  const out = [];
+  for (const line of (text || "").split("\n")) {
     const m = line.match(/^\[( |~|x)\]\s*(.*)$/);
-    if (!m) continue;
-    const li = el("li", m[1] === "x" ? "done" : m[1] === "~" ? "doing" : "");
+    if (m) out.push({ state: m[1] === "x" ? "done" : m[1] === "~" ? "doing" : "", text: m[2] });
+  }
+  return out;
+}
+function renderTodo(text, big) {
+  const items = parseTodo(text);
+  const done = items.filter((i) => i.state === "done").length;
+  const box = el("div", "todo" + (big ? " big" : ""));
+  const head = el("div", "todo-title");
+  head.append(svg(IC.list), el("span", "", "Görevler"), el("span", "todo-n", `${done}/${items.length}`));
+  const bar = el("i", "todo-bar");
+  const fill = el("i");
+  fill.style.width = items.length ? (100 * done) / items.length + "%" : "0";
+  bar.appendChild(fill);
+  box.append(head, bar);
+  const ul = el("ul");
+  for (const it of items) {
+    const li = el("li", it.state);
     const bx = el("span", "box");
-    if (m[1] === "x") bx.appendChild(svg(IC.check));
-    li.append(bx, el("span", "", m[2]));
+    if (it.state === "done") bx.appendChild(svg(IC.check));
+    li.append(bx, el("span", "", it.text));
     ul.appendChild(li);
   }
   box.appendChild(ul);
+  box.addEventListener("click", () => openPanel("plan"));
   return box;
 }
 
-function finishTool(t, ev) {
+// Komut çıktısı terminal görünümünde: komut, çıkış kodu, çıktı.
+function renderTerm(cmd, text, isErr) {
+  const m = (text || "").match(/^çıkış kodu (-?\d+)\n?/);
+  const code = m ? +m[1] : null;
+  const out = m ? text.slice(m[0].length) : text || "";
+  const box = el("div", "term");
+  const head = el("div", "term-head");
+  const c = el("span", "term-cmd");
+  c.append(el("span", "pr", "$"), el("span", "", cmd));
+  head.appendChild(c);
+  if (code !== null) head.appendChild(el("span", "exit " + (code === 0 ? "ok" : "bad"), `çıkış ${code}`));
+  else if (isErr) head.appendChild(el("span", "exit bad", "hata"));
+  const pre = el("pre", "term-out", out.trim() || "(çıktı yok)");
+  box.append(head, pre);
+  return { box, code };
+}
+
+function peekText(t, ev) {
+  let txt = ev.text || "";
+  if (t._name === "run_command") txt = txt.replace(/^çıkış kodu -?\d+\n?/, "");
+  const lines = txt.split("\n").map((l) => l.trimEnd()).filter((l) => l.trim());
+  if (!lines.length) return "";
+  const shown = lines.slice(0, 2).map((l) => (l.length > 140 ? l.slice(0, 137) + "…" : l));
+  if (lines.length > 2) shown.push(`… +${lines.length - 2} satır`);
+  return shown.join("\n");
+}
+
+function finishTool(t, ev, live) {
+  clearInterval(t._timer);
   t.classList.remove("running");
   t._v.classList.remove("shimmer");
-  if (ev.is_error) t.classList.add("err");
+  t.classList.add(ev.is_error ? "err" : "ok");
   const group = t.parentElement && t.parentElement.closest(".tool-group");
   if (group) setTimeout(() => updateGroup(group), 0);
   const body = t._body;
   body.replaceChildren();
+  t._meta.replaceChildren();
+  if (live && S.turn && ev.is_error) S.turn.errs++;
   if (t._name === "todo_write" && !ev.is_error) {
+    setTodo(ev.text || "");
+    // Aynı turdaki eski plan kartı kalkar, güncel olanı en sonda durur (Codex'teki gibi tek plan).
+    for (let n = t.previousElementSibling; n && !n.classList.contains("turn-user"); n = n.previousElementSibling) {
+      if (n.classList.contains("todo")) { n.remove(); break; }
+    }
     t.replaceWith(renderTodo(ev.text || ""));
     return;
   }
   if (ev.diff) {
-    const { box, a, d } = renderDiff(ev.diff);
+    const { box, a, d, file } = renderDiff(ev.diff);
     body.appendChild(box);
-    t._meta.replaceChildren(el("span", "a", `+${a}`), document.createTextNode(" "), el("span", "d", `−${d}`));
+    t._meta.append(el("span", "a", `+${a}`), document.createTextNode(" "), el("span", "d", `−${d}`));
     t.classList.add("open");
+    if (live && S.turn) {
+      const f = S.turn.files.get(file) || { a: 0, d: 0 };
+      f.a += a; f.d += d;
+      S.turn.files.set(file, f);
+      refreshChanges();
+    }
+  } else if (t._name === "run_command" && !/^arka planda/.test(ev.text || "")) {
+    const { box, code } = renderTerm(t._summary, ev.text, ev.is_error);
+    body.appendChild(box);
+    if (code !== null) t._meta.appendChild(el("span", "exit " + (code === 0 ? "ok" : "bad"), `çıkış ${code}`));
+  } else if (ev.text) {
+    body.appendChild(el("pre", "out", ev.text));
   }
-  if (ev.text && (!ev.diff || ev.is_error)) body.appendChild(el("pre", "out", ev.text));
+  const took = t._t0 ? (performance.now() - t._t0) / 1000 : 0;
+  if (took >= 0.05) t._meta.appendChild(el("span", "dur", fmtDur(took)));
+  if (PREFS.verbose && body.childNodes.length) t.classList.add("open");
+  if (!ev.diff) t._peek.textContent = peekText(t, ev);
   if (ev.images && ev.images.length) {
     const imgs = el("div", "imgs");
     for (const b64 of ev.images) {
@@ -478,17 +608,25 @@ function onPermission(ev) {
   hideWorking();
   const card = el("div", "perm" + (ev.risk === "danger" ? " danger" : ""));
   const q = el("div", "perm-q");
-  const [verb] = verbFor(ev.name);
-  q.append(document.createTextNode(ev.risk === "danger" ? "Bu işlem geri alınamayabilir. " : "ALICE izin istiyor: "),
-    el("b", "", verb));
+  const [verb, icon] = verbFor(ev.name);
+  const ic = el("span", "perm-ic");
+  ic.appendChild(svg(ev.risk === "danger" ? IC.shield : icon));
+  const qt = el("div", "perm-qt");
+  qt.append(el("b", "", ev.risk === "danger" ? "Bu işlem geri alınamayabilir" : "ALICE izin istiyor"),
+    el("small", "", `${verb} · ${ev.name}`));
+  q.append(ic, qt);
   const acts = el("div", "perm-actions");
-  const mk = (label, ans, cls) => {
-    const b = el("button", "btn " + (cls || ""), label);
+  // 1/2/3 tuşları da cevaplar (Claude Code'daki gibi).
+  const mk = (label, ans, cls, key) => {
+    const b = el("button", "btn " + (cls || ""));
+    b.append(document.createTextNode(label), el("kbd", "", key));
     b.addEventListener("click", () => api("/api/permission", { id: ev.id, answer: ans }));
     return b;
   };
-  acts.append(mk("İzin ver", "y", "primary"), mk("Bu oturumda hep izin ver", "a"), mk("Reddet", "n", "danger"));
-  card.append(q, el("pre", "", ev.summary), acts);
+  acts.append(mk("İzin ver", "y", "primary", "1"), mk("Bu oturumda hep izin ver", "a", "", "2"), mk("Reddet", "n", "danger", "3"));
+  const pre = el("pre", ev.name === "run_command" ? "cmd" : "", ev.summary);
+  card.append(q, pre, acts);
+  card._id = ev.id;
   card._acts = acts;
   S.perms.set(ev.id, card);
   add(card, true);
@@ -497,7 +635,12 @@ function onPermissionDone(ev) {
   const card = S.perms.get(ev.id);
   if (!card) return;
   const txt = { y: "İzin verildi", a: "Bu oturumda bu araca hep izin verildi", n: "Reddedildi" }[ev.answer] || ev.answer;
-  card._acts.replaceWith(el("div", "perm-done", txt));
+  card._acts.replaceWith(el("div", "perm-done " + (ev.answer === "n" ? "no" : "yes"), txt));
+  card.classList.add("answered");
+}
+function pendingPerm() {
+  for (const c of S.perms.values()) if (!c.classList.contains("answered")) return c;
+  return null;
 }
 
 /* ==================================================================== durum */
@@ -530,14 +673,45 @@ function markFinals() {
 }
 
 function setBusy(v) {
-  if (v && !S.busy) S.turnStart = performance.now();
+  if (v && !S.busy) {
+    S.turnStart = performance.now();
+    S.turn = { tools: 0, errs: 0, files: new Map() };
+  }
+  const ended = S.busy && !v;
   S.busy = !!v;
   app.classList.toggle("busy", S.busy);
   document.title = S.busy ? "● ALICE" : "ALICE";
   $("#sendBtn").title = S.busy ? "Durdur (Esc)" : "Gönder (Enter)";
   if (S.busy && !S.cur && !S.working) showWorking("Çalışıyor");
   if (!S.busy) { hideWorking(); markFinals(); flushQueue(); }
+  if (ended) { turnSummary(); refreshChanges(); }
+  setTodo(S.todo);
   updateSend();
+}
+// İş bitince tek satırlık özet: süre, araç sayısı, değişen dosyalar.
+function turnSummary() {
+  const t = S.turn;
+  S.turn = null;
+  if (!t) return;
+  const secs = (performance.now() - S.turnStart) / 1000;
+  if (!t.tools && secs < 4) return;
+  const row = el("div", "turn-sum" + (t.errs ? " has-err" : ""));
+  row.appendChild(svg(t.errs ? IC.x : IC.check));
+  const parts = [fmtDur(secs)];
+  if (t.tools) parts.push(`${t.tools} araç`);
+  if (t.errs) parts.push(`${t.errs} hata`);
+  row.appendChild(el("span", "", parts.join(" · ")));
+  if (t.files.size) {
+    let a = 0, d = 0;
+    for (const f of t.files.values()) { a += f.a; d += f.d; }
+    const ch = el("button", "ts-files");
+    ch.append(svg(IC.diff), document.createTextNode(`${t.files.size} dosya `), el("span", "a", `+${a}`),
+      document.createTextNode(" "), el("span", "d", `−${d}`));
+    ch.title = Array.from(t.files.keys()).join("\n");
+    ch.addEventListener("click", () => openPanel("changes"));
+    row.appendChild(ch);
+  }
+  add(row);
 }
 function applyStatus(s) {
   Object.assign(S.status, s);
@@ -563,7 +737,15 @@ function applyStatus(s) {
   }
   if (st.today_requests !== undefined) $("#stReq").textContent = `bugün ${st.today_requests} istek`;
   if (st.decider) $("#stDec").textContent = `karar: ${st.decider}`;
-  if (st.busy !== undefined && st.busy !== S.busy) setBusy(st.busy);
+  if (st.branch !== undefined) {
+    $("#branch").textContent = st.branch;
+    $("#branchChip").hidden = !st.branch;
+    $("#stBranch").textContent = st.branch ? "⎇ " + st.branch : "";
+    $$(".st-br").forEach((n) => { n.hidden = !st.branch; });
+  }
+  if (PREFS.panel && PREFS.tab === "context") renderPanel();
+  // Sadece gelen durumda busy varsa uygula: kısmi güncelleme (ör. model değişimi) eski busy değeriyle işi bitmiş saymasın.
+  if (s.busy !== undefined && s.busy !== S.busy) setBusy(s.busy);
   for (const p of st.pending || []) onPermission(p);
   $$(".sess").forEach((b) => b.classList.toggle("active", b.dataset.id === st.session));
   if (app.classList.contains("empty")) greet();
@@ -585,15 +767,49 @@ function renderHistory(items) {
 }
 async function loadHistory() { renderHistory(await api("/api/history")); }
 
+// Kenar çubuğu: aramayla süzülen, tarihe göre gruplanmış sohbetler.
 async function loadSessions() {
   const rows = await api("/api/sessions");
+  S.sessions = Array.isArray(rows) ? rows : [];
+  drawSessions();
+}
+function relTime(ts) {
+  if (!ts) return "";
+  const s = Date.now() / 1000 - ts;
+  if (s < 60) return "şimdi";
+  if (s < 3600) return `${Math.floor(s / 60)} dk`;
+  if (s < 86400) return `${Math.floor(s / 3600)} sa`;
+  if (s < 7 * 86400) return `${Math.floor(s / 86400)} g`;
+  return new Date(ts * 1000).toLocaleDateString("tr-TR", { day: "numeric", month: "short" });
+}
+function dayGroup(ts) {
+  if (!ts) return "Daha eski";
+  const d = new Date(ts * 1000), now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000;
+  if (ts >= start) return "Bugün";
+  if (ts >= start - 86400) return "Dün";
+  if (ts >= start - 6 * 86400) return "Bu hafta";
+  if (d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth()) return "Bu ay";
+  return "Daha eski";
+}
+function drawSessions() {
   const nav = $("#sessions");
   nav.replaceChildren();
-  for (const s of Array.isArray(rows) ? rows : []) {
+  const q = ($("#sessSearch").value || "").trim().toLocaleLowerCase("tr");
+  const rows = (S.sessions || []).filter((s) => !q || (s.title + " " + s.cwd).toLocaleLowerCase("tr").includes(q));
+  if (!rows.length) {
+    nav.appendChild(el("div", "side-empty", q ? "Eşleşen sohbet yok" : "Henüz sohbet yok"));
+    return;
+  }
+  let group = null;
+  for (const s of rows) {
+    const g = dayGroup(s.updated);
+    if (g !== group) { group = g; nav.appendChild(el("div", "side-label", g)); }
     const b = el("button", "sess");
     b.dataset.id = s.id;
     b.title = `${s.title}\n${s.cwd}`;
-    b.appendChild(el("span", "", s.title || "(boş)"));
+    b.appendChild(el("span", "st", s.title || "(boş)"));
+    b.appendChild(el("small", "when", relTime(s.updated)));
     const del = el("span", "del");
     del.title = "Sil";
     del.appendChild(svg(IC.trash));
@@ -610,18 +826,21 @@ async function loadSessions() {
   }
   $$(".sess").forEach((b) => b.classList.toggle("active", b.dataset.id === S.status.session));
 }
+$("#sessSearch").addEventListener("input", drawSessions);
+$("#sessSearch").addEventListener("keydown", (e) => { if (e.key === "Escape") { e.target.value = ""; drawSessions(); e.target.blur(); } });
 async function resume(id) {
   if (S.busy) return toast("Önce mevcut işi durdur");
   const r = await api("/api/resume", { id });
   if (!r.ok) return toast(r.error || "Oturum yüklenemedi");
   renderHistory(r.history);
   applyStatus(r);
+  refreshChanges();
   closeSideOnMobile();
 }
 async function newChat() {
   if (S.busy) return toast("Önce mevcut işi durdur");
   const r = await api("/api/new", {});
-  if (r.ok) { clearChat(); applyStatus(r); loadSessions(); input.focus(); }
+  if (r.ok) { clearChat(); applyStatus(r); loadSessions(); refreshChanges(); input.focus(); }
 }
 async function rewindTo(mi, edit) {
   if (S.busy) return toast("Önce mevcut işi durdur");
@@ -633,6 +852,7 @@ async function rewindTo(mi, edit) {
   if (!r.ok) return toast(r.error || "Geri sarılamadı");
   renderHistory(r.history);
   applyStatus(r);
+  refreshChanges();
   toast(r.restored && r.restored.length ? `Geri sarıldı, ${r.restored.length} dosya eski haline getirildi` : "Geri sarıldı");
   if (edit) { input.value = r.text; autosize(); input.focus(); }
 }
@@ -720,21 +940,12 @@ async function pinModel(ref) {
   toast(ref === "reset" ? "Otomatik model seçimi" : "Model sabitlendi: " + shortModel(ref));
 }
 
-function settingsMenu() {
-  openMenu($("#settingsBtn"), (m) => {
-    menuItem(m, IC.list, "Modeller", "Rol zincirleri ve durumları", showModels);
-    menuItem(m, IC.bolt, "Araçlar", "ALICE'in kullanabildiği araçlar (MCP dahil)", showTools);
-    menuItem(m, IC.brain, "Hafıza", "Oturumlar arası kaydedilen notlar", showMemory);
-    menuItem(m, IC.list, "Kullanım", "Bugünkü istek ve token sayıları", showUsage);
-    menuItem(m, IC.term, "Komutlar", "Slash komutları ve kısayollar", showHelp);
-  });
-}
-
 /* =================================================================== dialoglar */
 let onDialogClose = null;
 function showDialog(build) {
   if (onDialogClose) closeDialog();
   const d = $("#dialog");
+  d.className = "dialog";
   d.replaceChildren();
   build(d);
   $("#overlay").hidden = false;
@@ -794,77 +1005,424 @@ function askCwd() {
     setTimeout(() => { inp.focus(); inp.select(); }, 0);
   });
 }
-async function showModels() {
-  const data = await api("/api/models");
+const showModels = () => showSettings("models");
+const showTools = () => showSettings("tools");
+const showMemory = () => showSettings("memory");
+const showUsage = () => showSettings("usage");
+const showHelp = () => showSettings("keys");
+
+/* ================================================================ plan çubuğu */
+function setTodo(text) {
+  S.todo = text || "";
+  const items = parseTodo(S.todo);
+  const done = items.filter((i) => i.state === "done").length;
+  const bar = $("#planbar");
+  // Plan çubuğu sadece iş sürerken görünür; bitince plan yan panelde kalır.
+  const open = S.busy && items.length && done < items.length;
+  bar.hidden = !open;
+  if (open) {
+    const cur = items.find((i) => i.state === "doing") || items.find((i) => i.state !== "done");
+    const next = items.find((i) => i !== cur && i.state === "");
+    $("#pbCount").textContent = `${done}/${items.length}`;
+    $("#pbText").textContent = cur ? cur.text : "";
+    $("#pbNext").textContent = next ? "Sonra: " + next.text : "";
+    const arc = $("#pbArc");
+    const len = 2 * Math.PI * 15;
+    arc.style.strokeDasharray = `${(len * done) / items.length} ${len}`;
+  }
+  if (PREFS.panel && PREFS.tab === "plan") renderPanel();
+}
+$("#planbar").addEventListener("click", () => openPanel("plan"));
+
+/* ============================================================ değişiklikler */
+let changesSeq = 0;
+async function refreshChanges() {
+  const seq = ++changesSeq;
+  const rows = await api("/api/changes");
+  if (seq !== changesSeq || !Array.isArray(rows)) return;
+  S.changes = rows;
+  drawChangesChip();
+  if (PREFS.panel && PREFS.tab === "changes") renderPanel();
+}
+function changeTotals() {
+  let a = 0, d = 0;
+  for (const c of S.changes) { a += c.added; d += c.removed; }
+  return { a, d, n: S.changes.length };
+}
+function drawChangesChip() {
+  const { a, d, n } = changeTotals();
+  $("#changesBtn").hidden = !n;
+  $("#chA").textContent = `+${a}`;
+  $("#chD").textContent = `−${d}`;
+  $("#changesBtn").title = `Bu oturumda ${n} dosya değişti`;
+  $("#chCount").textContent = n ? String(n) : "";
+}
+async function revertFile(c) {
+  const ok = await confirmDialog("Değişiklik geri alınsın mı?",
+    `${c.path} bu oturumdaki ilk haline döner` + (c.status === "eklendi" ? " (ALICE oluşturduğu için silinir)." : "."), "Geri al");
+  if (!ok) return;
+  const r = await api("/api/changes/revert", { path: c.abs });
+  if (!r.ok) return toast(r.error || "Geri alınamadı");
+  S.changes = r.changes || [];
+  drawChangesChip();
+  renderPanel();
+  toast(`${c.path} geri alındı`);
+}
+
+/* ================================================================= yan panel */
+function openPanel(tab) {
+  if (tab) PREFS.tab = tab;
+  PREFS.panel = true;
+  savePrefs();
+  app.classList.add("panel-open");
+  renderPanel();
+  if (PREFS.tab === "changes") refreshChanges();
+}
+function closePanel() { PREFS.panel = false; savePrefs(); app.classList.remove("panel-open"); }
+function togglePanel() { if (PREFS.panel) closePanel(); else openPanel(); }
+$("#panelBtn").addEventListener("click", togglePanel);
+$("#panelClose").addEventListener("click", closePanel);
+$("#changesBtn").addEventListener("click", () => openPanel("changes"));
+$$("#panel .tab").forEach((b) => b.addEventListener("click", () => openPanel(b.dataset.tab)));
+
+function emptyState(icon, title, text) {
+  const e = el("div", "p-empty");
+  e.append(svg(icon), el("b", "", title), el("p", "", text));
+  return e;
+}
+function renderPanel() {
+  if (!PREFS.panel) return;
+  $$("#panel .tab").forEach((b) => b.classList.toggle("on", b.dataset.tab === PREFS.tab));
+  const body = $("#panelBody");
+  const keep = body.scrollTop;
+  body.replaceChildren();
+  if (PREFS.tab === "plan") {
+    if (!parseTodo(S.todo).length) {
+      body.appendChild(emptyState(IC.list, "Henüz plan yok",
+        "ALICE çok adımlı bir işe başladığında yapılacakları burada listeler ve ilerledikçe işaretler."));
+    } else body.appendChild(renderTodo(S.todo, true));
+  } else if (PREFS.tab === "changes") {
+    if (!S.changes.length) {
+      body.appendChild(emptyState(IC.diff, "Değişiklik yok",
+        "ALICE bu oturumda dosya araçlarıyla bir dosyayı değiştirdiğinde fark burada görünür. Dosya bazında geri alabilirsin."));
+    } else {
+      const { a, d, n } = changeTotals();
+      const head = el("div", "ch-sum");
+      head.append(el("b", "", `${n} dosya değişti`), el("span", "a", `+${a}`), el("span", "d", `−${d}`));
+      const fold = el("button", "act", "Tümünü daralt");
+      fold.addEventListener("click", () => $$(".ch-file", body).forEach((f) => f.classList.remove("open")));
+      head.append(el("span", "grow"), fold);
+      body.appendChild(head);
+      S.changes.forEach((c, i) => {
+        const f = el("div", "ch-file" + (i < 3 ? " open" : ""));
+        const row = el("div", "ch-row");
+        row.append(svg(IC.chev, "tchev"), el("span", "ch-st " + c.status, c.status[0].toUpperCase()));
+        const name = el("span", "ch-name");
+        const slash = c.path.lastIndexOf("/");
+        if (slash >= 0) name.appendChild(el("small", "", c.path.slice(0, slash + 1)));
+        name.appendChild(document.createTextNode(c.path.slice(slash + 1)));
+        row.append(name, el("span", "a", `+${c.added}`), el("span", "d", `−${c.removed}`));
+        const rv = el("button", "act ch-revert");
+        rv.title = "Bu dosyayı geri al";
+        rv.append(svg(IC.rewind), document.createTextNode("Geri al"));
+        rv.addEventListener("click", (e) => { e.stopPropagation(); revertFile(c); });
+        row.appendChild(rv);
+        row.addEventListener("click", () => f.classList.toggle("open"));
+        const inner = el("div", "ch-body");
+        if (c.binary) inner.appendChild(el("div", "note", "İkili dosya, fark gösterilemiyor"));
+        else if (c.diff) inner.appendChild(renderDiff(c.diff, c.path).box);
+        f.append(row, inner);
+        body.appendChild(f);
+      });
+    }
+  } else {
+    const st = S.status;
+    const pct = st.ctx_limit ? Math.min(100, (100 * st.ctx_tokens) / st.ctx_limit) : 0;
+    const ctx = el("div", "ctx-card");
+    const big = el("div", "ctx-big");
+    big.append(el("b", "", `${Math.round(pct)}%`), el("span", "", `${((st.ctx_tokens || 0) / 1000).toFixed(1)}k / ${Math.round((st.ctx_limit || 0) / 1000)}k token`));
+    const meter = el("i", "ctx-meter" + (pct > 75 ? " hot" : ""));
+    const fill = el("i");
+    fill.style.width = pct + "%";
+    meter.appendChild(fill);
+    const cp = el("button", "btn", "Şimdi özetle");
+    cp.addEventListener("click", () => runCommand("/compact"));
+    ctx.append(el("div", "sec", "Bağlam doluluğu"), big, meter,
+      el("p", "", "Sınıra yaklaşınca eski konuşma otomatik özetlenir."), cp);
+    body.appendChild(ctx);
+    const kv = el("dl", "kv");
+    const mins = Math.floor((Date.now() - S.started) / 60000);
+    const { a, d, n } = changeTotals();
+    for (const [k, v] of [["Model", st.model || "yok"], ["Düşünme", (THINK[st.thinking] || [st.thinking || "?"])[0]],
+      ["İzin modu", (MODES[st.mode] || [st.mode])[0]], ["Karar", st.decider || "-"], ["Klasör", st.cwd || ""],
+      ["Git dalı", st.branch || "-"], ["Oturum", st.session || ""], ["Açık kalma", mins < 1 ? "1 dk'dan az" : `${mins} dk`],
+      ["Bugün", `${st.today_requests || 0} istek`], ["Değişiklik", n ? `${n} dosya +${a} −${d}` : "yok"]]) {
+      kv.append(el("dt", "", k), el("dd", "", v));
+    }
+    const sec = el("div", "sec", "Oturum");
+    body.append(sec, kv);
+  }
+  body.scrollTop = keep;
+}
+
+/* ============================================================ komut paleti */
+function paletteItems() {
+  const items = [];
+  const act = (group, icon, label, hint, run, key) => items.push({ group, icon, label, hint, run, key });
+  act("Eylemler", IC.chat, "Yeni sohbet", "", newChat, "Ctrl+Shift+O");
+  act("Eylemler", IC.panel, PREFS.panel ? "Yan paneli kapat" : "Yan paneli aç", "", togglePanel, "Ctrl+J");
+  act("Eylemler", IC.list, "Planı göster", "Yapılacaklar listesi", () => openPanel("plan"));
+  act("Eylemler", IC.diff, "Değişiklikleri göster", "Bu oturumda değişen dosyalar", () => openPanel("changes"));
+  act("Eylemler", IC.gauge, "Bağlam ve oturum bilgisi", "", () => openPanel("context"));
+  act("Eylemler", IC.expand, PREFS.verbose ? "Araç ayrıntılarını gizle" : "Araç ayrıntılarını göster", "Tüm araç çıktılarını aç/kapat", toggleVerbose, "Ctrl+O");
+  act("Eylemler", IC.folder, "Çalışma klasörünü değiştir", S.status.cwd || "", askCwd);
+  act("Eylemler", IC.spark, "Konuşmayı özetle", "/compact", () => runCommand("/compact"));
+  act("Eylemler", IC.rewind, "Son mesaja geri sar", "/rewind", () => runCommand("/rewind"));
+  act("Eylemler", IC.gear, "Ayarlar", "", () => showSettings("general"), "Ctrl+,");
+  act("Eylemler", IC.keyboard, "Klavye kısayolları", "", () => showSettings("keys"));
+  for (const [k, label] of [["system", "Sistem"], ["light", "Açık"], ["dark", "Koyu"]]) {
+    act("Tema", k === "dark" ? IC.moon : IC.sun, `Tema: ${label}`, "", () => setPref("theme", k));
+  }
+  for (const [k, [label, sub, icon]] of Object.entries(MODES)) act("İzin modu", icon, `Mod: ${label}`, sub, () => setMode(k));
+  for (const [k, [label, sub]] of Object.entries(THINK)) act("Düşünme", IC.brain, `Düşünme: ${label}`, sub, () => setThinking(k));
+  act("Model", IC.spark, "Model: Otomatik", "Zincirdeki ilk uygun model", () => pinModel("reset"));
+  for (const ref of S.status.brain_chain || []) act("Model", IC.spark, `Model: ${shortModel(ref)}`, ref, () => pinModel(ref));
+  for (const c of S.commands) {
+    act("Komutlar", IC.term, "/" + c.name, c.description, () => {
+      input.value = "/" + c.name + " "; autosize(); input.focus();
+    });
+  }
+  for (const s of S.sessions || []) act("Sohbetler", IC.chat, s.title || "(boş)", relTime(s.updated), () => resume(s.id));
+  return items;
+}
+// Sırayla geçen harf eşleşmesi; ardışık harfler ve kelime başları daha yüksek puan alır.
+function fuzzy(q, text) {
+  if (!q) return 1;
+  const t = text.toLocaleLowerCase("tr");
+  const idx = t.indexOf(q);
+  if (idx >= 0) return 100 - idx + (idx === 0 || /\s|\/|:/.test(t[idx - 1]) ? 50 : 0);
+  let score = 0, j = 0, run = 0;
+  for (let i = 0; i < t.length && j < q.length; i++) {
+    if (t[i] === q[j]) { j++; run++; score += run * 2 + (i === 0 || /\s|\/|:/.test(t[i - 1]) ? 5 : 0); }
+    else run = 0;
+  }
+  return j === q.length ? score : 0;
+}
+const PAL = { items: [], shown: [], sel: 0 };
+function openPalette(prefill) {
+  closeMenu();
+  PAL.items = paletteItems();
+  $("#palette").hidden = false;
+  const inp = $("#palInput");
+  inp.value = prefill || "";
+  drawPalette();
+  setTimeout(() => inp.focus(), 0);
+}
+function closePalette() { $("#palette").hidden = true; }
+function drawPalette() {
+  const q = $("#palInput").value.trim().toLocaleLowerCase("tr");
+  const scored = PAL.items.map((it) => ({ it, sc: Math.max(fuzzy(q, it.label), fuzzy(q, it.group + " " + it.label) * 0.6, fuzzy(q, it.hint || "") * 0.4) }))
+    .filter((x) => x.sc > 0);
+  if (q) scored.sort((x, y) => y.sc - x.sc);
+  PAL.shown = scored.slice(0, 60).map((x) => x.it);
+  PAL.sel = Math.min(PAL.sel, Math.max(0, PAL.shown.length - 1));
+  const box = $("#palList");
+  box.replaceChildren();
+  if (!PAL.shown.length) { box.appendChild(el("div", "pal-empty", "Sonuç yok")); return; }
+  let group = null;
+  PAL.shown.forEach((it, i) => {
+    if (!q && it.group !== group) { group = it.group; box.appendChild(el("div", "pal-group", group)); }
+    const row = el("div", "pal-item" + (i === PAL.sel ? " sel" : ""));
+    row.appendChild(svg(it.icon));
+    const t = el("span", "pal-t");
+    t.appendChild(el("b", "", it.label));
+    if (it.hint) t.appendChild(el("small", "", it.hint));
+    row.appendChild(t);
+    if (q) row.appendChild(el("span", "pal-g", it.group));
+    if (it.key) row.appendChild(el("kbd", "", it.key));
+    row.addEventListener("mousemove", () => { if (PAL.sel !== i) { PAL.sel = i; markPalSel(); } });
+    row.addEventListener("click", () => runPalette(i));
+    box.appendChild(row);
+  });
+  markPalSel();
+}
+function markPalSel() {
+  $$("#palList .pal-item").forEach((r, i) => r.classList.toggle("sel", i === PAL.sel));
+  $("#palList .pal-item.sel")?.scrollIntoView({ block: "nearest" });
+}
+function runPalette(i) {
+  const it = PAL.shown[i];
+  closePalette();
+  if (it) it.run();
+}
+$("#palInput").addEventListener("input", () => { PAL.sel = 0; drawPalette(); });
+$("#palInput").addEventListener("keydown", (e) => {
+  if (e.key === "ArrowDown") { e.preventDefault(); PAL.sel = Math.min(PAL.shown.length - 1, PAL.sel + 1); markPalSel(); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); PAL.sel = Math.max(0, PAL.sel - 1); markPalSel(); }
+  else if (e.key === "Enter") { e.preventDefault(); runPalette(PAL.sel); }
+  else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closePalette(); }
+});
+$("#palette").addEventListener("mousedown", (e) => { if (e.target.id === "palette") closePalette(); });
+$("#paletteBtn").addEventListener("click", () => openPalette());
+
+/* ================================================================== ayarlar */
+function setPref(k, v) {
+  PREFS[k] = v;
+  savePrefs();
+  applyPrefs();
+}
+function toggleVerbose() {
+  setPref("verbose", !PREFS.verbose);
+  $$(".tool").forEach((t) => t.classList.toggle("open", PREFS.verbose || !!t.querySelector(".diff")));
+  $$(".tool-group").forEach((g) => g.classList.toggle("open", PREFS.verbose));
+  toast(PREFS.verbose ? "Araç ayrıntıları açık" : "Araç ayrıntıları kapalı");
+}
+function segmented(options, value, onPick) {
+  const seg = el("div", "seg");
+  for (const [k, label] of options) {
+    const b = el("button", k === value ? "on" : "", label);
+    b.addEventListener("click", () => { onPick(k); $$("button", seg).forEach((x) => x.classList.toggle("on", x === b)); });
+    seg.appendChild(b);
+  }
+  return seg;
+}
+function setRow(title, sub, control) {
+  const r = el("div", "set-row");
+  const t = el("div", "set-t");
+  t.appendChild(el("b", "", title));
+  if (sub) t.appendChild(el("small", "", sub));
+  r.append(t, control);
+  return r;
+}
+const SETTINGS_TABS = [
+  ["general", "Genel", IC.gear], ["models", "Modeller", IC.spark], ["tools", "Araçlar", IC.bolt],
+  ["memory", "Hafıza", IC.brain], ["usage", "Kullanım", IC.gauge], ["keys", "Kısayollar", IC.keyboard],
+];
+async function showSettings(tab) {
+  tab = tab || "general";
+  const data = {
+    models: tab === "models" ? await api("/api/models") : null,
+    tools: tab === "tools" ? await api("/api/tools") : null,
+    memory: tab === "memory" ? await api("/api/memory") : null,
+    usage: tab === "usage" ? await api("/api/usage") : null,
+  };
   showDialog((d) => {
-    d.append(el("h2", "", "Modeller"),
-      el("p", "", "Her rol soldan sağa denenir. Limite takılan ya da hata veren model atlanır, kısa süre sonra tekrar denenir."));
-    const names = { brain: "Ana model", fast: "Hızlı işler", vision: "Görsel" };
-    for (const [role, rows] of Object.entries(data || {})) {
-      d.appendChild(el("div", "sec", names[role] || role));
-      for (const r of rows) {
+    d.classList.add("settings");
+    const nav = el("nav", "set-nav");
+    nav.appendChild(el("div", "set-h", "Ayarlar"));
+    for (const [k, label, icon] of SETTINGS_TABS) {
+      const b = el("button", k === tab ? "on" : "");
+      b.append(svg(icon), document.createTextNode(label));
+      b.addEventListener("click", () => showSettings(k));
+      nav.appendChild(b);
+    }
+    const pane = el("div", "set-pane");
+    const x = el("button", "icon-btn set-x");
+    x.title = "Kapat (Esc)";
+    x.appendChild(svg(IC.x));
+    x.addEventListener("click", closeDialog);
+    pane.appendChild(x);
+    if (tab === "general") {
+      pane.append(el("h2", "", "Genel"));
+      pane.append(
+        setRow("Tema", "Sistem seçilirse Windows'un açık/koyu ayarını izler",
+          segmented([["system", "Sistem"], ["light", "Açık"], ["dark", "Koyu"]], PREFS.theme, (v) => setPref("theme", v))),
+        setRow("Yazı boyutu", "Sohbet metninin boyutu",
+          segmented([["small", "Küçük"], ["normal", "Normal"], ["large", "Büyük"]], PREFS.size, (v) => setPref("size", v))),
+        setRow("Araç ayrıntıları", "Komut çıktıları ve okunan dosyalar açık gelsin (Ctrl+O)",
+          segmented([["0", "Kapalı"], ["1", "Açık"]], PREFS.verbose ? "1" : "0", (v) => { if ((v === "1") !== PREFS.verbose) toggleVerbose(); })),
+        setRow("Yan panel", "Plan, değişiklikler ve bağlam (Ctrl+J)",
+          segmented([["0", "Kapalı"], ["1", "Açık"]], PREFS.panel ? "1" : "0", (v) => (v === "1" ? openPanel() : closePanel()))),
+        setRow("İzin modu", (MODES[S.status.mode] || ["", ""])[1],
+          segmented(Object.entries(MODES).map(([k, [l]]) => [k, l]), S.status.mode, (v) => setMode(v))),
+        setRow("Çalışma klasörü", S.status.cwd || "", (() => { const b = el("button", "btn", "Değiştir"); b.addEventListener("click", askCwd); return b; })()),
+      );
+    } else if (tab === "models") {
+      pane.append(el("h2", "", "Modeller"),
+        el("p", "", "Her rol soldan sağa denenir. Limite takılan ya da hata veren model atlanır, kısa süre sonra tekrar denenir."));
+      pane.appendChild(setRow("Düşünme", (THINK[S.status.thinking] || ["", ""])[1],
+        segmented(Object.entries(THINK).map(([k, [l]]) => [k, l]), S.status.thinking, (v) => setThinking(v))));
+      const names = { brain: "Ana model", fast: "Hızlı işler", vision: "Görsel" };
+      for (const [role, rows] of Object.entries(data.models || {})) {
+        pane.appendChild(el("div", "sec", names[role] || role));
+        for (const r of rows) {
+          const row = el("div", "list-row");
+          row.append(el("span", "l", r.ref), el("span", "r" + (r.status === "hazır" ? " ok" : ""), r.status));
+          if (role === "brain") {
+            const pin = el("button", "act", "Sabitle");
+            pin.addEventListener("click", () => pinModel(r.ref));
+            row.appendChild(pin);
+          }
+          pane.appendChild(row);
+        }
+      }
+    } else if (tab === "tools") {
+      const tools = Array.isArray(data.tools) ? data.tools : [];
+      pane.append(el("h2", "", "Araçlar"), el("p", "", `${tools.length} araç. MCP sunucularını config.toml'daki [mcp.servers] altına ekleyebilirsin.`));
+      const f = el("input"); f.type = "text"; f.placeholder = "Araç ara"; f.className = "set-filter";
+      const listBox = el("div");
+      const draw = () => {
+        listBox.replaceChildren();
+        const q = f.value.toLowerCase();
+        for (const t of tools.filter((t) => !q || (t.name + t.description).toLowerCase().includes(q))) {
+          const row = el("div", "list-row");
+          const [, icon] = verbFor(t.name);
+          const l = el("span", "l");
+          l.append(el("b", "", t.name), el("small", "", t.description));
+          row.append(svg(icon), l, el("span", "risk " + t.risk, t.risk));
+          listBox.appendChild(row);
+        }
+      };
+      f.addEventListener("input", draw);
+      draw();
+      pane.append(f, listBox);
+      setTimeout(() => f.focus(), 0);
+    } else if (tab === "memory") {
+      pane.append(el("h2", "", "Hafıza"), el("p", "", "ALICE'in oturumlar arası kaydettiği notlar (~/.alice/memory.md)."));
+      const box = el("div", "prose mem");
+      setMd(box, (data.memory && data.memory.text) || "_(henüz bir şey kaydedilmedi)_");
+      pane.appendChild(box);
+    } else if (tab === "usage") {
+      pane.append(el("h2", "", "Bugünkü kullanım"));
+      const entries = Object.entries(data.usage || {});
+      if (!entries.length) pane.appendChild(el("p", "", "Bugün henüz istek yok."));
+      const max = Math.max(1, ...entries.map(([, r]) => r.requests));
+      for (const [ref, r] of entries) {
+        const row = el("div", "use-row");
+        const bar = el("i", "use-bar");
+        const fill = el("i");
+        fill.style.width = (100 * r.requests) / max + "%";
+        bar.appendChild(fill);
+        row.append(el("span", "l", ref), bar,
+          el("span", "r", `${r.requests} istek · ${r.errors} hata · ${(r.prompt_tokens / 1000).toFixed(1)}k girdi · ${(r.completion_tokens / 1000).toFixed(1)}k çıktı`));
+        pane.appendChild(row);
+      }
+    } else {
+      pane.append(el("h2", "", "Kısayollar ve komutlar"));
+      for (const [k, v] of SHORTCUTS) {
         const row = el("div", "list-row");
-        row.append(el("span", "l", r.ref), el("span", "r" + (r.status === "hazır" ? " ok" : ""), r.status));
-        d.appendChild(row);
+        const keys = el("span", "keys");
+        for (const part of k.split(" / ")) keys.appendChild(el("kbd", "", part));
+        row.append(el("span", "l plain", v), keys);
+        pane.appendChild(row);
+      }
+      pane.appendChild(el("div", "sec", "Slash komutları"));
+      for (const c of S.commands) {
+        const row = el("div", "list-row");
+        row.append(el("span", "l", "/" + c.name), el("span", "r", c.description + (c.kind === "custom" ? " (özel)" : "")));
+        pane.appendChild(row);
       }
     }
-    dialogClose(d);
+    d.append(nav, pane);
   });
 }
-async function showTools() {
-  const tools = await api("/api/tools");
-  showDialog((d) => {
-    d.append(el("h2", "", "Araçlar"), el("p", "", `${tools.length} araç. MCP sunucularını config.toml'daki [mcp.servers] altına ekleyebilirsin.`));
-    for (const t of tools) {
-      const row = el("div", "list-row");
-      row.append(el("span", "l", t.name), el("span", "r", t.risk));
-      row.title = t.description;
-      d.appendChild(row);
-    }
-    dialogClose(d);
-  });
-}
-async function showMemory() {
-  const r = await api("/api/memory");
-  showDialog((d) => {
-    d.append(el("h2", "", "Hafıza"), el("p", "", "ALICE'in oturumlar arası kaydettiği notlar (~/.alice/memory.md)."),
-      el("pre", "mem", r.text || "(henüz bir şey kaydedilmedi)"));
-    dialogClose(d);
-  });
-}
-async function showUsage() {
-  const u = await api("/api/usage");
-  showDialog((d) => {
-    d.append(el("h2", "", "Bugünkü kullanım"));
-    const entries = Object.entries(u || {});
-    if (!entries.length) d.appendChild(el("p", "", "Bugün henüz istek yok."));
-    for (const [ref, r] of entries) {
-      const row = el("div", "list-row");
-      row.append(el("span", "l", ref),
-        el("span", "r", `${r.requests} istek · ${r.errors} hata · ${(r.prompt_tokens / 1000).toFixed(1)}k girdi · ${(r.completion_tokens / 1000).toFixed(1)}k çıktı`));
-      d.appendChild(row);
-    }
-    dialogClose(d);
-  });
-}
-function showHelp() {
-  showDialog((d) => {
-    d.append(el("h2", "", "Komutlar"), el("p", "", "Mesaj kutusuna / yazınca liste açılır. @ yazınca dosya önerir."));
-    for (const c of S.commands) {
-      const row = el("div", "list-row");
-      row.append(el("span", "l", "/" + c.name), el("span", "r", c.description + (c.kind === "custom" ? " (özel)" : "")));
-      d.appendChild(row);
-    }
-    d.appendChild(el("div", "sec", "Kısayollar"));
-    for (const [k, v] of [["Enter", "Gönder (çalışırken sıraya ekler)"], ["Shift+Enter", "Yeni satır"], ["↑ / ↓", "Önceki mesajları geri getir (kutu boşken)"], ["Esc", "Durdur / menüyü kapat"],
-      ["Shift+Tab", "İzin modunu değiştir"], ["Ctrl+B", "Kenar çubuğu"], ["Ctrl+Shift+O", "Yeni sohbet"], ["Ctrl+V", "Görsel yapıştır"]]) {
-      const row = el("div", "list-row");
-      row.append(el("span", "l", k), el("span", "r", v));
-      d.appendChild(row);
-    }
-    dialogClose(d);
-  });
-}
+const SHORTCUTS = [
+  ["Ctrl+K", "Komut paleti"], ["Ctrl+J", "Yan panel (plan, değişiklikler, bağlam)"], ["Ctrl+O", "Araç ayrıntılarını aç/kapat"],
+  ["Ctrl+,", "Ayarlar"], ["Enter", "Gönder (çalışırken sıraya ekler)"], ["Shift+Enter", "Yeni satır"],
+  ["↑ / ↓", "Önceki mesajları geri getir (kutu boşken)"], ["Esc", "Durdur / menüyü kapat"],
+  ["1 / 2 / 3", "İzin kartını cevapla: izin ver / hep izin ver / reddet"], ["Shift+Tab", "İzin modunu değiştir"],
+  ["Ctrl+B", "Kenar çubuğu"], ["Ctrl+Shift+O", "Yeni sohbet"], ["Ctrl+V", "Görsel yapıştır"],
+];
 
 /* =========================================================== slash komutları */
 async function runCommand(text) {
@@ -1108,7 +1666,7 @@ window.addEventListener("drop", (e) => {
 $("#sendBtn").addEventListener("click", () => (S.busy && !input.value.trim() ? stop() : submit()));
 $("#modeBtn").addEventListener("click", modeMenu);
 $("#modelBtn").addEventListener("click", modelMenu);
-$("#settingsBtn").addEventListener("click", settingsMenu);
+$("#settingsBtn").addEventListener("click", () => showSettings("general"));
 $("#cwdBtn").addEventListener("click", askCwd);
 $("#newChat").addEventListener("click", newChat);
 $$(".sg").forEach((b) => b.addEventListener("click", () => {
@@ -1127,8 +1685,26 @@ $("#openSide").addEventListener("click", toggleSide);
 try { if (localStorage.getItem("alice.side") === "0") app.classList.add("side-hidden"); } catch { /* yok */ }
 
 document.addEventListener("keydown", (e) => {
+  const mod = e.ctrlKey || e.metaKey;
+  if (mod && !e.shiftKey && e.key.toLowerCase() === "k") { e.preventDefault(); $("#palette").hidden ? openPalette() : closePalette(); return; }
+  if (mod && e.shiftKey && e.key.toLowerCase() === "p") { e.preventDefault(); openPalette(); return; }
+  if (mod && e.key.toLowerCase() === "j") { e.preventDefault(); togglePanel(); return; }
+  if (mod && e.key.toLowerCase() === "o" && !e.shiftKey) { e.preventDefault(); toggleVerbose(); return; }
+  if (mod && e.key === ",") { e.preventDefault(); showSettings("general"); return; }
+  // İzin kartı 1/2/3 ile cevaplanır; mesaj yazılırken rakamlar metne gider.
+  const typing = (document.activeElement === input && input.value) ||
+    (document.activeElement && document.activeElement !== input && /INPUT|TEXTAREA/.test(document.activeElement.tagName));
+  if (!mod && !e.altKey && !typing && /^[123]$/.test(e.key) && $("#overlay").hidden && $("#palette").hidden) {
+    const card = pendingPerm();
+    if (card) {
+      e.preventDefault();
+      api("/api/permission", { id: card._id, answer: { 1: "y", 2: "a", 3: "n" }[e.key] });
+      return;
+    }
+  }
   if (e.key === "Escape") {
-    if (!$("#menu").hidden) closeMenu();
+    if (!$("#palette").hidden) closePalette();
+    else if (!$("#menu").hidden) closeMenu();
     else if (!$("#overlay").hidden) closeDialog();
     else if (S.busy) stop();
   }
@@ -1152,7 +1728,7 @@ list.addEventListener("click", (e) => {
 const handlers = {
   status: applyStatus,
   user: (ev) => addUser(ev.text, ev.mi, ev.images),
-  busy: (ev) => { setBusy(ev.value); if (!ev.value) loadSessions(); },
+  busy: (ev) => { S.status.busy = ev.value; setBusy(ev.value); if (!ev.value) loadSessions(); },
   stream_start: () => { if (!S.cur) showWorking("Düşünüyor"); },
   thinking: (ev) => onThinking(ev.text),
   delta: (ev) => onDelta(ev.text),
@@ -1161,9 +1737,11 @@ const handlers = {
   tool_start: (ev) => toolRow(ev.id, ev.name, ev.summary, true),
   tool_end: (ev) => {
     const t = S.tools.get(ev.id) || toolRow(ev.id, ev.name, "", true);
-    finishTool(t, ev);
+    // Sonuç (diff, plan kartı) eklenmeden önce alttaysak, eklendikten sonra da altta kal.
+    const stick = nearBottom();
+    finishTool(t, ev, true);
     if (S.busy) showWorking("Çalışıyor");
-    toBottom();
+    toBottom(stick);
   },
   permission: onPermission,
   permission_done: onPermissionDone,
@@ -1229,5 +1807,13 @@ function connect() {
   S.commands = Array.isArray(cmds) ? cmds : [];
   autosize();
   input.focus();
+  refreshChanges();
+  if (PREFS.panel) openPanel();
   setInterval(() => { if (!S.busy) refreshStatus(); }, 10000);
+  const clock = () => {
+    const m = Math.floor((Date.now() - S.started) / 60000);
+    $("#stClock").textContent = m < 60 ? `${m} dk` : `${Math.floor(m / 60)} sa ${m % 60} dk`;
+  };
+  clock();
+  setInterval(clock, 30000);
 })();

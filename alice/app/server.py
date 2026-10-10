@@ -33,7 +33,7 @@ from alice.tools.base import ToolResult
 
 STATIC = Path(__file__).parent / "static"
 STATIC_FILES = {"app.js": "text/javascript", "app.css": "text/css", "marked.min.js": "text/javascript",
-                "purify.min.js": "text/javascript", "icon.svg": "image/svg+xml", "quick.js": "text/javascript",
+                "purify.min.js": "text/javascript", "highlight.js": "text/javascript", "icon.svg": "image/svg+xml", "quick.js": "text/javascript",
                 "quick.css": "text/css"}
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
        "connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
@@ -177,6 +177,91 @@ def display_history(messages: list[dict[str, Any]], tools: dict[str, Any] | None
     return items
 
 
+def git_branch(cwd: Path) -> str:
+    """Çalışma klasörünün git dalı (durum çubuğu için). git çalıştırmadan .git/HEAD okunur."""
+    for d in (cwd, *cwd.parents):
+        g = d / ".git"
+        try:
+            if g.is_file():  # worktree / submodule: "gitdir: ..."
+                line = g.read_text(encoding="utf-8").strip()
+                if not line.startswith("gitdir:"):
+                    return ""
+                g = (d / line[7:].strip()).resolve()
+            if g.is_dir():
+                head = (g / "HEAD").read_text(encoding="utf-8").strip()
+                return head[16:] if head.startswith("ref: refs/heads/") else head[:7]
+        except OSError:
+            return ""
+    return ""
+
+
+def _text_of(data: bytes | None) -> str | None:
+    if data is None:
+        return None
+    if b"\0" in data[:4096]:
+        return None
+    for enc in ("utf-8", "cp1254"):
+        try:
+            return data.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
+def session_changes(checkpoints: dict[int, dict[str, bytes | None]], cwd: Path) -> list[dict[str, Any]]:
+    """Bu oturumda dosya araçlarıyla değiştirilen dosyalar: ilk halleriyle şimdiki halleri arasındaki fark.
+    Codex'teki inceleme paneli gibi tüm değişiklikler tek yerde görünsün."""
+    import difflib
+
+    original: dict[str, bytes | None] = {}
+    for idx in sorted(checkpoints):
+        for path, data in checkpoints[idx].items():
+            original.setdefault(path, data)
+    out: list[dict[str, Any]] = []
+    for path, old in original.items():
+        p = Path(path)
+        try:
+            new = p.read_bytes() if p.is_file() else None
+        except OSError:
+            continue
+        if new == old:
+            continue
+        status = "eklendi" if old is None else "silindi" if new is None else "değişti"
+        try:
+            rel = str(p.relative_to(cwd))
+        except ValueError:
+            rel = str(p)
+        rel = rel.replace("\\", "/")
+        a, b = _text_of(old), _text_of(new)
+        if (old is not None and a is None) or (new is not None and b is None):
+            out.append({"path": rel, "abs": path, "status": status, "diff": "", "added": 0, "removed": 0, "binary": True})
+            continue
+        lines = list(difflib.unified_diff((a or "").splitlines(), (b or "").splitlines(),
+                                          f"a/{rel}", f"b/{rel}", lineterm="", n=3))
+        added = sum(1 for ln in lines if ln.startswith("+") and not ln.startswith("+++"))
+        removed = sum(1 for ln in lines if ln.startswith("-") and not ln.startswith("---"))
+        out.append({"path": rel, "abs": path, "status": status, "diff": "\n".join(lines[:4000]),
+                    "added": added, "removed": removed, "binary": False})
+    out.sort(key=lambda c: c["path"])
+    return out
+
+
+def revert_change(checkpoints: dict[int, dict[str, bytes | None]], path: str) -> bool:
+    """Tek bir dosyayı oturumdaki ilk haline döndür (Codex'teki dosya bazında "geri al")."""
+    for idx in sorted(checkpoints):
+        if path in checkpoints[idx]:
+            data = checkpoints[idx][path]
+            p = Path(path)
+            if data is None:
+                if p.exists():
+                    p.unlink()
+            else:
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(data)
+            return True
+    return False
+
+
 # ------------------------------------------------------------------------ durum
 class AppState:
     def __init__(self, cfg: Config, cwd: Path, mode: str, provider_factory=None):
@@ -246,6 +331,7 @@ class AppState:
             "today_requests": sum(r["requests"] for r in self.router.usage.today().values()),
             "decider": self.decider.names[0] if self.decider.names else "",
             "cwd": str(self.ctx.cwd),
+            "branch": git_branch(self.ctx.cwd),
             "busy": a.busy or self._queued,
             "session": self.sid,
             "pending": list(self.ui.pending.values()),
@@ -437,7 +523,16 @@ def make_handler(state: AppState):
             if u.path == "/api/history":
                 return self._json(display_history(state.agent.messages, state.agent.tools))
             if u.path == "/api/sessions":
-                return self._json([{"id": i, "cwd": c, "title": t} for i, c, t in sess.list_sessions(40)])
+                rows = []
+                for i, c, t in sess.list_sessions(60):
+                    try:
+                        updated = (sess.sessions_dir() / f"{i}.json").stat().st_mtime
+                    except OSError:
+                        updated = 0
+                    rows.append({"id": i, "cwd": c, "title": t, "updated": updated})
+                return self._json(rows)
+            if u.path == "/api/changes":
+                return self._json(session_changes(state.agent.checkpoints, state.ctx.cwd))
             if u.path == "/api/files":
                 from alice.mentions import complete_paths
 
@@ -533,7 +628,7 @@ def make_handler(state: AppState):
                     state.agent.permissions.mode = mode
                     return self._json({"ok": True, **state.status()})
                 if (state.agent.busy or state._queued) and p in ("/api/new", "/api/resume", "/api/cwd", "/api/compact",
-                                                                  "/api/rewind"):
+                                                                  "/api/rewind", "/api/changes/revert"):
                     return self._json({"ok": False, "error": "önce mevcut işi durdur"}, 409)
                 if p == "/api/new":
                     state.new_session()
@@ -551,6 +646,10 @@ def make_handler(state: AppState):
                     out = state.rewind(int(d.get("mi", -1)))
                     return self._json({"ok": True, **out, "history": display_history(state.agent.messages, state.agent.tools),
                                        **state.status()})
+                if p == "/api/changes/revert":
+                    ok = revert_change(state.agent.checkpoints, str(d.get("path", "")))
+                    return self._json({"ok": ok, "changes": session_changes(state.agent.checkpoints, state.ctx.cwd)},
+                                      200 if ok else 404)
                 if p == "/api/session/delete":
                     sid = str(d.get("id", ""))
                     f = sess.sessions_dir() / f"{sid}.json"
