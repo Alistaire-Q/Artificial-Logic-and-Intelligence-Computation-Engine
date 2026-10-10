@@ -226,7 +226,8 @@ class LiveSession:
                 pass
         raise LiveError("; ".join(errors) or "live modeli yok")
 
-    def converse(self, first_text: str, frames: "queue.Queue[bytes]", stop: threading.Event) -> None:
+    def converse(self, first_text: str, frames: "queue.Queue[bytes]", stop: threading.Event,
+                 first_audio: bytes = b"") -> None:
         """Mikrofon karelerini (16 kHz, 30 ms) modele akıt, cevabı çal, araçları çalıştır. Sessizlikte döner.
         Bu fonksiyon araçları çağıran thread'de çalışır (tarayıcı gibi thread'e bağlı araçlar için)."""
         ws = self._open()
@@ -294,6 +295,11 @@ class LiveSession:
         threading.Thread(target=reader, daemon=True, name="alice-live-in").start()
         threading.Thread(target=sender, daemon=True, name="alice-live-mic").start()
         try:
+            if first_audio:  # "Hey Alice ..." cümlesinin kendisi: yazıya çevirmeden doğrudan modele
+                for i in range(0, len(first_audio), 32000):
+                    ws.send(json.dumps({"realtimeInput": {"audio": {
+                        "data": base64.b64encode(first_audio[i:i + 32000]).decode(),
+                        "mimeType": "audio/pcm;rate=16000"}}}))
             if first_text:
                 ws.send(json.dumps({"clientContent": {"turns": [{"role": "user", "parts": [{"text": first_text}]}],
                                                       "turnComplete": True}}))

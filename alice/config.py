@@ -81,6 +81,11 @@ live_voice = "Kore"
 live_models = ["gemini-3.8-live", "gemini-3.1-flash-live-preview", "gemini-2.5-flash-native-audio-latest"]
 # Bu kadar saniye kimse konuşmazsa canlı konuşma kapanır, yeniden "Hey Alice" beklenir.
 live_idle = 20
+# Konuşman bitti saymak için sessizlik (sn). Kısa = hızlı cevap; çok kısa olursa cümle ortasında keser.
+end_silence = 0.5
+# "Hey Alice" kontrolü: ekran kartı varsa wake_local_gpu (daha iyi duyar, ~0,1 sn), yoksa işlemcide wake_local.
+wake_local = "base"
+wake_local_gpu = "small"
 # Bulut sesi "gemini:<ses>"; yerel motor "xtts" ya da "chatterbox" (boş = yok).
 tts_cloud = "gemini:Aoede"
 tts_local = ""

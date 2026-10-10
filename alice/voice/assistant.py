@@ -188,8 +188,9 @@ class VoiceAssistant:
     def __init__(self, agent, speaker: Speaker, stt, mic_factory: Callable[[], Microphone] = Microphone,
                  ptt_key: str = "", wake_model: str = "", wake_phrase: bool = True, barge_in: bool = True,
                  follow_up: float = 8.0, emit: Callable[[str], None] = lambda s: None,
-                 keep_turns: int = 4, idle_reset: float = 300.0, live=None):
+                 keep_turns: int = 4, idle_reset: float = 300.0, live=None, end_silence: float = 0.5):
         self.agent = agent
+        self.end_silence = end_silence  # konuşma bitti saymak için sessizlik (sn)
         self.live = live  # Gemini Live: "Hey Alice"ten sonra sesten sese canlı konuşma
         self._live_q: queue.Queue | None = None  # doluyken mikrofon kareleri Live'a gider
         self._live_down = 0.0
@@ -280,8 +281,16 @@ class VoiceAssistant:
             head = gate.heard(audio)
             if head is not None:
                 if strip_wake(head) is None:
+                    if audio.seconds >= 0.6:
+                        voice_log(f"uyandırma yok [{getattr(gate, 'model_name', '?')} {getattr(gate, 'last_seconds', 0):.2f}sn]: {head}")
                     return  # uyandırma yok: sesi buluta hiç gönderme
                 direct = True  # yerel model "Hey Alice" duydu; bulut yazımı farklı olsa da kabul et
+                if self._live_ready() and not self._busy.is_set():
+                    # Canlı konuşma: yazıya çevirmeyi atla, cümlenin sesini doğrudan Live'a ver (~0,5 sn kazanç).
+                    voice_log(f"uyandı [{getattr(gate, 'model_name', '?')} {getattr(gate, 'last_seconds', 0):.2f}sn]: {head}")
+                    self._live_q = queue.Queue()  # bağlanırken söylenenler kaybolmasın: kareler şimdiden biriksin
+                    self._jobs.put(audio)
+                    return
         try:
             text = self.stt.transcribe(audio)
         except STTError as e:
@@ -297,15 +306,19 @@ class VoiceAssistant:
     def _live_ready(self) -> bool:
         return self.live is not None and self.live.available and time.monotonic() > self._live_down
 
-    def _converse_live(self, text: str) -> bool:
+    def _converse_live(self, text: str, audio: Audio | None = None) -> bool:
         """Live oturumu aç ve sessizliğe kadar konuş. Açılamazsa False (eski yola dönülür)."""
         from alice.voice.live import LiveError
 
-        self.speaker.wait(10)
-        q: queue.Queue = queue.Queue()
+        if audio is None:
+            self.speaker.wait(10)
+        q: queue.Queue = self._live_q or queue.Queue()
         self._live_q = q
         try:
-            self.live.converse(text, q, self.stop_event)
+            if audio is not None:
+                self.live.converse("", q, self.stop_event, first_audio=audio.resample(16000).pcm)
+            else:
+                self.live.converse(text, q, self.stop_event)
             return True
         except LiveError as e:
             self._live_down = time.monotonic() + 300  # 5 dk eski yolla devam
@@ -318,8 +331,29 @@ class VoiceAssistant:
 
     def _worker(self) -> None:
         while True:
-            text = self._jobs.get()
-            if self._live_ready():
+            job = self._jobs.get()
+            audio = job if isinstance(job, Audio) else None
+            if audio is not None:
+                # Live açılamazsa eski yol: önce yazıya çevir.
+                if self._live_ready():
+                    self._busy.set()
+                    try:
+                        if self._converse_live("", audio):
+                            continue
+                    except Exception as e:  # noqa: BLE001
+                        voice_log(f"live hatası: {e}")
+                    finally:
+                        self._busy.clear()
+                try:
+                    text = strip_wake(self.stt.transcribe(audio)) or ""
+                except STTError as e:
+                    self.emit(f"anlaşılamadı: {e}")
+                    continue
+                if not text:
+                    continue
+            else:
+                text = job
+            if audio is None and self._live_ready():
                 self._busy.set()
                 try:
                     if self._converse_live(text):
@@ -380,7 +414,10 @@ class VoiceAssistant:
                     self.vad.boost = 2.5 if self.speaker.speaking else 1.0
                     yield frame
 
-            for audio in utterances(frames(), self.vad, stop=self.stop_event.is_set,
+            gate = getattr(self.stt, "wake_gate", None)
+            if gate is not None and hasattr(gate, "warm_up"):
+                gate.warm_up()
+            for audio in utterances(frames(), self.vad, stop=self.stop_event.is_set, end_silence=self.end_silence,
                                     on_start=self._on_speech_start):
                 direct = time.monotonic() <= self.armed_until
                 threading.Thread(target=self.handle_audio, args=(audio, direct), daemon=True).start()

@@ -134,8 +134,13 @@ class WakeGate:
 
     HEAD_SECONDS = 2.5
 
-    def __init__(self, model: str = "base", language: str = "tr"):
+    def __init__(self, model: str = "base", language: str = "tr", gpu_model: str = "",
+                 allow_gpu: Callable[[], bool] = lambda: False):
         self.model_name = model
+        self.gpu_model = gpu_model  # ekran kartı varsa daha iyi duyan model (ör. small): ~0,1-0,2 sn
+        self.allow_gpu = allow_gpu
+        self.device = ""
+        self.last_seconds = 0.0
         self.language = language
         self._model: Any = None
         self._failed = False
@@ -151,20 +156,48 @@ class WakeGate:
             return False
         return True
 
+    def _load(self):
+        from faster_whisper import WhisperModel
+
+        if self.gpu_model and self.allow_gpu():
+            try:
+                m = WhisperModel(self.gpu_model, device="cuda", compute_type="float16")
+                self.device, self.model_name = "cuda", self.gpu_model
+                return m
+            except Exception:  # noqa: BLE001 - CUDA yoksa işlemcide küçük model
+                pass
+        self.device = "cpu"
+        return WhisperModel(self.model_name, device="cpu", compute_type="int8")
+
+    def warm_up(self) -> None:
+        """Modeli arka planda yükle: ilk "Hey Alice" model yüklemesini beklemesin."""
+        def run() -> None:
+            if self.available():
+                with self._lock:
+                    if self._model is None:
+                        try:
+                            self._model = self._load()
+                        except Exception:  # noqa: BLE001
+                            self._failed = True
+
+        threading.Thread(target=run, daemon=True, name="alice-wake-warm").start()
+
     def heard(self, audio: Audio) -> str | None:
         """Cümlenin başının yerel yazıya dökümü; yerel model kullanılamıyorsa None."""
         if not self.available():
             return None
         head = Audio(audio.pcm[: int(self.HEAD_SECONDS * audio.rate) * 2], audio.rate).resample(16000)
+        t0 = time.monotonic()
         try:
             with self._lock:
                 if self._model is None:
-                    from faster_whisper import WhisperModel
-
-                    self._model = WhisperModel(self.model_name, device="cpu", compute_type="int8")
+                    self._model = self._load()
                 segments, _ = self._model.transcribe(io.BytesIO(head.to_wav()), language=self.language,
-                                                     beam_size=1, initial_prompt="Hey Alice.")
-                return " ".join(s.text.strip() for s in segments).strip()
+                                                     beam_size=1, initial_prompt="Hey Alice.",
+                                                     condition_on_previous_text=False)
+                text = " ".join(s.text.strip() for s in segments).strip()
+                self.last_seconds = time.monotonic() - t0
+                return text
         except Exception:  # noqa: BLE001 - yerel model bozuksa buluta düş
             self._failed = True
             return None
@@ -241,5 +274,6 @@ def make_stt(cfg: Config) -> STTRouter:
     router = STTRouter(engines)
     gate_model = v.get("wake_local", "base")
     if gate_model:
-        router.wake_gate = WakeGate(gate_model, lang)
+        router.wake_gate = WakeGate(gate_model, lang, gpu_model=str(v.get("wake_local_gpu", "small") or ""),
+                                    allow_gpu=lambda: core_policy().get("local_gpu", True) is not False)
     return router

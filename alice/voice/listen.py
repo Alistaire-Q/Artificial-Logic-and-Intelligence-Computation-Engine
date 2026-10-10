@@ -117,6 +117,11 @@ def strip_wake(text: str) -> str | None:
     if i < len(words) and words[i].group().lower().translate(_TR) in _HEYS:
         after_hey = True
         i += 1
+    # "Alice" -> "Ali C", "Ali J'e" diye bölünmüş yazım: Ali + tek harf (+ ek)
+    if (i < len(words) - 1 and i <= 2 and words[i].group().lower().translate(_TR) == "ali"
+            and len(words[i + 1].group()) == 1 and words[i + 1].start() - words[i].end() <= 1):
+        rest = text[words[i + 1].end():]
+        return re.sub(r"^['’]\w{1,3}", "", rest).lstrip(" ,.!?;:-'’").strip()
     if i < len(words) and i <= 2 and _name_like(words[i].group(), after_hey):
         return text[words[i].end():].lstrip(" ,.!?;:-'’").strip()
     return None
