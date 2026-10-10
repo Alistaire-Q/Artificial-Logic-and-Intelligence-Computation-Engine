@@ -135,3 +135,34 @@ def _wait(cond, t=3):
             return True
         time.sleep(0.02)
     return False
+
+
+def test_looks_internal_catches_leaked_notes_only():
+    from alice.voice.live import looks_internal
+
+    assert looks_internal("TIRED: I made a syntax error in the function call")
+    assert looks_internal("FIXED: Call `browser` properly")
+    assert not looks_internal("Tamam, YouTube'u açtım. Saat on üçü çeyrek geçiyor.")
+    assert not looks_internal("Alice burada, nasıl yardımcı olayım?")
+
+
+def test_live_mutes_leaked_internal_note(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    good = base64.b64encode(b"\x01\x00" * 10).decode()
+    bad = base64.b64encode(b"\x02\x00" * 10).decode()
+    ws = FakeWS([
+        {"serverContent": {"modelTurn": {"parts": [{"inlineData": {"data": good}, "thought": True}]}}},
+        {"serverContent": {"outputTranscription": {"text": "TIRED: I made a syntax error"}}},
+        {"serverContent": {"modelTurn": {"parts": [{"inlineData": {"data": bad}}]}}},
+        {"serverContent": {"turnComplete": True}},
+        {"serverContent": {"modelTurn": {"parts": [{"inlineData": {"data": good}}]}}},
+    ])
+    agent = SimpleNamespace(messages=[{"role": "system", "content": "sys"}], ctx=SimpleNamespace(state={}), ui=None,
+                            tool_specs=lambda: [], _enable_groups_for=lambda **k: None, _execute_calls=lambda c: [])
+    cfg = SimpleNamespace(data={"voice": {"live_idle": 0.6, "live_models": ["m1"]}})
+    out = FakeOut()
+    logs = []
+    s = LiveSession(cfg, agent, log=logs.append, connect=lambda url, **k: ws, out_factory=lambda: out)
+    s.converse("selam", queue.Queue(), threading.Event())
+    assert out.chunks == [b"\x01\x00" * 10]  # düşünce ve iç not çalınmadı, sonraki tur çalındı
+    assert any("iç not susturuldu" in line for line in logs)

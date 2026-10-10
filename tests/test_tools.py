@@ -226,3 +226,18 @@ def test_default_browser_helpers():
     assert is_chromium(r"C:\Users\k\AppData\Local\Programs\Opera GX\opera.exe")
     assert not is_chromium(r"C:\Firefox\firefox.exe")
     assert not cdp_alive("http://127.0.0.1:1", timeout=0.2)
+
+
+def test_windows_navigate_types_into_open_browser_tab(monkeypatch):
+    from alice.tools import computer, desktop
+
+    did = []
+    monkeypatch.setattr(desktop, "browser_window_title", lambda: "Opera")
+    monkeypatch.setattr(desktop, "focus_window", lambda t: did.append(("focus", t)) or "YouTube - Opera")
+    monkeypatch.setattr(desktop.time, "sleep", lambda s: None)
+    monkeypatch.setattr(computer, "press_keys", lambda k: did.append(("key", k)))
+    monkeypatch.setattr(computer, "type_text", lambda t: did.append(("type", t)))
+    res = desktop.Windows().run(None, "navigate", target="youtube.com/results?search_query=comfort")
+    assert did == [("focus", "Opera"), ("key", "ctrl+l"), ("type", "youtube.com/results?search_query=comfort"),
+                   ("key", "enter")]
+    assert "açık sekmede" in res.text
