@@ -29,10 +29,13 @@ SCHEMA_KEYS = {"type", "description", "enum", "properties", "required", "items",
 LIVE_PROMPT = """# Canlı sesli konuşma
 Kullanıcıyla sesli, canlı konuşuyorsun. Doğal, sıcak ve kısa konuş (genelde 1-2 cümle), Türkçe.
 Liste, kod, yol ya da uzun sayı okuma; gerekirse ekrana koyduğunu söyle.
-Bir iş istenince ilgili aracı hemen çağır; bir siteyi açmak için windows aracını action=open, target=<URL> ile kullan.
-Kullanıcı "açık sekmede / bu sekmede / şu anki sayfada" derse kendi açık tarayıcısında çalış: windows action=navigate
-target=<URL ya da arama> (sekmenin adres çubuğuna yazar); sayfada bir şeye tıklamak için sonra ui_elements/ui_act.
-browser aracı ayrı bir pencere açar, onu sadece kullanıcı açık sekmesini kastetmiyorsa kullan.
+Bir iş istenince ilgili aracı hemen çağır.
+Web işlerini her zaman kullanıcının açık tarayıcısında, açık sekmelerinde yap; sıfırdan pencere açma.
+YouTube'da video açma, "ilk videoya tıkla", "ikinci dakikaya getir" için youtube aracı (play, at=saniye; seek).
+Diğer sitelerde önce browser aracı: kullanıcının tarayıcısına bağlanır (tabs, switch_tab; goto açık site sekmesini
+kullanır; snapshot/click/type ile sayfada iş yapar). browser "bağlanılamıyor" derse: windows action=switch_tab
+target=<site adı> ile açık sekmeye geç, windows action=navigate target=<URL ya da arama> ile git.
+Yeni sekme ya da ayrı pencere sadece kullanıcı isterse.
 Bir araç "onay gerekli" derse kullanıcıya kısaca sor; "evet" derse aynı çağrıyı tekrarla.
 İç düşüncelerini, planını, araç hatalarını ya da düzeltmelerini asla sesli söyleme; sadece kullanıcıya Türkçe konuş.
 Şu an: {now}."""
@@ -151,14 +154,36 @@ class AudioOut:
         self.clear()
         self.q.put(None)
 
+    PREBUFFER = 0.2  # sn: konuşma başında/boşluktan sonra bu kadar ses birikmeden çalmaya başlama
+
+    def _gather(self, pcm: bytes) -> bytes | None:
+        """Sessizlikten sonra ilk parçayı PREBUFFER kadar biriktir: ağdan parçalar düzensiz gelir, beklemeden
+        çalınca aradaki boşluklarda ses takılır."""
+        if time.monotonic() < self.busy_until:
+            return pcm
+        need = int(self.rate * self.PREBUFFER) * 2
+        deadline = time.monotonic() + self.PREBUFFER + 0.1
+        gen = self._gen
+        while len(pcm) < need and gen == self._gen:
+            try:
+                more = self.q.get(timeout=max(0.0, deadline - time.monotonic()))
+            except queue.Empty:
+                break
+            if more is None:
+                self.q.put(None)
+                break
+            pcm += more
+        return pcm
+
     def _run(self) -> None:
         import sounddevice as sd
 
-        with sd.RawOutputStream(samplerate=self.rate, channels=1, dtype="int16") as out:
+        with sd.RawOutputStream(samplerate=self.rate, channels=1, dtype="int16", latency="high") as out:
             while True:
                 pcm = self.q.get()
                 if pcm is None:
                     return
+                pcm = self._gather(pcm)
                 gen = self._gen
                 step = self.rate // 20 * 2  # 50 ms
                 for i in range(0, len(pcm), step):
@@ -314,6 +339,7 @@ class LiveSession:
                     if sc:
                         if sc.get("interrupted"):
                             out.clear()
+                            self.log("live araya girildi (kullanıcı konuştu ya da gürültü)")
                         for part in (sc.get("modelTurn") or {}).get("parts", []):
                             data = (part.get("inlineData") or {}).get("data")
                             if data and not part.get("thought") and not state["mute"]:

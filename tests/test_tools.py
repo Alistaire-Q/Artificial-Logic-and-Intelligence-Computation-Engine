@@ -228,16 +228,94 @@ def test_default_browser_helpers():
     assert not cdp_alive("http://127.0.0.1:1", timeout=0.2)
 
 
-def test_windows_navigate_types_into_open_browser_tab(monkeypatch):
+def test_windows_navigate_reuses_open_site_tab(monkeypatch):
+    from alice.tools import computer, desktop
+
+    did = []
+    titles = iter(["Ayarlar - Opera", "Kedi - YouTube - Opera"])
+    state = {"title": "Gmail - Opera"}
+
+    def key(k):
+        did.append(("key", k))
+        if k == "ctrl+tab":
+            state["title"] = next(titles, state["title"])
+
+    monkeypatch.setattr(desktop, "browser_window_title", lambda: "Opera")
+    monkeypatch.setattr(desktop, "focus_window", lambda t: "x")
+    monkeypatch.setattr(desktop, "active_title", lambda: state["title"])
+    monkeypatch.setattr(desktop.time, "sleep", lambda s: None)
+    monkeypatch.setattr(computer, "press_keys", key)
+    monkeypatch.setattr(computer, "type_text", lambda t: did.append(("type", t)))
+    res = desktop.Windows().run(None, "navigate", target="youtube.com/results?search_query=comfort")
+    assert did[-3:] == [("key", "ctrl+l"), ("type", "youtube.com/results?search_query=comfort"), ("key", "enter")]
+    assert "YouTube" in res.text and ("key", "ctrl+t") not in did
+
+
+def test_windows_navigate_new_tab_when_site_not_open(monkeypatch):
     from alice.tools import computer, desktop
 
     did = []
     monkeypatch.setattr(desktop, "browser_window_title", lambda: "Opera")
-    monkeypatch.setattr(desktop, "focus_window", lambda t: did.append(("focus", t)) or "YouTube - Opera")
+    monkeypatch.setattr(desktop, "focus_window", lambda t: "x")
+    monkeypatch.setattr(desktop, "active_title", lambda: "Gmail - Opera")
     monkeypatch.setattr(desktop.time, "sleep", lambda s: None)
-    monkeypatch.setattr(computer, "press_keys", lambda k: did.append(("key", k)))
-    monkeypatch.setattr(computer, "type_text", lambda t: did.append(("type", t)))
-    res = desktop.Windows().run(None, "navigate", target="youtube.com/results?search_query=comfort")
-    assert did == [("focus", "Opera"), ("key", "ctrl+l"), ("type", "youtube.com/results?search_query=comfort"),
-                   ("key", "enter")]
-    assert "açık sekmede" in res.text
+    monkeypatch.setattr(computer, "press_keys", lambda k: did.append(k))
+    monkeypatch.setattr(computer, "type_text", lambda t: did.append(t))
+    desktop.Windows().run(None, "navigate", target="github.com")
+    assert did[-3:] == ["ctrl+t", "github.com", "enter"]
+    did.clear()
+    monkeypatch.setattr(desktop, "active_title", lambda: "Yeni sekme - Opera")
+    desktop.Windows().run(None, "navigate", target="github.com")
+    assert did[-3:] == ["ctrl+l", "github.com", "enter"]
+
+
+def test_site_key():
+    from alice.tools.desktop import site_key
+
+    assert site_key("https://www.youtube.com/watch?v=x") == "youtube"
+    assert site_key("mail.google.com") == "gmail"
+    assert site_key("kedi videoları") is None
+
+
+def test_youtube_tool_plays_first_result_at_time(monkeypatch):
+    import httpx
+
+    from alice.tools import desktop, extras
+
+    html = ('..."videoRenderer":{"videoId":"abcdefghijk","thumbnail":{},"title":{"runs":[{"text":"Concorde \\u0026 Co"}]}'
+            '..."videoRenderer":{"videoId":"bbbbbbbbbbb","title":{"runs":[{"text":"İkinci"}]}')
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, text=html)))
+    assert extras.youtube_search("concorde", client=client) == [("Concorde & Co", "abcdefghijk"), ("İkinci", "bbbbbbbbbbb")]
+    went = []
+    monkeypatch.setattr(extras, "youtube_search", lambda q: [("Concorde", "abcdefghijk")])
+    monkeypatch.setattr(desktop, "navigate_tab", lambda url, *a, **k: went.append((url, k)) or "açık sekmede açıldı")
+    res = extras.YouTube().run(None, "play", query="concorde", at=120)
+    assert went[0][0] == "https://www.youtube.com/watch?v=abcdefghijk&t=120"
+    assert "Concorde" in res.text
+    monkeypatch.setattr(desktop, "current_tab_url", lambda: "https://www.youtube.com/watch?v=abcdefghijk&t=5")
+    extras.YouTube().run(None, "seek", at=60)
+    assert went[-1] == ("https://www.youtube.com/watch?v=abcdefghijk&t=60", {"new_tab": False})
+
+
+def test_browser_does_not_open_separate_window_without_consent(monkeypatch):
+    import pytest
+
+    from alice.tools import browser
+    from alice.tools.base import ToolError
+
+    monkeypatch.setattr(browser, "cdp_alive", lambda e, timeout=0.4: False)
+    with pytest.raises(ToolError, match="ayrı pencere"):
+        browser.BrowserSession(cdp="http://127.0.0.1:9222", allow_launch=False)
+
+
+def test_devtools_active_port_endpoint(tmp_path, monkeypatch):
+    from alice.tools import browser
+
+    d = tmp_path / "Opera GX Stable"
+    d.mkdir()
+    (d / "DevToolsActivePort").write_text("9333\n/devtools/browser/abc\n")
+    monkeypatch.setattr(browser, "_port_open", lambda port, timeout=0.3: port == 9333)
+    assert browser.devtools_active_endpoint([tmp_path / "yok", d]) == "ws://127.0.0.1:9333/devtools/browser/abc"
+    monkeypatch.setattr(browser, "_port_open", lambda port, timeout=0.3: False)
+    assert browser.devtools_active_endpoint([d]) is None
+    assert browser.host_of("https://www.youtube.com/watch?v=1") == "youtube.com"
