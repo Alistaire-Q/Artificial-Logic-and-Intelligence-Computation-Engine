@@ -931,6 +931,13 @@ class FakeLive:
     def __init__(self, fail=False):
         self.fail = fail
         self.texts = []
+        self.prefetched = self.discarded = 0
+
+    def prefetch(self):
+        self.prefetched += 1
+
+    def discard(self):
+        self.discarded += 1
 
     def converse(self, text, frames, stop):
         from alice.voice.live import LiveError
@@ -989,7 +996,7 @@ def test_live_wake_sends_audio_without_cloud_stt():
     va = VoiceAssistant(agent, FakeSpeaker(), stt=stt, live=live)
     va.handle_audio(Audio(b"\1\0" * 16000, 16000), direct=False)
     assert wait_for(lambda: live.texts == [("", 32000)])
-    assert stt.calls == 0 and agent.turns == []
+    assert stt.calls == 0 and agent.turns == [] and live.prefetched == 1 and live.discarded == 0
 
 
 def test_wake_gate_falls_back_to_cpu_when_cuda_runtime_fails(monkeypatch):
