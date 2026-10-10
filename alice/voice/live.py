@@ -95,10 +95,11 @@ class LiveUI:
         return fn if fn is not None else (lambda *a, **k: None)
 
     def tool_start(self, call_id: str, name: str, summary: str) -> None:
+        # Sesli UI'a iletme: o "Bakıyorum" dolgusunu eski ses motoruyla söylüyor, Live de konuşurken çift ses olur.
         self.tools.append(f"{name}({summary[:80]})")
-        fn = getattr(self.inner, "tool_start", None)
-        if fn:
-            fn(call_id, name, summary)
+
+    def tool_end(self, *a) -> None:
+        pass
 
     def ask_permission(self, name: str, summary: str, risk: str) -> str:
         return "y" if any(w in self.last_user.lower() for w in YES) else "n"
@@ -168,6 +169,8 @@ class LiveSession:
         self._connect = connect
         self._out_factory = out_factory
         self.model = ""
+        self._pre: dict[str, Any] = {}  # önceden açılan bağlantı: {"thread", "ws", "error"}
+        self._pre_lock = threading.Lock()
 
     @property
     def available(self) -> bool:
@@ -226,11 +229,57 @@ class LiveSession:
                 pass
         raise LiveError("; ".join(errors) or "live modeli yok")
 
+    def prefetch(self) -> None:
+        """Konuşma biter bitmez bağlantıyı açmaya başla (uyandırma kontrolüyle aynı anda): ~0,8 sn kazanç.
+        Uyandırma yoksa discard() ile kapatılır; bu bir model çağrısı değil, sadece bağlantı."""
+        with self._pre_lock:
+            if self._pre:
+                return
+            pre: dict[str, Any] = {}
+
+            def run() -> None:
+                try:
+                    pre["ws"] = self._open()
+                except Exception as e:  # noqa: BLE001
+                    pre["error"] = e
+
+            pre["thread"] = threading.Thread(target=run, daemon=True, name="alice-live-pre")
+            self._pre = pre
+            pre["thread"].start()
+
+    def discard(self) -> None:
+        with self._pre_lock:
+            pre, self._pre = self._pre, {}
+        if not pre:
+            return
+
+        def close() -> None:
+            pre["thread"].join(15)
+            ws = pre.get("ws")
+            if ws is not None:
+                try:
+                    ws.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+        threading.Thread(target=close, daemon=True).start()
+
+    def _take(self):
+        with self._pre_lock:
+            pre, self._pre = self._pre, {}
+        if pre:
+            pre["thread"].join(15)
+            if pre.get("ws") is not None:
+                return pre["ws"]
+            if isinstance(pre.get("error"), LiveError):
+                raise pre["error"]
+        return self._open()
+
     def converse(self, first_text: str, frames: "queue.Queue[bytes]", stop: threading.Event,
                  first_audio: bytes = b"") -> None:
         """Mikrofon karelerini (16 kHz, 30 ms) modele akıt, cevabı çal, araçları çalıştır. Sessizlikte döner.
         Bu fonksiyon araçları çağıran thread'de çalışır (tarayıcı gibi thread'e bağlı araçlar için)."""
-        ws = self._open()
+        ws = self._take()
         out = self._out_factory()
         ui = LiveUI(self.agent.ui)
         old_ui, self.agent.ui = self.agent.ui, ui
@@ -300,6 +349,9 @@ class LiveSession:
                     ws.send(json.dumps({"realtimeInput": {"audio": {
                         "data": base64.b64encode(first_audio[i:i + 32000]).decode(),
                         "mimeType": "audio/pcm;rate=16000"}}}))
+                # Ardından kısa sessizlik: mikrofon karesi gecikse de sunucu "konuşma bitti"yi görsün.
+                ws.send(json.dumps({"realtimeInput": {"audio": {
+                    "data": base64.b64encode(b"\x00\x00" * 9600).decode(), "mimeType": "audio/pcm;rate=16000"}}}))
             if first_text:
                 ws.send(json.dumps({"clientContent": {"turns": [{"role": "user", "parts": [{"text": first_text}]}],
                                                       "turnComplete": True}}))

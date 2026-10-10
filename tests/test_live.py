@@ -103,3 +103,35 @@ def test_live_converse_runs_tools_and_plays_audio(monkeypatch):
     assert out.chunks == [b"\x01\x00" * 100]
     assert any("YouTube açıldı." in line for line in logs)
     assert agent.ui is None  # eski UI geri kondu
+
+
+def test_prefetch_reuses_connection_and_discard_closes(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    opened = []
+
+    def connect(url, **k):
+        ws = FakeWS([])
+        opened.append(ws)
+        return ws
+
+    agent = SimpleNamespace(messages=[{"role": "system", "content": "s"}], ctx=SimpleNamespace(state={}), ui=None,
+                            tool_specs=lambda: [], _enable_groups_for=lambda **k: None, _execute_calls=lambda c: [])
+    cfg = SimpleNamespace(data={"voice": {"live_idle": 0.3, "live_models": ["m1"]}})
+    s = LiveSession(cfg, agent, connect=connect, out_factory=FakeOut)
+    s.prefetch()
+    s.discard()
+    assert _wait(lambda: len(opened) == 1 and opened[0].closed)
+    s.prefetch()
+    s.converse("", queue.Queue(), threading.Event(), first_audio=b"\0\0" * 1600)
+    assert len(opened) == 2  # converse önceden açılan bağlantıyı kullandı
+    audio = [m for m in opened[1].sent if "realtimeInput" in m]
+    assert len(audio) == 2  # cümle + arkasından sessizlik
+
+
+def _wait(cond, t=3):
+    end = time.monotonic() + t
+    while time.monotonic() < end:
+        if cond():
+            return True
+        time.sleep(0.02)
+    return False

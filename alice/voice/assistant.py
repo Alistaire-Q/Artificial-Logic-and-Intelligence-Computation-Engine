@@ -278,7 +278,12 @@ class VoiceAssistant:
             return
         gate = getattr(self.stt, "wake_gate", None)
         if not direct and not self._awaiting_answer and gate is not None and self.wake_phrase:
+            pre = self._live_ready() and not self._busy.is_set() and audio.seconds >= 0.6
+            if pre:
+                self.live.prefetch()  # bağlantı, uyandırma kontrolüyle aynı anda açılsın
             head = gate.heard(audio)
+            if pre and (head is None or strip_wake(head) is None):
+                self.live.discard()
             if head is not None:
                 if strip_wake(head) is None:
                     if audio.seconds >= 0.6:
