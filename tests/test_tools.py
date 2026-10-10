@@ -171,6 +171,7 @@ def test_find_installed_apps_scans_program_folders(tmp_path, monkeypatch):
     monkeypatch.setattr(desktop.shutil, "which", lambda name: None)
     monkeypatch.setattr(desktop, "_steam_libraries", lambda: [])
     monkeypatch.setattr(desktop, "_shortcut_roots", lambda: [])
+    monkeypatch.setattr(desktop, "start_apps", lambda refresh=False: [])  # PowerShell yalnız Windows'ta var
     for k in ("ProgramFiles(x86)", "ProgramW6432", "LOCALAPPDATA"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("ProgramFiles", str(pf))

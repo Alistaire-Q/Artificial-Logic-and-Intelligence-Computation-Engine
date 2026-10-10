@@ -174,7 +174,7 @@ _START_APPS: list[tuple[str, str]] | None = None
 
 
 def start_apps(refresh: bool = False) -> list[tuple[str, str]]:
-    """Başlat menüsündeki TÜM uygulamalar (Microsoft Store / UWP dahil: WhatsApp, Spotify...) -> (ad, AppID).
+    r"""Başlat menüsündeki TÜM uygulamalar (Microsoft Store / UWP dahil: WhatsApp, Spotify...) -> (ad, AppID).
     Store uygulamalarının exe'si/kısayolu yok; shell:AppsFolder\<AppID> ile açılır."""
     global _START_APPS
     if _START_APPS is not None and not refresh:

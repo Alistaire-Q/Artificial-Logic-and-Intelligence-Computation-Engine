@@ -34,7 +34,7 @@ voice-local = ["faster-whisper>=1.0", "openwakeword>=0.6"]
 # XTTS v2 (yerel, Kore sesini taklit eder). transformers 5 XTTS'i bozuyor.
 voice-xtts = ["coqui-tts>=0.27", "transformers<5"]
 all = ["alice-harness[computer,browser,app,core,voice]"]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "ruff>=0.6", "websockets>=13"]
 
 [project.scripts]
 alice = "alice.cli:main"
@@ -48,3 +48,14 @@ include = ["alice*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+# Yalnız gerçek hata yakalayan kurallar: sözdizimi, tanımsız ad, kullanılmayan import/değişken.
+select = ["E9", "F63", "F7", "F82", "F401", "F811", "F841"]
+
+[tool.ruff.lint.per-file-ignores]
+"alice/**/__init__.py" = ["F401"]
