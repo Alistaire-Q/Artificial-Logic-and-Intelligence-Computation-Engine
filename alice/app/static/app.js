@@ -523,7 +523,7 @@ function applyStatus(s) {
     $("#modeIcon").innerHTML = icon;
     $("#modeBtn").className = "c-btn pill m-" + st.mode;
   }
-  $("#modelLabel").textContent = shortModel(st.model) + (st.brain_pinned ? "" : "");
+  $("#modelLabel").textContent = shortModel(st.model) + (st.thinking && THINK[st.thinking] ? " · " + THINK[st.thinking][0] : "");
   $("#modelBtn").title = st.model || "";
   $("#stModel").textContent = st.model || "model yok";
   if (st.ctx_limit) {
@@ -654,8 +654,26 @@ function cycleMode() {
   setMode(keys[(keys.indexOf(S.status.mode) + 1) % keys.length]);
 }
 
+const THINK = {
+  off: ["düşünmez", "En hızlı: hemen cevap verir. Basit işler için"],
+  low: ["az düşünür", "Kısa düşünür, sonra yapar (önerilen)"],
+  medium: ["orta düşünür", "Biraz daha dikkatli, biraz daha yavaş"],
+  high: ["çok düşünür", "Zor işler için; basit işte gereksiz uzun sürer"],
+  default: ["model karar verir", "Modelin kendi ayarı"],
+};
+async function setThinking(level) {
+  applyStatus(await api("/api/thinking", { level }));
+  toast("Düşünme: " + THINK[level][0]);
+}
+
 function modelMenu() {
   openMenu($("#modelBtn"), (m) => {
+    m.appendChild(el("div", "menu-title", "Düşünme"));
+    for (const [k, [label, sub]] of Object.entries(THINK)) {
+      menuItem(m, k === "off" ? IC.bolt : IC.brain, label[0].toUpperCase() + label.slice(1), sub,
+        () => setThinking(k), S.status.thinking === k);
+    }
+    m.appendChild(el("div", "menu-sep"));
     m.appendChild(el("div", "menu-title", "Ana model"));
     menuItem(m, IC.spark, "Otomatik", "Zincirdeki ilk uygun model, limit dolunca sıradakine geçer",
       () => pinModel("reset"), !S.status.brain_pinned);
@@ -832,6 +850,9 @@ async function runCommand(text) {
     case "plan": setMode("plan"); toast("Plan modu: sadece okur, plan yazar"); return true;
     case "model":
       if (arg) pinModel(arg.includes(":") ? arg : "reset"); else modelMenu();
+      return true;
+    case "think":
+      if (THINK[arg]) setThinking(arg); else modelMenu();
       return true;
     case "rewind": {
       const users = $$(".turn-user");
