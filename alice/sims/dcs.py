@@ -49,6 +49,19 @@ def install(dirs: list[Path] | None = None, port: int = PORT) -> list[Path]:
     return done
 
 
+def ensure_installed(dirs: list[Path] | None = None, port: int = PORT) -> list[Path]:
+    """Kurulu değilse ya da betik değişmişse kur (çekirdek açılışta çağırır). Kurulan klasörleri döndürür."""
+    lua = SCRIPT.read_text(encoding="utf-8").replace('"127.0.0.1", 41230,', f'"127.0.0.1", {port},')
+    todo = []
+    for d in dirs if dirs is not None else saved_games_dirs():
+        script, export = d / "Scripts" / "alice_export.lua", d / "Scripts" / "Export.lua"
+        ok = (script.exists() and script.read_text(encoding="utf-8", errors="replace") == lua and export.exists()
+              and "alice_export.lua" in export.read_text(encoding="utf-8", errors="replace"))
+        if not ok:
+            todo.append(d)
+    return install(todo, port) if todo else []
+
+
 def uninstall(dirs: list[Path] | None = None) -> list[Path]:
     done = []
     for d in dirs if dirs is not None else saved_games_dirs():
