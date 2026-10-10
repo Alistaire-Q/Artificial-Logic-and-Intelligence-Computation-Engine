@@ -336,3 +336,14 @@ def test_desktop_toasts_skip_flight_and_repeats(monkeypatch, tmp_path):
     n.send(Notification("PC", "GPU sıcak", "warn", "pc"))
     n.send(Notification("PC", "GPU sıcak", "warn", "pc"))
     assert shown == ["GPU sıcak"]
+
+
+def test_core_prime_writes_mode_before_first_tick_and_hooks_get_policy(tmp_path):
+    core, _ = make_core(tmp_path)
+    core.prime()  # DCS açık: ses modülü daha başlamadan "GPU yok" görsün
+    assert json.loads((alice_home() / "core-state.json").read_text())["policy"]["local_gpu"] is False
+    seen = []
+    core.hooks.append(lambda pol: seen.append(pol.local_gpu))
+    core.hooks.append(lambda pol: 1 / 0)  # çöken kanca turu bozmasın
+    core.tick(1000)
+    assert seen == [False]
