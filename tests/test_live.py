@@ -264,3 +264,28 @@ def test_live_declares_all_builtin_tools_upfront(monkeypatch):
                             tool_specs=lambda: [])
     s = LiveSession(SimpleNamespace(data={"voice": {}}), agent)
     assert [d["function"]["name"] for d in s._specs()] == ["blender", "computer"]
+
+
+def test_stuck_tool_does_not_lock_conversation(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    release = threading.Event()
+    sent = []
+
+    def execute(calls):
+        if calls[0]["function"]["name"] == "ui_elements":
+            release.wait(5)  # takılan araç
+        return [ToolResult("ok")]
+
+    state = {"browser": object()}
+    agent = SimpleNamespace(_enable_groups_for=lambda **k: None, _execute_calls=execute,
+                            ctx=SimpleNamespace(state=state))
+    s = LiveSession(SimpleNamespace(data={"voice": {}}), agent)
+    s.TOOL_TIMEOUT = 0.2
+    ws = SimpleNamespace(send=lambda d: sent.append(json.loads(d)))
+    t0 = time.monotonic()
+    s._run_call(ws, {"id": "1", "name": "ui_elements", "args": {}})
+    assert time.monotonic() - t0 < 2 and "browser" not in state
+    s._run_call(ws, {"id": "2", "name": "windows", "args": {}})  # yeni iş parçacığında hemen çalışır
+    results = [m["toolResponse"]["functionResponses"][0]["response"]["result"] for m in sent]
+    assert "YAPILMADI" in results[0] and results[1] == "ok"
+    release.set()
