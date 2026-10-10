@@ -73,6 +73,14 @@ programs = ["dcs.exe", "dcs_server.exe", "aces.exe"]
 [core.modes.dev]
 programs = ["unity.exe", "unity hub.exe", "code.exe", "devenv.exe", "rider64.exe"]
 
+# Eklentiler: ~/.alice/plugins/*.py ve buradaki yollar yeni araç ekler (bkz. docs/PLUGINS.md, `alice plugins`).
+[plugins]
+enabled = true
+# Kapatılacak eklenti adları.
+disabled = []
+# Ek eklenti dosyaları/klasörleri.
+paths = []
+
 # ALICE'in sesi ve kulağı (`alice voice`). Ses seçimi: `alice voice audition`.
 [voice]
 # true: çekirdek (alice core run) sesli asistanı da başlatır, bildirimleri seslendirir.
