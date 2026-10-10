@@ -1018,3 +1018,19 @@ def test_wake_gate_falls_back_to_cpu_when_cuda_runtime_fails(monkeypatch):
     gate = stt.WakeGate("base", "tr", gpu_model="small", allow_gpu=lambda: True)
     m = gate._load()
     assert m.device == "cpu" and gate.device == "cpu" and gate.model_name == "base"
+
+
+def test_mic_health_warns_once_on_digital_silence(monkeypatch):
+    from alice.voice import assistant
+
+    clock = [100.0]
+    monkeypatch.setattr(assistant.time, "monotonic", lambda: clock[0])
+    sp = FakeSpeaker()
+    va = VoiceAssistant(FakeAgent(), sp, stt=None)
+    va._mic_health(b"\0\0" * 480)
+    clock[0] += 16
+    va._mic_health(b"\0\0" * 480)
+    va._mic_health(b"\0\0" * 480)
+    assert sum("Mikrofonundan" in s for s in sp.said) == 1
+    va._mic_health(b"\1\0" + b"\0\0" * 479)
+    assert va._mic_warned is False

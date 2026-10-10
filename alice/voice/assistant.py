@@ -408,6 +408,7 @@ class VoiceAssistant:
                         threading.Thread(target=self.handle_audio, args=(audio, True), daemon=True).start()
                         continue
                     frame = mic.read()
+                    self._mic_health(frame)
                     if self._live_q is not None:  # canlı konuşmada mikrofon doğrudan Live'a
                         self._live_q.put(frame)
                         continue
@@ -428,6 +429,23 @@ class VoiceAssistant:
                 threading.Thread(target=self.handle_audio, args=(audio, direct), daemon=True).start()
         if ptt is not None:
             ptt.stop()
+
+    def _mic_health(self, frame: bytes) -> None:
+        """Mikrofon tamamen sessizse (sessize alınmış, kapalı kulaklık) ALICE hiçbir şey duymaz ve kimse nedenini
+        bilmez. 15 sn boyunca hiç ses yoksa bir kez söyle ve kaydet; ses geri gelince de kaydet."""
+        now = time.monotonic()
+        if not hasattr(self, "_mic_silent_since"):
+            self._mic_silent_since, self._mic_warned = now, False
+        if any(frame):  # tek bir sıfırdan farklı örnek bile yeter: dijital sessizlik değil
+            if self._mic_warned:
+                voice_log("mikrofondan ses geliyor yine")
+            self._mic_silent_since, self._mic_warned = now, False
+            return
+        if not self._mic_warned and now - self._mic_silent_since > 15:
+            self._mic_warned = True
+            voice_log("mikrofon tamamen sessiz: sessize alınmış ya da kapalı olabilir")
+            self.emit("mikrofon sessiz")
+            self.speaker.say("Mikrofonundan hiç ses gelmiyor, sessize alınmış olabilir.", "serious")
 
     def stop(self) -> None:
         self.stop_event.set()
