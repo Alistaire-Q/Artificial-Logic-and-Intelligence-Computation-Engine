@@ -668,9 +668,18 @@ def main(argv: list[str] | None = None) -> int:
         # pythonw.exe (konsolsuz kısayol) altında stdout yok; çıktıyı yut.
         import os
 
+        from alice.config import alice_home
+
         devnull = open(os.devnull, "w", encoding="utf-8")
+        try:  # hatalar kaybolmasın: ~/.alice/core.log (2 MB'ı geçince baştan)
+            log = alice_home() / "core.log"
+            if log.exists() and log.stat().st_size > 2_000_000:
+                log.replace(log.with_suffix(".log.1"))
+            err = open(log, "a", encoding="utf-8", buffering=1)
+        except OSError:
+            err = devnull
         sys.stdout = sys.stdout or devnull
-        sys.stderr = sys.stderr or devnull
+        sys.stderr = sys.stderr or err
         console.file = sys.stdout
     if sys.platform == "win32":
         try:
