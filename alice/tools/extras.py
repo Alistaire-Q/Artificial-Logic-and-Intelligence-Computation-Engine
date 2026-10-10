@@ -114,10 +114,21 @@ YT_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebK
                             "Chrome/130.0 Safari/537.36", "Accept-Language": "tr-TR,tr;q=0.9"}
 
 
+_YT_CACHE: dict[str, tuple[float, list[tuple[str, str]]]] = {}
+
+
 def youtube_search(query: str, limit: int = 5, client: httpx.Client | None = None) -> list[tuple[str, str]]:
-    """YouTube araması: [(başlık, video_id)]. Sayfa HTML'indeki ytInitialData'dan okunur (API anahtarı gerekmez)."""
+    """YouTube araması: [(başlık, video_id)]. Sayfa HTML'indeki ytInitialData'dan okunur (API anahtarı gerekmez).
+    Sonuçlar 10 dk saklanır: YouTube sırayı her istekte değiştirebiliyor, "ilk video" hep aynı olsun."""
+    import time
+
+    key = query.strip().lower()
+    hit = _YT_CACHE.get(key)
+    if hit and time.monotonic() - hit[0] < 600 and client is None:
+        return hit[1][:limit]
     c = client or httpx.Client(timeout=8, follow_redirects=True, cookies={"CONSENT": "YES+1", "SOCS": "CAI"})
-    r = c.get("https://www.youtube.com/results", params={"search_query": query, "hl": "tr"}, headers=YT_HEADERS)
+    r = c.get("https://www.youtube.com/results", params={"search_query": query, "hl": "tr", "gl": "TR"},
+              headers=YT_HEADERS)
     out: list[tuple[str, str]] = []
     for vid, title in YT_VIDEO.findall(r.text):
         if vid not in (v for _, v in out):
@@ -128,6 +139,8 @@ def youtube_search(query: str, limit: int = 5, client: httpx.Client | None = Non
             out.append((title, vid))
         if len(out) >= limit:
             break
+    if out:
+        _YT_CACHE[key] = (time.monotonic(), out)
     return out
 
 
@@ -140,7 +153,7 @@ def with_time(url: str, seconds: int) -> str:
 class YouTube(Tool):
     name = "youtube"
     description = ("YouTube, kullanıcının KENDİ açık tarayıcısında (açık YouTube sekmesi varsa onda): "
-                   "search: query'nin ilk videolarını listeler | play: query'nin index'inci (1 = ilk) videosunu ya da "
+                   "search: query'nin ilk videolarını listeler ve aynı sonuçları kullanıcının sekmesinde açar | play: query'nin index'inci (1 = ilk) videosunu ya da "
                    "url'yi açar, at=saniye ile o dakikadan başlatır | seek: açık videoyu at saniyesine götürür. "
                    "'X videosu aç', 'ilk videoya tıkla', 'ikinci dakikaya getir' için bunu kullan; tıklama gerekmez. "
                    "Durdur/devam için media play_pause.")
