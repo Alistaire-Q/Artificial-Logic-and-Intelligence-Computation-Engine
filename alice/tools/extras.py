@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
+
+import httpx
 
 from alice.tools.base import COMPUTER, DANGER, READ, WRITE, Tool, ToolContext, ToolError, ToolResult, obj
 
@@ -103,4 +107,82 @@ class Media(Tool):
         return ToolResult(media.key(action, times if action.startswith("volume") else 1))
 
 
-TOOLS = [Notes(), Report(), Weather(), Media()]
+YT_VIDEO = re.compile(r'"videoRenderer":\{"videoId":"([\w-]{11})".*?"title":\{"runs":\[\{"text":"((?:[^"\\]|\\.)*)"', re.S)
+
+
+YT_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/130.0 Safari/537.36", "Accept-Language": "tr-TR,tr;q=0.9"}
+
+
+def youtube_search(query: str, limit: int = 5, client: httpx.Client | None = None) -> list[tuple[str, str]]:
+    """YouTube araması: [(başlık, video_id)]. Sayfa HTML'indeki ytInitialData'dan okunur (API anahtarı gerekmez)."""
+    c = client or httpx.Client(timeout=8, follow_redirects=True, cookies={"CONSENT": "YES+1", "SOCS": "CAI"})
+    r = c.get("https://www.youtube.com/results", params={"search_query": query, "hl": "tr"}, headers=YT_HEADERS)
+    out: list[tuple[str, str]] = []
+    for vid, title in YT_VIDEO.findall(r.text):
+        if vid not in (v for _, v in out):
+            try:
+                title = json.loads(f'"{title}"')
+            except ValueError:
+                pass
+            out.append((title, vid))
+        if len(out) >= limit:
+            break
+    return out
+
+
+def with_time(url: str, seconds: int) -> str:
+    """YouTube adresine başlangıç saniyesi ekle/değiştir (&t=120)."""
+    url = re.sub(r"([?&])t=\d+s?&?", r"\1", url).rstrip("?&")
+    return f"{url}{'&' if '?' in url else '?'}t={max(0, int(seconds))}"
+
+
+class YouTube(Tool):
+    name = "youtube"
+    description = ("YouTube, kullanıcının KENDİ açık tarayıcısında (açık YouTube sekmesi varsa onda): "
+                   "search: query'nin ilk videolarını listeler | play: query'nin index'inci (1 = ilk) videosunu ya da "
+                   "url'yi açar, at=saniye ile o dakikadan başlatır | seek: açık videoyu at saniyesine götürür. "
+                   "'X videosu aç', 'ilk videoya tıkla', 'ikinci dakikaya getir' için bunu kullan; tıklama gerekmez. "
+                   "Durdur/devam için media play_pause.")
+    parameters = obj({"action": {"type": "string", "enum": ["search", "play", "seek"]},
+                      "query": {"type": "string"}, "url": {"type": "string"},
+                      "index": {"type": "integer", "description": "1 = ilk video"},
+                      "at": {"type": "integer", "description": "saniye, ör. 2. dakika = 120"}}, ["action"])
+    risk = COMPUTER
+
+    def risk_for(self, args: dict[str, Any]) -> str:
+        return READ if args.get("action") == "search" else COMPUTER
+
+    def run(self, ctx: ToolContext, action: str, query: str | None = None, url: str | None = None,
+            index: int = 1, at: int | None = None) -> ToolResult:
+        from alice.tools.desktop import current_tab_url, navigate_tab
+
+        if action == "seek":
+            if at is None:
+                raise ToolError("seek için at (saniye) gerekli")
+            cur = url or current_tab_url()
+            if "youtube.com/watch" not in cur and "youtu.be/" not in cur:
+                raise ToolError(f"öndeki sekmede YouTube videosu yok ({cur[:80] or 'adres okunamadı'}); önce play")
+            return ToolResult(navigate_tab(with_time(cur, at), new_tab=False))
+        if action == "search" or (action == "play" and not url):
+            if not query:
+                raise ToolError("query gerekli")
+            try:
+                hits = youtube_search(query)
+            except httpx.HTTPError as e:
+                raise ToolError(f"YouTube'a ulaşılamadı: {e.__class__.__name__}") from e
+            if not hits:
+                return ToolResult("video bulunamadı")
+            if action == "search":
+                return ToolResult("\n".join(f"{i}. {t} — https://www.youtube.com/watch?v={v}"
+                                            for i, (t, v) in enumerate(hits, 1)))
+            title, vid = hits[max(1, min(int(index or 1), len(hits))) - 1]
+            url = f"https://www.youtube.com/watch?v={vid}"
+        else:
+            title = url
+        if at:
+            url = with_time(url, at)
+        return ToolResult(f"oynatılıyor: {title}. {navigate_tab(url)}")
+
+
+TOOLS = [Notes(), Report(), Weather(), Media(), YouTube()]

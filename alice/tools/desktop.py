@@ -8,6 +8,7 @@ döngüsüne aday menüsü olarak verilir.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -330,22 +331,113 @@ def browser_window_title() -> str:
     return "Opera"
 
 
-def navigate_tab(target: str, title: str | None = None, new_tab: bool = False) -> str:
-    """Kullanıcının açık tarayıcısında, öndeki sekmenin adres çubuğuna yazıp git (CDP gerekmez)."""
+BLANK_TABS = ("yeni sekme", "new tab", "speed dial", "hızlı arama", "gx corner", "start page", "başlangıç")
+SITE_TITLES = {"mail.google": "gmail", "music.youtube": "youtube music", "web.whatsapp": "whatsapp",
+               "youtu.be": "youtube", "x.com": "/ x", "twitter": "/ x"}
+
+
+def site_key(target: str) -> str | None:
+    """URL'nin sekme başlığında görünen adı: youtube.com/results?... -> 'youtube'. Arama metni için None."""
+    t = target.strip().lower()
+    if " " in t or ("." not in t and "://" not in t):
+        return None
+    host = re.sub(r"^[a-z]+://", "", t).split("/", 1)[0].split(":", 1)[0]
+    host = host[4:] if host.startswith("www.") else host
+    for key, name in SITE_TITLES.items():
+        if host.startswith(key):
+            return name
+    parts = host.split(".")
+    return parts[-2] if len(parts) >= 2 else parts[0]
+
+
+def active_title() -> str:
+    try:
+        import pygetwindow as gw
+
+        w = gw.getActiveWindow()
+        return (w.title or "") if w else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def switch_tab(want: str, title: str | None = None, max_tabs: int = 40) -> str | None:
+    """Kullanıcının açık tarayıcısında başlığında `want` geçen sekmeye geç (Ctrl+Tab ile gezerek).
+    Bulursa sekme başlığını, bulamazsa None döner (başladığı sekmeye geri döner)."""
+    from alice.tools.computer import press_keys
+
+    focus_window(title or browser_window_title())
+    time.sleep(0.2)
+    want = want.lower()
+    start = active_title()
+    if want in start.lower():
+        return start
+    for _ in range(max_tabs):
+        press_keys("ctrl+tab")
+        time.sleep(0.12)
+        cur = active_title()
+        if want in cur.lower():
+            return cur
+        if cur == start:
+            break
+    return None
+
+
+def current_tab_url(title: str | None = None) -> str:
+    """Kullanıcının tarayıcısında öndeki sekmenin adresi (adres çubuğundan kopyalanır, pano geri konur)."""
+    from alice.tools.computer import press_keys
+
+    try:
+        import pyperclip
+    except ImportError as e:
+        raise ToolError("pyperclip kurulu değil") from e
+    focus_window(title or browser_window_title())
+    time.sleep(0.2)
+    old = None
+    try:
+        old = pyperclip.paste()
+    except Exception:  # noqa: BLE001
+        pass
+    pyperclip.copy("")
+    press_keys("ctrl+l")
+    time.sleep(0.1)
+    press_keys("ctrl+c")
+    time.sleep(0.15)
+    press_keys("esc")
+    url = (pyperclip.paste() or "").strip()
+    if old is not None:
+        try:
+            pyperclip.copy(old)
+        except Exception:  # noqa: BLE001
+            pass
+    return url
+
+
+def navigate_tab(target: str, title: str | None = None, new_tab: bool | None = None) -> str:
+    """Kullanıcının açık tarayıcısında gez (CDP gerekmez). Site zaten bir sekmede açıksa o sekmeye geçip orada,
+    öndeki sekme boşsa orada, yoksa yeni sekmede açar. new_tab=True/False bunu zorlar."""
     from alice.tools.computer import press_keys, type_text
 
     name = title or browser_window_title()
     try:
-        shown = focus_window(name)
+        focus_window(name)
     except ToolError:
-        open_app(target if "://" in target else f"https://www.google.com/search?q={target}")
+        open_app(target if "://" in target or site_key(target) else f"https://www.google.com/search?q={target}")
         return f"{name} açık değildi; varsayılan tarayıcıda açıldı: {target}"
-    time.sleep(0.25)
+    where = None
+    key = site_key(target)
+    if new_tab is None and key:
+        found = switch_tab(key, name)
+        if found:
+            new_tab, where = False, f"açık '{found}' sekmesinde"
+    if new_tab is None:
+        cur = active_title().lower()
+        new_tab = not any(b in cur for b in BLANK_TABS)
+    time.sleep(0.15)
     press_keys("ctrl+t" if new_tab else "ctrl+l")
     time.sleep(0.15)
     type_text(target)
     press_keys("enter")
-    return f"{'yeni sekmede' if new_tab else 'açık sekmede'} açıldı ({shown}): {target}"
+    return f"{where or ('yeni sekmede' if new_tab else 'öndeki sekmede')} açıldı: {target}"
 
 
 # ------------------------------------------------------------------- UIA ağacı
@@ -471,19 +563,21 @@ def ui_act(ctx: ToolContext, element_id: int, action: str, text: str | None = No
 class Windows(Tool):
     name = "windows"
     description = ("Pencere yönetimi, kurulu program bulma ve uygulama açma. "
-                   "action: list | focus | minimize | maximize | restore | close | open | find | navigate. "
+                   "action: list | focus | minimize | maximize | restore | close | open | find | navigate | switch_tab. "
                    "open için target: uygulama adı (ör. 'Discord', 'notepad', 'blender'), exe yolu, dosya ya da URL "
                    "(URL kullanıcının varsayılan tarayıcısında, kendi girişleriyle açılır). "
-                   "navigate: kullanıcının açık tarayıcısında (varsayılan: Opera vb., ya da title) öndeki sekmenin "
-                   "adres çubuğuna target'ı (URL ya da arama) yazıp gider; new_tab=true ise yeni sekmede. "
-                   "'Açık sekmede/bu sekmede' istekleri için browser aracı yerine bunu kullan. "
+                   "navigate: kullanıcının açık tarayıcısında (Opera vb.) target'a (URL ya da arama) gider: site zaten "
+                   "bir sekmede açıksa O SEKMEYE geçip orada açar (ör. youtube.com/results?search_query=... açık "
+                   "YouTube sekmesinde arar), öndeki sekme boşsa orada, yoksa yeni sekmede. new_tab=true/false zorlar. "
+                   "switch_tab: başlığında target geçen açık sekmeye geçer (ör. 'YouTube', 'Gmail'). "
+                   "Web işleri için browser aracı yerine bunları + ui_elements/ui_act kullan. "
                    "Zaten açık bir pencerede iş için: list ile bul, focus ile öne al, sonra ui_elements/ui_act. "
                    "find: kurulu bir programın exe yolunu bulur (Başlat menüsü, kayıt defteri, Program Files, Steam); "
                    "bir programın kurulu olup olmadığını ya da exe yolunu (ör. komut satırından script çalıştırmak için) "
                    "öğrenmek için shell'de arama yapmak yerine bunu kullan.")
     parameters = obj({
         "action": {"type": "string", "enum": ["list", "focus", "minimize", "maximize", "restore", "close", "open", "find",
-                                              "navigate"]},
+                                              "navigate", "switch_tab"]},
         "title": {"type": "string", "description": "pencere başlığının bir parçası"},
         "target": {"type": "string"},
         "new_tab": {"type": "boolean"},
@@ -494,7 +588,7 @@ class Windows(Tool):
         return READ if args.get("action") in ("list", "find") else COMPUTER
 
     def run(self, ctx: ToolContext, action: str, title: str | None = None, target: str | None = None,
-            new_tab: bool = False) -> ToolResult:
+            new_tab: bool | None = None) -> ToolResult:
         if action == "list":
             return ToolResult("\n".join(list_windows()) or "pencere yok")
         if action == "find":
@@ -514,6 +608,12 @@ class Windows(Tool):
             if not target:
                 raise ToolError("navigate için target gerekli")
             return ToolResult(navigate_tab(target, title, new_tab))
+        if action == "switch_tab":
+            if not target:
+                raise ToolError("switch_tab için target (sekme başlığından bir parça) gerekli")
+            found = switch_tab(target, title)
+            return ToolResult(f"sekmeye geçildi: {found}" if found else
+                              f"başlığında '{target}' geçen açık sekme yok; navigate ile açabilirsin")
         if not title:
             raise ToolError(f"{action} için title gerekli")
         if action == "focus":

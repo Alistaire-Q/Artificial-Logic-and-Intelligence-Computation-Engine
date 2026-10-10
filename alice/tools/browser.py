@@ -7,9 +7,13 @@ listesine (DOM snapshot) çevrilir; hem beyin hem reflex döngüsü bunu kullan�
 
 from __future__ import annotations
 
+import os
 import re
+import socket
 import sys
 import urllib.request
+from pathlib import Path
+from urllib.parse import urlparse
 from typing import Any
 
 from alice.config import alice_home
@@ -92,22 +96,80 @@ def cdp_alive(endpoint: str, timeout: float = 0.4) -> bool:
         return False
 
 
+# Tarayıcının "Allow remote debugging for this browser instance" ayarı (opera://inspect, chrome://inspect)
+# açıkken portu ve yolu kullanıcı veri klasöründeki DevToolsActivePort dosyasına yazar.
+USER_DATA_DIRS = [
+    ("APPDATA", r"Opera Software\Opera GX Stable"), ("APPDATA", r"Opera Software\Opera Stable"),
+    ("LOCALAPPDATA", r"Google\Chrome\User Data"), ("LOCALAPPDATA", r"Microsoft\Edge\User Data"),
+    ("LOCALAPPDATA", r"BraveSoftware\Brave-Browser\User Data"), ("LOCALAPPDATA", r"Vivaldi\User Data"),
+]
+BLANK_URLS = ("about:blank", "chrome://newtab", "opera://startpage", "chrome://new-tab-page", "edge://newtab",
+              "opera://speeddial", "chrome-search://")
+
+
+def _port_open(port: int, timeout: float = 0.3) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def devtools_active_endpoint(dirs: list[Path] | None = None) -> str | None:
+    """Kullanıcının açık tarayıcısında uzaktan hata ayıklama açıksa ws:// adresi."""
+    if dirs is None:
+        dirs = [Path(os.environ[env]) / sub for env, sub in USER_DATA_DIRS if os.environ.get(env)]
+    for d in dirs:
+        f = d / "DevToolsActivePort"
+        try:
+            lines = f.read_text(encoding="utf-8").split()
+            port = int(lines[0])
+        except (OSError, ValueError, IndexError):
+            continue
+        if _port_open(port):
+            path = lines[1] if len(lines) > 1 else ""
+            return f"ws://127.0.0.1:{port}{path}" if path else f"http://127.0.0.1:{port}"
+    return None
+
+
+def user_browser_endpoint(cdp: str | None) -> str | None:
+    if cdp and cdp_alive(cdp):
+        return cdp
+    return devtools_active_endpoint()
+
+
+def host_of(url: str) -> str:
+    h = urlparse(url if "://" in url else "https://" + url).hostname or ""
+    return h[4:] if h.startswith("www.") else h
+
+
+NO_SEPARATE = ("Kullanıcının açık tarayıcısına bağlanılamıyor ve ayrı pencere açılmıyor (kullanıcı istemiyor). "
+               "Bunun yerine kullanıcının kendi tarayıcısında çalış: windows action=switch_tab (açık sekmeye geç), "
+               "windows action=navigate (sekmede adres/arama), ui_elements + ui_act (sayfada tıklama/yazma). "
+               "Ayrı pencereyi sadece kullanıcı açıkça isterse separate=true ile aç.")
+
+
 class BrowserSession:
     """Önce kullanıcının açık tarayıcısına (uzaktan hata ayıklama portu açıksa) bağlanır; yoksa
     varsayılan tarayıcıyı (Chromium tabanlıysa, ör. Opera GX) ALICE profiliyle açar."""
 
-    def __init__(self, headless: bool = False, executable: str | None = None, cdp: str | None = None):
+    def __init__(self, headless: bool = False, executable: str | None = None, cdp: str | None = None,
+                 allow_launch: bool = True):
+        endpoint = user_browser_endpoint(cdp)
+        if not allow_launch and not endpoint:
+            raise ToolError(NO_SEPARATE)
         try:
             from playwright.sync_api import sync_playwright
         except ImportError as e:
             raise ToolError("playwright kurulu değil: pip install 'alice-harness[browser]' && playwright install chromium") from e
         self._pw = sync_playwright().start()
         self.attached = False
-        if cdp and cdp_alive(cdp):
-            browser = self._pw.chromium.connect_over_cdp(cdp)
+        if endpoint:
+            # Tarayıcı bağlantı için kullanıcıdan bir kez onay isteyebilir: ona zaman tanı.
+            browser = self._pw.chromium.connect_over_cdp(endpoint, timeout=60000)
             self.ctx = browser.contexts[0] if browser.contexts else browser.new_context()
             self.attached = True
-            self.page = self.ctx.pages[-1] if self.ctx.pages else self.ctx.new_page()
+            self.page = self._visible_page() or (self.ctx.pages[-1] if self.ctx.pages else self.ctx.new_page())
             self.ctx.on("page", self._on_page)
             return
         profile = alice_home() / "browser-profile"
@@ -137,6 +199,29 @@ class BrowserSession:
             except Exception:  # noqa: BLE001
                 return self._pw.chromium.launch_persistent_context(str(profile), **kwargs)
 
+    def _visible_page(self):
+        """Kullanıcının şu an baktığı sekme (öndeki pencerede görünen)."""
+        visible = []
+        for p in self.ctx.pages:
+            try:
+                st = p.evaluate("[document.visibilityState, document.hasFocus()]")
+            except Exception:  # noqa: BLE001
+                continue
+            if st[0] == "visible":
+                visible.append((bool(st[1]), p))
+        visible.sort(key=lambda t: not t[0])
+        return visible[0][1] if visible else None
+
+    def tab_for(self, url: str):
+        """Kullanıcının tarayıcısında goto için sekme: aynı site açıksa o sekme, öndeki sekme boşsa o, yoksa yeni."""
+        want = host_of(url)
+        for p in self.ctx.pages:
+            if want and host_of(p.url) == want:
+                return p
+        if self.page is not None and (not self.page.url or self.page.url.startswith(BLANK_URLS)):
+            return self.page
+        return self.ctx.new_page()
+
     def _on_page(self, page) -> None:
         self.page = page  # yeni sekme açılınca ona geç
 
@@ -157,12 +242,13 @@ class BrowserSession:
             self._pw.stop()
 
 
-def get_browser(ctx: ToolContext) -> BrowserSession:
+def get_browser(ctx: ToolContext, separate: bool = False) -> BrowserSession:
     b = ctx.state.get("browser")
     if b is None:
         a = ctx.config.agent
+        allow = separate or bool(a.get("browser_headless", False)) or bool(a.get("browser_allow_separate", False))
         b = BrowserSession(headless=bool(a.get("browser_headless", False)), executable=a.get("browser_executable") or None,
-                           cdp=a.get("browser_cdp") or None)
+                           cdp=a.get("browser_cdp") or None, allow_launch=allow)
         ctx.state["browser"] = b
     return b
 
@@ -186,8 +272,9 @@ class Browser(Tool):
         "Tarayıcıyı kontrol et: kullanıcının açık tarayıcısına bağlanabiliyorsa onu, yoksa varsayılan tarayıcıyı "
         "(ör. Opera GX) ALICE profiliyle açar. Sadece bir siteyi/videoyu açmak için bunu değil, "
         "windows action=open target=<URL> kullan: kullanıcının kendi tarayıcısında, girişleriyle açılır. "
-        "Kullanıcı 'açık sekmede/bu sekmede' derse bunu değil windows action=navigate kullan; "
-        "zaten açık penceresindeki bir şey için de windows focus + ui_elements/ui_act kullan. Aksiyonlar:\n"
+        "Kullanıcının tarayıcısında goto, site zaten bir sekmede açıksa O SEKMEYİ kullanır; tabs ile açık sekmeleri "
+        "görüp switch_tab ile geçebilirsin. Kullanıcının tarayıcısına bağlanamıyorsa ayrı pencere AÇMAZ (separate=true sadece kullanıcı açıkça isterse): "
+        "o durumda windows switch_tab/navigate + ui_elements/ui_act ile kullanıcının kendi sekmelerinde çalış. Aksiyonlar:\n"
         "goto(url) | snapshot: tıklanabilir öğeleri ID'leriyle listeler | click(element_id) | "
         "type(element_id, text, submit?) | select(element_id, text) | press(keys, ör. Enter) | "
         "scroll(amount, + aşağı) | back | text: sayfanın düz metni | screenshot | eval(js) | tabs | switch_tab(index) | close.\n"
@@ -204,6 +291,7 @@ class Browser(Tool):
         "amount": {"type": "integer"},
         "js": {"type": "string"},
         "index": {"type": "integer"},
+        "separate": {"type": "boolean", "description": "ayrı ALICE penceresi aç; sadece kullanıcı açıkça isterse"},
     }, ["action"])
     risk = COMPUTER
 
@@ -217,13 +305,13 @@ class Browser(Tool):
 
     def run(self, ctx: ToolContext, action: str, url: str | None = None, element_id: int | None = None,
             text: str | None = None, submit: bool = False, keys: str | None = None, amount: int = 600,
-            js: str | None = None, index: int | None = None) -> ToolResult:
+            js: str | None = None, index: int | None = None, separate: bool = False) -> ToolResult:
         if action == "close":
             b = ctx.state.pop("browser", None)
             if b:
                 b.close()
             return ToolResult("tarayıcı kapatıldı")
-        b = get_browser(ctx)
+        b = get_browser(ctx, separate)
         page = b.page
         limit = int(ctx.config.agent.get("tool_output_chars", 12000))
 
@@ -240,6 +328,9 @@ class Browser(Tool):
                 raise ToolError("goto için url gerekli")
             if "://" not in url:
                 url = "https://" + url
+            if b.attached:  # kullanıcının kendi tarayıcısı: açık site sekmesini kullan, her seferinde yeni açma
+                b.page = page = b.tab_for(url)
+                page.bring_to_front()
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=45000)
             except Exception as e:  # noqa: BLE001

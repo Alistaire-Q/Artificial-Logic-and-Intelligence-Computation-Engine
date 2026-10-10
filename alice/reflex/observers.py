@@ -54,7 +54,7 @@ class BrowserObserver:
         from alice.tools.browser import get_browser
 
         self.ctx = ctx
-        self.b = get_browser(ctx)
+        self.b = get_browser(ctx, separate=True)  # reflex modu kendi penceresini ister
         if start_url:
             if "://" not in start_url:
                 start_url = "https://" + start_url
