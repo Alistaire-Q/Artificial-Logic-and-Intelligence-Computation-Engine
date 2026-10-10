@@ -408,7 +408,12 @@ class VoiceAssistant:
                         threading.Thread(target=self.handle_audio, args=(audio, True), daemon=True).start()
                         continue
                     frame = mic.read()
-                    self._mic_health(frame)
+                    if self._mic_health(frame) and hasattr(mic, "reopen"):
+                        try:
+                            mic.reopen()
+                            voice_log(f"mikrofon yeniden açıldı: {getattr(mic, 'name', '')}")
+                        except Exception as e:  # noqa: BLE001
+                            voice_log(f"mikrofon yeniden açılamadı: {e}")
                     if self._live_q is not None:  # canlı konuşmada mikrofon doğrudan Live'a
                         self._live_q.put(frame)
                         continue
@@ -430,22 +435,27 @@ class VoiceAssistant:
         if ptt is not None:
             ptt.stop()
 
-    def _mic_health(self, frame: bytes) -> None:
+    def _mic_health(self, frame: bytes) -> bool:
         """Mikrofon tamamen sessizse (sessize alınmış, kapalı kulaklık) ALICE hiçbir şey duymaz ve kimse nedenini
         bilmez. 15 sn boyunca hiç ses yoksa bir kez söyle ve kaydet; ses geri gelince de kaydet."""
+        """Döner: mikrofon akışı yeniden açılmalı mı (dijital sessizlik sürüyor; her 15 sn'de bir dener)."""
         now = time.monotonic()
         if not hasattr(self, "_mic_silent_since"):
-            self._mic_silent_since, self._mic_warned = now, False
+            self._mic_silent_since, self._mic_warned, self._mic_retry = now, False, now
         if any(frame):  # tek bir sıfırdan farklı örnek bile yeter: dijital sessizlik değil
             if self._mic_warned:
                 voice_log("mikrofondan ses geliyor yine")
-            self._mic_silent_since, self._mic_warned = now, False
-            return
+            self._mic_silent_since, self._mic_warned, self._mic_retry = now, False, now
+            return False
         if not self._mic_warned and now - self._mic_silent_since > 15:
             self._mic_warned = True
             voice_log("mikrofon tamamen sessiz: sessize alınmış ya da kapalı olabilir")
             self.emit("mikrofon sessiz")
             self.speaker.say("Mikrofonundan hiç ses gelmiyor, sessize alınmış olabilir.", "serious")
+        if now - self._mic_retry > 15:
+            self._mic_retry = now
+            return True
+        return False
 
     def stop(self) -> None:
         self.stop_event.set()
