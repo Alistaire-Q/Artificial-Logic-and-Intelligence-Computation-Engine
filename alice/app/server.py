@@ -248,6 +248,7 @@ class AppState:
             "pending": list(self.ui.pending.values()),
             "brain_chain": self.router.chain("brain"),
             "brain_pinned": "brain" in self.router.role_overrides,
+            "thinking": self.router.thinking_level("brain"),
             "user": _user_name(),
             "checkpoints": sorted(self.agent.checkpoints),
         }
@@ -556,6 +557,16 @@ def make_handler(state: AppState):
                 if p == "/api/compact":
                     ok = state.agent.compact()
                     return self._json({"ok": ok, **state.status()})
+                if p == "/api/thinking":
+                    from alice.config import set_config_value
+                    from alice.providers.thinking import LEVELS
+
+                    level = str(d.get("level", ""))
+                    if level not in LEVELS:
+                        return self._json({"ok": False, "error": f"seviye: {' | '.join(LEVELS)}"}, 400)
+                    state.router.thinking_overrides["brain"] = level
+                    set_config_value("thinking", "brain", level)  # sonraki açılışta da kalsın
+                    return self._json({"ok": True, **state.status()})
                 if p == "/api/model":
                     role, ref = str(d.get("role", "")), str(d.get("ref", ""))
                     if ref == "reset":
