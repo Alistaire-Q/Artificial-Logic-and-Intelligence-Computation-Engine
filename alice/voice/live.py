@@ -69,7 +69,12 @@ Bir araç "onay gerekli" derse kullanıcıya kısaca sor; "evet" derse aynı ça
 Konuşma tanıma Türkçe cümle içindeki uygulama/site adlarını bozabilir. Kullanıcının bilgisayarındaki ve sık kullandığı
 adlar: {names}. Duyduğun bir kelime anlamsızsa ya da bu adlardan birine sesçe benziyorsa o adı kastediyordur.
 Hangi ad olduğundan emin değilsen işe başlamadan tek kısa soruyla teyit et.
-Konuşmanın ilk mesajı yazıyla gelirse, kullanıcının sesinin yerel yazı dökümüdür.
+Konuşmanın ilk mesajı yazıyla gelirse, kullanıcının sesinin yerel yazı dökümüdür; sonunda [hafızadan ...] notu
+olabilir, o kullanıcının sözü değil, ilgili eski bilgilerdir.
+Uzun süreli hafızan var (sistem istemindeki "Long-term memory"). Kullanıcı kendisi hakkında kalıcı bir şey söylerse
+(sevdiği/sevmediği, adı, bir alışkanlığı, senden nasıl davranmanı istediği) memory action=add ile kısa bir cümle
+olarak kaydet; "bunu unut" derse memory action=forget. Geçmiş bir konuşmayı ya da profilde olmayan kişisel bir
+bilgiyi sorarsa ("geçen gün ne demiştim", "hatırlıyor musun") önce memory action=search çağır, bilmediğini uydurma.
 Şu an: {now}."""
 
 
@@ -342,6 +347,9 @@ class LiveSession:
         from alice.voice.assistant import spoken_time
 
         now = datetime.now()
+        refresh = getattr(self.agent, "refresh_memory", None)
+        if callable(refresh):
+            refresh(force=True)  # son konuşmalar ve yeni öğrenilenler bu oturuma da girsin
         system = self.agent.messages[0]["content"] + "\n\n" + LIVE_PROMPT.format(
             now=f"{now:%d.%m.%Y %H:%M} ({spoken_time(now.hour, now.minute)})", names=", ".join(self.names()),
             monitors=monitor_layout())
@@ -556,7 +564,8 @@ class LiveSession:
                 ws.send(json.dumps({"realtimeInput": {"audio": {
                     "data": base64.b64encode(b"\x00\x00" * 9600).decode(), "mimeType": "audio/pcm;rate=16000"}}}))
             if first_text:
-                parts: list[dict[str, Any]] = [{"text": first_text}]
+                recall = self._recall(first_text)
+                parts: list[dict[str, Any]] = [{"text": first_text + ("\n\n" + recall if recall else "")}]
                 if frame:
                     parts.insert(0, {"inlineData": {"mimeType": "image/jpeg", "data": frame}})
                 ws.send(json.dumps({"clientContent": {"turns": [{"role": "user", "parts": parts}],
@@ -724,10 +733,28 @@ class LiveSession:
                     pass
         respond(text)
 
+    def _memory(self):
+        mem = getattr(self.agent, "memory", None)
+        return mem if mem is not None and hasattr(mem, "recall") else None
+
+    def _recall(self, text: str) -> str:
+        mem = self._memory()
+        try:
+            return mem.recall(text) if mem is not None else ""
+        except Exception:  # noqa: BLE001
+            return ""
+
     def _flush_log(self, state: dict[str, Any], ui: LiveUI) -> None:
         heard, said = "".join(state["heard"]).strip(), "".join(state["said"]).strip()
         if heard or said or ui.tools:
             tools = f" araçlar: {', '.join(ui.tools)}" if ui.tools else ""
             self.log(f"live [{self.model}] duyulan: {heard} | cevap: {said}{tools}")
+        mem = self._memory()
+        if mem is not None and heard:
+            try:
+                mem.record(heard, said, "canlı")
+                mem.learn(heard, said)
+            except Exception:  # noqa: BLE001 - hafıza hatası konuşmayı bozmasın
+                pass
         state["heard"], state["said"] = [], []
         ui.tools = []

@@ -29,6 +29,7 @@ specific folder the task is about. Large searches stop after a time limit and te
 - Only the core tools are listed at first; others come in groups (desktop, browser, system, automation, blender, \
 flight, personal) that load automatically from the user's words. If you need one that isn't listed, call \
 `load_tools` first.
+- You have long-term memory that persists across sessions (memory tool, stored locally). When the user tells you something lasting about themselves (preferences, dislikes, personal info, people, habits, how you should behave), save it with memory action=add as one short sentence; update or forget it when it changes. Don't save one-off requests.
 - Never invent tool results. If you can't do something, say why in one sentence and offer the closest alternative.
 
 # Using the computer (fastest/most reliable first)
@@ -83,12 +84,27 @@ def build_system_prompt(cwd: Path) -> str:
             body = p.read_text(encoding="utf-8", errors="replace").strip()
             if body:
                 extras.append(f"# Instructions from {p}\n{body[:6000]}")
-    mem = alice_home() / "memory.md"
-    if mem.is_file():
-        body = mem.read_text(encoding="utf-8", errors="replace").strip()
-        if body:
-            extras.append(f"# Long-term memory (memory tool)\n{body[-4000:]}")
+    from alice.memory import profile_text
+
+    profile = profile_text()
+    if profile:
+        extras.append(memory_section(profile))
     return text + ("\n\n" + "\n\n".join(extras) if extras else "")
+
+
+MEMORY_OPEN, MEMORY_CLOSE = "<memory>", "</memory>"
+
+
+def memory_section(profile: str) -> str:
+    return f"{MEMORY_OPEN}\n{profile}\n{MEMORY_CLOSE}" if profile else f"{MEMORY_OPEN}{MEMORY_CLOSE}"
+
+
+def with_memory(system: str, profile: str) -> str:
+    """Sistem istemindeki hafıza bölümünü güncel profille değiştir (yoksa sona ekle)."""
+    start, end = system.find(MEMORY_OPEN), system.find(MEMORY_CLOSE)
+    if start < 0 or end < start:
+        return system + ("\n\n" + memory_section(profile) if profile else "")
+    return system[:start] + memory_section(profile) + system[end + len(MEMORY_CLOSE):]
 
 
 COMPACT_PROMPT = """Summarize the conversation so far so that work can continue seamlessly in a fresh context. Include:
