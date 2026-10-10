@@ -407,3 +407,32 @@ def test_warthunder_extra_fields():
     text = "\n".join(describe_extra(s))
     assert s.heading == 270 and "Mach 0.45" in text and "gaz %100" in text and "yağ 80°C" in text
     assert "yakıt %50" in text and "flap %20" in text
+
+
+def test_proactive_callouts():
+    from alice.sims.flight import NM, FlightCompanion, FlightState, describe_extra
+
+    said = []
+    c = FlightCompanion(lambda text, sev="info", emo=None: said.append(text))
+    c.phase = "air"
+
+    def st(t, **kw):
+        base = dict(t=t, ias=120, agl=2000, gear=0, x=0, z=0)
+        base.update(kw)
+        return FlightState(**base)
+
+    c._warnings(st(1, extra={"warnings": "LeftEngineFailure"}))
+    c._warnings(st(2, extra={"warnings": "LeftEngineFailure"}))  # aynı ışık tekrar söylenmez
+    assert said == ["Uyarı: sol motor arızası."]
+    c._engine_heat(st(3, extra={"oil_temp": 108}))
+    assert "Yağ sıcaklığı 108" in said[-1]
+    c._gear_check(st(4, ias=70, agl=150, vv=-4, gear=0))
+    assert said[-1] == "Teker kapalı! Alçak ve yavaşsın."
+    c._waypoint(st(5, extra={"wp_x": 1.5 * NM, "wp_z": 0, "wp_num": 3}))
+    c._waypoint(st(6, extra={"wp_x": 1.4 * NM, "wp_z": 0, "wp_num": 3}))
+    assert said[-1] == "3 numaralı waypoint'e 2 mil." and said.count("3 numaralı waypoint'e 2 mil.") == 1
+    c._weapons(st(7, extra={"weapons": "AIM-120C x2, AIM-9X x2", "gun": 500}))
+    c._weapons(st(8, extra={"weapons": "AIM-120C x1, AIM-9X x2", "gun": 90}))
+    assert "Son AIM-120C." in said and "Top mermisi azaldı, 90 kaldı." in said
+    text = "\n".join(describe_extra(st(9, extra={"radios": "251.000,127.500"})))
+    assert "UHF 251.000" in text and "VHF 127.500" in text

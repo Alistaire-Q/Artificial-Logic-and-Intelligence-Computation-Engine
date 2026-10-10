@@ -117,7 +117,7 @@ def _extra(d: dict[str, Any], num: Callable[[str], float | None]) -> dict[str, A
     if wx is not None and wz is not None:
         e["wind_kt"] = math.hypot(wx, wz) / 0.514444
         e["wind_from"] = (math.degrees(math.atan2(wz, wx)) + 180) % 360  # rüzgarın geldiği yön
-    for k in ("weapons", "warnings", "mode"):
+    for k in ("weapons", "warnings", "mode", "radios"):
         if isinstance(d.get(k), str) and d[k].strip("/ "):
             e[k] = d[k]
     return {k: v for k, v in e.items() if v is not None}

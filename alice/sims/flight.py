@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import time
 from collections import deque
 from dataclasses import asdict, dataclass, field
@@ -142,6 +143,13 @@ class FlightCompanion:
         self.burn_hist: deque[tuple[float, float]] = deque()
         self.home: tuple[float, float] | None = None
         self.home_alert_nm: float | None = None
+        self.warn_seen: set[str] = set()
+        self.heat_flags: set[str] = set()
+        self.gear_last_warn = -1e9
+        self.wp_called: float | None = None
+        self.weapons_last: dict[str, int] = {}
+        self.gun_start: float | None = None
+        self.gun_flag = False
         self.fuel_flags: set[str] = set()
         self.g_since: float | None = None
         self.g_last_warn = -1e9
@@ -191,6 +199,11 @@ class FlightCompanion:
         self._g(s)
         self._countermeasures(s)
         self._approach(s)
+        self._warnings(s)
+        self._engine_heat(s)
+        self._gear_check(s)
+        self._waypoint(s)
+        self._weapons(s)
 
     # ------------------------------------------------------------------- evre
     def _airborne(self, s: FlightState) -> bool:
@@ -326,6 +339,76 @@ class FlightCompanion:
         hr = self.hr_now()
         return "calm" if hr is not None and hr >= 120 else "urgent"
 
+    # ------------------------------------------------------- kendiliğinden uyarılar
+    OIL_MAX, WATER_MAX = 105.0, 115.0  # War Thunder: bunların üstü motoru yakar (uçağa göre değişir)
+
+    def _warnings(self, s: FlightState) -> None:
+        """DCS uyarı/arıza ışıkları: yeni yanan her ışığı bir kez söyle, sönünce unut."""
+        raw = s.extra.get("warnings")
+        if raw is None:
+            return
+        now = {w for w in str(raw).split(",") if w}
+        new = sorted(now - self.warn_seen)
+        self.warn_seen = now
+        if new:
+            names = ", ".join(warning_name(w) for w in new[:3])
+            self.say(f"Uyarı: {names}.", "critical", self._urgent())
+
+    def _engine_heat(self, s: FlightState) -> None:
+        for key, limit, label in (("oil_temp", self.OIL_MAX, "Yağ"), ("water_temp", self.WATER_MAX, "Su")):
+            v = s.extra.get(key)
+            if v is None:
+                continue
+            if v >= limit and key not in self.heat_flags:
+                self.heat_flags.add(key)
+                self.say(f"{label} sıcaklığı {v:.0f} derece, motor ısınıyor. Gazı azalt ya da radyatörü aç.",
+                         "warn", self._urgent())
+            elif v < limit - 8:
+                self.heat_flags.discard(key)
+
+    def _gear_check(self, s: FlightState) -> None:
+        if s.gear is None or s.ias is None or s.t - self.gear_last_warn < 30:
+            return
+        agl = s.agl if s.agl is not None else s.extra.get("radalt", 0) * FT if s.extra.get("radalt") else None
+        if s.gear < 0.1 and agl is not None and agl < 300 and s.ias < 85 and (s.vv or 0) < -2:
+            self.gear_last_warn = s.t
+            self.say("Teker kapalı! Alçak ve yavaşsın.", "critical", "urgent")
+        elif s.gear > 0.9 and s.ias > 150:
+            self.gear_last_warn = s.t
+            self.say(f"Teker açık ve hızın {s.ias / 0.514444:.0f} knot, tekeri kapat ya da yavaşla.", "warn", "serious")
+
+    def _waypoint(self, s: FlightState) -> None:
+        e = s.extra
+        if e.get("wp_x") is None or e.get("wp_z") is None:
+            return
+        bn = _bearing_nm(s, e["wp_x"], e["wp_z"])
+        num = e.get("wp_num")
+        if bn is None:
+            return
+        if bn[1] <= 2 and self.wp_called != num:
+            self.wp_called = num
+            label = f"{int(num)} numaralı waypoint'e" if num is not None else "Waypoint'e"
+            self.say(f"{label} {bn[1]:.0f} mil.", "info", "calm")
+
+    def _weapons(self, s: FlightState) -> None:
+        now = parse_weapons(s.extra.get("weapons"))
+        if s.extra.get("weapons") is not None or self.weapons_last:
+            for name, before in self.weapons_last.items():
+                after = now.get(name, 0)
+                if after < before:
+                    if after == 1:
+                        self.say(f"Son {name}.", "info", "serious")
+                    elif after == 0:
+                        self.say(f"{name} bitti.", "info", "serious")
+            self.weapons_last = now
+        gun = s.extra.get("gun")
+        if gun is not None:
+            if self.gun_start is None or gun > self.gun_start:
+                self.gun_start, self.gun_flag = gun, False
+            elif self.gun_start > 0 and gun <= self.gun_start * 0.2 and not self.gun_flag:
+                self.gun_flag = True
+                self.say(f"Top mermisi azaldı, {int(gun)} kaldı.", "info", "serious")
+
     # --------------------------------------------------------------------- G
     def _g(self, s: FlightState) -> None:
         p = self.profile
@@ -450,6 +533,47 @@ def _bearing_nm(s: FlightState, x: float, z: float) -> tuple[float, float] | Non
     return math.degrees(math.atan2(dz, dx)) % 360, math.hypot(dx, dz) / NM
 
 
+# DCS MCP uyarı ışıklarının Türkçesi (bilinmeyen ad olduğu gibi okunur).
+WARNING_NAMES = {
+    "LeftEngineFailure": "sol motor arızası", "RightEngineFailure": "sağ motor arızası",
+    "HydraulicsFailure": "hidrolik arızası", "ACSFailure": "otopilot arızası", "AutopilotFailure": "otopilot arızası",
+    "AutopilotOn": "otopilot açık", "CannonFailure": "top arızası", "StallSignalization": "stall",
+    "LeftMainPumpFailure": "sol yakıt pompası arızası", "RightMainPumpFailure": "sağ yakıt pompası arızası",
+    "LeftWingPumpFailure": "sol kanat pompası arızası", "RightWingPumpFailure": "sağ kanat pompası arızası",
+    "RadarFailure": "radar arızası", "EOSFailure": "optik sistem arızası", "MLWSFailure": "füze uyarı sistemi arızası",
+    "ECMFailure": "karıştırıcı arızası", "GearFailure": "teker arızası", "MFDFailure": "ekran arızası",
+    "RWSFailure": "radar uyarı alıcısı arızası", "HUDFailure": "HUD arızası", "LeftTailPlaneFailure": "sol kuyruk hasarı",
+    "RightTailPlaneFailure": "sağ kuyruk hasarı", "LeftAileronFailure": "sol eleron hasarı",
+    "RightAileronFailure": "sağ eleron hasarı", "CanopyOpen": "kanopi açık", "FuelTankDamage": "yakıt tankı hasarı",
+    "MasterWarning": "ana uyarı", "LeftEngineFire": "sol motor yangını", "RightEngineFire": "sağ motor yangını",
+}
+
+
+def warning_name(key: str) -> str:
+    return WARNING_NAMES.get(key) or re.sub(r"(?<!^)(?=[A-Z])", " ", key).lower()
+
+
+def band_name(mhz: float) -> str:
+    if 225 <= mhz <= 400:
+        return "UHF"
+    if 108 <= mhz < 118:
+        return "NAV (VOR/ILS)"
+    if 118 <= mhz <= 174:
+        return "VHF"
+    if 30 <= mhz < 88:
+        return "FM"
+    return "frekans"
+
+
+def parse_weapons(text: str | None) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for part in (text or "").split(","):
+        m = re.match(r"\s*(.+?)\s+x(\d+)\s*$", part)
+        if m:
+            out[m.group(1)] = out.get(m.group(1), 0) + int(m.group(2))
+    return out
+
+
 def describe_extra(s: FlightState) -> list[str]:
     """Ek göstergeleri kısa Türkçe satırlara çevir (sadece oyunun o uçak için verdiği değerler)."""
     e = s.extra
@@ -499,7 +623,9 @@ def describe_extra(s: FlightState) -> list[str]:
         bn = _bearing_nm(s, e["wp_x"], e["wp_z"])
         if bn:
             num = f" {int(e['wp_num'])}" if e.get("wp_num") is not None else ""
-            out.append(f"  sıradaki waypoint{num}: {bn[0]:03.0f}° (gerçek), {bn[1]:.1f} nm")
+            spd = s.tas or s.ias
+            eta = f", varış ~{bn[1] * NM / spd / 60:.0f} dk" if spd and spd > 20 else ""
+            out.append(f"  sıradaki waypoint{num}: {bn[0]:03.0f}° (gerçek), {bn[1]:.1f} nm{eta}")
     if e.get("ils_glide") is not None and e.get("ils_side") is not None and (e["ils_glide"] or e["ils_side"]):
         g, sd = e["ils_glide"], e["ils_side"]
         out.append(f"  ILS: süzülüş {'yukarıda' if g > 0 else 'aşağıda'} ({g:+.2f}), "
@@ -510,6 +636,9 @@ def describe_extra(s: FlightState) -> list[str]:
         out.append(f"  silahlar: {w}{gun}")
     if e.get("warnings"):
         out.append(f"  UYARI / ARIZA: {e['warnings']}")
+    if e.get("radios"):
+        out.append("  telsiz/seyrüsefer frekansları: " + ", ".join(f"{band_name(float(f))} {f}" for f in
+                                                               str(e["radios"]).split(",") if f))
     if e.get("mode"):
         out.append(f"  sistem modu: {e['mode']}")
     return out

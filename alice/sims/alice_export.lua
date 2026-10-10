@@ -17,6 +17,7 @@ do
 
   local HOST, PORT, HZ = "127.0.0.1", 41230, 10
   local udp, next_send = nil, 0
+  local next_radio, radios = 0, nil
 
   local prev_start, prev_after, prev_stop = LuaExportStart, LuaExportAfterNextFrame, LuaExportStop
 
@@ -132,6 +133,23 @@ do
     end
     d.ils_glide = try(LoGetGlideDeviation)
     d.ils_side = try(LoGetSideDeviation)
+    -- Telsiz frekansları: kokpit cihazlarından get_frequency verenler (her modülde aynı yöntem; 2 sn'de bir).
+    if GetDevice and (d.t or 0) >= next_radio then
+      next_radio = (d.t or 0) + 2
+      local seen, list = {}, {}
+      for i = 1, 100 do
+        local dev = GetDevice(i)
+        if dev and dev.get_frequency then
+          local ok, f = pcall(dev.get_frequency, dev)
+          if ok and type(f) == "number" and f > 1e6 and not seen[f] then
+            seen[f] = true
+            list[#list + 1] = string.format("%.3f", f / 1e6)
+          end
+        end
+      end
+      radios = table.concat(list, ",")
+    end
+    d.radios = radios
     local nav = try(LoGetNavigationInfo)
     if nav and nav.SystemMode then d.mode = tostring(nav.SystemMode.master or "") .. "/" .. tostring(nav.SystemMode.submode or "") end
     return d
