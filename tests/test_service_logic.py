@@ -177,10 +177,14 @@ def test_reload_picks_up_file_created_after_start(tmp_path):
 
 
 # ----------------------------------------------------------------- görevler
+# Windows'ta 1970'e yakın zamanlar datetime.timestamp() ile OSError verir; gerçekçi bir an kullan.
+NOW = 1_760_000_000
+
+
 def test_run_due_without_agent_does_nothing(tmp_path):
     core, _ = make_core(tmp_path)
-    core.tasks.add(ScheduledTask("* * * * *", "x", created=900))
-    core._run_due(1000)
+    core.tasks.add(ScheduledTask("* * * * *", "x", created=NOW - 100))
+    core._run_due(NOW)
     assert core.tasks.tasks[0].last_run is None and not core.running_tasks
 
 
@@ -189,14 +193,14 @@ def test_run_due_skips_already_running(tmp_path, monkeypatch):
     monkeypatch.setattr(service.threading, "Thread",
                         lambda target, args, daemon: SimpleNamespace(start=lambda: started.append(args)))
     core, _ = make_core(tmp_path, run_agent=lambda p: "ok")
-    t = core.tasks.add(ScheduledTask("* * * * *", "x", created=900))
+    t = core.tasks.add(ScheduledTask("* * * * *", "x", created=NOW - 100))
     core.running_tasks.add(t.id)
-    core._run_due(1000)
+    core._run_due(NOW)
     assert started == []
     core.running_tasks.clear()
-    core._run_due(1000)
+    core._run_due(NOW)
     assert len(started) == 1 and t.id in core.running_tasks
-    assert core.tasks.get(t.id).last_result == "(çalışıyor)" and core.tasks.get(t.id).last_run == 1000
+    assert core.tasks.get(t.id).last_result == "(çalışıyor)" and core.tasks.get(t.id).last_run == NOW
 
 
 def test_run_task_success_notifies(tmp_path):
