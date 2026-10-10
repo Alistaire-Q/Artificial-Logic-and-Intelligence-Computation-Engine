@@ -226,6 +226,33 @@ def test_alert_home_and_status_with_hub(ctx, monkeypatch):
     assert f.run(ctx, action="status").text == "yakıt 2000 kg"
 
 
+@pytest.mark.parametrize("nm, want", [("10", 10.0), ("12,5", 12.5), ("20 mil", 20.0)])
+def test_alert_home_text_nm(ctx, monkeypatch, nm, want):
+    from alice.sims import hub
+
+    fake = FakeHub()
+    monkeypatch.setattr(hub, "ACTIVE", fake)
+    flight_mod.Flight().run(ctx, action="alert_home", nm=nm)
+    assert fake.alerts == [want]
+
+
+def test_alert_alt_text_with_thousands(ctx, monkeypatch):
+    from alice.sims import hub
+
+    fake = FakeHub()
+    monkeypatch.setattr(hub, "ACTIVE", fake)
+    flight_mod.Flight().run(ctx, action="alert_alt", ft="5.000")
+    assert fake.alerts == [("ft", 5000.0)]
+
+
+def test_alert_home_unparseable_text_nm(ctx, monkeypatch):
+    from alice.sims import hub
+
+    monkeypatch.setattr(hub, "ACTIVE", FakeHub())
+    with pytest.raises(ToolError, match="nm"):
+        flight_mod.Flight().run(ctx, action="alert_home", nm="on")
+
+
 def test_status_without_hub(ctx, no_hub):
     assert "çalışmıyor" in flight_mod.Flight().run(ctx, action="status").text
 

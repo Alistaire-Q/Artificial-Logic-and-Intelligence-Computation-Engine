@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,7 @@ class Flight(Tool):
             name, value, call = {"alert_home": ("nm", nm, hub.ACTIVE.alert_home),
                                  "alert_alt": ("ft", ft, hub.ACTIVE.alert_altitude),
                                  "alert_fuel": ("kg", kg, hub.ACTIVE.alert_fuel)}[action]
+            value = _number(value)
             if not value or value <= 0:
                 raise ToolError(f"{name} gerekli")
             return ToolResult(call(value))
@@ -130,3 +132,15 @@ class Flight(Tool):
 
 
 TOOLS = [Flight()]
+
+
+def _number(value: Any) -> float | None:
+    """Model sayıyı bazen yazı olarak gönderir ("10", "12,5", "10 mil"); sayıya çevir, olmazsa None."""
+    if value is None or isinstance(value, (int, float)):
+        return value
+    text = str(value)
+    m = re.search(r"-?\d{1,3}(?:([.,])\d{3})(?:\1\d{3})*(?![.,]?\d)", text)  # "5.000", "12,000"
+    if m:
+        return float(re.sub(r"[.,]", "", m.group()))
+    m = re.search(r"-?\d+(?:[.,]\d+)?", text)
+    return float(m.group().replace(",", ".")) if m else None

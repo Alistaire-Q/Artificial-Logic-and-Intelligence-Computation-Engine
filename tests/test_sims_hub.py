@@ -257,6 +257,12 @@ def test_alert_home_sets_threshold(h):
     assert isinstance(h.alert_home(7), str) and c.home_alert_nm == 7.0 and isinstance(c.home_alert_nm, float)
 
 
+def test_alert_home_accepts_text_number(h):
+    c = airborne(h)
+    c.home = (0.0, 0.0)
+    assert h.alert_home("15") == "kuruldu: üsse 15 mil kalınca sesli söylenecek" and c.home_alert_nm == 15.0
+
+
 # ---------------------------------------------------------------------- status
 def test_status_no_data_dcs_hint(h):
     h.companion("dcs")
