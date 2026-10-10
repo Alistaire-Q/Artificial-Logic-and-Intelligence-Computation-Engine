@@ -12,6 +12,7 @@
   alice rules [add "cümle"]  uyarı kuralları ("GPU uzun süre ısınırsa söyle")
   alice tasks [add "cümle"]  zamanlanmış görevler ("her pazar gece projelerimi yedekle")
   alice voice [audition|use|library|say|test|status]   sesli asistan ve ses seçimi
+  alice offline [install|test|on|off|auto]   tam çevrimdışı mod (yerel model + yerel Türkçe ses)
   alice quick [--open]       hızlı bar kısayolları (Ctrl+Alt+A / S / C)
   alice dcs install|status|kneeboard   DCS bağlantısı
   alice watch [status|import <db>]     akıllı saat verisi ve ne sıklıkla geldiği
@@ -738,6 +739,10 @@ def main(argv: list[str] | None = None) -> int:
         from alice.voice.cli import voice_cmd
 
         return voice_cmd(argv[1:])
+    if argv and argv[0] == "offline":
+        from alice.offline_cli import offline_cmd
+
+        return offline_cmd(argv[1:])
     if argv and argv[0] == "shortcut":
         return shortcut_cmd()
     if argv and argv[0] == "reflex":

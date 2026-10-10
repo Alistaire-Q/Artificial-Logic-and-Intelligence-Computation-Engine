@@ -26,6 +26,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
+from alice import offline
 from alice.config import Config, ProviderConfig, alice_home
 from alice.providers import ranking, thinking
 from alice.providers.openai_compat import ChatResult, OpenAICompatProvider, ProviderError, StreamCancelled
@@ -160,8 +161,10 @@ class Router:
         max_wait: float = 65.0,
         on_event: Callable[[str], None] | None = None,
         auto_cache: dict[str, Any] | None = None,
+        net: "offline.NetState | None" = None,
     ):
         self.config = config
+        self._net = net
         self.providers_cfg = config.providers()
         self._factory = provider_factory or (lambda pc: OpenAICompatProvider(pc))
         self._real_clients = provider_factory is None
@@ -188,8 +191,33 @@ class Router:
         return self.thinking_overrides.get(role) or self.thinking_overrides.get("*") or thinking.level_for(
             self.config.data, role)
 
+    @property
+    def net(self) -> "offline.NetState":
+        return self._net or offline.state()
+
+    def is_offline(self) -> bool:
+        return not self.net.online()
+
+    def _local(self, ref: str) -> bool:
+        pc = self.providers_cfg.get(ref.partition(":")[0])
+        return bool(pc and pc.is_local)
+
+    def offline_chain(self, chain: list[str], role: str) -> list[str]:
+        """İnternet yok: sadece bu bilgisayarda çalışan modeller, yoksa [offline] modeli."""
+        out = [r for r in chain if self._local(r)]
+        o = offline.settings(self.config.data)
+        extra = [o["vision_model"]] if role == "vision" and o["vision_model"] else []
+        for ref in extra + [o["model"]]:
+            if ref and ref not in out and self._local(ref):
+                out.append(ref)
+        return out
+
     # ------------------------------------------------------------------ helpers
     def chain(self, role: str) -> list[str]:
+        refs = self._chain(role)
+        return self.offline_chain(refs, role) if self.is_offline() else refs
+
+    def _chain(self, role: str) -> list[str]:
         """Rolün model sırası. "auto" ölçülmüş en iyi ücretsiz modellere açılır; ölçümde kalıcı hata veren
         (kalkmış, bu anahtarla kapalı) modeller atlanır; rastgele model seçen router'lar en sona itilir."""
         if role in self.role_overrides:
@@ -305,12 +333,15 @@ class Router:
     ) -> ChatResult:
         """stream verilirse cevap parça parça stream.on_delta'ya akar. Bir model akışın ortasında
         düşerse stream.on_reset() çağrılır ve sıradaki model baştan dener."""
-        if not self._probe_checked:
+        offline_now = self.is_offline()
+        if offline_now:
+            self._wake_local()
+        elif not self._probe_checked:
             # Gerçek sağlayıcılarla çalışırken model ölçümü bir günden eskiyse arka planda yenilenir.
             self._probe_checked = True
             if self._real_clients:
                 ranking.refresh_in_background(self, emit=self.on_event)
-        chain = self.chain(role)
+        chain = self.offline_chain(self._chain(role), role) if offline_now else self._chain(role)
         est = estimate_tokens(messages, tools)
         attempts = 0
         failed: list[str] = []
@@ -403,6 +434,8 @@ class Router:
                 self.on_event(f"tüm modeller meşgul, {w:.0f} sn bekleniyor")
                 self.sleep(w)
                 continue
+            if offline_now:
+                errors.append("internet yok ve yerel model cevap vermedi (alice offline status)")
             self._log(f"{role} TÜM MODELLER BAŞARISIZ: " + " | ".join(errors))
             raise AllProvidersFailed(role, errors)
 
@@ -410,6 +443,8 @@ class Router:
                   est: int = 0) -> None:
         now = time.monotonic()
         low = str(e).lower()
+        if e.kind in ("network", "unreachable") and not self._local(ref):
+            self.net.report_failure()  # internet gitmiş olabilir: hemen yeniden ölç
         if e.kind == "auth":
             self.dead_providers.add(provider)
         elif e.kind == "not_found":
@@ -428,6 +463,17 @@ class Router:
             wait = e.retry_after if (e.retry_after and e.kind == "rate_limit") else base
             self.cooldown_until[ref] = now + min(max(wait, 1.0), 6 * 3600)
             self.cooldown_kind[ref] = e.kind
+
+    def _wake_local(self) -> None:
+        """Çevrimdışıyken Ollama kapalıysa başlat; açıldıysa "sunucu yok" soğumasını kaldır."""
+        for name, pc in self.providers_cfg.items():
+            if not pc.is_local or name != "ollama" or not self._real_clients:
+                continue
+            refs = [r for r in self.cooldown_until if r.startswith(f"{name}:")]
+            if offline.ensure_ollama(pc.base_url):
+                for r in refs:
+                    if self.cooldown_kind.get(r) == "unreachable":
+                        self.cooldown_until.pop(r, None)
 
     def status(self) -> dict[str, list[tuple[str, str]]]:
         roles = set(self.config.roles) | set(self.role_overrides)
