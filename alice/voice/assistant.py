@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import queue
 import random
+import re
 import threading
 import time
 from typing import Any, Callable
@@ -324,7 +325,7 @@ class VoiceAssistant:
         def run() -> None:
             from alice.voice.vocab import whisper_prompt
 
-            box["r"] = gate.transcribe(audio, whisper_prompt((names() if names else [])[:40]))
+            box["r"] = gate.transcribe(audio, whisper_prompt((names() if names else [])[:12]))
 
         t = threading.Thread(target=run, daemon=True, name="alice-live-text")
         t.start()
@@ -337,7 +338,9 @@ class VoiceAssistant:
                 return None
             text, conf = r
             rest = strip_wake(text)
-            if not rest or is_hallucination(rest) or conf < self.live_text_min:
+            words = [w.lower() for w in re.findall(r"\w+", rest or "")]
+            looping = len(words) >= 3 and len(set(words)) <= len(words) // 2  # "YouTube, YouTube, YouTube"
+            if not rest or looping or is_hallucination(rest) or conf < self.live_text_min:
                 voice_log(f"yerel döküm güvenilmez ({conf:.2f}), ses gönderiliyor: {text}")
                 return None
             return rest

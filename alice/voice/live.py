@@ -32,9 +32,13 @@ Kullanıcıyla sesli, canlı konuşuyorsun. Doğal, sıcak ve kısa konuş (gene
 Liste, kod, yol ya da uzun sayı okuma; gerekirse ekrana koyduğunu söyle.
 Bir iş istenince ilgili aracı hemen çağır.
 Web işlerini her zaman kullanıcının açık tarayıcısında, açık sekmelerinde yap; sıfırdan pencere açma.
-YouTube'da video açma, "ilk videoya tıkla", "ikinci dakikaya getir" için youtube aracı (play, at=saniye; seek).
-Diğer sitelerde önce browser aracı: kullanıcının tarayıcısına bağlanır (tabs, switch_tab; goto açık site sekmesini
-kullanır; snapshot/click/type ile sayfada iş yapar). browser "bağlanılamıyor" derse: windows action=switch_tab
+Kullanıcı her konuştuğunda ekranının o anki görüntüsü sana gelir: ne açık, ne yazıyor, ona bakarak anla.
+"Ekrandaki", "şu", "bu", "sağdaki", "açık olan" gibi ekranda görünen bir şeyi isterse onu YENİDEN ARAMA: ekranda
+neyse ona tıkla. Tarayıcıdaysa browser action=snapshot (öndeki sekmenin öğeleri) ve görünen yazıya uyan öğeye
+browser action=click; tarayıcı dışında ui_elements + ui_act, o da olmazsa computer (screenshot, click x,y).
+Siteler arasında fark gözetme: her sitede aynı yol (snapshot, click, type ile arama kutusu, sonuca tıklama).
+youtube aracı sadece ekranda olmayan yeni bir YouTube videosunu açmak ya da açık videoyu sarmak (seek) için.
+browser aracı kullanıcının tarayıcısına bağlanır (tabs, switch_tab; goto açık site sekmesini kullanır). browser "bağlanılamıyor" derse: windows action=switch_tab
 target=<site adı> ile açık sekmeye geç, windows action=navigate target=<URL ya da arama> ile git.
 Yeni sekme ya da ayrı pencere sadece kullanıcı isterse.
 Bir araç "onay gerekli" derse kullanıcıya kısaca sor; "evet" derse aynı çağrıyı tekrarla.
@@ -58,6 +62,57 @@ def looks_internal(text: str) -> bool:
 
 class LiveError(Exception):
     pass
+
+
+def _to_jpeg(b64_png: str) -> str | None:
+    try:
+        import io
+
+        from PIL import Image
+
+        img = Image.open(io.BytesIO(base64.b64decode(b64_png))).convert("RGB")
+        buf = io.BytesIO()
+        img.save(buf, "JPEG", quality=75)
+        return base64.b64encode(buf.getvalue()).decode()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def screen_frame(max_width: int = 1280) -> str | None:
+    """Öndeki pencerenin bulunduğu ekranın küçültülmüş JPEG görüntüsü (base64). Alınamazsa None."""
+    try:
+        import io
+
+        import mss
+        from PIL import Image
+
+        from alice.tools.computer import _dpi_aware
+
+        _dpi_aware()
+        with mss.mss() as sct:
+            mon = sct.monitors[1]
+            try:
+                import ctypes
+                from ctypes import wintypes
+
+                r = wintypes.RECT()
+                ctypes.windll.user32.GetWindowRect(ctypes.windll.user32.GetForegroundWindow(), ctypes.byref(r))
+                cx, cy = (r.left + r.right) // 2, (r.top + r.bottom) // 2
+                for m in sct.monitors[1:]:
+                    if m["left"] <= cx < m["left"] + m["width"] and m["top"] <= cy < m["top"] + m["height"]:
+                        mon = m
+                        break
+            except Exception:  # noqa: BLE001 - Windows dışı: ana ekran
+                pass
+            shot = sct.grab(mon)
+        img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+        if img.width > max_width:
+            img = img.resize((max_width, round(img.height * max_width / img.width)))
+        buf = io.BytesIO()
+        img.save(buf, "JPEG", quality=70)
+        return base64.b64encode(buf.getvalue()).decode()
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def sanitize_schema(s: Any) -> Any:
@@ -217,6 +272,9 @@ class LiveSession:
         self._out_factory = out_factory
         self.model = ""
         self.names: Callable[[], list[str]] = lambda: known_names(cfg)
+        # "turn": kullanıcı her konuşmaya başladığında ekranın bir karesi modele gider (ekrandakini görsün).
+        self.screen = str(v.get("live_screen", "turn"))
+        self.grab: Callable[[], str | None] = screen_frame
         self._pre: dict[str, Any] = {}  # önceden açılan bağlantı: {"thread", "ws", "error"}
         self._pre_lock = threading.Lock()
 
@@ -343,11 +401,19 @@ class LiveSession:
         old_ui, self.agent.ui = self.agent.ui, ui
         calls: queue.Queue[dict[str, Any] | None] = queue.Queue()
         done = threading.Event()
-        state = {"active": time.monotonic(), "said": [], "heard": [], "mute": False}
+        state = {"active": time.monotonic(), "said": [], "heard": [], "mute": False, "framed": True}
         self.log(f"live açıldı [{self.model}]")
 
         def touch() -> None:
             state["active"] = time.monotonic()
+
+        def send_frame() -> None:
+            frame = self.grab()
+            if frame:
+                try:
+                    ws.send(json.dumps({"realtimeInput": {"video": {"data": frame, "mimeType": "image/jpeg"}}}))
+                except Exception:  # noqa: BLE001
+                    pass
 
         def reader() -> None:
             try:
@@ -364,6 +430,10 @@ class LiveSession:
                                 out.put(base64.b64decode(data))
                                 touch()
                         if (t := (sc.get("inputTranscription") or {}).get("text")):
+                            if not state["framed"] and self.screen == "turn":
+                                # Kullanıcı konuşmaya başladı: cevaptan önce ekranın güncel hali modele gitsin.
+                                state["framed"] = True
+                                threading.Thread(target=send_frame, daemon=True).start()
                             state["heard"].append(t)
                             ui.last_user = "".join(state["heard"])[-200:]
                             touch()
@@ -379,6 +449,7 @@ class LiveSession:
                                 out.underruns = 0
                             self._flush_log(state, ui)
                             state["mute"] = False
+                            state["framed"] = False
                     if msg.get("toolCall"):
                         for fc in msg["toolCall"].get("functionCalls", []):
                             calls.put(fc)
@@ -411,6 +482,9 @@ class LiveSession:
         threading.Thread(target=reader, daemon=True, name="alice-live-in").start()
         threading.Thread(target=sender, daemon=True, name="alice-live-mic").start()
         try:
+            frame = self.grab() if self.screen == "turn" else None
+            if frame and first_audio:
+                ws.send(json.dumps({"realtimeInput": {"video": {"data": frame, "mimeType": "image/jpeg"}}}))
             if first_audio:  # "Hey Alice ..." cümlesinin kendisi: yazıya çevirmeden doğrudan modele
                 for i in range(0, len(first_audio), 32000):
                     ws.send(json.dumps({"realtimeInput": {"audio": {
@@ -420,7 +494,10 @@ class LiveSession:
                 ws.send(json.dumps({"realtimeInput": {"audio": {
                     "data": base64.b64encode(b"\x00\x00" * 9600).decode(), "mimeType": "audio/pcm;rate=16000"}}}))
             if first_text:
-                ws.send(json.dumps({"clientContent": {"turns": [{"role": "user", "parts": [{"text": first_text}]}],
+                parts: list[dict[str, Any]] = [{"text": first_text}]
+                if frame:
+                    parts.insert(0, {"inlineData": {"mimeType": "image/jpeg", "data": frame}})
+                ws.send(json.dumps({"clientContent": {"turns": [{"role": "user", "parts": parts}],
                                                       "turnComplete": True}}))
                 state["heard"].append(first_text)
                 ui.last_user = first_text
@@ -488,6 +565,14 @@ class LiveSession:
         elif res.is_error:
             text = "HATA: " + text
         timer.cancel()
+        for img in (getattr(res, "images", None) or [])[:1]:  # araç görüntüsü (ekran/sekme): modele göster
+            frame = _to_jpeg(img)
+            if frame:
+                try:
+                    ws.send(json.dumps({"realtimeInput": {"video": {"data": frame, "mimeType": "image/jpeg"}}}))
+                    text += "\n(görüntü sana ayrıca gönderildi)"
+                except Exception:  # noqa: BLE001
+                    pass
         respond(text)
 
     def _flush_log(self, state: dict[str, Any], ui: LiveUI) -> None:

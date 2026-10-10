@@ -87,6 +87,8 @@ live_idle = 20
 # "Hey Alice" cümlesi yerelde (ekran kartında) uygulama/site adı ipuçlarıyla yazıya dökülür; döküm bu güvenin
 # üstündeyse Live'a ses yerine yazı gider (Live Türkçe cümledeki "GitHub" gibi adları bozuyor). Boş = hep ses.
 live_text_min = -0.7
+# turn: her konuşma turunun başında ekranın bir karesi Live'a gider, model ekrandakini görür. off = gönderme.
+live_screen = "turn"
 # Konuşma tanımaya ve Live'a ipucu olarak verilen adlar: bunlar + Başlat menüsü programları + yer imleri.
 vocab = []
 # Konuşman bitti saymak için sessizlik (sn). Kısa = hızlı cevap; çok kısa olursa cümle ortasında keser.

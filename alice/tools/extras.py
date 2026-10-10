@@ -155,7 +155,8 @@ class YouTube(Tool):
     description = ("YouTube, kullanıcının KENDİ açık tarayıcısında (açık YouTube sekmesi varsa onda): "
                    "search: query'nin ilk videolarını listeler ve aynı sonuçları kullanıcının sekmesinde açar | play: query'nin index'inci (1 = ilk) videosunu ya da "
                    "url'yi açar, at=saniye ile o dakikadan başlatır | seek: açık videoyu at saniyesine götürür. "
-                   "'X videosu aç', 'ilk videoya tıkla', 'ikinci dakikaya getir' için bunu kullan; tıklama gerekmez. "
+                   "Ekranda olmayan yeni bir video ('X videosu aç') ya da 'ikinci dakikaya getir' için. Ekranda zaten "
+                   "görünen bir video/şarkı için KULLANMA: browser snapshot + click ile ona tıkla. "
                    "Durdur/devam için media play_pause.")
     parameters = obj({"action": {"type": "string", "enum": ["search", "play", "seek"]},
                       "query": {"type": "string"}, "url": {"type": "string"},
