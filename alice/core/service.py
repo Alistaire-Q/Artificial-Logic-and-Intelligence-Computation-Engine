@@ -120,7 +120,7 @@ class Core:
         # Her turda mod politikasıyla çağrılır (ör. ses: DCS açılınca modelleri ekran kartından çıkar).
         self.hooks: list[Callable[[Policy], None]] = []
         self._last_prune = 0.0
-        self._last_files = 0.0
+        self._last_files: float | None = None  # None: dosyalar henüz hiç kontrol edilmedi
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------ tur
@@ -181,8 +181,8 @@ class Core:
     def _reload_if_changed(self) -> None:
         """Kural/görev dosyaları başka süreçten (CLI, ajan aracı) değiştiyse yeniden yükle."""
         mt = max((p.stat().st_mtime for p in (self.rules.path, self.tasks.path) if p.exists()), default=0.0)
-        if mt > self._last_files:
-            if self._last_files:
+        if self._last_files is None or mt > self._last_files:
+            if self._last_files is not None:  # ilk görüşte değil; sonradan oluşan dosya da yüklenir
                 self.rules.load()
                 self.tasks.load()
             self._last_files = mt

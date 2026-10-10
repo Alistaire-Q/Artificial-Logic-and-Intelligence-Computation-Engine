@@ -75,8 +75,6 @@ def test_parse_action_errors(bad):
         parse_action(bad)
 
 
-@pytest.mark.xfail(reason="BUG: parse_action(None) hata mesajında text[:120] yüzünden TypeError fırlatıyor",
-                   raises=TypeError, strict=False)
 def test_parse_action_none_is_value_error():
     with pytest.raises(ValueError):
         parse_action(None)

@@ -166,8 +166,6 @@ def test_reload_when_files_change_externally(tmp_path):
     assert sorted(t.prompt for t in core.tasks.tasks) == ["başka süreçten", "ilk"]
 
 
-@pytest.mark.xfail(reason="BUG: core başlarken rules/tasks dosyası yoksa _last_files=0 kalır; sonradan oluşturulan "
-                          "dosya ilk değişiklikte yüklenmez (service.py _reload_if_changed)", strict=False)
 def test_reload_picks_up_file_created_after_start(tmp_path):
     core, _ = make_core(tmp_path)
     core.tick(1000)  # henüz dosya yok

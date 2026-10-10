@@ -87,6 +87,7 @@ class SimHub:
 
     def alert_home(self, nm: float) -> str:
         """Havadaki uçuşa 'üsse nm mil kalınca söyle' uyarısı kur."""
+        nm = float(nm)
         for c in self.companions.values():
             if c.last_state is not None and c.phase == "air":
                 if c.home is None:
@@ -100,6 +101,7 @@ class SimHub:
 
     def alert_altitude(self, ft: float) -> str:
         """'X feet'e gelince söyle': irtifa hangi yönden geçilirse geçilsin bir kez söyle."""
+        ft = float(ft)
         c = self._flying()
         if c is None:
             return "kurulamadı: şu an uçuşta değilsin"
@@ -107,6 +109,7 @@ class SimHub:
         return f"kuruldu: {ft:,.0f} feet'e gelince sesli söylenecek".replace(",", ".")
 
     def alert_fuel(self, kg: float) -> str:
+        kg = float(kg)
         c = self._flying()
         if c is None:
             return "kurulamadı: şu an uçuşta değilsin"

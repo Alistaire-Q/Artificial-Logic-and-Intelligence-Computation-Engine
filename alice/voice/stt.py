@@ -437,10 +437,12 @@ def is_hallucination(text: str) -> bool:
     t = text.lower().strip(" .,!?…\"'")
     if not t:
         return True
+    # İpucu metninden birden çok terimi (virgül/noktayla) aynen geri vermiş: "Hey Alice. ALICE, DCS".
+    # Tek terim ("bingo", "Hey Alice") gerçek konuşma olabilir, ona dokunma.
+    if len(t) > 3 and t in PROMPT.lower() and any(c in t for c in ",."):
+        return True
     if "alice" in t:
         return False
-    if len(t) > 3 and t in PROMPT.lower():  # ipucu metnini aynen geri vermiş
-        return True
     return len(t) < 60 and any(h in t for h in HALLUCINATIONS)
 
 

@@ -96,11 +96,14 @@ def test_long_text_with_marker_word_is_kept():
     assert len(text) >= 60 and not is_hallucination(text)
 
 
-@pytest.mark.xfail(reason="BUG: 'alice' kontrolü ipucu yankısından önce geldiği için PROMPT'un tamamı süzülmüyor",
-                   strict=False)
 def test_full_prompt_echo_is_hallucination():
     assert is_hallucination(PROMPT)
     assert is_hallucination("Hey Alice. ALICE, DCS, F-16")
+
+
+@pytest.mark.parametrize("text", ["bingo", "Bingo.", "Hey Alice", "War Thunder", "kneeboard"])
+def test_single_prompt_term_is_real_speech(text):
+    assert not is_hallucination(text)
 
 
 # ------------------------------------------------------------------- Groq
