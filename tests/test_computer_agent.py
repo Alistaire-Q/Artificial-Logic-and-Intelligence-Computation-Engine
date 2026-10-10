@@ -48,7 +48,6 @@ def test_point_mapping_uses_ids_and_normalized_coords():
 
 
 def test_live_runs_computer_task_in_background(monkeypatch):
-    import queue
     import threading
     from types import SimpleNamespace
 

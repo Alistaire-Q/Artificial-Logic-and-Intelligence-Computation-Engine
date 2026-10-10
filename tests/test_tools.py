@@ -137,7 +137,13 @@ def test_cli_status_line_and_prompt_session(workdir):
     agent, router, ctx = build(cfg, workdir, "auto")
     line = status_line(agent, router, ctx)
     assert "a:m" in line and "izin: auto" in line and "context" in line
-    assert make_prompt_session(agent, router, ctx).multiline
+    from prompt_toolkit.application import create_app_session
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    # CI'da (özellikle Windows) gerçek konsol yok; sahte giriş/çıkışla kur.
+    with create_pipe_input() as inp, create_app_session(input=inp, output=DummyOutput()):
+        assert make_prompt_session(agent, router, ctx).multiline
 
 
 def test_cli_slash_commands(workdir, isolated_home, monkeypatch):
@@ -171,6 +177,7 @@ def test_find_installed_apps_scans_program_folders(tmp_path, monkeypatch):
     monkeypatch.setattr(desktop.shutil, "which", lambda name: None)
     monkeypatch.setattr(desktop, "_steam_libraries", lambda: [])
     monkeypatch.setattr(desktop, "_shortcut_roots", lambda: [])
+    monkeypatch.setattr(desktop, "start_apps", lambda refresh=False: [])  # PowerShell yalnız Windows'ta var
     for k in ("ProgramFiles(x86)", "ProgramW6432", "LOCALAPPDATA"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("ProgramFiles", str(pf))
@@ -199,8 +206,12 @@ def test_blender_tool_parses_error_and_scene(tmp_path, monkeypatch):
         "print('Cube [MESH] konum=(0, 0, 0) boyut=(2, 2, 2)')\n"
         "print('@@ALICE@@SON')\n"
         "raise SystemExit(1)\n", encoding="utf-8")
-    exe = tmp_path / "fake_blender.sh"
-    exe.write_text(f"#!/bin/sh\nexec {_sys.executable} {fake}\n")
+    if _sys.platform == "win32":
+        exe = tmp_path / "fake_blender.cmd"
+        exe.write_text(f'@"{_sys.executable}" "{fake}"\r\n')
+    else:
+        exe = tmp_path / "fake_blender.sh"
+        exe.write_text(f"#!/bin/sh\nexec {_sys.executable} {fake}\n")
     exe.chmod(0o755)
     monkeypatch.setattr(bl, "find_blender", lambda ctx=None: str(exe))
     monkeypatch.setattr(bl, "alice_home", lambda: tmp_path)

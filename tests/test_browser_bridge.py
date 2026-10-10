@@ -1,10 +1,13 @@
 import asyncio
 import json
 
+import pytest
+
 from alice.tools import browser_bridge as bb
 
 
 def test_bridge_keeps_one_browser_connection_across_clients():
+    pytest.importorskip("websockets")  # "voice" ekstrası; CI bunu kurar
     from websockets.asyncio.client import connect
     from websockets.asyncio.server import serve
 
