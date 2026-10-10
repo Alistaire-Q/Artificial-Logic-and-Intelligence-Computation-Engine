@@ -1073,3 +1073,14 @@ def test_wasapi_twin_finds_same_mic():
             return devs if i is None else devs[i]
 
     assert wasapi_twin(SD) == 2
+
+
+def test_strip_wake_greetings_and_name_in_first_words():
+    from alice.voice.listen import strip_wake
+
+    assert strip_wake("Merhaba Alice nasılsın?") == "nasılsın?"
+    assert strip_wake("Selamlar Alis, saat kaç") == "saat kaç"
+    assert strip_wake("Bak şimdi Alice YouTube'u aç") == "YouTube'u aç"
+    assert strip_wake("Merhaba nasılsın?") is None
+    assert strip_wake("Ali bana bir çay getir") is None
+    assert strip_wake("dün akşam yemekte Alice vardı") is None
