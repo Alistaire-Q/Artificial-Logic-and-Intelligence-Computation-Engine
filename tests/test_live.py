@@ -11,6 +11,14 @@ from alice.tools.base import ToolResult
 from alice.voice.live import LiveSession, declarations, sanitize_schema
 
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def no_screen(monkeypatch):
+    monkeypatch.setattr("alice.voice.live.screen_frame", lambda: None)  # testler gerçek ekranı çekmesin
+
+
 def test_sanitize_schema_for_gemini():
     s = {"type": "object", "additionalProperties": False, "properties": {
         "a": {"type": ["string", "null"], "default": "x"}, "b": {"type": "array", "items": {"type": "integer"}}},
@@ -207,3 +215,21 @@ def test_live_first_turn_falls_back_to_audio_without_text(monkeypatch):
     s.converse("", queue.Queue(), threading.Event(), first_audio=b"\0\0" * 1600, hint=lambda: None)
     assert len([m for m in ws.sent if "realtimeInput" in m]) == 2
     assert not [m for m in ws.sent if "clientContent" in m]
+
+
+def test_live_sends_screen_frame_each_turn(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    ws = FakeWS([{"serverContent": {"inputTranscription": {"text": "ekrandaki"}}},
+                 {"serverContent": {"turnComplete": True}},
+                 {"serverContent": {"inputTranscription": {"text": "şunu aç"}}}])
+    agent = SimpleNamespace(messages=[{"role": "system", "content": "s"}], ctx=SimpleNamespace(state={}), ui=None,
+                            tool_specs=lambda: [], _enable_groups_for=lambda **k: None, _execute_calls=lambda c: [])
+    cfg = SimpleNamespace(data={"voice": {"live_idle": 0.5, "live_models": ["m1"]}})
+    s = LiveSession(cfg, agent, connect=lambda url, **k: ws, out_factory=FakeOut)
+    s.names = lambda: []
+    s.grab = lambda: "IMG"
+    s.converse("ekrandakini aç", queue.Queue(), threading.Event())
+    first = next(m for m in ws.sent if "clientContent" in m)["clientContent"]["turns"][0]["parts"]
+    assert first[0] == {"inlineData": {"mimeType": "image/jpeg", "data": "IMG"}}
+    frames = [m for m in ws.sent if "video" in m.get("realtimeInput", {})]
+    assert len(frames) == 1  # ilk tur yazıyla birlikte gitti; ikinci tur başında bir kare daha

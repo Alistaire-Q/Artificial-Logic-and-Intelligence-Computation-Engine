@@ -408,6 +408,11 @@ class Browser(Tool):
                 b.close()
             return ToolResult("tarayıcı kapatıldı")
         b = get_browser(ctx, separate)
+        if b.attached and action in ("snapshot", "text", "screenshot"):
+            # Kullanıcı bu arada başka sekmeye geçmiş olabilir: "ekrandaki" neyse ona bak.
+            seen = b._visible_page()
+            if seen is not None:
+                b.page = seen
         page = b.page
         limit = int(ctx.config.agent.get("tool_output_chars", 12000))
 
