@@ -137,6 +137,11 @@ def test_collect_basic_rows(fake_ps):
     assert "pc.foreground" not in d
 
 
+def test_first_disk_reading_right_after_boot(fake_ps, monkeypatch):
+    monkeypatch.setattr(monitors.time, "monotonic", lambda: 5.0)  # açılıştan 5 sn sonra
+    assert "pc.disk.root.percent" in keys(make_mon().collect())
+
+
 def test_collect_adds_foreground(fake_ps, monkeypatch):
     monkeypatch.setattr(monitors, "foreground_process", lambda: "DCS.exe")
     rows = make_mon().collect()

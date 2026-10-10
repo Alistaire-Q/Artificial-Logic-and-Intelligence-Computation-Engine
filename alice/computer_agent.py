@@ -68,7 +68,8 @@ class TaskResult:
 
 
 def parse_action(text: str) -> dict[str, Any]:
-    m = re.search(r"\{.*\}", text or "", re.S)
+    text = text or ""
+    m = re.search(r"\{.*\}", text, re.S)
     if not m:
         raise ValueError(f"JSON yok: {text[:120]}")
     a = json.loads(m.group(0))

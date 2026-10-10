@@ -70,8 +70,9 @@ class PCMonitor:
         self.processes: set[str] = set()  # son toplamadaki süreç adları (mod tespiti için)
         self._nvidia = shutil.which("nvidia-smi")
         self._lhm = sys.platform == "win32"  # ilk başarısızlıkta kapanır
-        self._disk_at = 0.0
-        self._temps_at = 0.0
+        # -inf: ilk ölçüm hemen yapılır (monotonic() açılıştan sonraki ilk 60 sn'de < 60 olabilir)
+        self._disk_at = float("-inf")
+        self._temps_at = float("-inf")
         self._temps_last: list[Row] = []
         psutil.cpu_percent(interval=None)  # ilk çağrı hep 0 döner, ısındır
 
