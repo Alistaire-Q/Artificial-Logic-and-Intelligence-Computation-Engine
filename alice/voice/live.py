@@ -65,6 +65,10 @@ verebilirsin.
 Bir işe özel araç varsa (ör. 3B/Blender için blender) run_command ya da write_file yerine onu kullan; iş bitince
 sonucu kullanıcının ekranında aç (blender action=open gibi), çünkü kullanıcı ekranda görmek ister.
 Bir araç "onay gerekli" derse kullanıcıya kısaca sor; "evet" derse aynı çağrıyı tekrarla.
+Kullanıcı tek istekte birbirine bağlı birkaç iş isterse (ör. "son faturayı indir ve Ahmet'e gönder", "hava durumuna
+bak, yağmur varsa hatırlatma kur") run_plan'a ver: planlar, adım adım yapar, kontrol eder; arka planda sürer.
+Görev "[görev onay bekliyor]" yazarsa soruyu kullanıcıya sor ve cevabına göre task_control action=approve/reject
+çağır; kullanıcı açıkça evet demeden asla approve verme. "Dur/vazgeç" derse task_control action=stop.
 İç düşüncelerini, planını, araç hatalarını ya da düzeltmelerini asla sesli söyleme; sadece kullanıcıya Türkçe konuş.
 Konuşma tanıma Türkçe cümle içindeki uygulama/site adlarını bozabilir. Kullanıcının bilgisayarındaki ve sık kullandığı
 adlar: {names}. Duyduğun bir kelime anlamsızsa ya da bu adlardan birine sesçe benziyorsa o adı kastediyordur.
@@ -465,6 +469,15 @@ class LiveSession:
         def touch() -> None:
             state["active"] = time.monotonic()
 
+        def say(text: str) -> None:  # arka plandaki görevin ilerlemesi/onay sorusu: Alice kullanıcıya söylesin
+            ws.send(json.dumps({"clientContent": {"turns": [{"role": "user", "parts": [{"text": text}]}],
+                                                  "turnComplete": True}}))
+            touch()
+
+        task_state = getattr(getattr(self.agent, "ctx", None), "state", None)
+        if isinstance(task_state, dict):
+            task_state["task_hooks"] = {"say": say, "run_tool": self._on_tool_thread, "log": self.log}
+
         def send_frame() -> None:
             frame = self.grab()
             if frame:
@@ -589,10 +602,12 @@ class LiveSession:
                 time.sleep(0.1)
             out.close()
             self.agent.ui = old_ui
+            if isinstance(task_state, dict) and (task_state.get("task_hooks") or {}).get("say") is say:
+                task_state.pop("task_hooks", None)
             self.log("live kapandı")
 
     TOOL_TIMEOUT = 25.0  # sn: araç takılırsa modele hata dön, konuşma kilitlenmesin
-    BACKGROUND = {"computer_task"}  # dakikalar sürebilir: arka planda çalışır, bitince sonuç konuşmaya yazılır
+    BACKGROUND = {"computer_task", "run_plan"}  # dakikalar sürebilir: arka planda çalışır, bitince sonuç konuşmaya yazılır
 
     def _run_background(self, ws, fc: dict[str, Any]) -> None:
         name = fc.get("name", "")
@@ -658,6 +673,19 @@ class LiveSession:
             return None
         return job["res"]
 
+    def _on_tool_thread(self, fn: Callable[[], ToolResult], timeout: float = 600.0) -> ToolResult:
+        """Arka plandaki görevin aracını konuşmanın araç iş parçacığında çalıştır (tarayıcı bağlantısı orada)."""
+        q = getattr(self, "_tools_q", None)
+        if q is None:
+            q = queue.Queue()
+            self._tools_q = q
+            threading.Thread(target=self._tool_worker, args=(q,), daemon=True, name="alice-live-tools").start()
+        job: dict[str, Any] = {"fn": fn, "done": threading.Event()}
+        q.put(job)
+        if not job["done"].wait(timeout):
+            return ToolResult(f"araç {timeout:.0f} sn içinde bitmedi", is_error=True)
+        return job["res"]
+
     def _tool_worker(self, q: "queue.Queue[dict[str, Any]]") -> None:
         try:
             import comtypes  # UI Automation bu iş parçacığında da çalışsın
@@ -667,10 +695,13 @@ class LiveSession:
             pass
         while True:
             job = q.get()
-            call = job["call"]
+            call = job.get("call")
             try:
-                self.agent._enable_groups_for(tool_names=(call["function"]["name"],))
-                job["res"] = self.agent._execute_calls([call])[0]
+                if "fn" in job:  # arka plandaki görevin aracı: tarayıcı/UIA nesneleri bu iş parçacığına bağlı
+                    job["res"] = job["fn"]()
+                else:
+                    self.agent._enable_groups_for(tool_names=(call["function"]["name"],))
+                    job["res"] = self.agent._execute_calls([call])[0]
             except Exception as e:  # noqa: BLE001
                 job["res"] = ToolResult(f"{type(e).__name__}: {e}", is_error=True)
             job["done"].set()
@@ -681,6 +712,15 @@ class LiveSession:
             return
         call = {"id": fc.get("id") or fc.get("name"), "type": "function",
                 "function": {"name": fc.get("name", ""), "arguments": json.dumps(fc.get("args") or {})}}
+        if fc.get("name") == "task_control":  # anında: araç iş parçacığı görevin bir adımıyla meşgul olabilir
+            res = self.agent._execute_calls([call])[0]
+            self.log(f"live görev kontrolü {json.dumps(fc.get('args') or {}, ensure_ascii=False)}: {res.text[:120]}")
+            try:
+                ws.send(json.dumps({"toolResponse": {"functionResponses": [
+                    {"id": fc.get("id"), "name": "task_control", "response": {"result": res.text}}]}}))
+            except Exception:  # noqa: BLE001
+                pass
+            return
         lock = threading.Lock()
         answered = [False]
 
