@@ -59,6 +59,18 @@ def add_cuda_dlls() -> None:
             os.environ["PATH"] = str(d) + os.pathsep + os.environ.get("PATH", "")
 
 
+# Ekran kartında Whisper ağırlıkları int8, hesap float16: bellek yarıya iner (small ~0,5 -> ~0,25 GB),
+# doğruluk ve hız float16 ile neredeyse aynı. [voice] gpu_compute = "float16" eski davranış.
+GPU_COMPUTE = "int8_float16"
+
+
+def _free_cuda() -> None:
+    """Silinen modelin ekran kartı belleği Python nesnesi toplanınca bırakılır; hemen topla."""
+    import gc
+
+    gc.collect()
+
+
 def _cuda_ok(model) -> bool:
     """Model kuruldu diye CUDA çalışıyor sanma: DLL hatası ilk yazıya çevirmede çıkıyor. Yarım saniyelik
     sessizlikle dene (ilk CUDA çağrısı ~2,5 sn sürer, böylece ısınma da olur)."""
@@ -127,9 +139,13 @@ class LocalWhisper:
     """faster-whisper. GPU izinliyse large-v3-turbo, değilse işlemcide küçük model."""
 
     def __init__(self, gpu_model: str = "large-v3-turbo", cpu_model: str = "small", language: str = "tr",
-                 allow_gpu: Callable[[], bool] = lambda: True, prompt: str = ""):
+                 allow_gpu: Callable[[], bool] = lambda: True, prompt: str = "", compute: str = GPU_COMPUTE,
+                 idle_unload: float = 600):
         self.gpu_model = gpu_model
         self.cpu_model = cpu_model
+        self.compute = compute
+        self.idle_unload = idle_unload  # yedek motor: bu kadar sn kullanılmazsa bellekten çıkar
+        self.last_used = 0.0
         self.language = language
         self.allow_gpu = allow_gpu
         self.prompt = prompt
@@ -153,7 +169,7 @@ class LocalWhisper:
         if gpu and "cuda" not in self._models and not self._models.get("cuda_failed"):
             add_cuda_dlls()
             try:
-                m = WhisperModel(self.gpu_model, device="cuda", compute_type="float16")
+                m = WhisperModel(self.gpu_model, device="cuda", compute_type=self.compute)
                 if _cuda_ok(m):
                     self._models["cuda"] = m
                 else:
@@ -172,9 +188,25 @@ class LocalWhisper:
     def transcribe_file(self, data: bytes, filename: str) -> str:
         # faster-whisper, PyAV ile wav/webm/ogg hepsini çözer.
         with self._lock:
+            self.last_used = time.monotonic()
             segments, _ = self._model().transcribe(io.BytesIO(data), language=self.language, vad_filter=True,
                                                    beam_size=1, initial_prompt=self.prompt or None)
             return " ".join(s.text.strip() for s in segments).strip()
+
+    def trim(self, gpu_ok: bool) -> None:
+        """Uçuşta (GPU yasak) ekran kartındaki modeli bırak; uzun süre kullanılmayan yedek modelleri de at.
+        Bulut (Groq) çalıştıkça bu motor hiç kullanılmaz ama bir kez düşünce ~1 GB'lık model kalıcı yer kaplıyordu."""
+        if not self._lock.acquire(blocking=False):
+            return  # şu an yazıya çeviriyor
+        try:
+            idle = self.last_used and time.monotonic() - self.last_used > self.idle_unload
+            drop = [k for k in ("cuda", "cpu") if k in self._models and (idle or (k == "cuda" and not gpu_ok))]
+            for k in drop:
+                del self._models[k]
+            if drop:
+                _free_cuda()
+        finally:
+            self._lock.release()
 
 
 def _norm(text: str) -> str:
@@ -214,9 +246,11 @@ class WakeGate:
     HEAD_SECONDS = 2.5
 
     def __init__(self, model: str = "base", language: str = "tr", gpu_model: str = "",
-                 allow_gpu: Callable[[], bool] = lambda: False):
+                 allow_gpu: Callable[[], bool] = lambda: False, compute: str = GPU_COMPUTE):
         self.model_name = model
-        self.cpu_name = model
+        self.cpu_model = model
+        self.compute = compute
+        self.load_seconds = 0.0
         self.gpu_model = gpu_model  # ekran kartı varsa daha iyi duyan model (ör. small): ~0,1-0,2 sn
         self.allow_gpu = allow_gpu
         self.device = ""
@@ -224,9 +258,6 @@ class WakeGate:
         self.last_conf = 0.0  # son baş dökümünün güveni (ortalama log olasılık)
         self.language = language
         self._model: Any = None
-        self._models: dict[str, Any] = {}
-        self._cuda_failed = False
-        self._gpu_checked = (-1e9, False)
         self._failed = False
         self._lock = threading.Lock()
 
@@ -243,70 +274,71 @@ class WakeGate:
     def _load(self):
         from faster_whisper import WhisperModel
 
-        if self.gpu_model and self.allow_gpu():
-            add_cuda_dlls()
-            try:
-                m = WhisperModel(self.gpu_model, device="cuda", compute_type="float16")
-                if _cuda_ok(m):
-                    self.device, self.model_name = "cuda", self.gpu_model
-                    return m
-            except Exception:  # noqa: BLE001 - CUDA yoksa işlemcide küçük model
-                pass
-        self.device, self.model_name = "cpu", self.cpu_name
-        return WhisperModel(self.cpu_name, device="cpu", compute_type="int8")
+        t0 = time.monotonic()
+        try:
+            if self.gpu_model and self.allow_gpu():
+                add_cuda_dlls()
+                try:
+                    m = WhisperModel(self.gpu_model, device="cuda", compute_type=self.compute)
+                    if _cuda_ok(m):
+                        self.device, self.model_name = "cuda", self.gpu_model
+                        return m
+                except Exception:  # noqa: BLE001 - CUDA yoksa işlemcide küçük model
+                    pass
+                self._cuda_failed = True  # bir daha ekran kartına taşımayı deneme
+            self.device, self.model_name = "cpu", self.cpu_model
+            # Uçuşta işlemci DCS'e lazım: Whisper bütün çekirdekleri değil 4 iş parçacığı kullansın.
+            return WhisperModel(self.cpu_model, device="cpu", compute_type="int8", cpu_threads=4)
+        finally:
+            self.load_seconds = time.monotonic() - t0
 
-    def _gpu_allowed(self) -> bool:
-        t, ok = self._gpu_checked
-        if time.monotonic() - t > 3:
-            try:
-                ok = bool(self.allow_gpu())
-            except Exception:  # noqa: BLE001
-                ok = False
-            self._gpu_checked = (time.monotonic(), ok)
-        return ok
-
-    def _current(self):
-        """Modele her seferinde mod kontrolüyle ulaş. Model eskiden bir kez yüklenip hep ekran kartında kalıyordu:
-        DCS açıkken (uçuş modu, local_gpu = false) oyunla GPU için yarışıp uyandırma 3-26 sn sürüyordu. Uçuşta
-        işlemcideki modele geçer ve ekran kartındakini bırakır; uçuş bitince geri döner."""
-        want_gpu = bool(self.gpu_model) and not self._cuda_failed and self._gpu_allowed()
-        key = "cuda" if want_gpu else "cpu"
-        m = self._models.get(key)
-        if m is None:
-            if want_gpu:
-                m = self._load()
-                if self.device != "cuda":
-                    self._cuda_failed, key = True, "cpu"
-            else:
-                m = self._load_cpu()
-            self._models[key] = m
-        if key == "cpu":
-            self._models.pop("cuda", None)  # ekran kartı belleğini oyuna bırak
-        self.device = key
-        self.model_name = self.gpu_model if key == "cuda" else self.cpu_name
-        self._model = m
-        return m
-
-    def flying(self) -> bool:
-        """Uçuş modu: ekran kartı varken kullanımı kapalı (local_gpu = false)."""
-        return bool(self.gpu_model) and not self._cuda_failed and not self._gpu_allowed()
-
-    def _load_cpu(self):
-        from faster_whisper import WhisperModel
-
-        return WhisperModel(self.cpu_name, device="cpu", compute_type="int8")
-
-    def warm_up(self) -> None:
+    def warm_up(self, log: Callable[[str], None] | None = None) -> None:
         """Modeli arka planda yükle: ilk "Hey Alice" model yüklemesini beklemesin."""
         def run() -> None:
             if self.available():
                 with self._lock:
-                    try:
-                        self._current()
-                    except Exception:  # noqa: BLE001
-                        self._failed = True
+                    if self._model is None:
+                        try:
+                            self._model = self._load()
+                            if log:
+                                log(f"uyandırma modeli hazır: {self.model_name} ({self.device}), "
+                                    f"{self.load_seconds:.1f} sn")
+                        except Exception:  # noqa: BLE001
+                            self._failed = True
 
         threading.Thread(target=run, daemon=True, name="alice-wake-warm").start()
+
+    def sync(self, gpu_ok: bool) -> None:
+        """Mod değişince modeli doğru yere taşı: DCS açılınca ekran kartından çıkıp işlemciye geçer (oyuna
+        bellek kalır), kapanınca ekran kartına döner. Yeni model kilidin dışında yüklenir; bu sırada gelen
+        "Hey Alice" eski modelle cevaplanır, beklemez."""
+        want = "cuda" if gpu_ok and self.gpu_model else "cpu"
+        if (self._model is None or self.device == want or self._failed or getattr(self, "_moving", False)
+                or (want == "cuda" and getattr(self, "_cuda_failed", False))):
+            return
+        self._moving = True
+
+        def run() -> None:
+            try:
+                m = self._load()
+                with self._lock:
+                    self._model = m
+                _free_cuda()
+            except Exception:  # noqa: BLE001 - taşınamazsa eskisi kalsın
+                pass
+            finally:
+                self._moving = False
+
+        threading.Thread(target=run, daemon=True, name="alice-wake-move").start()
+
+    def flying(self) -> bool:
+        """Uçuş modu: ekran kartı var ama kullanımı kapalı (local_gpu = false)."""
+        if not self.gpu_model or getattr(self, "_cuda_failed", False):
+            return False
+        try:
+            return not self.allow_gpu()
+        except Exception:  # noqa: BLE001
+            return False
 
     def heard(self, audio: Audio) -> str | None:
         """Cümlenin başının yerel yazıya dökümü; yerel model kullanılamıyorsa None."""
@@ -316,7 +348,9 @@ class WakeGate:
         t0 = time.monotonic()
         try:
             with self._lock:
-                segments, _ = self._current().transcribe(io.BytesIO(head.to_wav()), language=self.language,
+                if self._model is None:
+                    self._model = self._load()
+                segments, _ = self._model.transcribe(io.BytesIO(head.to_wav()), language=self.language,
                                                      beam_size=1, initial_prompt="Hey Alice.",
                                                      condition_on_previous_text=False)
                 segs = speech_segments(segments)
@@ -334,11 +368,12 @@ class WakeGate:
         wav = audio.resample(16000).to_wav()
         try:
             with self._lock:
-                model = self._current()
+                if self._model is None:
+                    self._model = self._load()
                 if self.flying():
                     prompt = f"{prompt} {FLIGHT_HINT}".strip()
-                segments, _ = model.transcribe(io.BytesIO(wav), language=self.language, beam_size=1,
-                                               initial_prompt=prompt, condition_on_previous_text=False)
+                segments, _ = self._model.transcribe(io.BytesIO(wav), language=self.language, beam_size=1,
+                                                     initial_prompt=prompt, condition_on_previous_text=False)
                 segs = speech_segments(segments, prompt)
         except Exception:  # noqa: BLE001
             return None
@@ -361,6 +396,14 @@ class STTRouter:
 
     def transcribe_file(self, data: bytes, filename: str) -> str:
         return self._try(lambda e: e.transcribe_file(data, filename))
+
+    def trim(self, gpu_ok: bool) -> None:
+        """Çekirdeğin her turunda: ekran kartı izni değiştiyse modelleri taşı, boştaki yedekleri bırak."""
+        if self.wake_gate is not None:
+            self.wake_gate.sync(gpu_ok)
+        for e in self.engines:
+            if hasattr(e, "trim"):
+                e.trim(gpu_ok)
 
     def _try(self, fn) -> str:
         errors = []
@@ -404,6 +447,7 @@ def make_stt(cfg: Config) -> STTRouter:
 
     v = cfg.data.get("voice", {})
     lang = v.get("language", "tr")
+    compute = str(v.get("gpu_compute", GPU_COMPUTE) or GPU_COMPUTE)
     engines: list[STT] = []
     for ref in v.get("stt", ["groq:whisper-large-v3-turbo", "local:large-v3-turbo"]):
         kind, _, model = ref.partition(":")
@@ -415,10 +459,11 @@ def make_stt(cfg: Config) -> STTRouter:
         elif kind == "local":
             engines.append(LocalWhisper(model or "large-v3-turbo", v.get("stt_cpu_model", "small"), lang,
                                         allow_gpu=lambda: core_policy().get("local_gpu", True) is not False,
-                                        prompt=PROMPT))
+                                        prompt=PROMPT, compute=compute))
     router = STTRouter(engines)
     gate_model = v.get("wake_local", "base")
     if gate_model:
         router.wake_gate = WakeGate(gate_model, lang, gpu_model=str(v.get("wake_local_gpu", "small") or ""),
-                                    allow_gpu=lambda: core_policy().get("local_gpu", True) is not False)
+                                    allow_gpu=lambda: core_policy().get("local_gpu", True) is not False,
+                                    compute=compute)
     return router

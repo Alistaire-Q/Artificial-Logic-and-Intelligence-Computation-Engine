@@ -68,6 +68,8 @@ class PCMonitor:
         self._nvidia = shutil.which("nvidia-smi")
         self._lhm = sys.platform == "win32"  # ilk başarısızlıkta kapanır
         self._disk_at = 0.0
+        self._temps_at = 0.0
+        self._temps_last: list[Row] = []
         psutil.cpu_percent(interval=None)  # ilk çağrı hep 0 döner, ısındır
 
     def collect(self) -> list[Row]:
@@ -115,7 +117,11 @@ class PCMonitor:
             if cpu:
                 out.append(("pc.cpu.temp", max(cpu), None))
         if self._lhm and not out:
-            out += self._lhm_temps()
+            # Her sorgu bir PowerShell açıyor (~0,5 sn işlemci): 15 sn'de bir değil dakikada bir yeter.
+            if time.monotonic() - self._temps_at >= 60:
+                self._temps_at = time.monotonic()
+                self._temps_last = self._lhm_temps()
+            out += self._temps_last
         return out
 
     def _lhm_temps(self) -> list[Row]:

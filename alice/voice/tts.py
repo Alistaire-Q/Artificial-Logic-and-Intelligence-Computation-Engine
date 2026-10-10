@@ -430,6 +430,24 @@ class XTTS:
             wav = self._load().tts(text=text, speaker_wav=str(ref), language="tr")
         return Audio.from_floats(wav, 24000).polish()
 
+    def release_gpu(self) -> None:
+        """Uçuşta ekran kartındaki modeli at (bir sonraki cümle işlemcide yükler)."""
+        if self._device != "cuda" or not self._lock.acquire(blocking=False):
+            return
+        try:
+            self._model, self._device = None, ""
+            import gc
+
+            gc.collect()
+            try:
+                import torch
+
+                torch.cuda.empty_cache()
+            except ImportError:
+                pass
+        finally:
+            self._lock.release()
+
 
 class Chatterbox:
     """Resemble Chatterbox çok dilli, ayrı sanal ortamdaki yerel ses sunucusu üzerinden (tts_server.py).
@@ -471,6 +489,15 @@ class Chatterbox:
             return self.client.get(self.base + "/health", timeout=3).status_code == 200
         except httpx.HTTPError:
             return False
+
+    def release_gpu(self) -> None:
+        """Uçuşta ses sunucusundaki model ekran kartındaysa (~3 GB) attır. Sunucu kapalıysa bir şey yapmaz."""
+        try:
+            r = self.client.get(self.base + "/health", timeout=1)
+            if r.status_code == 200 and r.json().get("device") == "cuda":
+                self.client.post(self.base + "/release", timeout=10)
+        except (httpx.HTTPError, ValueError):
+            pass
 
     def ensure_server(self) -> None:
         with self._lock:
@@ -657,6 +684,13 @@ class TTSRouter:
     @property
     def name(self) -> str:
         return self.last or (self.order()[0].name if self.order() else "yok")
+
+    def release_gpu(self) -> None:
+        """Çekirdek uçuş moduna geçince: yerel ses modeli ekran kartında duruyorsa bırak. Uçuşta önce bulut
+        sesi kullanıldığı için yerel motor hiç çağrılmıyor ve modeli DCS boyunca ekran kartında kalıyordu."""
+        fn = getattr(self.local, "release_gpu", None)
+        if fn is not None:
+            fn()
 
     def order(self) -> list[TTS]:
         # Yedek (Edge) en sonda: önce ALICE'in kendi sesi (bulut ya da onu taklit eden yerel motor).
