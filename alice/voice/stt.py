@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import threading
 import time
 from typing import Any, Callable, Protocol
@@ -208,6 +209,27 @@ class LocalWhisper:
             self._lock.release()
 
 
+def _wake_echo(text: str) -> bool:
+    return re.sub(r"[^a-zçğıöşü ]", "", text.lower()).strip() in {"hey alice", "alice", "hey alis", "hey"}
+
+
+def speech_segments(segments) -> list:
+    """Gerçek konuşma olmayan Whisper parçalarını at. initial_prompt "Hey Alice." olduğu için Whisper oyun/motor
+    sesi ya da müzikte ipucunu aynen geri yazabiliyor: kimse konuşmadan ALICE uyanıyordu. Ayrıca kendini tekrar
+    eden döngüler (sıkıştırma oranı yüksek) ve "konuşma yok" olasılığı yüksek + güvensiz parçalar atılır."""
+    out = []
+    for s in segments:
+        nsp = float(getattr(s, "no_speech_prob", 0.0) or 0.0)
+        lp = float(getattr(s, "avg_logprob", 0.0) or 0.0)
+        cr = float(getattr(s, "compression_ratio", 1.0) or 1.0)
+        if cr > 2.4 or (nsp > 0.6 and lp < -0.7):
+            continue
+        if _wake_echo(getattr(s, "text", "")) and (nsp > 0.35 or lp < -0.9):
+            continue
+        out.append(s)
+    return out
+
+
 class WakeGate:
     """Yerel küçük Whisper ile sadece cümlenin başına bakıp "Hey Alice" var mı diye kontrol eder.
 
@@ -226,6 +248,7 @@ class WakeGate:
         self.allow_gpu = allow_gpu
         self.device = ""
         self.last_seconds = 0.0
+        self.last_conf = 0.0  # son baş dökümünün güveni (ortalama log olasılık)
         self.language = language
         self._model: Any = None
         self._failed = False
@@ -314,9 +337,10 @@ class WakeGate:
                 segments, _ = self._model.transcribe(io.BytesIO(head.to_wav()), language=self.language,
                                                      beam_size=1, initial_prompt="Hey Alice.",
                                                      condition_on_previous_text=False)
-                text = " ".join(s.text.strip() for s in segments).strip()
+                segs = speech_segments(segments)
                 self.last_seconds = time.monotonic() - t0
-                return text
+                self.last_conf = min((s.avg_logprob for s in segs), default=-9.0)
+                return " ".join(s.text.strip() for s in segs).strip()
         except Exception:  # noqa: BLE001 - yerel model bozuksa buluta düş
             self._failed = True
             return None
@@ -332,7 +356,7 @@ class WakeGate:
                     self._model = self._load()
                 segments, _ = self._model.transcribe(io.BytesIO(wav), language=self.language, beam_size=1,
                                                      initial_prompt=prompt, condition_on_previous_text=False)
-                segs = list(segments)
+                segs = speech_segments(segments)
         except Exception:  # noqa: BLE001
             return None
         text = " ".join(s.text.strip() for s in segs).strip()
