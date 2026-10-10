@@ -307,9 +307,12 @@ def test_wakegate_gpu_failure_falls_back_to_cpu(fake_fw):
     assert g.device == "cpu" and g.model_name == "base"
 
 
-def test_wakegate_heard_failure_disables_gate(fake_fw):
+def test_wakegate_heard_failure_disables_gate_after_three(fake_fw):
     fake_fw.raise_on_transcribe = RuntimeError("bozuk")
     g = WakeGate()
+    for _ in range(2):  # tek tük hata (CUDA OOM) kapıyı kapatmaz, model yeniden yüklenir
+        assert g.heard(Audio.silence(0.5, 16000)) is None
+        assert g.available() is True and g._model is None
     assert g.heard(Audio.silence(0.5, 16000)) is None
     assert g.available() is False
 
