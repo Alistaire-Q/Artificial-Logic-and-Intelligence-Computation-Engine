@@ -29,6 +29,46 @@ class STT(Protocol):
     def transcribe(self, audio: Audio) -> str: ...
 
 
+_DLLS_DONE = False
+
+
+def add_cuda_dlls() -> None:
+    """Windows: faster-whisper (ctranslate2) cublas64_12.dll/cudnn'i bulamıyor; PyTorch ve nvidia-* pip
+    paketlerinin içindekileri arama yoluna ekle. Diğer sistemlerde bir şey yapmaz."""
+    global _DLLS_DONE
+    if _DLLS_DONE or os.name != "nt":
+        return
+    _DLLS_DONE = True
+    import importlib.util
+    from pathlib import Path
+
+    dirs: list[Path] = []
+    spec = importlib.util.find_spec("torch")
+    if spec and spec.origin:
+        dirs.append(Path(spec.origin).parent / "lib")
+    spec = importlib.util.find_spec("nvidia")
+    for root in (spec.submodule_search_locations or []) if spec else []:
+        dirs += list(Path(root).glob("*/bin"))
+    for d in dirs:
+        if d.is_dir():
+            try:
+                os.add_dll_directory(str(d))  # type: ignore[attr-defined]
+            except OSError:
+                pass
+            os.environ["PATH"] = str(d) + os.pathsep + os.environ.get("PATH", "")
+
+
+def _cuda_ok(model) -> bool:
+    """Model kuruldu diye CUDA çalışıyor sanma: DLL hatası ilk yazıya çevirmede çıkıyor. Yarım saniyelik
+    sessizlikle dene (ilk CUDA çağrısı ~2,5 sn sürer, böylece ısınma da olur)."""
+    try:
+        segs, _ = model.transcribe(io.BytesIO(Audio.silence(0.5, 16000).to_wav()), beam_size=1)
+        list(segs)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 class GroqWhisper:
     URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 
@@ -109,11 +149,21 @@ class LocalWhisper:
                 gpu = ctranslate2.get_cuda_device_count() > 0
             except (ImportError, RuntimeError):
                 gpu = False
-        key = "cuda" if gpu else "cpu"
-        if key not in self._models:
-            self._models[key] = (WhisperModel(self.gpu_model, device="cuda", compute_type="float16") if gpu
-                                 else WhisperModel(self.cpu_model, device="cpu", compute_type="int8"))
-        return self._models[key]
+        if gpu and "cuda" not in self._models and not self._models.get("cuda_failed"):
+            add_cuda_dlls()
+            try:
+                m = WhisperModel(self.gpu_model, device="cuda", compute_type="float16")
+                if _cuda_ok(m):
+                    self._models["cuda"] = m
+                else:
+                    self._models["cuda_failed"] = True
+            except Exception:  # noqa: BLE001 - CUDA yoksa işlemciye düş
+                self._models["cuda_failed"] = True
+        if gpu and "cuda" in self._models:
+            return self._models["cuda"]
+        if "cpu" not in self._models:
+            self._models["cpu"] = WhisperModel(self.cpu_model, device="cpu", compute_type="int8")
+        return self._models["cpu"]
 
     def transcribe(self, audio: Audio) -> str:
         return self.transcribe_file(audio.resample(16000).to_wav(), "speech.wav")
@@ -160,10 +210,12 @@ class WakeGate:
         from faster_whisper import WhisperModel
 
         if self.gpu_model and self.allow_gpu():
+            add_cuda_dlls()
             try:
                 m = WhisperModel(self.gpu_model, device="cuda", compute_type="float16")
-                self.device, self.model_name = "cuda", self.gpu_model
-                return m
+                if _cuda_ok(m):
+                    self.device, self.model_name = "cuda", self.gpu_model
+                    return m
             except Exception:  # noqa: BLE001 - CUDA yoksa işlemcide küçük model
                 pass
         self.device = "cpu"
