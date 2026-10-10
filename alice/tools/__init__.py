@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from alice.tools import blender, browser, computer, core, desktop, extras, flight, files, groups, meta, shell, system, web
+from alice.tools import (blender, browser, computer, core, desktop, extras, flight, files, groups, meta, shell, system,
+                         tasks, web)
 from alice.tools.base import Tool, ToolContext, ToolError, ToolResult
 
 
 def builtin_tools() -> list[Tool]:
     return [*files.TOOLS, *shell.TOOLS, *web.TOOLS, *system.TOOLS, *computer.TOOLS, *desktop.TOOLS,
-            *browser.TOOLS, *blender.TOOLS, *meta.TOOLS, *groups.TOOLS, *core.TOOLS, *flight.TOOLS, *extras.TOOLS]
+            *browser.TOOLS, *blender.TOOLS, *meta.TOOLS, *groups.TOOLS, *core.TOOLS, *flight.TOOLS, *extras.TOOLS,
+            *tasks.TOOLS]
 
 
 def all_tools(config=None, emit=lambda s: None) -> list[Tool]:
