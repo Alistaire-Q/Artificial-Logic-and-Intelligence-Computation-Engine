@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from alice.tools.base import COMPUTER, READ, Tool, ToolContext, ToolError, ToolResult, obj
+from alice.tools.base import COMPUTER, EXEC, READ, Tool, ToolContext, ToolError, ToolResult, obj
 
 IS_WIN = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
@@ -51,15 +51,45 @@ def focus_window(title: str) -> str:
             if getattr(w, "isMinimized", False):
                 w.restore()
             w.activate()
-        except Exception:  # noqa: BLE001 - Windows bazen ön plana almayı reddeder; alt hilesi
-            if IS_WIN:
-                import pyautogui
-
-                pyautogui.press("alt")
-                w.activate()
+        except Exception:  # noqa: BLE001 - Windows bazen ön plana almayı reddeder (oyun öndeyken)
+            if not IS_WIN:
+                raise
+        if IS_WIN and not force_foreground(getattr(w, "_hWnd", 0)):
+            raise ToolError(f"'{w.title}' öne alınamadı (Windows izin vermedi; tam ekran oyun açık olabilir)")
         return w.title
     subprocess.run(["wmctrl", "-a", title], check=False)
     return title
+
+
+def force_foreground(hwnd: int) -> bool:
+    """Pencereyi gerçekten öne al. Windows, öndeki uygulama (ör. tam ekran oyun) başka bir sürece
+    ait olunca SetForegroundWindow'u sessizce reddeder; alt tuşu ve iş parçacığı girdisini bağlama
+    hileleriyle tekrar dene. Sonunda öndeki pencereyi doğrula."""
+    if not IS_WIN or not hwnd:
+        return True
+    import ctypes
+
+    u = ctypes.windll.user32
+    if u.GetForegroundWindow() == hwnd:
+        return True
+    if u.IsIconic(hwnd):
+        u.ShowWindow(hwnd, 9)  # SW_RESTORE
+    u.keybd_event(0x12, 0, 0, 0)  # alt bas-bırak: "son girdi bizden" sayılır, kilit açılır
+    u.keybd_event(0x12, 0, 2, 0)
+    u.SetForegroundWindow(hwnd)
+    if u.GetForegroundWindow() != hwnd:
+        fg = u.GetForegroundWindow()
+        fg_thread = u.GetWindowThreadProcessId(fg, None)
+        me = ctypes.windll.kernel32.GetCurrentThreadId()
+        attached = fg_thread and fg_thread != me and u.AttachThreadInput(me, fg_thread, True)
+        try:
+            u.BringWindowToTop(hwnd)
+            u.SetForegroundWindow(hwnd)
+        finally:
+            if attached:
+                u.AttachThreadInput(me, fg_thread, False)
+    time.sleep(0.1)
+    return u.GetForegroundWindow() == hwnd
 
 
 def window_op(title: str, op: str) -> str:
@@ -175,7 +205,7 @@ _START_APPS: list[tuple[str, str]] | None = None
 
 def start_apps(refresh: bool = False) -> list[tuple[str, str]]:
     """Başlat menüsündeki TÜM uygulamalar (Microsoft Store / UWP dahil: WhatsApp, Spotify...) -> (ad, AppID).
-    Store uygulamalarının exe'si/kısayolu yok; shell:AppsFolder\<AppID> ile açılır."""
+    Store uygulamalarının exe'si/kısayolu yok; shell:AppsFolder\\<AppID> ile açılır."""
     global _START_APPS
     if _START_APPS is not None and not refresh:
         return _START_APPS
@@ -190,7 +220,7 @@ def start_apps(refresh: bool = False) -> list[tuple[str, str]]:
                 name, _, app_id = line.partition("	")
                 if name.strip() and app_id.strip():
                     apps.append((name.strip(), app_id.strip()))
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, ValueError, subprocess.SubprocessError):
             pass
     _START_APPS = apps
     return apps
@@ -323,6 +353,15 @@ def find_installed_apps(name: str, limit: int = 15) -> list[str]:
     return out[:limit]
 
 
+SCRIPT_EXT = (".bat", ".cmd", ".ps1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".msi", ".scr", ".hta", ".com")
+CMD_META = set('&|<>^%"')
+
+
+def is_script_target(target: str) -> bool:
+    t = target.strip().strip('"').lower()
+    return "://" not in t and t.endswith(SCRIPT_EXT)
+
+
 def open_app(target: str) -> str:
     """Uygulama adı, exe yolu, dosya ya da URL aç."""
     if IS_WIN:
@@ -346,7 +385,10 @@ def open_app(target: str) -> str:
             if path.lower().endswith(".exe"):
                 os.startfile(path)  # type: ignore[attr-defined]
                 return f"açıldı: {path}"
-        # Son çare: shell'in kendi çözümlemesi (App Paths kayıtları dahil).
+        # Son çare: shell'in kendi çözümlemesi (App Paths kayıtları dahil). cmd.exe & | ^ gibi karakterleri komut
+        # ayırıcı sayar: "x&calc" ikinci bir komut çalıştırmasın (hedef bir web sayfasından gelmiş olabilir).
+        if CMD_META & set(target):
+            raise ToolError(f"'{target}' bulunamadı (geçersiz karakter içeriyor)")
         subprocess.Popen(["cmd", "/c", "start", "", target], creationflags=0x08000000)
         return (f"'{target}' kurulu programlarda bulunamadı; başlatma komutu yine de gönderildi. "
                 "Pencere açılmadıysa program kurulu değildir ya da adı farklıdır.")
@@ -652,7 +694,11 @@ class Windows(Tool):
     risk = COMPUTER
 
     def risk_for(self, args: dict[str, Any]) -> str:
-        return READ if args.get("action") in ("list", "find") else COMPUTER
+        if args.get("action") in ("list", "find"):
+            return READ
+        if args.get("action") == "open" and is_script_target(str(args.get("target") or "")):
+            return EXEC  # betik/exe çalıştırmak komut çalıştırmakla aynı: run_command gibi onaya tabi
+        return COMPUTER
 
     def run(self, ctx: ToolContext, action: str, title: str | None = None, target: str | None = None,
             new_tab: bool | None = None) -> ToolResult:

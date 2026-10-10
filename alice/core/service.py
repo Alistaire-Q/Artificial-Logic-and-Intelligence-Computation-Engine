@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import traceback
 import threading
 import time
 from dataclasses import asdict
@@ -128,7 +129,10 @@ class Core:
             try:
                 rows += m.collect()
             except Exception as e:  # bir gözlemci çökse de diğerleri çalışsın
-                self.store.add_event("error", f"{getattr(m, 'name', m)} gözlemcisi hata verdi", str(e)[:300])
+                try:
+                    self.store.add_event("error", f"{getattr(m, 'name', m)} gözlemcisi hata verdi", str(e)[:300])
+                except Exception:  # noqa: BLE001
+                    pass
         if rows:
             self.store.add_many(rows, now)
         self._update_mode(now)
@@ -173,7 +177,11 @@ class Core:
                 continue
             self.running_tasks.add(task.id)
             # Çift çalışmayı önlemek için hemen işaretle; sonuç gelince güncellenir.
-            self.tasks.mark_run(task, "(çalışıyor)", now)
+            try:
+                self.tasks.mark_run(task, "(çalışıyor)", now)
+            except Exception:
+                self.running_tasks.discard(task.id)  # yoksa bu görev bir daha hiç çalışmaz
+                raise
             threading.Thread(target=self._run_task, args=(task, late), daemon=True).start()
 
     def _run_task(self, task: ScheduledTask, late: bool) -> None:
@@ -213,7 +221,10 @@ class Core:
                 try:
                     self.tick()
                 except Exception as e:
-                    self.store.add_event("error", "çekirdek turu hata verdi", repr(e)[:500], "warn", "core")
+                    try:  # olay yazılamasa da (veritabanı kilitli) döngü ölmesin
+                        self.store.add_event("error", "çekirdek turu hata verdi", repr(e)[:500], "warn", "core")
+                    except Exception:  # noqa: BLE001
+                        traceback.print_exc()
                 self.stop_event.wait(max(1.0, self.interval - (time.monotonic() - t0)))
         finally:
             self.store.add(MODE_KEY, text="off")

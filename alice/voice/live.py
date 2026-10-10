@@ -18,13 +18,13 @@ import time
 from typing import Any, Callable
 
 from alice.tools.base import ToolResult
+from alice.voice.listen import is_yes
 from alice.voice.vocab import known_names
 
 URL = ("wss://generativelanguage.googleapis.com/ws/"
        "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key={key}")
 DEFAULT_MODELS = ["gemini-3.8-live", "gemini-3.1-flash-live-preview", "gemini-2.5-flash-native-audio-latest"]
 LIVE_GROUPS = {"desktop", "browser", "personal", "system", "automation"}
-YES = ("evet", "tamam", "olur", "onay", "yap", "devam", "peki")
 SCHEMA_KEYS = {"type", "description", "enum", "properties", "required", "items", "nullable", "format"}
 
 LIVE_PROMPT = """# Canlı sesli konuşma
@@ -222,7 +222,7 @@ class LiveUI:
         pass
 
     def ask_permission(self, name: str, summary: str, risk: str) -> str:
-        return "y" if any(w in self.last_user.lower() for w in YES) else "n"
+        return "y" if is_yes(self.last_user) else "n"
 
 
 class AudioOut:
@@ -238,7 +238,8 @@ class AudioOut:
         self._t.start()
 
     def put(self, pcm: bytes) -> None:
-        self.q.put(pcm)
+        if self.dead is None:
+            self.q.put(pcm)
 
     def clear(self) -> None:
         self._gen += 1
@@ -249,8 +250,12 @@ class AudioOut:
             pass
         self.busy_until = 0.0
 
+    dead: Exception | None = None
+
     @property
     def playing(self) -> bool:
+        if self.dead is not None:
+            return False
         return not self.q.empty() or time.monotonic() < self.busy_until
 
     def close(self) -> None:
@@ -279,6 +284,13 @@ class AudioOut:
         return pcm
 
     def _run(self) -> None:
+        try:
+            self._play()
+        except Exception as e:  # noqa: BLE001 - çıkış aygıtı yok/çıkarıldı: "çalıyor" sanıp oturumu açık tutma
+            self.dead = e
+            self.clear()
+
+    def _play(self) -> None:
         import sounddevice as sd
 
         with sd.RawOutputStream(samplerate=self.rate, channels=1, dtype="int16", latency="high") as out:
@@ -542,7 +554,6 @@ class LiveSession:
                     buf = b""
 
         threading.Thread(target=reader, daemon=True, name="alice-live-in").start()
-        threading.Thread(target=sender, daemon=True, name="alice-live-mic").start()
         try:
             frame = self.grab() if self.screen == "turn" else None
             if frame and first_audio:
@@ -563,6 +574,9 @@ class LiveSession:
                                                       "turnComplete": True}}))
                 state["heard"].append(first_text)
                 ui.last_user = first_text
+            # Mikrofon akışı ilk cümle gönderildikten SONRA başlasın: bağlanırken biriken devamı ilk cümlenin
+            # önüne ya da arasına girip modele karışık sırayla gitmesin.
+            threading.Thread(target=sender, daemon=True, name="alice-live-mic").start()
             state["asked"], state["spoke"] = time.monotonic(), False
             while not done.is_set() and not stop.is_set():
                 try:
@@ -589,6 +603,8 @@ class LiveSession:
                 time.sleep(0.1)
             out.close()
             self.agent.ui = old_ui
+            if getattr(out, "dead", None) is not None:
+                self.log(f"live ses çıkışı açılamadı: {out.dead}")
             self.log("live kapandı")
 
     TOOL_TIMEOUT = 25.0  # sn: araç takılırsa modele hata dön, konuşma kilitlenmesin

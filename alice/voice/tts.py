@@ -187,6 +187,8 @@ class GeminiTTS:
 
     URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
+    TOTAL_SECONDS = 20.0
+
     def __init__(self, api_key: str, voice: str = "Aoede", models: list[str] | str | None = None,
                  client: httpx.Client | None = None, verify: Callable[[Audio, str], bool] | None = None,
                  formats_file: Path | None = None):
@@ -276,6 +278,10 @@ class GeminiTTS:
         errors: list[str] = []
         status: dict[str, str] = {}
         for model in self.models:
+            # Toplam süre sınırı: her model 45 sn bekletirse 5 modelde Edge'e düşmek dakikalar sürüyordu.
+            if time.monotonic() - now > self.TOTAL_SECONDS:
+                errors.append(f"{self.TOTAL_SECONDS:.0f} sn içinde ses gelmedi")
+                break
             if self.down.get(model, 0) > now:
                 status[model] = {"daily": "günlük kota", "minute": "dakikalık kota"}.get(self.reason.get(model, ""),
                                                                                          "bekletiliyor")
@@ -304,6 +310,8 @@ class GeminiTTS:
                     status[model] = "zaman aşımı"
                     break
                 if kind == "error":
+                    self.down[model] = now + 60  # 500/503 veren model her cümlede ilk denenmesin
+                    self.reason[model] = "error"
                     errors.append(res)
                     status[model] = res.split(": ", 1)[-1][:60]
                     break
@@ -620,7 +628,11 @@ class SpeechCache:
         f = self._file(engine, emotion, text)
         try:
             return Audio.load(f) if f.exists() else None
-        except (OSError, ValueError, EOFError):
+        except Exception:  # noqa: BLE001 - yarım yazılmış/bozuk dosya (wave.Error dahil): sil, yeniden üretilsin
+            try:
+                f.unlink()
+            except OSError:
+                pass
             return None
 
     def put(self, engine: str, emotion: str, text: str, audio: Audio) -> None:
@@ -628,7 +640,10 @@ class SpeechCache:
             return
         try:
             self.path.mkdir(parents=True, exist_ok=True)
-            audio.save(self._file(engine, emotion, text))
+            f = self._file(engine, emotion, text)
+            tmp = f.with_suffix(".tmp")
+            audio.save(tmp)
+            os.replace(tmp, f)  # yarıda kesilirse bozuk .wav önbellekte kalmasın
             self._writes += 1
             if self._writes % 100 == 0:
                 files = sorted(self.path.glob("*.wav"), key=lambda p: p.stat().st_mtime)
@@ -704,7 +719,9 @@ class TTSRouter:
                 if self.cache is not None:
                     self.cache.put(e.name, emotion, text, audio)
                 return audio
-            except TTSError as ex:
+            except Exception as ex:  # noqa: BLE001 - CUDA OOM, bozuk ses verisi: sıradaki motora geç, bu motoru beklet
+                if not isinstance(ex, TTSError):
+                    ex = TTSError(f"{type(ex).__name__}: {ex}")
                 wait = self.cooldown
                 if isinstance(ex, QuotaError):
                     wait = 3600 if ex.daily else (ex.retry_after or self.cooldown)

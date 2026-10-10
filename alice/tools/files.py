@@ -24,6 +24,41 @@ def _skip_dir(name: str) -> bool:
     return name in SKIP_DIRS or name.startswith(".")
 
 
+def glob_regex(pattern: str) -> "re.Pattern[str]":
+    """Glob desenini (ör. '**/*.py', 'src/**/*.cs', '*.txt') göreli yola uyan regex'e çevir.
+    '**/' sıfır ya da daha fazla klasör, '*' ve '?' tek klasör adı içinde eşleşir. Windows'ta büyük/küçük harf duyarsız."""
+    pat = pattern.replace("\\", "/")
+    while pat.startswith("./"):
+        pat = pat[2:]
+    out, i = "", 0
+    while i < len(pat):
+        if pat.startswith("**/", i):
+            out += "(?:.*/)?"
+            i += 3
+        elif pat.startswith("**", i):
+            out += ".*"
+            i += 2
+        elif pat[i] == "*":
+            out += "[^/]*"
+            i += 1
+        elif pat[i] == "?":
+            out += "[^/]"
+            i += 1
+        elif pat[i] == "[":
+            j = pat.find("]", i + 1)
+            if j == -1:
+                out += re.escape(pat[i])
+                i += 1
+            else:
+                body = pat[i + 1:j]
+                out += "[" + ("^" + body[1:] if body.startswith("!") else body) + "]"
+                i = j + 1
+        else:
+            out += re.escape(pat[i])
+            i += 1
+    return re.compile(out + r"\Z", re.IGNORECASE if os.name == "nt" else 0)
+
+
 def _limit_note(reason: str) -> str:
     return (f"[ARAMA YARIDA KESİLDİ: {reason}. Sonuç eksik; 'eşleşme yok' aranan şeyin olmadığı anlamına GELMEZ. "
             "Daha dar bir klasör (path) ya da dosya filtresi (glob) vererek tekrar ara.]\n")
@@ -245,20 +280,28 @@ class Glob(Tool):
         import time
 
         base = ctx.resolve(path)
-        hits = []
+        rx = glob_regex(pattern)
+        # "**" yoksa desen derinliği sınırlı: daha derine inmeye gerek yok.
+        max_depth = None if "**" in pattern else pattern.replace("\\", "/").strip("/").count("/")
+        hits: list[Path] = []
         note = ""
         deadline = time.monotonic() + SEARCH_SECONDS
-        for n, p in enumerate(base.glob(pattern)):
-            if n % 200 == 0:
-                if ctx.cancelled():
-                    note = _limit_note("kullanıcı durdurdu")
-                    break
-                if time.monotonic() > deadline:
-                    note = _limit_note(f"{SEARCH_SECONDS:.0f} sn doldu")
-                    break
-            if any(_skip_dir(part) for part in p.relative_to(base).parts[:-1]):
-                continue
-            hits.append(p)
+        # Path.glob sadece eşleşmeleri verir: az eşleşmede süre/durdurma hiç kontrol edilmiyor ve atlanacak
+        # klasörlere (AppData, node_modules) yine de iniyordu. Kendimiz yürüyoruz, klasör başına kontrol ediyoruz.
+        for root, dirs, files in os.walk(base):
+            if ctx.cancelled():
+                note = _limit_note("kullanıcı durdurdu")
+                break
+            if time.monotonic() > deadline:
+                note = _limit_note(f"{SEARCH_SECONDS:.0f} sn doldu")
+                break
+            rel_root = os.path.relpath(root, base).replace("\\", "/")
+            rel_root = "" if rel_root == "." else rel_root + "/"
+            depth = rel_root.count("/")
+            dirs[:] = [d for d in dirs if not _skip_dir(d)] if max_depth is None or depth < max_depth else []
+            for name in [*files, *dirs]:
+                if rx.match(rel_root + name):
+                    hits.append(Path(root) / name)
             if len(hits) >= 2000:
                 break
         hits.sort(key=lambda x: x.stat().st_mtime if x.exists() else 0, reverse=True)
@@ -294,8 +337,14 @@ class Grep(Tool):
                 cmd += ["-g", glob]
             # Göreli yollar: hem okunaklı hem modele daha az token.
             cmd += ["-e", pattern, "." if base.is_dir() else str(base)]
-            r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
-                               cwd=base if base.is_dir() else None, creationflags=NO_WINDOW)
+            try:
+                r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+                                   cwd=base if base.is_dir() else None, creationflags=NO_WINDOW)
+            except subprocess.TimeoutExpired:
+                return _with_note("", _limit_note("60 sn doldu"))
+            if r.returncode == 2 and not r.stdout.strip():
+                # rg hatası (desteklenmeyen regex, olmayan yol): "eşleşme yok" diye yutulursa model yanlış sonuca varıyor.
+                raise ToolError(f"rg hatası: {(r.stderr or '').strip()[:300]}")
             lines = r.stdout.splitlines()[:max_results]
             return ToolResult("\n".join(lines) if lines else "eşleşme yok")
         try:

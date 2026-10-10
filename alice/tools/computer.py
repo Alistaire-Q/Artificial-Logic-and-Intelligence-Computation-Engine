@@ -109,7 +109,9 @@ def type_text(text: str) -> None:
         pass
     pyperclip.copy(text)
     pg.hotkey("command" if sys.platform == "darwin" else "ctrl", "v")
-    time.sleep(0.15)
+    # Hedef uygulama yapıştırmayı geç işleyebilir (meşgul sekme, WhatsApp): pano erken geri yüklenirse kullanıcının
+    # eski panosu (şifre olabilir) yapıştırılıyordu.
+    time.sleep(0.5)
     if old is not None:
         try:
             pyperclip.copy(old)
