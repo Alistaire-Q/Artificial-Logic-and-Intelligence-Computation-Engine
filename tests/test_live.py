@@ -289,3 +289,38 @@ def test_stuck_tool_does_not_lock_conversation(monkeypatch):
     results = [m["toolResponse"]["functionResponses"][0]["response"]["result"] for m in sent]
     assert "YAPILMADI" in results[0] and results[1] == "ok"
     release.set()
+
+
+def _guard_session(budget=3):
+    sent = []
+    agent = SimpleNamespace(_enable_groups_for=lambda **k: None,
+                            _execute_calls=lambda c: [ToolResult("sonuç " + c[0]["function"]["arguments"])])
+    s = LiveSession(SimpleNamespace(data={"voice": {"live_tool_budget": budget}}), agent)
+    s.TOOL_TIMEOUT = 2
+    ws = SimpleNamespace(send=lambda d: sent.append(json.loads(d)))
+    results = lambda: [m["toolResponse"]["functionResponses"][0]["response"]["result"] for m in sent]  # noqa: E731
+    return s, ws, results
+
+
+def test_live_tool_budget_stops_runaway_loop():
+    s, ws, results = _guard_session(budget=3)
+    for i in range(5):
+        s._run_call(ws, {"id": str(i), "name": "run_command", "args": {"command": f"komut {i}"}})
+    r = results()
+    assert r[:3] == [f'sonuç {{"command": "komut {i}"}}' for i in range(3)]
+    assert all("DUR" in x and "ÇALIŞTIRILMADI" in x for x in r[3:])
+    s._new_turn()  # kullanıcı tekrar konuştu: sayaç sıfırlanır
+    s._run_call(ws, {"id": "9", "name": "run_command", "args": {"command": "yeni"}})
+    assert results()[-1].startswith("sonuç")
+
+
+def test_live_consecutive_duplicate_call_not_rerun():
+    s, ws, results = _guard_session()
+    calls = []
+    s.agent._execute_calls = lambda c: calls.append(c) or [ToolResult("adım 3")]
+    s._run_call(ws, {"id": "1", "name": "flight", "args": {"action": "checklist_next"}})
+    s._run_call(ws, {"id": "2", "name": "flight", "args": {"action": "checklist_next"}})
+    assert len(calls) == 1 and "tekrar çalıştırılmadı" in results()[1] and "adım 3" in results()[1]
+    s._run_call(ws, {"id": "3", "name": "computer", "args": {"action": "scroll"}})
+    s._run_call(ws, {"id": "4", "name": "computer", "args": {"action": "scroll"}})
+    assert len(calls) == 3  # kaydırma gibi tekrar edilebilir işler engellenmez

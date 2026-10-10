@@ -10,11 +10,12 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from alice import plugins
 from alice.tools.base import READ, Tool, ToolContext, ToolError, ToolResult, obj
 
 CORE = {"read_file", "write_file", "edit_file", "multi_edit", "list_dir", "glob", "grep", "run_command",
         "process_output", "process_stop", "web_fetch", "web_search", "windows", "todo_write", "memory", "task", "weather", "youtube",
-        "load_tools"}
+        "load_tools", "run_plan", "task_control"}
 
 # grup -> (araçlar, kısa açıklama, anahtar kelime regex'i)
 GROUPS: dict[str, tuple[set[str], str, str]] = {
@@ -50,9 +51,17 @@ _RX = {g: re.compile(rx, re.I) for g, (_, _, rx) in GROUPS.items()}
 MCP_KEYWORDS = {"github": r"git ?hub|\brepo|issue|pull request|\bpr\b|commit|release|branch"}
 
 
+def all_groups() -> dict[str, tuple[set[str], str, str]]:
+    """Yerleşik gruplar + eklenti grupları."""
+    return {**GROUPS, **plugins.groups()}
+
+
 def group_of(name: str) -> str | None:
     if name in TOOL_TO_GROUP:
         return TOOL_TO_GROUP[name]
+    for g, (names, _, _) in plugins.groups().items():
+        if name in names:
+            return g
     if name.startswith("mcp__"):
         return "mcp:" + name.split("__")[1]
     return None
@@ -65,6 +74,7 @@ def mcp_servers(tool_names) -> set[str]:
 def groups_for_text(text: str, tool_names=()) -> set[str]:
     text = text or ""
     out = {g for g, rx in _RX.items() if rx.search(text)}
+    out |= {g for g, (_, _, rx) in plugins.groups().items() if rx and re.search(rx, text, re.I)}
     for srv in mcp_servers(tool_names):
         rx = re.escape(srv) + ("|" + MCP_KEYWORDS[srv] if srv in MCP_KEYWORDS else "")
         if re.search(rx, text, re.I):
@@ -75,9 +85,10 @@ def groups_for_text(text: str, tool_names=()) -> set[str]:
 def visible_tools(tools: dict[str, Tool], enabled: set[str]) -> list[Tool]:
     """Temel araçlar + açık gruplar + gruba ait olmayanlar (MCP vb.)."""
     out = []
+    always = CORE | plugins.always_tools()
     for name, t in tools.items():
         g = group_of(name)
-        if name in CORE or g is None or g in enabled:
+        if name in always or g is None or g in enabled:
             out.append(t)
     return out
 
@@ -85,9 +96,13 @@ def visible_tools(tools: dict[str, Tool], enabled: set[str]) -> list[Tool]:
 class LoadTools(Tool):
     name = "load_tools"
     parallel_safe = True
-    description = ("Ek araç grubu aç (sonraki adımdan itibaren kullanılabilir). Gruplar: "
-                   + "; ".join(f"{g}: {desc}" for g, (_, desc, _) in GROUPS.items())
-                   + "; MCP sunucuları için 'mcp:<sunucu>' (ör. mcp:github). Hepsi için 'all'.")
+
+    @property
+    def description(self) -> str:  # eklenti grupları sonradan yüklendiği için her seferinde kurulur
+        return ("Ek araç grubu aç (sonraki adımdan itibaren kullanılabilir). Gruplar: "
+                + "; ".join(f"{g}: {desc}" for g, (_, desc, _) in all_groups().items())
+                + "; MCP sunucuları için 'mcp:<sunucu>' (ör. mcp:github). Hepsi için 'all'.")
+
     parameters = obj({"groups": {"type": "array", "items": {"type": "string"}}}, ["groups"])
     risk = READ
 
@@ -95,15 +110,16 @@ class LoadTools(Tool):
         if isinstance(groups, str):
             groups = [g.strip() for g in groups.split(",")]
         servers = mcp_servers(ctx.state.get("tool_names", ()))
-        known = set(GROUPS) | {"mcp:" + s for s in servers}
+        groups_ = all_groups()
+        known = set(groups_) | {"mcp:" + s for s in servers}
         groups = ["mcp:" + g if g in servers else g for g in groups]
         wanted = known if "all" in groups else set(groups)
         unknown = wanted - known
         if unknown:
-            raise ToolError(f"bilinmeyen grup: {', '.join(sorted(unknown))}. Gruplar: {', '.join(GROUPS)}")
+            raise ToolError(f"bilinmeyen grup: {', '.join(sorted(unknown))}. Gruplar: {', '.join(groups_)}")
         enabled: set[str] = ctx.state.setdefault("tool_groups", set())
         enabled |= wanted
-        names = sorted(n for g in wanted if g in GROUPS for n in GROUPS[g][0])
+        names = sorted(n for g in wanted if g in groups_ for n in groups_[g][0])
         names += sorted(g for g in wanted if g.startswith("mcp:"))
         return ToolResult(f"açıldı: {', '.join(names)}")
 

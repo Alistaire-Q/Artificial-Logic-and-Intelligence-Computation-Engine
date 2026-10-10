@@ -73,6 +73,14 @@ programs = ["dcs.exe", "dcs_server.exe", "aces.exe"]
 [core.modes.dev]
 programs = ["unity.exe", "unity hub.exe", "code.exe", "devenv.exe", "rider64.exe"]
 
+# Eklentiler: ~/.alice/plugins/*.py ve buradaki yollar yeni araç ekler (bkz. docs/PLUGINS.md, `alice plugins`).
+[plugins]
+enabled = true
+# Kapatılacak eklenti adları.
+disabled = []
+# Ek eklenti dosyaları/klasörleri.
+paths = []
+
 # ALICE'in sesi ve kulağı (`alice voice`). Ses seçimi: `alice voice audition`.
 [voice]
 # true: çekirdek (alice core run) sesli asistanı da başlatır, bildirimleri seslendirir.
@@ -97,6 +105,9 @@ end_silence = 0.5
 # "Hey Alice" kontrolü: ekran kartı varsa wake_local_gpu (daha iyi duyar, ~0,1 sn), yoksa işlemcide wake_local.
 wake_local = "base"
 wake_local_gpu = "small"
+# Ekran kartındaki Whisper modelleri: int8_float16 belleği yarıya indirir (doğruluk aynı); float16 = eski hali.
+# DCS açılınca (uçuş modu) modeller ekran kartından çıkar, kapanınca geri döner.
+gpu_compute = "int8_float16"
 # Bulut sesi "gemini:<ses>"; yerel motor "xtts" ya da "chatterbox" (boş = yok).
 tts_cloud = "gemini:Aoede"
 tts_local = ""
@@ -347,6 +358,10 @@ def load_env_file(path: Path) -> None:
             os.environ[key] = value
 
 
+KNOWN_VISION = ("*gemma-3-*", "*gemma-4-*", "*llama-4-*", "*-vl-*", "*-vl", "*vision*", "*pixtral*")
+NOT_VISION = ("*-1b*", "*embed*", "*tts*", "*guard*")
+
+
 @dataclass
 class ProviderConfig:
     name: str
@@ -378,7 +393,13 @@ class ProviderConfig:
         return is_local_url(self.base_url)
 
     def supports_vision(self, model: str) -> bool:
-        return any(fnmatch.fnmatch(model.lower(), p.lower()) for p in self.vision_models)
+        low = model.lower()
+        if any(fnmatch.fnmatch(low, p.lower()) for p in self.vision_models):
+            return True
+        # Görsel anladığı bilinen aileler, sağlayıcı listesinde yazmasa da (ör. Gemini API'deki Gemma 4): Gemini
+        # günlük kotası dolunca görme rolü bunlara düşebilsin. Görseli reddederse router o modeli görmeden çıkarır.
+        return (any(fnmatch.fnmatch(low, p) for p in KNOWN_VISION)
+                and not any(fnmatch.fnmatch(low, p) for p in NOT_VISION))
 
 
 @dataclass

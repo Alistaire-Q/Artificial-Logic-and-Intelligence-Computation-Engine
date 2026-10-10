@@ -164,3 +164,65 @@ def test_signature_error_does_not_disable_tools_and_too_large_learns_limit():
     assert "a:m" not in r.no_tools
     r._penalize("a:m", "a", ProviderError("too_large", "TPM limit 8000"), True, False, est=10000)
     assert r.size_limit["a:m"] == 9000
+
+
+GEMINI_DAY = ('[{"error": {"code": 429, "message": "You exceeded your current quota. Please retry in 12.5s.", '
+              '"details": [{"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [{"quotaId": '
+              '"GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]}, {"@type": '
+              '"type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "12s"}]}}]')
+
+
+def test_gemini_minute_quota_is_rate_limit_and_daily_is_quota():
+    minute = classify_error(429, GEMINI_DAY.replace("PerDay", "PerMinute"))
+    assert minute.kind == "rate_limit" and minute.retry_after == 12.0
+    day = classify_error(429, GEMINI_DAY)
+    assert day.kind == "quota" and day.daily
+    assert classify_error(429, "free-models-per-day limit reached").daily
+
+
+def test_seconds_until_reset_uses_pacific_midnight_for_gemini():
+    from datetime import datetime, timezone
+
+    from alice.providers.router import seconds_until_reset
+
+    now = datetime(2026, 10, 10, 6, 0, tzinfo=timezone.utc)  # Pasifik 23:00 (PDT) ya da 22:00 (UTC-8)
+    assert 3600 <= seconds_until_reset("gemini", now=now) <= 2 * 3600 + 60
+    assert abs(seconds_until_reset("groq", now=now) - (18 * 3600 + 60)) < 1
+
+
+def test_daily_quota_survives_restart(tmp_path):
+    cfg = make_config({"brain": ["a:m1", "b:m2"]})
+    a = FakeProvider("a", [ProviderError("quota", "per day", 429, daily=True)])
+    b = FakeProvider("b", ["b1", "b2"])
+    r = router_with(cfg, {"a": a, "b": b}, usage_path=tmp_path / "usage.json")
+    assert r.chat("brain", [{"role": "user", "content": "x"}]).text == "b1"
+    r2 = router_with(cfg, {"a": a, "b": b}, usage_path=tmp_path / "usage.json")
+    assert not r2.available("a:m1")[0]
+    assert r2.chat("brain", [{"role": "user", "content": "x"}]).text == "b2"
+    assert len(a.calls) == 1
+
+
+def test_openrouter_daily_quota_closes_all_free_models():
+    cfg = make_config({"brain": ["openrouter:x:free", "openrouter:y:free", "b:m"]}, providers={
+        "openrouter": {"base_url": "http://or", "api_key_env": ""},
+        "b": {"base_url": "http://b", "api_key_env": ""},
+    })
+    o = FakeProvider("openrouter", [ProviderError("quota", "free-models-per-day", 429, daily=True)])
+    b = FakeProvider("b", ["ok"])
+    r = router_with(cfg, {"openrouter": o, "b": b})
+    assert r.chat("brain", [{"role": "user", "content": "x"}]).text == "ok"
+    assert len(o.calls) == 1 and not r.available("openrouter:y:free")[0]
+
+
+def test_model_rejecting_images_is_skipped_for_vision():
+    cfg = make_config({"vision": ["a:m", "b:m"]}, providers={
+        "a": {"base_url": "http://a", "api_key_env": "", "vision_models": ["*"]},
+        "b": {"base_url": "http://b", "api_key_env": "", "vision_models": ["*"]},
+    })
+    a = FakeProvider("a", [ProviderError("bad_request", "image input is not supported", 400)])
+    b = FakeProvider("b", ["gördüm", "yine"])
+    r = router_with(cfg, {"a": a, "b": b})
+    img = [{"role": "user", "content": [{"type": "text", "text": "ne var"},
+                                         {"type": "image_url", "image_url": {"url": "data:x"}}]}]
+    assert r.chat("vision", img).text == "gördüm"
+    assert not r.supports_vision("a:m")

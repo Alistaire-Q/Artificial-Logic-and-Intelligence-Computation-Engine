@@ -372,6 +372,17 @@ alice report --install 20:00                          # her pazar akşamı
 * **Pano:** hızlı barda Ctrl+Alt+C.
 * **Müzik ve ses:** "Alice, sonraki şarkı", "sesi yüzde 30 yap", "müziği 20 dakika sonra durdur", "bilgisayarı bir saat sonra kapat" ("kapatmayı iptal et" ile geri alınır). Kapatma onay ister. Windows'ta tam ses seviyesi için `pip install pycaw` önerilir, kurulu değilse ses tuşlarıyla yaklaşık ayarlanır.
 
+## Eklentiler
+
+Yeni yetenek eklemek için çekirdek koda dokunmak gerekmiyor: `~/.alice/plugins/` altına bir Python dosyası koy.
+
+```powershell
+alice plugins new spotify     # şablon: ~/.alice/plugins/spotify.py
+alice plugins                 # yüklü eklentiler ve hatalar
+```
+
+Eklenti araçları kendi grubunda durur, mesajdaki anahtar kelimelerle ya da `load_tools` ile açılır; sesli konuşmada baştan açık olabilir. Ayrıntı ve örnek: [docs/PLUGINS.md](docs/PLUGINS.md).
+
 ## İzin modları ve güvenlik
 
 * **plan:** sadece okur ve araştırır; dosya değiştiren, komut çalıştıran ya da ekrana dokunan her şey reddedilir, ALICE plan yazıp onayını bekler
