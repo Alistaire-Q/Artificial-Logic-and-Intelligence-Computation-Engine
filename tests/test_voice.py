@@ -1034,3 +1034,42 @@ def test_mic_health_warns_once_on_digital_silence(monkeypatch):
     assert sum("Mikrofonundan" in s for s in sp.said) == 1
     va._mic_health(b"\1\0" + b"\0\0" * 479)
     assert va._mic_warned is False
+
+
+def test_mic_auto_gain_boosts_quiet_speech():
+    import array
+
+    from alice.voice.audio import Microphone
+
+    mic = Microphone.__new__(Microphone)
+    mic.gain, mic._peak, mic.auto_gain = 1.0, 0.0, True
+    quiet = array.array("h", [600, -600] * 240).tobytes()  # tepe ~0,018
+    for _ in range(200):
+        out = mic._apply_gain(quiet)
+    peak = max(array.array("h", out)) / 32768
+    assert 0.2 < peak < 0.4 and mic.gain > 10
+    loud = array.array("h", [20000, -20000] * 240).tobytes()
+    for _ in range(200):
+        mic._apply_gain(loud)
+    assert mic.gain < 1.5
+
+
+def test_wasapi_twin_finds_same_mic():
+    from alice.voice.audio import wasapi_twin
+
+    class SD:
+        class default:
+            device = (1, 3)
+
+        @staticmethod
+        def query_hostapis():
+            return [{"name": "MME"}, {"name": "Windows WASAPI"}]
+
+        @staticmethod
+        def query_devices(i=None, kind=None):
+            devs = [{"name": "Microsoft Ses Eşleyicisi", "hostapi": 0, "max_input_channels": 2},
+                    {"name": "Mikrofon (Razer BlackShark V2 H", "hostapi": 0, "max_input_channels": 1},
+                    {"name": "Mikrofon (Razer BlackShark V2 HS 2.4)", "hostapi": 1, "max_input_channels": 1}]
+            return devs if i is None else devs[i]
+
+    assert wasapi_twin(SD) == 2

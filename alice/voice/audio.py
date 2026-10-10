@@ -208,28 +208,100 @@ class Microphone:
     RATE = 16000
     FRAME = 480  # 30 ms
 
-    def __init__(self, device: int | str | None = None):
+    TARGET_PEAK = 0.35  # otomatik kazanç: konuşmanın tepe seviyesi bu civara getirilir
+    MAX_GAIN = 16.0
+
+    def __init__(self, device: int | str | None = None, auto_gain: bool = True):
         import sounddevice as sd
 
         self._sd = sd
         self.device = device
+        self.auto_gain = auto_gain
+        self.gain = 1.0
+        self._peak = 0.0
         self._stream = None
+        self.name = ""
+
+    def _open(self):
+        sd = self._sd
+        if self.device is None and sys.platform == "win32":
+            # Windows'un varsayılanı MME: aynı mikrofon WASAPI'den ~20 kat güçlü geliyor (Razer'da ölçüldü).
+            wasapi = wasapi_twin(sd)
+            if wasapi is not None:
+                try:
+                    st = sd.RawInputStream(samplerate=self.RATE, channels=1, dtype="int16", blocksize=self.FRAME,
+                                           device=wasapi, extra_settings=sd.WasapiSettings(auto_convert=True))
+                    self.name = f"{sd.query_devices(wasapi)['name']} (WASAPI)"
+                    return st
+                except Exception:  # noqa: BLE001 - açılmazsa varsayılan
+                    pass
+        st = sd.RawInputStream(samplerate=self.RATE, channels=1, dtype="int16", blocksize=self.FRAME,
+                               device=self.device)
+        try:
+            self.name = str(sd.query_devices(self.device, "input")["name"])
+        except Exception:  # noqa: BLE001
+            self.name = str(self.device or "varsayılan")
+        return st
 
     def __enter__(self) -> "Microphone":
-        self._stream = self._sd.RawInputStream(samplerate=self.RATE, channels=1, dtype="int16",
-                                               blocksize=self.FRAME, device=self.device)
+        self._stream = self._open()
         self._stream.start()
         return self
 
     def __exit__(self, *exc) -> None:
         if self._stream is not None:
-            self._stream.stop()
-            self._stream.close()
+            try:
+                self._stream.stop()
+                self._stream.close()
+            except Exception:  # noqa: BLE001
+                pass
             self._stream = None
+
+    def reopen(self) -> None:
+        """Kulaklık uyuyup geri gelince eski akış sıfır vermeye devam ediyor: kapat, yeniden aç."""
+        self.__exit__()
+        self.__enter__()
 
     def read(self) -> bytes:
         data, _ = self._stream.read(self.FRAME)
-        return bytes(data)
+        data = bytes(data)
+        return self._apply_gain(data) if self.auto_gain else data
+
+    def _apply_gain(self, data: bytes) -> bytes:
+        a = array.array("h", data)
+        if not a:
+            return data
+        peak = max(abs(min(a)), max(a)) / 32768
+        # Tepe izleyici: hızlı yüksel, yavaş (~10 sn) düş. Kazanç sadece konuşma seviyesine göre ayarlanır.
+        self._peak = peak if peak > self._peak else self._peak * 0.997
+        if self._peak > 0.003:
+            want = min(self.MAX_GAIN, max(1.0, self.TARGET_PEAK / self._peak))
+            self.gain += (want - self.gain) * 0.05
+        if self.gain <= 1.01:
+            return data
+        g = self.gain
+        out = array.array("h", (max(-32768, min(32767, int(s * g))) for s in a))
+        return out.tobytes()
+
+
+def wasapi_twin(sd) -> int | None:
+    """Varsayılan giriş aygıtının WASAPI'deki karşılığı (MME adları 31 karakterde kesilir)."""
+    try:
+        default = sd.default.device[0]
+        if default is None or default < 0:
+            default = sd.query_devices(kind="input")["index"]
+        info = sd.query_devices(default)
+        apis = sd.query_hostapis()
+        if "WASAPI" in apis[info["hostapi"]]["name"]:
+            return None  # zaten WASAPI
+        name = info["name"].strip()[:31].lower()
+        for i, d in enumerate(sd.query_devices()):
+            if (d.get("max_input_channels", 0) > 0 and "WASAPI" in apis[d["hostapi"]]["name"]
+                    and d["name"].lower().startswith(name)):
+                return i
+    except Exception:  # noqa: BLE001
+        return None
+    return None
 
 
 def mic_available() -> bool:
