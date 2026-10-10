@@ -64,8 +64,13 @@ def html_to_text(raw: str) -> str:
 class WebFetch(Tool):
     name = "web_fetch"
     parallel_safe = True
-    description = "URL'yi indir, HTML ise okunabilir metne çevir. JS gerektiren sayfalar için browser aracını kullan."
-    parameters = obj({"url": {"type": "string"}, "raw": {"type": "boolean", "description": "HTML'i dönüştürmeden döndür"}}, ["url"])
+    description = ("Bir URL'yi arka planda indirir; HTML ise okunabilir metne çevirip döndürür (ekranda bir şey açmaz). "
+                   "Bir sayfanın içeriğini okumak için. Kullanıcıya siteyi açmak için windows action=navigate; giriş "
+                   "gerektiren ya da JavaScript ile yüklenen sayfalar (Gmail, YouTube) için browser kullan.")
+    parameters = obj({
+        "url": {"type": "string", "description": "Tam adres, ör. 'https://tr.wikipedia.org/wiki/Ankara'."},
+        "raw": {"type": "boolean", "description": "true: HTML'i metne çevirmeden döndür. Varsayılan false."},
+    }, ["url"])
     risk = NETWORK
 
     def summary(self, args: dict[str, Any]) -> str:
@@ -109,8 +114,14 @@ def ddg_search(query: str, max_results: int = 8) -> list[dict[str, str]]:
 class WebSearch(Tool):
     name = "web_search"
     parallel_safe = True
-    description = "İnternette ara (DuckDuckGo, anahtar gerekmez). Başlık, URL ve özet döner; detay için web_fetch kullan."
-    parameters = obj({"query": {"type": "string"}, "max_results": {"type": "integer"}}, ["query"])
+    description = ("İnternette arar (DuckDuckGo) ve sonuçların başlık, URL ve özetini döndürür; ekranda bir şey açmaz. "
+                   "Güncel bilgi, haber, fiyat ya da bilmediğin bir şey sorulunca kullan; ayrıntı için sonra web_fetch. "
+                   "Kullanıcı aramayı tarayıcıda görmek isterse windows action=navigate kullan.")
+    parameters = obj({
+        "query": {"type": "string", "description": "Arama ifadesi, ör. 'Ankara hava durumu yarın'."},
+        "max_results": {"type": "integer", "description": "En fazla sonuç. Varsayılan 8."},
+    }, ["query"])
+
     risk = NETWORK
 
     def summary(self, args: dict[str, Any]) -> str:

@@ -10,14 +10,16 @@ from alice.tools.base import COMPUTER, READ, Tool, ToolContext, ToolError, ToolR
 class RunPlan(Tool):
     name = "run_plan"
     description = (
-        "Birkaç ayrı adım süren bir isteği kendin planlayıp baştan sona yap: istek 2-8 adıma bölünür, her adım "
-        "sırayla araçlarla yapılır ve sonucu ayrıca kontrol edilir; olmayan adım bir kez başka yoldan denenir. "
-        "Geri alınamaz adımlardan (mesaj/e-posta göndermek, silmek, satın almak, kurmak) önce kullanıcıya onay "
-        "sorulur. Ör. 'Gmail'deki son faturayı indir, masaüstüne kaydet ve Ahmet'e WhatsApp'tan gönder', "
-        "'yarınki hava durumuna bak, yağmur varsa takvime not ekle'. goal'e kullanıcının istediğini eksiksiz, "
-        "adlarıyla yaz. Tek adımlık işler için doğrudan ilgili aracı kullan."
+        "Birkaç ayrı adımdan oluşan bir isteği planlayıp baştan sona yapar: 2-8 adıma böler, her adımı araçlarla "
+        "yapar ve sonucunu kontrol eder; olmayan adımı bir kez başka yoldan dener. Geri alınamaz adımlardan "
+        "(mesaj/e-posta göndermek, silmek, satın almak, kurmak) önce kullanıcıya onay sorar (cevap task_control "
+        "ile verilir). Dakikalar sürebilir.\n"
+        "- Kullan: 'Gmail'deki son faturayı indir, masaüstüne kaydet ve Ahmet'e WhatsApp'tan gönder'.\n"
+        "- Kullanma: tek araçla bitecek işler (doğrudan o aracı çağır); tek bir uygulamada ekran işi "
+        "(computer_task). Aynı anda tek görev çalışır."
     )
-    parameters = obj({"goal": {"type": "string", "description": "kullanıcının isteği, eksiksiz"}}, ["goal"])
+    parameters = obj({"goal": {"type": "string", "description": "Kullanıcının isteği eksiksiz, kişi, dosya ve "
+                               "uygulama adlarıyla; konuşmayı görmeyen birinin anlayacağı gibi."}}, ["goal"])
     risk = COMPUTER  # içindeki her araç çağrısı ayrıca izin kontrolünden geçer
 
     def summary(self, args: dict[str, Any]) -> str:
@@ -54,11 +56,11 @@ class RunPlan(Tool):
 class TaskControl(Tool):
     name = "task_control"
     description = (
-        "Süren run_plan görevini yönet. Görev onay isteyince kullanıcı 'evet' derse action=approve, 'hayır' derse "
-        "action=reject; 'dur', 'vazgeç' derse action=stop; 'ne durumda' derse action=status. Onayı kullanıcı "
-        "söylemeden asla verme."
+        "Süren run_plan görevini yönetir. Onayı kullanıcı açıkça söylemeden ASLA verme."
     )
-    parameters = obj({"action": {"type": "string", "enum": ["approve", "reject", "stop", "status"]}}, ["action"])
+    parameters = obj({"action": {"type": "string", "enum": ["approve", "reject", "stop", "status"],
+                                 "description": "approve: görev onay sorunca kullanıcı 'evet' dedi | reject: 'hayır' "
+                                 "dedi | stop: 'dur', 'vazgeç' | status: 'ne durumda'."}}, ["action"])
     risk = READ
 
     def run(self, ctx: ToolContext, action: str) -> ToolResult:

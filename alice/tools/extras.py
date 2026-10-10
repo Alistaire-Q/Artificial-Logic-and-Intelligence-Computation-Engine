@@ -13,11 +13,17 @@ from alice.tools.base import COMPUTER, DANGER, READ, WRITE, Tool, ToolContext, T
 
 class Notes(Tool):
     name = "notes"
-    description = ("Kullanıcının notları ('not al'). search: query ve/veya since/until ('7d', 'dün', ISO). "
-                   "Uçuştaki notlar için flight kneeboard_note.")
-    parameters = obj({"action": {"type": "string", "enum": ["add", "search", "list", "undo"]},
-                      "text": {"type": "string"}, "query": {"type": "string"},
-                      "since": {"type": "string"}, "until": {"type": "string"}}, ["action"])
+    description = ("Kullanıcının kısa notları: 'not al', 'şunu not et', 'notlarımda ne vardı'. Kullanıcı hakkında "
+                   "kalıcı bilgi ve tercihler için memory, uçuş sırasındaki notlar için flight kneeboard_note kullan.")
+    parameters = obj({
+        "action": {"type": "string", "enum": ["add", "search", "list", "undo"],
+                   "description": "add: text'i kaydet | search: query ve/veya tarih aralığıyla ara | list: son 20 not "
+                   "| undo: son eklenen notu sil."},
+        "text": {"type": "string", "description": "add için notun metni, kullanıcının söylediği gibi."},
+        "query": {"type": "string", "description": "search için aranacak kelimeler."},
+        "since": {"type": "string", "description": "Başlangıç: '7d', '2h', 'dün', 'bugün' ya da ISO tarih."},
+        "until": {"type": "string", "description": "Bitiş, since ile aynı biçim. Boş: şimdi."},
+    }, ["action"])
     risk = WRITE
 
     def risk_for(self, args: dict[str, Any]) -> str:
@@ -48,9 +54,13 @@ class Notes(Tool):
 
 class Report(Tool):
     name = "report"
-    description = ("kind=morning: sabah özeti verisi (hava, bugün okul/staj, gece görevler ve uyarılar, dünden "
-                   "kalanlar); kısa ve sıcak anlat. kind=pc: son days günün bilgisayar raporu (+HTML).")
-    parameters = obj({"kind": {"type": "string", "enum": ["morning", "pc"]}, "days": {"type": "integer"}}, ["kind"])
+    description = ("Hazır özet raporlar. morning: sabah özeti için veri (hava, bugün okul/staj, gece çalışan görevler "
+                   "ve uyarılar, dünden kalanlar); kullanıcıya kısa ve sıcak anlat. pc: son günlerin bilgisayar "
+                   "raporu (sıcaklık, kullanım, olaylar) ve HTML dosyası.")
+    parameters = obj({
+        "kind": {"type": "string", "enum": ["morning", "pc"], "description": "morning: sabah özeti | pc: PC raporu."},
+        "days": {"type": "integer", "description": "pc için kaç günlük. Varsayılan 7."},
+    }, ["kind"])
     risk = READ
 
     def run(self, ctx: ToolContext, kind: str, days: int = 7) -> ToolResult:
@@ -66,8 +76,9 @@ class Report(Tool):
 
 class Weather(Tool):
     name = "weather"
-    description = "Hava durumu: şu an ve bugün (en düşük/yüksek, yağmur ihtimali). city boşsa ayarlı şehir ya da konum."
-    parameters = obj({"city": {"type": "string"}}, [])
+    description = ("Hava durumu: şu an ve bugün (sıcaklık, en düşük/yüksek, yağmur ihtimali). Hava sorulunca web_search "
+                   "yerine bunu kullan.")
+    parameters = obj({"city": {"type": "string", "description": "Şehir, ör. 'İzmir'. Boş: ayarlı şehir ya da konum."}})
     risk = READ
 
     def run(self, ctx: ToolContext, city: str = "") -> ToolResult:
@@ -78,13 +89,20 @@ class Weather(Tool):
 
 class Media(Tool):
     name = "media"
-    description = ("Müzik/ses. volume_up/down: times basış (~%2). pause_in: müziği minutes sonra durdur. "
-                   "shutdown_in: bilgisayarı minutes sonra kapat.")
-    parameters = obj({"action": {"type": "string", "enum": ["play_pause", "next", "previous", "stop", "mute",
-                                                             "volume_up", "volume_down", "set_volume", "pause_in",
-                                                             "shutdown_in", "cancel_shutdown"]},
-                      "times": {"type": "integer"}, "percent": {"type": "integer"}, "minutes": {"type": "number"}},
-                     ["action"])
+    description = ("Çalan medyayı (müzik, video) medya tuşlarıyla kontrol eder ve sistem sesini ayarlar; hangi "
+                   "uygulamada çaldığı fark etmez. Ayrıca zamanlı durdurma ve bilgisayarı kapatma. Yeni bir şarkı ya "
+                   "da video AÇMAK için değil (youtube ya da browser).")
+    parameters = obj({
+        "action": {"type": "string", "enum": ["play_pause", "next", "previous", "stop", "mute", "volume_up",
+                                              "volume_down", "set_volume", "pause_in", "shutdown_in",
+                                              "cancel_shutdown"],
+                   "description": "play_pause: durdur/devam | next/previous: sonraki/önceki parça | mute: sesi kapat/aç "
+                   "| volume_up/volume_down: times kadar adım | set_volume: percent'e ayarla | pause_in: minutes "
+                   "sonra müziği durdur | shutdown_in: minutes sonra bilgisayarı kapat | cancel_shutdown."},
+        "times": {"type": "integer", "description": "volume_up/down için basış sayısı (her biri ~%2). Varsayılan 5."},
+        "percent": {"type": "integer", "description": "set_volume için 0-100."},
+        "minutes": {"type": "number", "description": "pause_in ve shutdown_in için dakika."},
+    }, ["action"])
     risk = COMPUTER
 
     def risk_for(self, args: dict[str, Any]) -> str:
@@ -152,16 +170,23 @@ def with_time(url: str, seconds: int) -> str:
 
 class YouTube(Tool):
     name = "youtube"
-    description = ("YouTube, kullanıcının KENDİ açık tarayıcısında (açık YouTube sekmesi varsa onda): "
-                   "search: query'nin ilk videolarını listeler ve aynı sonuçları kullanıcının sekmesinde açar | play: query'nin index'inci (1 = ilk) videosunu ya da "
-                   "url'yi açar, at=saniye ile o dakikadan başlatır | seek: açık videoyu at saniyesine götürür. "
-                   "Ekranda olmayan yeni bir video ('X videosu aç') ya da 'ikinci dakikaya getir' için. Ekranda zaten "
-                   "görünen bir video/şarkı için KULLANMA: browser snapshot + click ile ona tıkla. "
-                   "Durdur/devam için media play_pause.")
-    parameters = obj({"action": {"type": "string", "enum": ["search", "play", "seek"]},
-                      "query": {"type": "string"}, "url": {"type": "string"},
-                      "index": {"type": "integer", "description": "1 = ilk video"},
-                      "at": {"type": "integer", "description": "saniye, ör. 2. dakika = 120"}}, ["action"])
+    description = ("YouTube'da yeni bir video bulup kullanıcının kendi tarayıcısında açar (açık YouTube sekmesi varsa "
+                   "onda) ya da açık videoyu bir dakikaya sarar.\n"
+                   "- Kullan: ekranda olmayan bir videoyu açmak ('X videosunu aç', 'Y şarkısını çal'), 'ikinci "
+                   "dakikaya getir'.\n"
+                   "- Kullanma: ekranda zaten görünen bir video/şarkı (browser snapshot + click ya da reflex), bir "
+                   "siteyi açmak (YouTube Music dahil: windows navigate ya da browser goto), durdur/devam (media "
+                   "play_pause).\n"
+                   "- query'yi kullanıcının söylediği gibi yaz; ne istediği belirsizse önce sor.")
+    parameters = obj({
+        "action": {"type": "string", "enum": ["search", "play", "seek"],
+                   "description": "search: query için ilk videoları listeler (bir şey açmaz) | play: query'nin "
+                   "index'inci videosunu ya da url'yi açar | seek: açık videoyu at saniyesine götürür."},
+        "query": {"type": "string", "description": "Arama ifadesi, ör. 'Coldplay Yellow'."},
+        "url": {"type": "string", "description": "play için doğrudan video adresi (query yerine)."},
+        "index": {"type": "integer", "description": "play için kaçıncı sonuç; 1 = ilk. Varsayılan 1."},
+        "at": {"type": "integer", "description": "Başlangıç saniyesi; ör. 2. dakika = 120."},
+    }, ["action"])
     risk = COMPUTER
 
     def risk_for(self, args: dict[str, Any]) -> str:

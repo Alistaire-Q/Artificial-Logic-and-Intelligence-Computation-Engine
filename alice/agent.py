@@ -19,7 +19,7 @@ from alice.permissions import Permissions
 from alice.prompts import COMPACT_PROMPT, build_system_prompt
 from alice.providers.openai_compat import ChatResult, StreamCancelled
 from alice.providers.router import AllProvidersFailed, Router, estimate_tokens, strip_images
-from alice.tools.base import Tool, ToolContext, ToolError, ToolResult, truncate
+from alice.tools.base import Tool, ToolContext, ToolError, ToolResult, check_args, truncate, unknown_params
 
 
 class UI(Protocol):
@@ -486,6 +486,9 @@ class Agent:
             return ToolResult(f"argümanlar geçerli JSON değil ({e}). Tekrar dene.", is_error=True)
         if not isinstance(args, dict):
             return ToolResult("argümanlar bir JSON nesnesi olmalı ({\"ad\": değer}). Tekrar dene.", is_error=True)
+        bad = check_args(tool, args)
+        if bad:
+            return ToolResult(bad + " Düzeltip tekrar çağır.", is_error=True)
         try:
             summary = tool.summary(args)
             if quiet:
@@ -524,7 +527,7 @@ class Agent:
         except ToolError as e:
             return ToolResult(str(e), is_error=True)
         except TypeError as e:
-            return ToolResult(f"geçersiz parametre: {e}", is_error=True)
+            return ToolResult(unknown_params(tool, args) or f"geçersiz parametre: {e}", is_error=True)
         except KeyboardInterrupt:
             raise
         except Exception as e:  # noqa: BLE001 - araç hatası ajanı düşürmesin, modele dönsün

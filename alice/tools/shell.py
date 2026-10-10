@@ -83,14 +83,18 @@ class BgProc:
 class RunCommand(Tool):
     name = "run_command"
     description = (
-        "Shell komutu çalıştır (Windows: PowerShell, diğer: bash). stdout+stderr ve çıkış kodu döner. "
-        "Uzun süren sunucu/izleme işleri için background=true ver, sonra process_output ile çıktıyı oku."
+        "Shell komutu çalıştırır (Windows: PowerShell 5.1, diğer: bash); çıkış kodu ve stdout+stderr döner.\n"
+        "- Dosya okumak/aramak/düzenlemek için komut değil read_file, grep, glob, edit_file kullan.\n"
+        "- Pencereli program ya da site açmak için windows action=open; Blender için blender aracı.\n"
+        "- Sürekli çalışan işler (sunucu, izleme) için background=true, sonra process_output.\n"
+        "- PowerShell 5.1'de '&&' yok: komutları ';' ile ayır. Boşluklu yolları tırnak içine al."
     )
     parameters = obj({
-        "command": {"type": "string"},
-        "cwd": {"type": "string", "description": "varsayılan: çalışma klasörü"},
-        "timeout": {"type": "integer", "description": "saniye, varsayılan 120, en fazla 1800"},
-        "background": {"type": "boolean"},
+        "command": {"type": "string", "description": "Çalıştırılacak komut, ör. 'git status' ya da 'python -m pytest -q'."},
+        "cwd": {"type": "string", "description": "Komutun çalışacağı klasör. Varsayılan: çalışma klasörü."},
+        "timeout": {"type": "integer", "description": "Saniye; dolunca komut öldürülür. Varsayılan 120, en fazla 1800."},
+        "background": {"type": "boolean", "description": "true: beklemeden arka planda başlat ve pid döndür. "
+                       "Varsayılan false."},
     }, ["command"])
     risk = EXEC
 
@@ -158,8 +162,12 @@ class RunCommand(Tool):
 class ProcessOutput(Tool):
     name = "process_output"
     parallel_safe = True
-    description = "run_command(background=true) ile başlatılan süreçlerin durumunu ve son çıktısını göster. pid verilmezse hepsini listeler."
-    parameters = obj({"pid": {"type": "integer"}, "tail_chars": {"type": "integer"}})
+    description = ("run_command(background=true) ile başlatılan süreçlerin durumunu ve son çıktısını gösterir. pid "
+                   "verilmezse hepsini listeler.")
+    parameters = obj({
+        "pid": {"type": "integer", "description": "run_command'ın döndürdüğü pid. Boş: tüm arka plan süreçleri."},
+        "tail_chars": {"type": "integer", "description": "Çıktının sonundan kaç karakter. Varsayılan 4000."},
+    })
 
     def run(self, ctx: ToolContext, pid: int | None = None, tail_chars: int = 4000) -> ToolResult:
         procs: dict[int, BgProc] = ctx.state.get("bg_procs", {})
@@ -179,8 +187,10 @@ class ProcessOutput(Tool):
 
 class ProcessStop(Tool):
     name = "process_stop"
-    description = "ALICE'in arka planda başlattığı bir süreci durdur."
-    parameters = obj({"pid": {"type": "integer"}}, ["pid"])
+    description = ("ALICE'in run_command(background=true) ile başlattığı bir süreci durdurur. Başka programlar için "
+                   "process_kill kullan.")
+    parameters = obj({"pid": {"type": "integer", "description": "run_command'ın döndürdüğü pid."}}, ["pid"])
+
     risk = EXEC
 
     def run(self, ctx: ToolContext, pid: int) -> ToolResult:

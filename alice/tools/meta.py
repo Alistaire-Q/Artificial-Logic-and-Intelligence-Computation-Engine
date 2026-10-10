@@ -9,10 +9,13 @@ from alice.tools.base import COMPUTER, READ, WRITE, Tool, ToolContext, ToolError
 
 class TodoWrite(Tool):
     name = "todo_write"
-    description = ("Çok adımlı işlerde plan/ilerleme listesi tut. Her çağrıda listenin TAMAMINI gönder. "
-                   "status: pending | in_progress | done. Aynı anda tek bir in_progress olsun.")
-    parameters = obj({"todos": {"type": "array", "items": obj({
-        "content": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "in_progress", "done"]}},
+    description = ("Çok adımlı (3+ adım) bir işte planı ve ilerlemeyi listede tutar; kullanıcı da listeyi görür. "
+                   "Her çağrıda listenin TAMAMINI gönder; aynı anda tek bir in_progress olsun, bir adım biter bitmez "
+                   "done yap. Tek adımlık ya da sohbet işlerinde kullanma.")
+    parameters = obj({"todos": {"type": "array", "description": "Güncel listenin tamamı.", "items": obj({
+        "content": {"type": "string", "description": "Adım, emir kipinde kısa cümle, ör. 'Testleri çalıştır'."},
+        "status": {"type": "string", "enum": ["pending", "in_progress", "done"],
+                   "description": "pending: başlamadı | in_progress: şu an yapılan | done: bitti."}},
         ["content", "status"])}}, ["todos"])
 
     def summary(self, args: dict[str, Any]) -> str:
@@ -29,16 +32,25 @@ class TodoWrite(Tool):
 
 class Memory(Tool):
     name = "memory"
-    description = ("Uzun süreli, yerel hafıza (oturumlar arası). Kullanıcının kalıcı tercihlerini, kişisel bilgilerini, "
-                   "çevresindeki kişileri, alışkanlıklarını ve ALICE'ten nasıl davranmasını istediğini kaydet (action=add, "
-                   "kind: preference|fact|person|routine|note; tek kısa Türkçe cümle). Bilgi değişince eskisini güncelle "
-                   "(action=update id text) ya da sil (action=forget, id ya da query). Geçmiş konuşmaları ve bilgileri "
-                   "aramak için action=search query (\"geçen hafta ne konuşmuştuk\", \"en sevdiğim dizi\"). "
-                   "action=read hepsini listeler. Profil zaten sistem isteminde: sadece okumak için çağırma.")
-    parameters = obj({"action": {"type": "string", "enum": ["read", "add", "update", "forget", "search"]},
-                      "note": {"type": "string", "description": "add/update için bilgi cümlesi"},
-                      "kind": {"type": "string", "enum": ["preference", "fact", "person", "routine", "note"]},
-                      "id": {"type": "integer"}, "query": {"type": "string"}}, ["action"])
+    description = ("Oturumlar arası kalıcı hafıza. Kullanıcı hakkında ileride işe yarayacak kalıcı bilgiyi kaydet: "
+                   "tercihleri, kişisel bilgileri, çevresindeki kişiler, alışkanlıkları, ALICE'ten nasıl davranmasını "
+                   "istediği ('bunu hatırla', 'bundan sonra hep...').\n"
+                   "- Bilgi değişince yenisini eklemek yerine eskisini update ile güncelle; yanlışsa forget.\n"
+                   "- Geçmiş konuşmalarda ya da kayıtlarda bir şey aramak için search ('geçen hafta ne konuşmuştuk').\n"
+                   "- Profil zaten sistem isteminde; sadece okumak için çağırma. Geçici şeyleri (o anki iş) kaydetme; "
+                   "not için notes aracı.")
+    parameters = obj({
+        "action": {"type": "string", "enum": ["read", "add", "update", "forget", "search"],
+                   "description": "read: hepsini listele | add: note'u kaydet | update: id'li bilgiyi note ile değiştir "
+                   "| forget: id'li ya da query'ye uyan bilgiyi sil | search: query ile ara."},
+        "note": {"type": "string", "description": "add/update için tek, kısa Türkçe cümle, ör. 'Kullanıcı kahveyi "
+                 "şekersiz içer.'"},
+        "kind": {"type": "string", "enum": ["preference", "fact", "person", "routine", "note"],
+                 "description": "add için tür: preference tercih, fact bilgi, person kişi, routine alışkanlık. "
+                 "Varsayılan fact."},
+        "id": {"type": "integer", "description": "update/forget için bilginin numarası (read/search çıktısındaki #)."},
+        "query": {"type": "string", "description": "search ya da forget için arama ifadesi."},
+    }, ["action"])
     risk = WRITE
 
     def risk_for(self, args: dict[str, Any]) -> str:
@@ -88,10 +100,14 @@ class Memory(Tool):
 
 class Task(Tool):
     name = "task"
-    description = ("Alt ajan başlat: kendi temiz context'iyle bağımsız bir işi (araştırma, büyük bir kod tabanında arama, "
-                   "uzun bir alt görev) yapar ve sadece sonucu döndürür. Ana context'i şişirmemek için kullan.")
-    parameters = obj({"prompt": {"type": "string", "description": "alt ajana eksiksiz görev tanımı"},
-                      "max_steps": {"type": "integer"}}, ["prompt"])
+    description = ("Kendi temiz bağlamıyla çalışan bir alt ajan başlatır; bağımsız bir işi (araştırma, büyük bir "
+                   "klasörde arama, uzun bir alt görev) yapar ve sadece sonucunu döndürür. Konuşmayı çok sayıda ara "
+                   "çıktıyla doldurmamak için. Alt ajan bu konuşmayı görmez: prompt'a gereken her şeyi yaz. Bir iki "
+                   "araç çağrısıyla bitecek işlerde kullanma.")
+    parameters = obj({
+        "prompt": {"type": "string", "description": "Alt ajana eksiksiz görev: ne yapacak, nerede, ne döndürecek."},
+        "max_steps": {"type": "integer", "description": "En fazla adım. Varsayılan 40."},
+    }, ["prompt"])
     risk = READ  # alt ajanın kendi araç çağrıları ayrı ayrı izin kontrolünden geçer
 
     def run(self, ctx: ToolContext, prompt: str, max_steps: int = 40) -> ToolResult:
@@ -108,20 +124,23 @@ class Task(Tool):
 class Reflex(Tool):
     name = "reflex"
     description = (
-        "Hızlı reflex modu (System One / Jev): ekranda görünen bir şeye tıklama, arama kutusuna yazma gibi kısa ve net "
-        "bir arayüz hedefini (ör. 'ekrandaki Impossible şarkısına tıkla', 'Ayarlar > Gizlilik sayfasını aç', "
-        "'arama kutusuna X yazıp ilk sonuca tıkla') büyük modele her adımı sormadan, adım başına ~100-500 ms kararla yürütür. "
-        "Sayfayı görüntüyle değil öğe listesiyle okur, her sitede/uygulamada aynı çalışır. "
-        "target=browser (kullanıcının açık tarayıcısında o an öndeki sekme; url verilirse o siteye gider) ya da desktop (Windows UI Automation, "
-        "title ile pencere seçilir). inputs: alan adı parçası -> yazılacak metin. Sonuç 'needs_help' ise kalan kısmı sen yap."
+        "Ekranda görünen bir şeye tıklama, bir alana yazma gibi kısa ve net bir arayüz hedefini hızlıca yapar "
+        "(adım başına ~0,1-0,5 sn). Sayfayı öğe listesiyle okur; her sitede ve uygulamada aynı çalışır.\n"
+        "- Kullan: 'ekrandaki Impossible şarkısına tıkla', 'Ayarlar > Gizlilik'i aç', 'arama kutusuna X yazıp ilk "
+        "sonuca tıkla'.\n"
+        "- Kullanma: birçok adımlı, ekranı izleyerek yapılacak işler (computer_task).\n"
+        "- Sonuç 'needs_help' ise kalan kısmı browser snapshot/click ya da ui_elements/ui_act ile sen bitir."
     )
     parameters = obj({
-        "goal": {"type": "string"},
-        "target": {"type": "string", "enum": ["browser", "desktop"]},
-        "url": {"type": "string"},
-        "title": {"type": "string"},
-        "inputs": {"type": "object", "additionalProperties": {"type": "string"}},
-        "max_steps": {"type": "integer"},
+        "goal": {"type": "string", "description": "Hedef, ekranda göründüğü adlarla, ör. 'ekrandaki Impossible "
+                 "şarkısına tıkla'."},
+        "target": {"type": "string", "enum": ["browser", "desktop"],
+                   "description": "browser: kullanıcının tarayıcısında öndeki sekme | desktop: masaüstü penceresi."},
+        "url": {"type": "string", "description": "browser için: önce bu adrese git. Boş: öndeki sekmede kal."},
+        "title": {"type": "string", "description": "desktop için pencere başlığından bir parça. Boş: öndeki pencere."},
+        "inputs": {"type": "object", "additionalProperties": {"type": "string"},
+                   "description": "Doldurulacak alanlar: alan adından parça -> yazılacak metin, ör. {\"ara\": \"lofi\"}."},
+        "max_steps": {"type": "integer", "description": "En fazla adım. Varsayılan 20."},
     }, ["goal", "target"])
     risk = COMPUTER
 

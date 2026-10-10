@@ -15,20 +15,29 @@ ACTIONS = ["status", "alert_home", "alert_alt", "alert_fuel", "alerts_clear", "l
 
 class Flight(Tool):
     name = "flight"
-    description = ("DCS/War Thunder. status: canlı yakıt/kalan dk/eve dönüş, üssün yönü ve mesafesi, sağa/sola kaç "
-                   "derece dönmeli (yön/mesafe/yakıt/silah sorulunca HER SEFER status çağır). status'ta olmayan ya da "
-                   "BİLİNMİYOR yazan bir bilgiyi (silah sayısı, mesafe, yön...) ASLA uydurma ve genel bilginden "
-                   "tahmin etme: 'oyun bu bilgiyi vermiyor' de. alert_home (nm): "
-                   "üsse nm mil kalınca otomatik sesli uyarı kurar; 'X mile gelince söyle' denince bunu çağır, "
-                   "alert_alt (ft): o irtifaya gelince söyler; alert_fuel (kg): yakıt o kiloya inince söyler; "
-                   "alerts_clear: kurulu uyarıları siler. Bunlar dışında uyarı söz verme. checklist_start (name: iniş, kalkış...): "
-                   "sesliyken sadece dönen adımı oku, 'tamam/devam' gelince checklist_next. kneeboard_note (text): "
-                   "uçuşta not. kneeboard_build (mission: .miz, boşsa son görev).")
-    parameters = obj({"action": {"type": "string", "enum": ACTIONS}, "name": {"type": "string"},
-                      "text": {"type": "string"}, "mission": {"type": "string"},
-                      "nm": {"type": "number", "description": "alert_home için mil"},
-                      "ft": {"type": "number", "description": "alert_alt için feet"},
-                      "kg": {"type": "number", "description": "alert_fuel için kilo"}}, ["action"])
+    description = ("DCS / War Thunder uçuşu: canlı durum, sesli uyarılar, kontrol listeleri, kneeboard.\n"
+                   "- Hız, irtifa, yakıt, yön, üsse mesafe, silah sorulunca HER SEFER status çağır; eski cevabı "
+                   "tekrarlama.\n"
+                   "- status'ta olmayan ya da BİLİNMİYOR yazan bilgiyi ASLA uydurma ve genel bilginden tahmin etme; "
+                   "'oyun bu bilgiyi vermiyor' de.\n"
+                   "- Sadece alert_home/alt/fuel ile kurulabilen uyarıları söz ver ('X mile gelince söyle' -> "
+                   "alert_home).\n"
+                   "- Kontrol listesinde sesliyken sadece dönen adımı oku; 'tamam/devam' gelince checklist_next.")
+    parameters = obj({
+        "action": {"type": "string", "enum": ACTIONS,
+                   "description": "status: canlı yakıt, kalan dakika, üssün yönü/mesafesi, kaç derece dönmeli | "
+                   "alert_home: üsse nm mil kalınca söyle | alert_alt: ft irtifasına gelince söyle | alert_fuel: yakıt "
+                   "kg'a inince söyle | alerts_clear | last_debrief: son uçuşun değerlendirmesi | checklist_list | "
+                   "checklist_start: name listesini başlat | checklist_next/prev/stop | kneeboard_note: text'i not "
+                   "et | kneeboard_build: görevden kneeboard yap | kneeboard_show | kneeboard_clear."},
+        "name": {"type": "string", "description": "checklist_start için liste adı: kalkış, kalkış sonrası, iniş, iniş "
+                 "sonrası, motor çalıştırma, motor arızası, savaş girişi, savaş çıkışı."},
+        "text": {"type": "string", "description": "kneeboard_note için not."},
+        "mission": {"type": "string", "description": "kneeboard_build için .miz yolu. Boş: son görev."},
+        "nm": {"type": "number", "description": "alert_home için deniz mili."},
+        "ft": {"type": "number", "description": "alert_alt için feet."},
+        "kg": {"type": "number", "description": "alert_fuel için kilogram."},
+    }, ["action"])
     risk = READ
 
     def risk_for(self, args: dict[str, Any]) -> str:

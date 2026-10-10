@@ -37,7 +37,8 @@ def _gpu() -> str:
 class SystemInfo(Tool):
     name = "system_info"
     parallel_safe = True
-    description = "İşletim sistemi, CPU, RAM, diskler, GPU, ağ ve pil durumu."
+    description = ("Bilgisayarın şu anki durumu: işletim sistemi, CPU ve RAM kullanımı, diskler, GPU (sıcaklık, "
+                   "kullanım), ağ ve pil. Geçmiş değerler ('dün GPU kaç dereceydi') için metrics kullan.")
     parameters = obj({})
 
     def run(self, ctx: ToolContext) -> ToolResult:
@@ -66,9 +67,13 @@ class SystemInfo(Tool):
 class ProcessList(Tool):
     name = "process_list"
     parallel_safe = True
-    description = "Çalışan süreçleri listele (isim filtresi opsiyonel), CPU/RAM'e göre sıralı."
-    parameters = obj({"name": {"type": "string"}, "sort": {"type": "string", "enum": ["cpu", "memory"]},
-                      "limit": {"type": "integer"}})
+    description = ("Çalışan süreçleri PID, RAM ve CPU ile listeler. 'Ne çok RAM yiyor', 'X açık mı' gibi sorular ve "
+                   "process_kill'den önce doğru adı/PID'i bulmak için. Pencereler için windows action=list.")
+    parameters = obj({
+        "name": {"type": "string", "description": "Adında bu geçen süreçler, ör. 'chrome'. Boş: hepsi."},
+        "sort": {"type": "string", "enum": ["cpu", "memory"], "description": "Sıralama. Varsayılan memory."},
+        "limit": {"type": "integer", "description": "En fazla satır. Varsayılan 40."},
+    })
 
     def run(self, ctx: ToolContext, name: str | None = None, sort: str = "memory", limit: int = 40) -> ToolResult:
         procs: list[dict[str, Any]] = []
@@ -86,8 +91,15 @@ class ProcessList(Tool):
 
 class ProcessKill(Tool):
     name = "process_kill"
-    description = "Süreci PID ya da isimle sonlandır (isimle verilirse eşleşen hepsi)."
-    parameters = obj({"pid": {"type": "integer"}, "name": {"type": "string"}})
+    description = ("Bir süreci PID ya da tam adıyla sonlandırır; adla verilirse o adlı TÜM süreçler kapanır. Kaydedilmemiş "
+                   "işler kaybolabilir: bir uygulamayı nazikçe kapatmak için önce windows action=close dene. Adı "
+                   "bilmiyorsan önce process_list.")
+    parameters = obj({
+        "pid": {"type": "integer", "description": "Sonlandırılacak sürecin PID'i (process_list'ten)."},
+        "name": {"type": "string", "description": "Tam süreç adı, büyük/küçük harf fark etmez, ör. 'notepad.exe'. "
+                 "pid verilmediğinde kullanılır."},
+    })
+
     risk = EXEC
 
     def risk_for(self, args: dict[str, Any]) -> str:
