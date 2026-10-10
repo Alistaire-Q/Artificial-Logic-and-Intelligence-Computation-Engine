@@ -191,7 +191,7 @@ class VoiceAssistant:
                  follow_up: float = 8.0, emit: Callable[[str], None] = lambda s: None,
                  keep_turns: int = 4, idle_reset: float = 300.0, live=None, end_silence: float = 0.5,
                  live_text_min: float | None = -0.7, live_text_wait: float = 1.5, live_follow: float = 12.0,
-                 full_text_max: float = 8.0):
+                 full_text_max: float = 8.0, live_gate: bool = True):
         self.agent = agent
         # İlk cümlenin yerel dökümü bu güvenin (ortalama log olasılık) üstündeyse Live'a ses yerine yazı gider.
         self.live_text_min = live_text_min
@@ -199,6 +199,9 @@ class VoiceAssistant:
         self.live_follow = live_follow  # canlı konuşma bitince bu kadar sn "Alice" demeden devam edilebilir
         self.full_text_max = full_text_max  # bu uzunluğa kadar cümle uyandırmada bir kerede yazıya dökülür
         self._pre_text: tuple[Any, bool] = (None, False)
+        from alice.voice.listen import SpeechGate
+
+        self.live_gate: SpeechGate | None = SpeechGate() if live_gate else None
         self.end_silence = end_silence  # konuşma bitti saymak için sessizlik (sn)
         self.live = live  # Gemini Live: "Hey Alice"ten sonra sesten sese canlı konuşma
         self._live_q: queue.Queue | None = None  # doluyken mikrofon kareleri Live'a gider
@@ -488,8 +491,9 @@ class VoiceAssistant:
                             voice_log(f"mikrofon yeniden açıldı: {getattr(mic, 'name', '')}")
                         except Exception as e:  # noqa: BLE001
                             voice_log(f"mikrofon yeniden açılamadı: {e}")
-                    if self._live_q is not None:  # canlı konuşmada mikrofon doğrudan Live'a
-                        self._live_q.put(frame)
+                    if self._live_q is not None:  # canlı konuşmada mikrofon (gürültü süzülerek) Live'a
+                        for f in (self.live_gate.feed(frame) if self.live_gate is not None else [frame]):
+                            self._live_q.put(f)
                         continue
                     if wake is not None and wake.detect(frame):
                         self._interrupt()
@@ -541,7 +545,8 @@ def live_text_options(v: dict[str, Any]) -> dict[str, Any]:
     m = v.get("live_text_min", -0.7)
     return {"live_text_min": None if m in ("", False, None) else float(m),
             "live_text_wait": float(v.get("live_text_wait", 1.5)),
-            "live_follow": float(v.get("live_follow", 12))}
+            "live_follow": float(v.get("live_follow", 12)),
+            "live_gate": bool(v.get("live_gate", True))}
 
 
 def make_live(cfg, agent):

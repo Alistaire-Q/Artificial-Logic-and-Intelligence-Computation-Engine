@@ -1164,3 +1164,28 @@ def test_live_follow_up_without_wake_word_after_conversation():
     va.armed_until = time.monotonic() + 5  # canlı konuşma az önce bitti
     va.handle_audio(Audio(b"\1\0" * 16000, 16000), direct=False)
     assert wait_for(lambda: live.texts == ["Masaüstü simgelerini göster."])
+
+
+def test_speech_gate_sends_silence_for_noise_and_preroll_for_speech():
+    from alice.voice.listen import SpeechGate
+
+    class FakeVAD:
+        def __init__(self):
+            self.speech = False
+
+        def is_speech(self, frame):
+            return self.speech
+
+    vad = FakeVAD()
+    g = SpeechGate(vad, preroll=3, hangover=2, start_frames=2)
+    noise = [bytes([i]) * 960 for i in range(1, 6)]
+    out = [f for n in noise for f in g.feed(n)]
+    assert out == [b"\x00" * 960] * 5  # gürültü: Live'a sessizlik
+    vad.speech = True
+    assert g.feed(b"a" * 960) == [b"\x00" * 960]  # tek kare yetmez
+    sent = g.feed(b"b" * 960)
+    assert sent[-1] == b"b" * 960 and b"a" * 960 in sent and noise[-1] in sent  # öncesiyle birlikte
+    vad.speech = False
+    assert g.feed(b"c" * 960) == [b"c" * 960]  # konuşma bitince kısa süre açık kalır
+    g.feed(b"d" * 960)
+    assert g.feed(b"e" * 960) == [b"\x00" * 960]

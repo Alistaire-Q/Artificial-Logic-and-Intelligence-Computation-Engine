@@ -48,6 +48,36 @@ class VAD:
         return result
 
 
+class SpeechGate:
+    """Canlı konuşmada mikrofonu süzer: konuşma yokken Live'a sessizlik gider. Oyun/motor sesi Live'ın kendi
+    konuşma algısını tetikleyip "vote vote", Japonca, Hintçe gibi uydurma cümlelere yol açıyordu."""
+
+    def __init__(self, vad: "VAD | None" = None, preroll: int = 10, hangover: int = 20, start_frames: int = 3):
+        self.vad = vad or VAD(aggressiveness=3)
+        self.ring: deque[bytes] = deque(maxlen=preroll)
+        self.hangover = hangover
+        self.start_frames = start_frames
+        self.voiced = 0
+        self.open_left = 0
+
+    def feed(self, frame: bytes) -> list[bytes]:
+        """Kareyi al, Live'a gidecek kareleri döndür (konuşma yoksa aynı uzunlukta sessizlik)."""
+        if self.vad.is_speech(frame):
+            self.voiced += 1
+        else:
+            self.voiced = 0
+        if self.open_left > 0:
+            self.open_left = self.hangover if self.voiced else self.open_left - 1
+            return [frame]
+        if self.voiced >= self.start_frames:  # konuşma başladı: hemen öncesini de gönder (ilk hece kesilmesin)
+            self.open_left = self.hangover
+            out = list(self.ring) + [frame]
+            self.ring.clear()
+            return out
+        self.ring.append(frame)
+        return [b"\x00" * len(frame)]
+
+
 def utterances(frames: Iterator[bytes], vad: VAD, start_frames: int = 6, end_silence: float = 0.8,
                max_seconds: float = 30, preroll: int = 10, rate: int = 16000, frame_len: int = 480,
                stop: Callable[[], bool] = lambda: False, on_start: Callable[[], None] = lambda: None
