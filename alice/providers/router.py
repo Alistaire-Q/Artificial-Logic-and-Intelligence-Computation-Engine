@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from alice.config import Config, ProviderConfig, alice_home
-from alice.providers import ranking
+from alice.providers import ranking, thinking
 from alice.providers.openai_compat import ChatResult, OpenAICompatProvider, ProviderError, StreamCancelled
 
 COOLDOWNS = {"rate_limit": 20.0, "quota": 3600.0, "server": 30.0, "network": 30.0, "unreachable": 600.0}
@@ -172,6 +172,8 @@ class Router:
         self.dead_models: set[str] = set()
         self.dead_providers: set[str] = set()
         self.no_tools: set[str] = set()
+        self.no_thinking: set[str] = set()  # düşünme parametresini reddeden modeller
+        self.thinking_overrides: dict[str, str] = {}  # /think ile oturumluk seviye
         self.size_limit: dict[str, int] = {}
         self.usage = UsageTracker(usage_path or alice_home() / "usage.json")
         self.sleep = sleep
@@ -181,6 +183,10 @@ class Router:
         self.role_overrides: dict[str, list[str]] = {}
         self.log_path: Path | None = (usage_path.parent if usage_path else alice_home()) / "logs" / "providers.log"
         self.auto_cache: dict[str, Any] = ranking.load_cache() if auto_cache is None else auto_cache
+
+    def thinking_level(self, role: str) -> str:
+        return self.thinking_overrides.get(role) or self.thinking_overrides.get("*") or thinking.level_for(
+            self.config.data, role)
 
     # ------------------------------------------------------------------ helpers
     def chain(self, role: str) -> list[str]:
@@ -209,6 +215,10 @@ class Router:
     def auto_chain(self, role: str) -> list[str]:
         chains = self.auto_cache.get("chains") or {}
         refs = chains.get(role) or (role == "voice" and chains.get("brain")) or ranking.DEFAULT_AUTO.get(role, [])
+        res = self.auto_cache.get("results") or {}
+        if role == "brain" and res:  # önceki ölçümle kurulmuş zinciri güncel hız cezasına göre yeniden diz
+            refs = sorted(refs, key=lambda r: -ranking.brain_score_of(res[r].get("quality", 0), res[r].get("latency", 0))
+                          if r in res else 0)
         if role == "voice" and not chains.get("voice"):  # eski ölçüm: beyin zincirini ilk kelime hızına göre diz
             res = self.auto_cache.get("results") or {}
             refs = sorted(refs or ranking.DEFAULT_AUTO["brain"],
@@ -328,26 +338,41 @@ class Router:
                 msgs = clean_messages(messages if pc.supports_vision(model) else strip_images(messages),
                                       gemini=is_gemini(pc))
                 client = self.client(p)
-                extra = dict(self.config.model_extra(ref) or {})
+                think = {} if ref in self.no_thinking else thinking.params(p, model, self.thinking_level(role))
+                extra = {**think, **(self.config.model_extra(ref) or {})}  # elle yazılan model ayarı önce gelir
                 if gemini_extra and is_gemini(pc):  # ör. reasoning_effort: sadece Gemini'nin anladığı ayarlar
                     extra.update(gemini_extra)
                 kw = dict(tools=tools, temperature=temperature, max_tokens=max_tokens,
                           response_format=response_format, extra=extra or None)
                 emitted = [False]
-                try:
+
+                def call(kw=kw, client=client, model=model, msgs=msgs, emitted=emitted):
                     if stream is not None and hasattr(client, "chat_stream"):
                         def on_delta(piece: str, _flag=emitted, _sink=stream) -> None:
                             _flag[0] = True
                             _sink.on_delta(piece)
 
-                        res = client.chat_stream(model, msgs, on_delta, cancel=stream.cancelled,
-                                                 on_reasoning=getattr(stream, "on_reasoning", None), **kw)
-                        if not res.usage:
-                            res.usage = {"prompt_tokens": est, "completion_tokens": int(len(res.text) / 3.5)}
-                    else:
-                        res = client.chat(model, msgs, **kw)
-                        if stream is not None and res.text:
-                            stream.on_delta(res.text)
+                        r = client.chat_stream(model, msgs, on_delta, cancel=stream.cancelled,
+                                               on_reasoning=getattr(stream, "on_reasoning", None), **kw)
+                        if not r.usage:
+                            r.usage = {"prompt_tokens": est, "completion_tokens": int(len(r.text) / 3.5)}
+                        return r
+                    r = client.chat(model, msgs, **kw)
+                    if stream is not None and r.text:
+                        stream.on_delta(r.text)
+                    return r
+
+                try:
+                    try:
+                        res = call()
+                    except ProviderError as e:
+                        if not (think and e.kind == "bad_request") or emitted[0]:
+                            raise
+                        # Sağlayıcı düşünme parametresini tanımadı: bir daha gönderme, ayarsız tekrar dene.
+                        self.no_thinking.add(ref)
+                        self._log(f"{ref} düşünme ayarını kabul etmedi ({e}); ayarsız deneniyor")
+                        kw["extra"] = {k: v for k, v in extra.items() if k not in think} or None
+                        res = call()
                 except ProviderError as e:
                     if emitted[0]:
                         stream.on_reset()

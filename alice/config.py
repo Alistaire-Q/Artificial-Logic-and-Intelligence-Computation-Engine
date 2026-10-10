@@ -165,6 +165,14 @@ hotkey = "<ctrl>+<alt>+a"
 region_hotkey = "<ctrl>+<alt>+s"
 clipboard_hotkey = "<ctrl>+<alt>+c"
 
+# Düşünme (reasoning) seviyesi, rol başına: off | low | medium | high | default (modele bırak).
+# Her sağlayıcının kendi ayarına çevrilir (Gemini, Groq, OpenRouter, NVIDIA, Ollama); tanımayan model ayarsız çalışır.
+# Sohbette geçici olarak: /think off, /think brain medium
+[thinking]
+default = "low"
+fast = "off"
+voice = "off"
+
 # Rol başına model zinciri. Soldan sağa denenir; 429, quota, 5xx, model yok gibi
 # durumlarda bir sonrakine geçilir.
 # "auto": anahtarı olan tüm sağlayıcılardaki ücretsiz modeller gerçek bir araç çağrısıyla ölçülür
