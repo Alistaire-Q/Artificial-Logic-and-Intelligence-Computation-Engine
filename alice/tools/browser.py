@@ -335,6 +335,8 @@ class Browser(Tool):
             if b.attached:  # kullanıcının kendi tarayıcısı: açık site sekmesini kullan, her seferinde yeni açma
                 b.page = page = b.tab_for(url)
                 page.bring_to_front()
+                if host_of(page.url) == host_of(url) and urlparse(url).path.strip("/") == "" and not urlparse(url).query:
+                    return snap(f"zaten açık sekmeye geçildi: {page.title()}")  # içindekini (çalan video) bozma
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=45000)
             except Exception as e:  # noqa: BLE001
