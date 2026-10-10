@@ -94,7 +94,8 @@ def to_state(d: dict[str, Any], internal_fuel_kg: float | None = None) -> Flight
                        alt=num("alt"), agl=num("agl"), vv=num("vv"), aoa=num("aoa"), g=num("g"), fuel_kg=fuel,
                        burn_kgs=num("burn"), chaff=int(d["chaff"]) if isinstance(d.get("chaff"), (int, float)) else None,
                        flare=int(d["flare"]) if isinstance(d.get("flare"), (int, float)) else None,
-                       gear=num("gear"), x=num("x"), z=num("z"))
+                       gear=num("gear"), x=num("x"), z=num("z"),
+                       heading=math.degrees(num("heading")) % 360 if num("heading") is not None else None)
 
 
 class DCSListener:
