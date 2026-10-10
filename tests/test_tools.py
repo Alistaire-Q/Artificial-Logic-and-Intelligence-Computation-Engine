@@ -368,3 +368,13 @@ def test_browser_evaluate_wraps_with_timeout():
     b.evaluate("document.title")
     assert calls[0] == ("(_el, arg) => ((limit) => limit)(arg)", 5, 10000)
     assert calls[1][0] == "(_el, arg) => (() => (document.title))(arg)"
+
+
+def test_start_apps_match_store_apps(monkeypatch):
+    from alice.tools import desktop
+
+    monkeypatch.setattr(desktop, "_START_APPS", [("WhatsApp", "5319275A.WhatsAppDesktop_x!App"),
+                                                 ("Medya Oynatıcı", "Microsoft.ZuneMusic_x!Microsoft.ZuneMusic")])
+    assert desktop.match_start_app("whatsapp") == ("WhatsApp", "5319275A.WhatsAppDesktop_x!App")
+    assert desktop.match_start_app("medya") == ("Medya Oynatıcı", "Microsoft.ZuneMusic_x!Microsoft.ZuneMusic")
+    assert desktop.match_start_app("matlab") is None

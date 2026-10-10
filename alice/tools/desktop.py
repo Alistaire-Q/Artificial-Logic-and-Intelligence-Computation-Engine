@@ -170,6 +170,46 @@ def _exes_in(folder: Path, needle: str, depth: int = 3) -> list[Path]:
     return [f for f in (named or found) if not any(k in f.stem.lower() for k in skip)]
 
 
+_START_APPS: list[tuple[str, str]] | None = None
+
+
+def start_apps(refresh: bool = False) -> list[tuple[str, str]]:
+    """Başlat menüsündeki TÜM uygulamalar (Microsoft Store / UWP dahil: WhatsApp, Spotify...) -> (ad, AppID).
+    Store uygulamalarının exe'si/kısayolu yok; shell:AppsFolder\<AppID> ile açılır."""
+    global _START_APPS
+    if _START_APPS is not None and not refresh:
+        return _START_APPS
+    apps: list[tuple[str, str]] = []
+    if IS_WIN:
+        try:
+            out = subprocess.run(["powershell", "-NoProfile", "-Command",
+                                  "[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-StartApps | ForEach-Object { $_.Name + \"`t\" + $_.AppID }"],
+                                 capture_output=True, timeout=15, creationflags=0x08000000)
+            text = out.stdout.decode("utf-8", "replace") if out.returncode == 0 else ""
+            for line in text.splitlines():
+                name, _, app_id = line.partition("	")
+                if name.strip() and app_id.strip():
+                    apps.append((name.strip(), app_id.strip()))
+        except (OSError, subprocess.SubprocessError):
+            pass
+    _START_APPS = apps
+    return apps
+
+
+def match_start_app(name: str) -> tuple[str, str] | None:
+    needle = _norm(name)
+    if not needle:
+        return None
+    apps = start_apps()
+    for n, app_id in apps:  # önce tam eşleşme, sonra içeren
+        if _norm(n) == needle:
+            return n, app_id
+    for n, app_id in apps:
+        if needle in _norm(n):
+            return n, app_id
+    return None
+
+
 def find_installed_apps(name: str, limit: int = 15) -> list[str]:
     """Kurulu bir programın yerini bul: Başlat menüsü, kayıt defteri (Uninstall, App Paths),
     Program Files, LOCALAPPDATA\\Programs ve Steam kütüphaneleri. Satır başına 'kaynak: yol'."""
@@ -191,6 +231,9 @@ def find_installed_apps(name: str, limit: int = 15) -> list[str]:
     w = shutil.which(name)
     if w:
         add("PATH", w)
+    for n, app_id in start_apps():
+        if needle in _norm(n) and len(out) < limit:
+            out.append(f"Başlat uygulaması ({n}): shell:AppsFolder\\{app_id}")
 
     # Başlat menüsü / masaüstü kısayolları (hedef exe'leriyle birlikte)
     roots = _shortcut_roots()
@@ -287,10 +330,17 @@ def open_app(target: str) -> str:
         if p.exists() or "://" in target or shutil.which(target):
             os.startfile(str(p) if p.exists() else (shutil.which(target) or target))  # type: ignore[attr-defined]
             return f"açıldı: {target}"
+        if target.lower().startswith("shell:appsfolder"):
+            subprocess.Popen(["explorer.exe", target])
+            return f"açıldı: {target}"
         lnk = _start_menu_lookup(target)
         if lnk:
             os.startfile(str(lnk))  # type: ignore[attr-defined]
             return f"açıldı: {lnk.stem} ({lnk})"
+        app = match_start_app(target)
+        if app:  # Store uygulamaları (WhatsApp vb.) dahil Başlat menüsündeki her uygulama
+            subprocess.Popen(["explorer.exe", f"shell:AppsFolder\\{app[1]}"])
+            return f"açıldı: {app[0]}"
         for line in find_installed_apps(target):
             path = line.split(": ", 1)[1]
             if path.lower().endswith(".exe"):
