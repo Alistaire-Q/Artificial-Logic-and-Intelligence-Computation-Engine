@@ -516,18 +516,26 @@ def _foreground_uia(title: str | None):
     return desk.window(handle=hwnd).wrapper_object()
 
 
-def collect_ui_elements(ctx: ToolContext, title: str | None = None, limit: int = 150) -> tuple[str, list[dict[str, Any]]]:
-    """Öndeki (ya da başlığı verilen) pencerenin etkileşimli öğelerini topla."""
+def collect_ui_elements(ctx: ToolContext, title: str | None = None, limit: int = 150,
+                        budget: float = 5.0) -> tuple[str, list[dict[str, Any]]]:
+    """Öndeki (ya da başlığı verilen) pencerenin etkileşimli öğelerini topla. Chromium/WebView2 tabanlı
+    uygulamalarda (WhatsApp, Discord...) ağaç çok büyük: budget saniyede ne bulunduysa onunla dön."""
     if not IS_WIN:
         raise ToolError("ui_elements şimdilik sadece Windows'ta (UI Automation). Linux/macOS'ta computer aracını kullan.")
     win = _foreground_uia(title)
-    try:
-        descendants = win.descendants(depth=14)
-    except TypeError:
-        descendants = win.descendants()
+    deadline = time.monotonic() + budget
+    if hasattr(win, "iter_descendants"):
+        descendants = win.iter_descendants(depth=14)  # tembel: süre dolunca durabilelim
+    else:
+        try:
+            descendants = win.descendants(depth=14)
+        except TypeError:
+            descendants = win.descendants()
     items: list[dict[str, Any]] = []
     wrappers: dict[int, Any] = {}
     for el in descendants:
+        if time.monotonic() > deadline:
+            break
         try:
             info = el.element_info
             ctype = info.control_type

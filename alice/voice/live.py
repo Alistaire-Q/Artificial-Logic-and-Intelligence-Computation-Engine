@@ -310,6 +310,7 @@ class LiveSession:
         self.grab: Callable[[], str | None] = screen_frame
         self._pre: dict[str, Any] = {}  # önceden açılan bağlantı: {"thread", "ws", "error"}
         self._pre_lock = threading.Lock()
+        self._tools_q: queue.Queue | None = None  # araç iş parçacığının kuyruğu
         self._bg = 0  # arka planda süren uzun işler (computer_task): bitene kadar konuşma kapanmasın
 
     @property
@@ -620,6 +621,41 @@ class LiveSession:
 
         threading.Thread(target=run, daemon=True, name=f"alice-live-bg-{name}").start()
 
+    def _execute(self, call: dict[str, Any]) -> ToolResult | None:
+        """Aracı araç iş parçacığında çalıştır. Takılırsa (ör. bir pencerenin öğelerini okurken) o iş parçacığını
+        bırak, sonraki araçlar yeni bir iş parçacığında çalışsın: konuşma kilitlenmesin. None = takıldı."""
+        if getattr(self, "_tools_q", None) is None:
+            q: queue.Queue = queue.Queue()
+            self._tools_q = q
+            threading.Thread(target=self._tool_worker, args=(q,), daemon=True, name="alice-live-tools").start()
+        job: dict[str, Any] = {"call": call, "done": threading.Event()}
+        self._tools_q.put(job)
+        if not job["done"].wait(self.TOOL_TIMEOUT + 1):
+            self.log(f"live araç takıldı, araçlar yeni iş parçacığına geçti: {call['function']['name']}")
+            self._tools_q = None
+            state = getattr(getattr(self.agent, "ctx", None), "state", None)
+            if isinstance(state, dict):
+                state.pop("browser", None)  # tarayıcı bağlantısı eski iş parçacığına bağlı: yeniden bağlanılsın
+            return None
+        return job["res"]
+
+    def _tool_worker(self, q: "queue.Queue[dict[str, Any]]") -> None:
+        try:
+            import comtypes  # UI Automation bu iş parçacığında da çalışsın
+
+            comtypes.CoInitialize()
+        except Exception:  # noqa: BLE001
+            pass
+        while True:
+            job = q.get()
+            call = job["call"]
+            try:
+                self.agent._enable_groups_for(tool_names=(call["function"]["name"],))
+                job["res"] = self.agent._execute_calls([call])[0]
+            except Exception as e:  # noqa: BLE001
+                job["res"] = ToolResult(f"{type(e).__name__}: {e}", is_error=True)
+            job["done"].set()
+
     def _run_call(self, ws, fc: dict[str, Any]) -> None:
         if fc.get("name") in self.BACKGROUND:
             self._run_background(ws, fc)
@@ -642,16 +678,15 @@ class LiveSession:
 
         def too_slow() -> None:
             self.log(f"live araç zaman aşımı: {fc.get('name')} {json.dumps(fc.get('args') or {}, ensure_ascii=False)[:120]}")
-            respond(f"HATA: araç {self.TOOL_TIMEOUT:.0f} sn içinde bitmedi; kullanıcıya olmadığını kısaca söyle.")
+            respond(f"HATA: araç {self.TOOL_TIMEOUT:.0f} sn içinde bitmedi, iş YAPILMADI. Kullanıcıya olmadığını "
+                    "kısaca söyle (yapıldı deme); başka yoldan dene (ör. computer_task).")
 
         timer = threading.Timer(self.TOOL_TIMEOUT, too_slow)
         timer.daemon = True
         timer.start()
-        try:
-            self.agent._enable_groups_for(tool_names=(call["function"]["name"],))
-            res: ToolResult = self.agent._execute_calls([call])[0]
-        except Exception as e:  # noqa: BLE001
-            res = ToolResult(f"{type(e).__name__}: {e}", is_error=True)
+        res = self._execute(call)
+        if res is None:  # takıldı: zaman aşımı cevabı gitti, konuşma bir sonraki istekle devam eder
+            return
         text = res.text[:6000]
         if fc.get("name") in ("reflex", "computer_task", "browser", "ui_act"):  # neden olmadı, günlükten anlaşılsın
             self.log(f"live araç sonucu {fc.get('name')}: {text[:200].replace(chr(10), ' | ')}")
