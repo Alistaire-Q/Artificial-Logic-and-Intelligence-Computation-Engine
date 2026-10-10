@@ -337,3 +337,23 @@ def test_export_lua_runs_in_luajit():
     data = [m for m in msgs if "aircraft" in m]
     assert len(data) == 5 and data[0]["burn"] == 0.8 and data[0]["chaff"] == 60
     assert msgs[-2] == {"t": 5, "restricted": True}
+
+
+def test_dcs_ensure_installed_only_when_missing_or_changed(tmp_path):
+    from alice.sims import dcs
+
+    d = tmp_path / "DCS"
+    d.mkdir()
+    assert dcs.ensure_installed([d]) == [d]
+    assert "alice_export.lua" in (d / "Scripts" / "Export.lua").read_text(encoding="utf-8")
+    assert dcs.ensure_installed([d]) == []  # zaten kurulu
+    (d / "Scripts" / "alice_export.lua").write_text("eski", encoding="utf-8")
+    assert dcs.ensure_installed([d]) == [d]  # betik değişmiş: yenile
+    assert (d / "Scripts" / "Export.lua").read_text(encoding="utf-8").count("alice_export.lua") == 1
+
+
+def test_checklist_after_takeoff_exists():
+    from alice.sims.checklists import find
+
+    cl = find("kalkış sonrası")
+    assert cl is not None and cl.key == "kalkis-sonrasi"

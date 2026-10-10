@@ -50,7 +50,14 @@ class SimHub:
     def start(self) -> "SimHub":
         global ACTIVE
         if self.cfg.get("dcs", True):
-            from alice.sims.dcs import PORT, DCSListener
+            from alice.sims.dcs import PORT, DCSListener, ensure_installed
+
+            try:  # betik kurulu değilse ya da eskiyse kur: kurulmadan DCS hiç veri göndermiyor
+                for d in ensure_installed(port=int(self.cfg.get("dcs_port", PORT))):
+                    self.store.add_event("info", "DCS veri betiği kuruldu", f"{d} (DCS'i yeniden başlat)", "info",
+                                         "flight")
+            except OSError as e:
+                self.store.add_event("error", "DCS veri betiği kurulamadı", str(e), "warn", "flight")
 
             comp = self.companion("dcs")
             tracker = TouchdownTracker(comp)
@@ -82,7 +89,10 @@ class SimHub:
         lines = []
         for src, c in self.companions.items():
             s = c.last_state
-            if s is None or c.phase != "air":
+            if s is None:
+                continue
+            if c.phase != "air":
+                lines.append(f"{src}: {c.profile.name}, yerde")
                 continue
             lines.append(f"{src}: {c.profile.name}, {(s.alt or 0) / 0.3048:,.0f} ft, {(s.ias or 0) / 0.514444:.0f} kt, "
                          f"{s.g or 0:.1f} G")
@@ -94,4 +104,9 @@ class SimHub:
                              f"{fs['left_min']:.0f} dk kaldı{extra}")
             if s.chaff is not None:
                 lines.append(f"  chaff {s.chaff}, flare {s.flare}")
-        return "\n".join(lines) or "şu an uçuşta değilsin (ya da veri gelmiyor)"
+        if lines:
+            return "\n".join(lines)
+        if self.cfg.get("dcs", True) and "dcs" in self.companions and self.companions["dcs"].last_state is None:
+            return ("DCS'ten bu oturumda hiç veri gelmedi. DCS açıksa: veri betiği yeni kurulduysa DCS'i yeniden "
+                    "başlatmak gerekir (görevi yeniden başlatmak yetmez); kuruluysa `alice dcs status` ile kontrol et.")
+        return "şu an uçuşta değilsin"
