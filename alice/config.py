@@ -88,6 +88,14 @@ profile_chars = 2500
 # Konuşma kayıtları kaç gün saklanır (bilgiler silinmez). 0 = sonsuz.
 keep_days = 365
 
+# Eklentiler: ~/.alice/plugins/*.py ve buradaki yollar yeni araç ekler (bkz. docs/PLUGINS.md, `alice plugins`).
+[plugins]
+enabled = true
+# Kapatılacak eklenti adları.
+disabled = []
+# Ek eklenti dosyaları/klasörleri.
+paths = []
+
 # ALICE'in sesi ve kulağı (`alice voice`). Ses seçimi: `alice voice audition`.
 [voice]
 # true: çekirdek (alice core run) sesli asistanı da başlatır, bildirimleri seslendirir.
@@ -112,6 +120,9 @@ end_silence = 0.5
 # "Hey Alice" kontrolü: ekran kartı varsa wake_local_gpu (daha iyi duyar, ~0,1 sn), yoksa işlemcide wake_local.
 wake_local = "base"
 wake_local_gpu = "small"
+# Ekran kartındaki Whisper modelleri: int8_float16 belleği yarıya indirir (doğruluk aynı); float16 = eski hali.
+# DCS açılınca (uçuş modu) modeller ekran kartından çıkar, kapanınca geri döner.
+gpu_compute = "int8_float16"
 # Bulut sesi "gemini:<ses>"; yerel motor "xtts" ya da "chatterbox" (boş = yok).
 tts_cloud = "gemini:Aoede"
 tts_local = ""
@@ -341,6 +352,10 @@ def load_env_file(path: Path) -> None:
             os.environ[key] = value
 
 
+KNOWN_VISION = ("*gemma-3-*", "*gemma-4-*", "*llama-4-*", "*-vl-*", "*-vl", "*vision*", "*pixtral*")
+NOT_VISION = ("*-1b*", "*embed*", "*tts*", "*guard*")
+
+
 @dataclass
 class ProviderConfig:
     name: str
@@ -365,7 +380,13 @@ class ProviderConfig:
         return not self.needs_key or self.api_key is not None
 
     def supports_vision(self, model: str) -> bool:
-        return any(fnmatch.fnmatch(model.lower(), p.lower()) for p in self.vision_models)
+        low = model.lower()
+        if any(fnmatch.fnmatch(low, p.lower()) for p in self.vision_models):
+            return True
+        # Görsel anladığı bilinen aileler, sağlayıcı listesinde yazmasa da (ör. Gemini API'deki Gemma 4): Gemini
+        # günlük kotası dolunca görme rolü bunlara düşebilsin. Görseli reddederse router o modeli görmeden çıkarır.
+        return (any(fnmatch.fnmatch(low, p) for p in KNOWN_VISION)
+                and not any(fnmatch.fnmatch(low, p) for p in NOT_VISION))
 
 
 @dataclass
@@ -436,8 +457,13 @@ def load_config(path: Path | None = None, cwd: Path | None = None) -> Config:
     data = default_config_dict()
     cfg_path = path or (home / "config.toml")
     if cfg_path.is_file():
-        with open(cfg_path, "rb") as f:
-            user = tomllib.load(f)
+        try:
+            # utf-8-sig: Not Defteri'nin eklediği BOM'u tomllib reddediyor.
+            user = tomllib.loads(cfg_path.read_text(encoding="utf-8-sig"))
+        except (tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
+            # Elle düzenlemede tek yazım hatası çekirdeği/uygulamayı açılışta sessizce düşürmesin: varsayılanlarla aç.
+            print(f"UYARI: {cfg_path} okunamadı, varsayılan ayarlar kullanılıyor: {e}", file=sys.stderr)
+            user = {}
         # Rol listeleri birleştirilmez, kullanıcınınki tamamen geçerlidir.
         data = _deep_merge(data, user)
     return Config(data=data, path=cfg_path if cfg_path.is_file() else None)

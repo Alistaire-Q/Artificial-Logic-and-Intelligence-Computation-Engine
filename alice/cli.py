@@ -228,7 +228,7 @@ def build(cfg: Config, cwd: Path, mode: str, verbose: bool = False) -> tuple[Age
     decider = Decider.from_config(cfg, router, on_event=lambda s: console.print(f"[dim]  ↪ {s}[/]"))
     ctx = ToolContext(cwd=cwd, config=cfg, router=router, decider=decider,
                       emit=lambda s: console.print(f"[dim]  {s}[/]"))
-    agent = Agent(cfg, router, all_tools(), ctx, Permissions(mode), ui, decider)
+    agent = Agent(cfg, router, all_tools(cfg, ctx.emit), ctx, Permissions(mode), ui, decider)
     attach_memory(agent, "yazı")
     attach_mcp(agent, ctx, emit=lambda s: console.print(f"[dim]  {s}[/]"))
     return agent, router, ctx
@@ -742,6 +742,10 @@ def main(argv: list[str] | None = None) -> int:
         return voice_cmd(argv[1:])
     if argv and argv[0] == "shortcut":
         return shortcut_cmd()
+    if argv and argv[0] == "plugins":
+        from alice.plugins import plugins_cmd
+
+        return plugins_cmd(argv[1:])
     if argv and argv[0] == "reflex":
         rp = argparse.ArgumentParser(prog="alice reflex")
         rp.add_argument("goal")

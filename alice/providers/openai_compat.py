@@ -22,11 +22,13 @@ from alice.config import ProviderConfig
 class ProviderError(Exception):
     """kind: rate_limit | quota | auth | not_found | too_large | bad_request | server | network | unreachable"""
 
-    def __init__(self, kind: str, message: str, status: int | None = None, retry_after: float | None = None):
+    def __init__(self, kind: str, message: str, status: int | None = None, retry_after: float | None = None,
+                 daily: bool = False):
         super().__init__(f"[{kind}] {message}")
         self.kind = kind
         self.status = status
         self.retry_after = retry_after
+        self.daily = daily  # günlük kota: ertesi gün sıfırlanana kadar bu modele istek gitmesin
 
 
 class StreamCancelled(Exception):
@@ -54,10 +56,20 @@ class ChatResult:
 
 
 _QUOTA_HINTS = ("per day", "daily", "quota", "rpd", "tokens per day", "free-models-per-day", "exhausted")
+_DAILY_HINTS = ("per day", "daily", "rpd", "tokens per day", "free-models-per-day")
 _TOO_LARGE_HINTS = ("context length", "context_length", "maximum context", "too long", "too large",
                     "reduce the length", "request_too_large", "tokens per minute", "max_tokens")
 _NOT_FOUND_HINTS = ("model not found", "does not exist", "no endpoints found", "not a valid model",
                     "model_not_found", "unknown model", "is not supported", "decommissioned", "deprecated")
+
+
+def _quota_window(low: str) -> tuple[str, float | None]:
+    """Gemini 429 gövdesindeki kota kimliğinden pencereyi ("day", "minute" ya da "") ve bekleme süresini çıkar.
+    Gemini dakikalık sınırda da "exceeded your current quota" yazıyor: kimliğe bakmadan hepsi günlük sanılıyordu
+    ve 40 sn sonra açılacak model bir saat kapanıyordu."""
+    window = "day" if "perday" in low else "minute" if "perminute" in low else ""
+    m = re.search(r'"retrydelay":\s*"([\d.]+)s"', low) or re.search(r"retry in ([\d.]+)\s*s", low)
+    return window, (float(m.group(1)) if m else None)
 
 
 def classify_error(status: int, body: str, headers: dict[str, str] | None = None) -> ProviderError:
@@ -83,6 +95,13 @@ def classify_error(status: int, body: str, headers: dict[str, str] | None = None
     if status == 429:
         if any(h in low for h in _TOO_LARGE_HINTS) and "request" in low and "too large" in low:
             return ProviderError("too_large", short, status)
+        window, wait = _quota_window(low)
+        if window == "day":
+            return ProviderError("quota", short, status, retry_after, daily=True)
+        if window == "minute":
+            return ProviderError("rate_limit", short, status, retry_after or wait)
+        if any(h in low for h in _DAILY_HINTS):
+            return ProviderError("quota", short, status, retry_after, daily=True)
         if any(h in low for h in _QUOTA_HINTS):
             return ProviderError("quota", short, status, retry_after)
         return ProviderError("rate_limit", short, status, retry_after)
@@ -219,6 +238,8 @@ class OpenAICompatProvider:
                     try:
                         chunk = json.loads(payload)
                     except json.JSONDecodeError:
+                        continue
+                    if not isinstance(chunk, dict):  # "data: null" gibi: oturumu AttributeError ile düşürmesin
                         continue
                     if chunk.get("error"):
                         err = chunk["error"]

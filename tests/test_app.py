@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from alice.app.server import AppServer, AppState, display_history
-from tests.conftest import FakeProvider, make_config, tool_call
+from tests.conftest import FakeProvider, make_config, rm_rf, tool_call
 
 
 @pytest.fixture
@@ -77,7 +77,7 @@ def test_send_streams_events_and_saves_session(app):
 def test_permission_via_api(app, workdir):
     state, srv, client, prov = app
     (workdir / "eski").mkdir()
-    prov.script.extend([tool_call("run_command", {"command": "rm -rf eski"}), "sildim"])
+    prov.script.extend([tool_call("run_command", {"command": rm_rf("eski")}), "sildim"])
     events, t = collect(state, lambda e: e["type"] == "permission")
     client.post("/api/send", json={"text": "sil"})
     t.join()

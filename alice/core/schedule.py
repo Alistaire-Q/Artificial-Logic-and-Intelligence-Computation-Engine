@@ -12,6 +12,8 @@ Cron: "dakika saat gün ay haftanın_günü"; *, a-b, a,b, */n desteklenir. Haft
 from __future__ import annotations
 
 import json
+import os
+import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -20,6 +22,27 @@ from pathlib import Path
 from typing import Any
 
 from alice.config import alice_home
+
+_SAVE_LOCK = threading.Lock()
+
+
+def write_json_atomic(path: Path, data: Any) -> None:
+    """Önce geçici dosyaya yaz, sonra yerine koy: çökme/elektrik kesintisi ya da iki iş parçacığının aynı anda
+    yazması yarım (bozuk) JSON bırakmasın; bozuk dosya çekirdeği her açılışta düşürüyordu."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _SAVE_LOCK:
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+
+
+def read_json_list(path: Path) -> list[Any] | None:
+    """JSON listesi oku; dosya bozuksa None (çağıran eldekini korusun, çekirdek düşmesin)."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig") or "[]")
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, list) else None
 
 _RANGES = [(0, 59), (0, 23), (1, 31), (1, 12), (0, 7)]
 _NAMES = ["dakika", "saat", "gün", "ay", "haftanın günü"]
@@ -125,7 +148,9 @@ class ScheduledTask:
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
 
     def __post_init__(self) -> None:
-        Cron(self.cron)  # geçersizse hemen hata
+        # Geçersizse hemen hata. "30 Şubat" gibi hiç gelmeyen tarih de kaydedilmeden reddedilsin; yoksa due()
+        # her turda patlayıp diğer bütün görevleri durduruyordu.
+        Cron(self.cron).next_after(datetime.now())
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "ScheduledTask":
@@ -137,7 +162,10 @@ class ScheduledTask:
         return Cron(self.cron).next_after(datetime.fromtimestamp(base))
 
     def summary(self) -> str:
-        nxt = self.next_run(time.time()).strftime("%d.%m %H:%M") if self.enabled else "kapalı"
+        try:
+            nxt = self.next_run(time.time()).strftime("%d.%m %H:%M") if self.enabled else "kapalı"
+        except ValueError:
+            nxt = "hiç gelmiyor"
         last = datetime.fromtimestamp(self.last_run).strftime("%d.%m %H:%M") if self.last_run else "hiç"
         return (f"{self.id}: [{self.cron}] {Cron(self.cron).describe()} -> {self.description or self.prompt[:60]} "
                 f"(sonraki: {nxt}, son: {last})")
@@ -150,18 +178,22 @@ class TaskStore:
         self.load()
 
     def load(self) -> None:
-        self.tasks = []
-        if self.path.exists():
-            for d in json.loads(self.path.read_text(encoding="utf-8") or "[]"):
-                try:
-                    self.tasks.append(ScheduledTask.from_dict(d))
-                except (TypeError, ValueError):
-                    continue
+        if not self.path.exists():
+            self.tasks = []
+            return
+        data = read_json_list(self.path)
+        if data is None:  # bozuk dosya: eldekini koru
+            return
+        tasks = []
+        for d in data:
+            try:
+                tasks.append(ScheduledTask.from_dict(d))
+            except (TypeError, ValueError, AttributeError):
+                continue
+        self.tasks = tasks
 
     def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps([asdict(t) for t in self.tasks], ensure_ascii=False, indent=2),
-                             encoding="utf-8")
+        write_json_atomic(self.path, [asdict(t) for t in self.tasks])
 
     def add(self, task: ScheduledTask) -> ScheduledTask:
         self.tasks = [t for t in self.tasks if t.id != task.id] + [task]
@@ -191,7 +223,10 @@ class TaskStore:
                 continue
             if not t.enabled:
                 continue
-            nxt = t.next_run().timestamp()
+            try:
+                nxt = t.next_run().timestamp()
+            except ValueError:  # hiç gelmeyen tarih: bu görevi atla, diğerlerini durdurma
+                continue
             if nxt > now:
                 continue
             late = now - nxt > grace

@@ -17,7 +17,7 @@ from typing import Any, Callable
 
 from alice.tools.base import ToolResult
 from alice.voice.audio import Audio, Microphone
-from alice.voice.listen import VAD, PushToTalk, WakeWord, strip_wake, utterances
+from alice.voice.listen import VAD, PushToTalk, WakeWord, is_yes, strip_wake, utterances
 from alice.voice.speaker import Speaker
 from alice.voice.stt import STTError, is_hallucination
 from alice.voice.tone import SentenceSplitter
@@ -80,7 +80,6 @@ def spoken_time(hour: int, minute: int) -> str:
 
 
 FILLERS = ["Hemen bakıyorum.", "Bir saniye, bakıyorum.", "Tamam, bakıyorum."]
-YES = ("evet", "tamam", "olur", "onay", "yap", "devam", "peki")
 
 
 class VoiceUI:
@@ -248,6 +247,11 @@ class VoiceAssistant:
 
     def ask_yes_no(self, question: str, timeout: float = 10) -> bool:
         """Sesli onay: soruyu söyle, sıradaki konuşmayı cevap say."""
+        while not self._answers.empty():  # önceki sorudan kalan cevap bu soruyu onaylamasın
+            try:
+                self._answers.get_nowait()
+            except queue.Empty:
+                break
         self.speaker.say(question, "serious")
         self.speaker.wait(15)
         self._awaiting_answer = True
@@ -258,7 +262,7 @@ class VoiceAssistant:
             return False
         finally:
             self._awaiting_answer = False
-        return any(w in ans.lower() for w in YES)
+        return is_yes(ans)
 
     def handle_text(self, text: str, direct: bool) -> None:
         """Yazıya çevrilmiş konuşmayı işle (test edilebilir çekirdek)."""
@@ -298,7 +302,13 @@ class VoiceAssistant:
             armed = time.monotonic() <= self.armed_until  # canlı konuşma az önce bitti: "Alice" demeden devam
             full = self._full_text(audio) if pre else None
             head = full[0] if full else gate.heard(audio)
-            woke = head is not None and (strip_wake(head) is not None or (armed and len(head.strip()) > 1))
+            if head is not None and not head.strip() and not full:
+                audio, head = self._scan_wake(gate, audio, head)
+            conf = full[1] if full else getattr(gate, "last_conf", 0.0)
+            # "Alice" demeden devam: gürültüden uydurulmuş ya da çok güvensiz döküm canlı konuşmayı yeniden açmasın.
+            follow = (armed and len(head.strip()) > 1 and not is_hallucination(head) and conf > -1.2
+                      if head is not None else False)
+            woke = head is not None and (strip_wake(head) is not None or follow)
             if pre and not woke:
                 self.live.discard()
             if head is not None:
@@ -325,6 +335,25 @@ class VoiceAssistant:
             return
         voice_log(f"duyulan [{getattr(self.stt, 'last', '')}]{' (doğrudan)' if direct else ''}: {text}")
         self.handle_text(text, direct)
+
+    def _scan_wake(self, gate, audio: Audio, head: str, step: float = 2.0, limit: int = 5) -> tuple[Audio, str]:
+        """Cümlenin başı konuşma değilse (oyun/müzik sesiyle başlayan uzun kayıt) "Hey Alice" ileride olabilir:
+        sonraki pencerelere bak, bulursa kaydı oradan başlat. Başta gerçek konuşma varsa (başkasıyla konuşma)
+        bakılmaz, yani normal sohbet ek iş çıkarmaz."""
+        head_s = getattr(gate, "HEAD_SECONDS", 2.5)
+        start = step
+        for _ in range(limit):
+            if audio.seconds - start < 0.8:
+                break
+            part = Audio(audio.pcm[int(start * audio.rate) * 2:], audio.rate)
+            text = gate.heard(part)
+            if text and strip_wake(text) is not None:
+                voice_log(f"uyandırma kaydın {start:.0f}. saniyesinde bulundu: {text}")
+                return part, text
+            if text and text.strip():
+                break  # orada gerçek konuşma var ama uyandırma yok
+            start += min(step, head_s)
+        return audio, head
 
     def _full_text(self, audio: Audio) -> tuple[str, float] | None:
         """Kısa cümlede uyandırma kontrolü ve Live'a gidecek yazı için TEK yerel geçiş (iki ayrı geçiş ~0,5 sn
@@ -416,61 +445,69 @@ class VoiceAssistant:
     def _worker(self) -> None:
         while True:
             job = self._jobs.get()
-            audio = job if isinstance(job, Audio) else None
-            if audio is not None:
-                # Live açılamazsa eski yol: önce yazıya çevir.
-                if self._live_ready():
-                    self._busy.set()
-                    try:
-                        if self._converse_live("", audio):
-                            continue
-                    except Exception as e:  # noqa: BLE001
-                        voice_log(f"live hatası: {e}")
-                    finally:
-                        self._busy.clear()
-                try:
-                    text = strip_wake(self.stt.transcribe(audio)) or ""
-                except STTError as e:
-                    self.emit(f"anlaşılamadı: {e}")
-                    continue
-                if not text:
-                    continue
-            else:
-                text = job
-            if audio is None and self._live_ready():
+            try:
+                self._handle_job(job)
+            except Exception as e:  # noqa: BLE001 - tek bir iş (STT, CUDA, ağ) sesli asistanı kalıcı susturmasın
+                self._busy.clear()
+                voice_log(f"iş hatası ({type(e).__name__}): {e}")
+                self.emit(f"hata: {e}")
+
+    def _handle_job(self, job) -> None:
+        audio = job if isinstance(job, Audio) else None
+        if audio is not None:
+            # Live açılamazsa eski yol: önce yazıya çevir.
+            if self._live_ready():
                 self._busy.set()
                 try:
-                    if self._converse_live(text):
-                        continue
+                    if self._converse_live("", audio):
+                        return
                 except Exception as e:  # noqa: BLE001
                     voice_log(f"live hatası: {e}")
                 finally:
                     self._busy.clear()
-            if not text:
-                continue
-            self._busy.set()
-            now = time.monotonic()
-            msgs = getattr(self.agent, "messages", None)
-            if isinstance(msgs, list) and msgs:
-                if self._last_turn and now - self._last_turn > self.idle_reset:
-                    msgs[:] = msgs[:1]  # uzun sessizlik: yeni sohbet
-                else:
-                    msgs[:] = trim_history(msgs, self.keep_turns)
-            reply = ""
             try:
-                self.ui.begin_turn()
-                reply = self.agent.run_turn(with_clock(text)) or ""
-            except Exception as e:
-                self.speaker.say("Bir sorun çıktı, ekrana yazdım.", "serious")
-                self.emit(f"hata: {e}")
-                reply = f"HATA {e}"
+                text = strip_wake(self.stt.transcribe(audio)) or ""
+            except STTError as e:
+                self.emit(f"anlaşılamadı: {e}")
+                return
+            if not text:
+                return
+        else:
+            text = job
+        if audio is None and self._live_ready():
+            self._busy.set()
+            try:
+                if self._converse_live(text):
+                    return
+            except Exception as e:  # noqa: BLE001
+                voice_log(f"live hatası: {e}")
             finally:
                 self._busy.clear()
-                self._last_turn = time.monotonic()
-                tools = f" araçlar: {', '.join(self.ui.tools)}" if self.ui.tools else ""
-                voice_log(f"cevap [{', '.join(dict.fromkeys(self.ui.models))}]{tools}: {reply}")
-            self.speaker.wait(120)
-            self.armed_until = time.monotonic() + self.follow_up
+        if not text:
+            return
+        self._busy.set()
+        now = time.monotonic()
+        msgs = getattr(self.agent, "messages", None)
+        if isinstance(msgs, list) and msgs:
+            if self._last_turn and now - self._last_turn > self.idle_reset:
+                msgs[:] = msgs[:1]  # uzun sessizlik: yeni sohbet
+            else:
+                msgs[:] = trim_history(msgs, self.keep_turns)
+        reply = ""
+        try:
+            self.ui.begin_turn()
+            reply = self.agent.run_turn(with_clock(text)) or ""
+        except Exception as e:
+            self.speaker.say("Bir sorun çıktı, ekrana yazdım.", "serious")
+            self.emit(f"hata: {e}")
+            reply = f"HATA {e}"
+        finally:
+            self._busy.clear()
+            self._last_turn = time.monotonic()
+            tools = f" araçlar: {', '.join(self.ui.tools)}" if self.ui.tools else ""
+            voice_log(f"cevap [{', '.join(dict.fromkeys(self.ui.models))}]{tools}: {reply}")
+        self.speaker.wait(120)
+        self.armed_until = time.monotonic() + self.follow_up
 
     # ------------------------------------------------------------------ döngü
     def run(self) -> None:
@@ -479,6 +516,8 @@ class VoiceAssistant:
         wake = WakeWord(self.wake_model) if self.wake_model else None
         self.wake_phrase = self.wake_phrase and wake is None
         with self.mic_factory() as mic:
+            mic_down: list[float] = []
+
             def frames():
                 while not self.stop_event.is_set():
                     if ptt is not None and ptt.pressed.is_set():
@@ -486,7 +525,22 @@ class VoiceAssistant:
                         audio = ptt.record(mic)
                         threading.Thread(target=self.handle_audio, args=(audio, True), daemon=True).start()
                         continue
-                    frame = mic.read()
+                    try:
+                        frame = mic.read()
+                    except Exception as e:  # noqa: BLE001 - kulaklık çıkarıldı/kapandı: dinlemeyi öldürme, yeniden dene
+                        if not mic_down:
+                            voice_log(f"mikrofon okunamadı, yeniden deneniyor: {e}")
+                            self.emit("mikrofon okunamıyor; tekrar deniyorum")
+                        mic_down.append(time.monotonic())
+                        self.stop_event.wait(1.0)
+                        if hasattr(mic, "reopen"):
+                            try:
+                                mic.reopen()
+                                voice_log(f"mikrofon yeniden açıldı: {getattr(mic, 'name', '')}")
+                                mic_down.clear()
+                            except Exception:  # noqa: BLE001
+                                pass
+                        continue
                     if self._mic_health(frame) and hasattr(mic, "reopen"):
                         try:
                             mic.reopen()
@@ -580,7 +634,7 @@ def build_voice_agent(cfg, inner_ui=None, speaker: Speaker | None = None, cwd=No
         tts.warm_up()
         speaker = Speaker(tts)
     ui = VoiceUI(speaker, inner_ui)
-    agent = Agent(cfg, router, all_tools(), ctx, Permissions(cfg.agent.get("permission_mode", "auto")), ui, decider)
+    agent = Agent(cfg, router, all_tools(cfg, ctx.emit), ctx, Permissions(cfg.agent.get("permission_mode", "auto")), ui, decider)
     agent.messages[0]["content"] += "\n\n" + VOICE_PROMPT
     from alice.memory import attach_memory
 

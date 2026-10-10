@@ -188,7 +188,7 @@ class AppState:
         self.decider = Decider.from_config(cfg, self.router)
         self.ctx = ToolContext(cwd=cwd, config=cfg, router=self.router, decider=self.decider,
                                emit=lambda s: self.bus.publish({"type": "info", "text": s}))
-        self.agent = Agent(cfg, self.router, all_tools(), self.ctx, Permissions(mode), self.ui, self.decider)
+        self.agent = Agent(cfg, self.router, all_tools(cfg, self.ctx.emit), self.ctx, Permissions(mode), self.ui, self.decider)
         self.ui.agent = self.agent
         from alice.memory import attach_memory
 

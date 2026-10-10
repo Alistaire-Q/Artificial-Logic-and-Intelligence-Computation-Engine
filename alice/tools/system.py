@@ -16,16 +16,21 @@ PROTECTED = {"system", "smss.exe", "csrss.exe", "wininit.exe", "winlogon.exe", "
 
 
 def _gpu() -> str:
-    if shutil.which("nvidia-smi"):
-        r = subprocess.run(["nvidia-smi", "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
-                            "--format=csv,noheader"], capture_output=True, text=True, creationflags=NO_WINDOW)
-        if r.returncode == 0:
+    # Süre sınırı: WMI meşgulken ya da sürücü takılınca system_info (ve paralel araç grubu) sonsuza dek beklemesin.
+    try:
+        if shutil.which("nvidia-smi"):
+            r = subprocess.run(["nvidia-smi", "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
+                                "--format=csv,noheader"], capture_output=True, text=True, encoding="utf-8",
+                               errors="replace", timeout=5, creationflags=NO_WINDOW)
+            if r.returncode == 0:
+                return r.stdout.strip()
+        if sys.platform == "win32":
+            r = subprocess.run(["powershell", "-NoProfile", "-Command",
+                                "(Get-CimInstance Win32_VideoController).Name -join ', '"], capture_output=True,
+                               text=True, encoding="utf-8", errors="replace", timeout=8, creationflags=NO_WINDOW)
             return r.stdout.strip()
-    if sys.platform == "win32":
-        r = subprocess.run(["powershell", "-NoProfile", "-Command",
-                            "(Get-CimInstance Win32_VideoController).Name -join ', '"], capture_output=True, text=True,
-                           creationflags=NO_WINDOW)
-        return r.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
     return "bilinmiyor"
 
 
@@ -87,7 +92,17 @@ class ProcessKill(Tool):
 
     def risk_for(self, args: dict[str, Any]) -> str:
         n = (args.get("name") or "").lower()
-        return DANGER if n in PROTECTED or not (args.get("pid") or n) else EXEC
+        pid = args.get("pid")
+        if pid:  # PID ile verilince de korunan süreçleri (explorer, winlogon) ve ALICE'in kendisini sor
+            import os
+
+            try:
+                pid = int(pid)
+                if pid in (os.getpid(), os.getppid()) or psutil.Process(pid).name().lower() in PROTECTED:
+                    return DANGER
+            except (ValueError, TypeError, psutil.Error):
+                pass
+        return DANGER if n in PROTECTED or not (pid or n) else EXEC
 
     def run(self, ctx: ToolContext, pid: int | None = None, name: str | None = None) -> ToolResult:
         targets = []

@@ -151,6 +151,7 @@ def test_rule_agent_action(store, tmp_path):
     prompts = []
     rule = Rule("pc.cpu.percent", ">", 90, "CPU", action="agent", prompt="neden yüksek, bak")
     eng, sent = engine(store, tmp_path, [rule], run_agent=lambda p: prompts.append(p) or "Chrome yüzünden")
+    eng.sync_agent = True
     store.add("pc.cpu.percent", 99, ts=1000)
     eng.evaluate(1001)
     assert "neden yüksek" in prompts[0] and sent[0].body == "Chrome yüzünden"
@@ -283,8 +284,9 @@ def test_core_runs_due_task(tmp_path):
     core, sent = make_core(tmp_path, run_agent=agent)
     core.modes.forced = None
     core.monitors[0].processes = set()
-    t = core.tasks.add(ScheduledTask("* * * * *", "rapor yaz", created=900))
-    core.tick(1000)
+    now = 1_760_000_000  # 1970'e yakın değerler Windows'ta datetime.timestamp() hatası verir
+    t = core.tasks.add(ScheduledTask("* * * * *", "rapor yaz", created=now - 100))
+    core.tick(now)
     assert done.wait(5)
     for _ in range(100):
         if not core.running_tasks:
@@ -335,3 +337,54 @@ def test_desktop_toasts_skip_flight_and_repeats(monkeypatch, tmp_path):
     n.send(Notification("PC", "GPU sıcak", "warn", "pc"))
     n.send(Notification("PC", "GPU sıcak", "warn", "pc"))
     assert shown == ["GPU sıcak"]
+
+
+def test_rule_agent_action_does_not_block_tick(store, tmp_path):
+    import threading
+
+    gate = threading.Event()
+    rule = Rule("pc.cpu.percent", ">", 90, "CPU", action="agent", prompt="bak")
+    eng, sent = engine(store, tmp_path, [rule], run_agent=lambda p: gate.wait(5) and "bitti")
+    store.add("pc.cpu.percent", 99, ts=1000)
+    assert eng.evaluate(1001)  # ajan bitmeden döner
+    gate.set()
+
+
+def test_impossible_cron_rejected_and_skipped(tmp_path):
+    import json as _json
+
+    from alice.core.schedule import ScheduledTask, TaskStore
+
+    with pytest.raises(ValueError):
+        ScheduledTask("0 9 30 2 *", "x")
+    path = tmp_path / "tasks.json"
+    good = ScheduledTask("* * * * *", "iyi", created=1_760_000_000)  # 1970 civarı Windows'ta OSError verir
+    from dataclasses import asdict
+
+    bad = asdict(good) | {"cron": "0 9 30 2 *", "id": "bad"}
+    path.write_text(_json.dumps([bad, asdict(good)]), encoding="utf-8")
+    ts = TaskStore(path)
+    assert [t.id for t in ts.tasks] == [good.id]
+    assert [t.id for t, _ in ts.due(now=1_760_010_000)] == [good.id]
+
+
+def test_corrupt_task_file_keeps_memory(tmp_path):
+    from alice.core.schedule import ScheduledTask, TaskStore
+
+    ts = TaskStore(tmp_path / "tasks.json")
+    ts.add(ScheduledTask("0 9 * * *", "sabah"))
+    (tmp_path / "tasks.json").write_text('[{"cron": "0 9', encoding="utf-8")
+    ts.load()
+    assert len(ts.tasks) == 1
+    assert TaskStore(tmp_path / "tasks.json").tasks == []
+
+
+def test_core_prime_writes_mode_before_first_tick_and_hooks_get_policy(tmp_path):
+    core, _ = make_core(tmp_path)
+    core.prime()  # DCS açık: ses modülü daha başlamadan "GPU yok" görsün
+    assert json.loads((alice_home() / "core-state.json").read_text())["policy"]["local_gpu"] is False
+    seen = []
+    core.hooks.append(lambda pol: seen.append(pol.local_gpu))
+    core.hooks.append(lambda pol: 1 / 0)  # çöken kanca turu bozmasın
+    core.tick(1000)
+    assert seen == [False]

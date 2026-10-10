@@ -337,6 +337,19 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: r
 }
 .att button svg { width: 11px; height: 11px; stroke-width: 2.6; }
 
+#dockTop { max-width: 760px; margin: 0 auto; position: relative; }
+#jump {
+  position: absolute; right: 0; bottom: 8px; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--raised); border: 1px solid var(--line-strong); box-shadow: var(--shadow); color: var(--muted); cursor: pointer;
+}
+#jump:hover { color: var(--text); }
+#jump svg { width: 17px; height: 17px; }
+#jump[hidden], #conn[hidden] { display: none; }
+#conn {
+  margin: 0 0 8px; padding: 7px 12px; border-radius: 10px; text-align: center; font-size: 13px;
+  background: var(--accent-soft); color: var(--warn);
+}
+.working .secs { color: var(--faint); font-size: 12.5px; font-variant-numeric: tabular-nums; }
 #queue { max-width: 760px; margin: 0 auto 6px; display: flex; flex-direction: column; gap: 4px; }
 .queued {
   display: flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px dashed var(--line-strong); border-radius: 10px;

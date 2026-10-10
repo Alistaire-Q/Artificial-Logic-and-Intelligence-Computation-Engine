@@ -1,0 +1,282 @@
+from __future__ import annotations
+
+import subprocess
+from types import SimpleNamespace
+
+import psutil
+import pytest
+
+from alice.core import monitors
+from alice.core.monitors import PCMonitor, _key_part, _run, foreground_process
+
+
+# ---------------------------------------------------------------- yardımcı
+@pytest.mark.parametrize("raw, want", [
+    ("C:\\", "c"),
+    ("/", "root"),
+    ("", "root"),
+    ("/home/user", "home_user"),
+    ("Unity Hub.exe", "unity_hub.exe"),
+    ("  D:/Games  ", "d_games"),
+    ("my-app_v2.exe", "my-app_v2.exe"),
+    ("a$$b", "a_b"),
+])
+def test_key_part(raw, want):
+    assert _key_part(raw) == want
+
+
+def test_run_returns_stdout_on_success(monkeypatch):
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen.update(cmd=cmd, **kw)
+        return SimpleNamespace(returncode=0, stdout="ok\n")
+
+    monkeypatch.setattr(monitors.subprocess, "run", fake_run)
+    assert _run(["tool", "-x"], timeout=3) == "ok\n"
+    assert seen["cmd"] == ["tool", "-x"] and seen["timeout"] == 3 and seen["capture_output"] is True
+
+
+def test_run_none_on_failure_or_error(monkeypatch):
+    monkeypatch.setattr(monitors.subprocess, "run", lambda cmd, **kw: SimpleNamespace(returncode=1, stdout="x"))
+    assert _run(["t"]) is None
+
+    def boom(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, 1)
+
+    monkeypatch.setattr(monitors.subprocess, "run", boom)
+    assert _run(["t"]) is None
+
+    def missing(cmd, **kw):
+        raise FileNotFoundError(cmd[0])
+
+    monkeypatch.setattr(monitors.subprocess, "run", missing)
+    assert _run(["t"]) is None
+
+
+def test_foreground_process_none_off_windows(monkeypatch):
+    monkeypatch.setattr(monitors.sys, "platform", "linux")
+    assert foreground_process() is None
+
+
+# ---------------------------------------------------------------- PCMonitor
+class Proc:
+    def __init__(self, name, rss_mb=None, cpu=None):
+        mi = SimpleNamespace(rss=int(rss_mb * 2**20)) if rss_mb is not None else None
+        self.info = {"name": name, "memory_info": mi, "cpu_percent": cpu}
+
+
+def Part(mount, fstype="ext4", opts="rw"):
+    return SimpleNamespace(mountpoint=mount, fstype=fstype, opts=opts)
+
+
+@pytest.fixture
+def fake_ps(monkeypatch):
+    """psutil'i sahte değerlerle değiştir; testler alanları değiştirebilir."""
+    state = SimpleNamespace(
+        cpu=12.5,
+        vm=SimpleNamespace(percent=40.0, used=8 * 2**30),
+        parts=[Part("/")],
+        usage={"/": 55.0},
+        temps={},
+        procs=[],
+        run_out={},
+        run_calls=[],
+    )
+    # Yeni açılmış CI makinesinde time.monotonic() < 60 olabiliyor; o zaman ilk disk/sıcaklık okuması
+    # "dakikada bir" kısıtına takılır. Sabit, büyük bir saat kullan.
+    monkeypatch.setattr(monitors.time, "monotonic", lambda: 1_000_000.0)
+    monkeypatch.setattr(monitors.psutil, "cpu_percent", lambda interval=None: state.cpu)
+    monkeypatch.setattr(monitors.psutil, "virtual_memory", lambda: state.vm)
+    monkeypatch.setattr(monitors.psutil, "disk_partitions", lambda all=False: state.parts)
+
+    def usage(mp):
+        v = state.usage[mp]
+        if isinstance(v, Exception):
+            raise v
+        return SimpleNamespace(percent=v)
+
+    monkeypatch.setattr(monitors.psutil, "disk_usage", usage)
+
+    def temps():
+        if isinstance(state.temps, Exception):
+            raise state.temps
+        return state.temps
+
+    monkeypatch.setattr(monitors.psutil, "sensors_temperatures", temps, raising=False)
+    monkeypatch.setattr(monitors.psutil, "process_iter", lambda attrs=None: list(state.procs))
+    monkeypatch.setattr(monitors.shutil, "which", lambda name: None)
+    monkeypatch.setattr(monitors, "foreground_process", lambda: None)
+
+    def fake_run(cmd, timeout=5):
+        state.run_calls.append(cmd)
+        return state.run_out.get(cmd[0])
+
+    monkeypatch.setattr(monitors, "_run", fake_run)
+    return state
+
+
+def make_mon(**kw):
+    m = PCMonitor(**kw)
+    m._lhm = False
+    return m
+
+
+def keys(rows):
+    return [k for k, _, _ in rows]
+
+
+def test_collect_basic_rows(fake_ps):
+    mon = make_mon()
+    rows = mon.collect()
+    d = {k: v for k, v, _ in rows}
+    assert d["pc.cpu.percent"] == 12.5
+    assert d["pc.mem.percent"] == 40.0
+    assert d["pc.mem.used_gb"] == pytest.approx(8.0)
+    assert d["pc.disk.root.percent"] == 55.0
+    assert "pc.foreground" not in d
+
+
+def test_collect_adds_foreground(fake_ps, monkeypatch):
+    monkeypatch.setattr(monitors, "foreground_process", lambda: "DCS.exe")
+    rows = make_mon().collect()
+    assert ("pc.foreground", None, "DCS.exe") in rows
+
+
+def test_disks_skip_readonly_cdrom_and_errors_and_throttle(fake_ps):
+    fake_ps.parts = [Part("/"), Part("/snap/core", "squashfs", "ro,nodev"), Part("E:\\", "CDFS", "cdrom"),
+                     Part("/weird", ""), Part("/denied"), Part("C:\\", "NTFS", "rw,fixed")]
+    fake_ps.usage = {"/": 10.0, "/denied": PermissionError("no"), "C:\\": 70.0}
+    mon = make_mon()
+    rows = mon._disks()
+    assert rows == [("pc.disk.root.percent", 10.0, None), ("pc.disk.c.percent", 70.0, None)]
+    # Dakikada bir: hemen ardından boş döner
+    assert mon._disks() == []
+    mon._disk_at -= 61
+    assert len(mon._disks()) == 2
+
+
+def test_temps_from_psutil_takes_max_cpu(fake_ps):
+    T = lambda c: SimpleNamespace(current=c)  # noqa: E731
+    fake_ps.temps = {"coretemp": [T(55.0), T(71.5), T(0.0)], "k10temp": [T(60.0)], "nvme": [T(99.0)]}
+    assert make_mon()._temps() == [("pc.cpu.temp", 71.5, None)]
+
+
+def test_temps_none_when_no_cpu_sensor(fake_ps):
+    fake_ps.temps = {"nvme": [SimpleNamespace(current=40.0)]}
+    assert make_mon()._temps() == []
+
+
+def test_temps_sensor_error_falls_back_to_lhm(fake_ps):
+    fake_ps.temps = RuntimeError("no sensors")
+    fake_ps.run_out["powershell"] = "/amdcpu/0/temperature/2|61,5\n/gpu-nvidia/0/temperature/0|70\n" \
+                                    "/intelcpu/0/temperature/0|58.25\n/lpc/cpu|bad\nnopipe-line\n"
+    mon = make_mon()
+    mon._lhm = True
+    assert mon._temps() == [("pc.cpu.temp", 61.5, None)]
+    assert mon._lhm is True
+
+
+def test_lhm_disables_itself_when_unavailable(fake_ps):
+    mon = make_mon()
+    mon._lhm = True
+    assert mon._temps() == []
+    assert mon._lhm is False
+    n = len(fake_ps.run_calls)
+    mon._temps()
+    assert len(fake_ps.run_calls) == n  # bir daha powershell çağrılmaz
+
+
+def test_lhm_no_cpu_lines(fake_ps):
+    fake_ps.run_out["powershell"] = "/gpu/0/temperature/0|50\n"
+    mon = make_mon()
+    mon._lhm = True
+    assert mon._lhm_temps() == []
+    assert mon._lhm is True  # komut çalıştı, sadece CPU yoktu
+
+
+def test_lhm_not_used_when_psutil_has_temp(fake_ps):
+    fake_ps.temps = {"acpitz": [SimpleNamespace(current=45.0)]}
+    mon = make_mon()
+    mon._lhm = True
+    assert mon._temps() == [("pc.cpu.temp", 45.0, None)]
+    assert fake_ps.run_calls == []
+
+
+def test_temps_without_sensors_function(fake_ps, monkeypatch):
+    monkeypatch.delattr(monitors.psutil, "sensors_temperatures", raising=False)
+    assert make_mon()._temps() == []
+
+
+def test_gpu_disabled_without_nvidia_smi(fake_ps):
+    assert make_mon()._gpu() == []
+    assert fake_ps.run_calls == []
+
+
+def test_gpu_parses_nvidia_smi(fake_ps):
+    mon = make_mon()
+    mon._nvidia = "nvidia-smi"
+    fake_ps.run_out["nvidia-smi"] = "65, 37, 2048, 8192\n50, 1, 1, 2\n"
+    assert mon._gpu() == [("pc.gpu.temp", 65.0, None), ("pc.gpu.util", 37.0, None),
+                          ("pc.gpu.mem_percent", 25.0, None)]
+
+
+@pytest.mark.parametrize("out", [None, "", "N/A, 3, 1, 2", "1, 2, 3"])
+def test_gpu_bad_output(fake_ps, out):
+    mon = make_mon()
+    mon._nvidia = "nvidia-smi"
+    fake_ps.run_out["nvidia-smi"] = out
+    assert mon._gpu() == []
+
+
+def test_gpu_zero_total_memory(fake_ps):
+    mon = make_mon()
+    mon._nvidia = "nvidia-smi"
+    fake_ps.run_out["nvidia-smi"] = "40, 0, 0, 0"
+    assert mon._gpu()[-1] == ("pc.gpu.mem_percent", 0.0, None)
+
+
+def test_procs_aggregates_by_name_and_limits_top_n(fake_ps):
+    fake_ps.procs = [
+        Proc("chrome.exe", 100, 5.0), Proc("chrome.exe", 300, 2.5),
+        Proc("Unity Hub.exe", 250, 0.0),
+        Proc("idle", 10, None),
+        Proc("", 999, 99.0),        # adsız atlanır
+        Proc("ghost", None, 1.0),   # bellek bilgisi yok
+    ]
+    mon = make_mon(top_n=2)
+    rows = mon._procs()
+    assert mon.processes == {"chrome.exe", "Unity Hub.exe", "idle", "ghost"}
+    assert rows == [
+        ("pc.proc.chrome.exe.mem_mb", pytest.approx(400.0), None),
+        ("pc.proc.unity_hub.exe.mem_mb", pytest.approx(250.0), None),
+        ("pc.proc.chrome.exe.cpu", 7.5, None),
+        ("pc.proc.ghost.cpu", 1.0, None),
+    ]
+
+
+def test_procs_zero_cpu_not_reported(fake_ps):
+    fake_ps.procs = [Proc("a", 1, 0.0), Proc("b", 2, None)]
+    rows = make_mon()._procs()
+    assert keys(rows) == ["pc.proc.b.mem_mb", "pc.proc.a.mem_mb"]
+
+
+def test_procs_updates_process_set_each_collect(fake_ps):
+    mon = make_mon()
+    fake_ps.procs = [Proc("aces.exe", 1, 0)]
+    mon.collect()
+    assert mon.processes == {"aces.exe"}
+    fake_ps.procs = []
+    mon.collect()
+    assert mon.processes == set()
+
+
+def test_real_psutil_smoke():
+    """Gerçek psutil ile bir toplama hata vermeden satır döndürmeli (dış komut yok)."""
+    mon = PCMonitor(top_n=1)
+    mon._nvidia = None
+    mon._lhm = False
+    rows = mon.collect()
+    assert rows[0][0] == "pc.cpu.percent"
+    assert all(isinstance(k, str) for k, _, _ in rows)
+    assert isinstance(psutil.cpu_count(), int)
