@@ -603,7 +603,7 @@ def build_voice_agent(cfg, inner_ui=None, speaker: Speaker | None = None, cwd=No
         tts.warm_up()
         speaker = Speaker(tts)
     ui = VoiceUI(speaker, inner_ui)
-    agent = Agent(cfg, router, all_tools(), ctx, Permissions(cfg.agent.get("permission_mode", "auto")), ui, decider)
+    agent = Agent(cfg, router, all_tools(cfg, ctx.emit), ctx, Permissions(cfg.agent.get("permission_mode", "auto")), ui, decider)
     agent.messages[0]["content"] += "\n\n" + VOICE_PROMPT
     if "voice" in cfg.roles:
         agent.role = "voice"

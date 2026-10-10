@@ -76,7 +76,7 @@ def make_agent_runner(cfg: Config, cwd: Path | None = None) -> Callable[[str], s
         decider = Decider.from_config(cfg, router)
         ctx = ToolContext(cwd=cwd or Path.home(), config=cfg, router=router, decider=decider)
         mode = cfg.data.get("core", {}).get("task_permission_mode", "auto")
-        agent = Agent(cfg, router, all_tools(), ctx, Permissions(mode), NullUI(approve="n"), decider)
+        agent = Agent(cfg, router, all_tools(cfg), ctx, Permissions(mode), NullUI(approve="n"), decider)
         try:
             text = agent.run_turn(
                 prompt + "\n\n(Bu görev arka planda, kullanıcı başında değilken çalışıyor. Soru sorma; "
