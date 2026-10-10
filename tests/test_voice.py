@@ -990,3 +990,24 @@ def test_live_wake_sends_audio_without_cloud_stt():
     va.handle_audio(Audio(b"\1\0" * 16000, 16000), direct=False)
     assert wait_for(lambda: live.texts == [("", 32000)])
     assert stt.calls == 0 and agent.turns == []
+
+
+def test_wake_gate_falls_back_to_cpu_when_cuda_runtime_fails(monkeypatch):
+    import sys
+    import types
+
+    from alice.voice import stt
+
+    class Model:
+        def __init__(self, name, device, compute_type):
+            self.device = device
+
+        def transcribe(self, *a, **k):
+            if self.device == "cuda":
+                raise RuntimeError("Library cublas64_12.dll is not found")
+            return iter([]), None
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=Model))
+    gate = stt.WakeGate("base", "tr", gpu_model="small", allow_gpu=lambda: True)
+    m = gate._load()
+    assert m.device == "cpu" and gate.device == "cpu" and gate.model_name == "base"
