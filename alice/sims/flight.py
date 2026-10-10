@@ -48,6 +48,7 @@ class FlightState:
     x: float | None = None           # harita koordinatı m (DCS: x kuzey, z doğu)
     z: float | None = None
     heading: float | None = None     # burnun yönü, derece (gerçek kuzey)
+    extra: dict[str, Any] = field(default_factory=dict)  # oyunun verdiği ek göstergeler (bkz. describe_extra)
     wall: float = field(default_factory=time.time)
 
 
@@ -442,6 +443,78 @@ class TouchdownTracker:
 
 
 # ---------------------------------------------------------------- rapor
+def _bearing_nm(s: FlightState, x: float, z: float) -> tuple[float, float] | None:
+    if s.x is None or s.z is None:
+        return None
+    dx, dz = x - s.x, z - s.z
+    return math.degrees(math.atan2(dz, dx)) % 360, math.hypot(dx, dz) / NM
+
+
+def describe_extra(s: FlightState) -> list[str]:
+    """Ek göstergeleri kısa Türkçe satırlara çevir (sadece oyunun o uçak için verdiği değerler)."""
+    e = s.extra
+    out: list[str] = []
+    bits = []
+    if e.get("mach") is not None:
+        bits.append(f"Mach {e['mach']:.2f}")
+    if e.get("mag_heading") is not None:
+        bits.append(f"manyetik yön {e['mag_heading']:03.0f}°")
+    elif s.heading is not None:
+        bits.append(f"yön {s.heading:03.0f}°")
+    if e.get("pitch") is not None and e.get("bank") is not None:
+        bits.append(f"burun {e['pitch']:+.0f}°, yatış {e['bank']:+.0f}°")
+    if s.vv is not None:
+        bits.append(f"dikey hız {s.vv / FT * 60:+,.0f} ft/dk")
+    if e.get("radalt") is not None:
+        bits.append(f"radar irtifa {e['radalt']:,.0f} ft")
+    if bits:
+        out.append("  " + ", ".join(bits))
+    eng = []
+    if e.get("rpm") is not None:
+        eng.append(f"devir %{e['rpm']:.0f}")
+    if e.get("throttle") is not None:
+        eng.append(f"gaz %{e['throttle']:.0f}")
+    if e.get("egt") is not None:
+        eng.append(f"motor sıcaklığı {e['egt']:.0f}°C")
+    if e.get("oil_temp") is not None:
+        eng.append(f"yağ {e['oil_temp']:.0f}°C")
+    if e.get("water_temp") is not None:
+        eng.append(f"su {e['water_temp']:.0f}°C")
+    if e.get("fuel_pct") is not None:
+        eng.append(f"yakıt %{e['fuel_pct']:.0f}")
+    if eng:
+        out.append("  motor: " + ", ".join(eng))
+    cfg = []
+    for k, label in (("flaps", "flap"), ("speedbrake", "hız freni"), ("hook", "kanca")):
+        v = e.get(k)
+        if v is not None and v > 0.05:
+            cfg.append(f"{label} %{v * 100:.0f}" if v <= 1 else f"{label} %{v:.0f}")
+    if s.gear is not None:
+        cfg.append("teker aşağı" if s.gear > 0.9 else "teker yukarı" if s.gear < 0.1 else "teker hareket halinde")
+    if cfg:
+        out.append("  " + ", ".join(cfg))
+    if e.get("wind_kt") is not None and e["wind_kt"] >= 1:
+        out.append(f"  rüzgar {e['wind_from']:03.0f}° yönünden {e['wind_kt']:.0f} kt")
+    if e.get("wp_x") is not None and e.get("wp_z") is not None:
+        bn = _bearing_nm(s, e["wp_x"], e["wp_z"])
+        if bn:
+            num = f" {int(e['wp_num'])}" if e.get("wp_num") is not None else ""
+            out.append(f"  sıradaki waypoint{num}: {bn[0]:03.0f}° (gerçek), {bn[1]:.1f} nm")
+    if e.get("ils_glide") is not None and e.get("ils_side") is not None and (e["ils_glide"] or e["ils_side"]):
+        g, sd = e["ils_glide"], e["ils_side"]
+        out.append(f"  ILS: süzülüş {'yukarıda' if g > 0 else 'aşağıda'} ({g:+.2f}), "
+                   f"merkez {'sağda' if sd > 0 else 'solda'} ({sd:+.2f})")
+    if e.get("weapons") or e.get("gun") is not None:
+        w = e.get("weapons") or "yok"
+        gun = f", top mermisi {int(e['gun'])}" if e.get("gun") is not None else ""
+        out.append(f"  silahlar: {w}{gun}")
+    if e.get("warnings"):
+        out.append(f"  UYARI / ARIZA: {e['warnings']}")
+    if e.get("mode"):
+        out.append(f"  sistem modu: {e['mode']}")
+    return out
+
+
 def flights_dir() -> Path:
     return alice_home() / "flights"
 

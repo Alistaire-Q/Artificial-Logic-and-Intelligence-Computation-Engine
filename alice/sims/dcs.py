@@ -95,7 +95,32 @@ def to_state(d: dict[str, Any], internal_fuel_kg: float | None = None) -> Flight
                        burn_kgs=num("burn"), chaff=int(d["chaff"]) if isinstance(d.get("chaff"), (int, float)) else None,
                        flare=int(d["flare"]) if isinstance(d.get("flare"), (int, float)) else None,
                        gear=num("gear"), x=num("x"), z=num("z"),
-                       heading=math.degrees(num("heading")) % 360 if num("heading") is not None else None)
+                       heading=math.degrees(num("heading")) % 360 if num("heading") is not None else None,
+                       extra=_extra(d, num))
+
+
+def _extra(d: dict[str, Any], num: Callable[[str], float | None]) -> dict[str, Any]:
+    deg = lambda k: None if num(k) is None else math.degrees(num(k))  # noqa: E731
+    e: dict[str, Any] = {"mach": num("mach"), "pitch": deg("pitch"), "bank": deg("bank"),
+                         "mag_heading": None if num("mag_heading") is None else deg("mag_heading") % 360,
+                         "radalt": None if num("radalt") is None else num("radalt") / FT,
+                         "flaps": num("flaps"), "speedbrake": num("speedbrake"), "hook": num("hook"),
+                         "wp_x": num("wp_x"), "wp_z": num("wp_z"), "wp_num": num("wp_num"),
+                         "ils_glide": num("ils_glide"), "ils_side": num("ils_side"), "gun": num("gun")}
+    rpms = [v for v in (num("rpm_l"), num("rpm_r")) if v]
+    if rpms:
+        e["rpm"] = max(rpms)
+    egts = [v for v in (num("egt_l"), num("egt_r")) if v]
+    if egts:
+        e["egt"] = max(egts)
+    wx, wz = num("wind_x"), num("wind_z")
+    if wx is not None and wz is not None:
+        e["wind_kt"] = math.hypot(wx, wz) / 0.514444
+        e["wind_from"] = (math.degrees(math.atan2(wz, wx)) + 180) % 360  # rüzgarın geldiği yön
+    for k in ("weapons", "warnings", "mode"):
+        if isinstance(d.get(k), str) and d[k].strip("/ "):
+            e[k] = d[k]
+    return {k: v for k, v in e.items() if v is not None}
 
 
 class DCSListener:

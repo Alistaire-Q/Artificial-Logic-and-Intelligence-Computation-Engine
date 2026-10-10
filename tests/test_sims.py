@@ -376,3 +376,34 @@ def test_home_nav_bearing_turn_and_alert():
     assert said == []
     c._home_alert(FlightState(t=2, x=-9 * NM, z=0, heading=0))
     assert said == ["Üsse 9 mil kaldı."] and c.home_alert_nm is None
+
+
+def test_dcs_extra_fields_described():
+    import math
+
+    from alice.sims.dcs import to_state
+    from alice.sims.flight import NM, describe_extra
+
+    s = to_state({"t": 1, "aircraft": "F-16C_50", "ias": 150, "alt": 3000, "x": 0, "z": 0, "heading": 0,
+                  "mach": 0.62, "pitch": math.radians(5), "bank": math.radians(-20), "mag_heading": math.radians(6),
+                  "radalt": 914.4, "rpm_l": 92, "egt_l": 640, "wind_x": -10, "wind_z": 0, "wp_x": 10 * NM, "wp_z": 0,
+                  "wp_num": 3, "weapons": "AIM-120C x2, AIM-9X x2", "gun": 510, "warnings": "LeftEngineFailure",
+                  "gear": 0, "flaps": 0})
+    text = "\n".join(describe_extra(s))
+    assert "Mach 0.62" in text and "manyetik yön 006°" in text and "yatış -20°" in text
+    assert "radar irtifa 3,000 ft" in text and "devir %92" in text
+    assert "rüzgar 000° yönünden 19 kt" in text  # kuzeyden esen rüzgar güneye iter
+    assert "sıradaki waypoint 3: 000° (gerçek), 10.0 nm" in text
+    assert "AIM-120C x2" in text and "top mermisi 510" in text and "UYARI / ARIZA: LeftEngineFailure" in text
+
+
+def test_warthunder_extra_fields():
+    from alice.sims.flight import describe_extra
+    from alice.sims.warthunder import to_state
+
+    s = to_state({"valid": True, "IAS, km/h": 500, "M": 0.45, "throttle 1, %": 100, "RPM throttle 1, %": 95,
+                  "oil temp 1, C": 80, "Mfuel, kg": 300, "Mfuel0, kg": 600, "flaps, %": 20},
+                 {"type": "spitfire", "compass": 270, "aviahorizon_roll": 10, "aviahorizon_pitch": 2}, 1.0)
+    text = "\n".join(describe_extra(s))
+    assert s.heading == 270 and "Mach 0.45" in text and "gaz %100" in text and "yağ 80°C" in text
+    assert "yakıt %50" in text and "flap %20" in text
