@@ -81,7 +81,8 @@ def utterances(frames: Iterator[bytes], vad: VAD, start_frames: int = 6, end_sil
 
 # Whisper "Hey Alice"i Türkçede çok farklı yazıyor: "Hey Alis", "Ey Alıs", "Hey Ellis", "Heyalis", "Hey Alize"...
 _FILLERS = {"e", "ee", "eee", "şey", "ya", "hmm", "hı", "ıı", "a", "ah", "oh", "pardon"}
-_HEYS = {"hey", "hay", "hei", "heyy", "ey", "hi", "he", "hej", "hello", "helo", "selam", "alo"}
+_HEYS = {"hey", "hay", "hei", "heyy", "ey", "hi", "he", "hej", "hello", "helo", "selam", "alo",
+         "merhaba", "merhabalar", "selamlar", "slm", "gunaydin", "naber", "bak", "baksana"}
 _NAMES = {"alice", "alis", "alise", "alize", "aliz", "alisa", "alys", "elis", "ellis", "elise", "ales", "ailis",
           "alıs", "alıse", "aliş", "alış", "allis", "alliss", "alist"}
 _TR = str.maketrans("ıİçÇşŞğĞöÖüÜ", "iIcCsSgGoOuU")
@@ -124,6 +125,10 @@ def strip_wake(text: str) -> str | None:
         return re.sub(r"^['’]\w{1,3}", "", rest).lstrip(" ,.!?;:-'’").strip()
     if i < len(words) and i <= 2 and _name_like(words[i].group(), after_hey):
         return text[words[i].end():].lstrip(" ,.!?;:-'’").strip()
+    # "Bak şimdi Alice ..." gibi: ilk üç sözcükte tam isim (benzerlik değil, yanlış uyanmasın)
+    for w in words[:3]:
+        if _name_like(w.group(), False):
+            return text[w.end():].lstrip(" ,.!?;:-'’").strip()
     return None
 
 
