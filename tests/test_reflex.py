@@ -90,3 +90,13 @@ def test_rank_prefers_goal_words():
            Element(3, "input", "", True)]
     top = rank(els, "gizlilik ayarlarını aç", 2, set())
     assert top[0].id == 2
+
+
+def test_low_confidence_click_on_element_named_in_goal_proceeds():
+    obs = FakeObserver()
+    dec = ScriptedDecider([("click_3", 0.45, 0.0), ("click_4", 0.95, 0.0), ("done", 0.9, 0.95)])
+    res = ReflexLoop(obs, dec, settle=0).run("ekrandaki Ayarlar düğmesine tıkla, sonra Gizlilik")
+    assert obs.actions[0] == ("click", 3) and res.status == "done"
+    # adı hedefte geçmeyen öğe: yine beyne döner
+    res = ReflexLoop(FakeObserver(), ScriptedDecider([("click_1", 0.45, 0.0)]), settle=0).run("ayarları aç")
+    assert res.status == "needs_help"

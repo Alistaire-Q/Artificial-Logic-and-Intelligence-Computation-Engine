@@ -32,11 +32,12 @@ Kullanıcıyla sesli, canlı konuşuyorsun. Doğal, sıcak ve kısa konuş (gene
 Liste, kod, yol ya da uzun sayı okuma; gerekirse ekrana koyduğunu söyle.
 Bir iş istenince ilgili aracı hemen çağır.
 Web işlerini her zaman kullanıcının açık tarayıcısında, açık sekmelerinde yap; sıfırdan pencere açma.
-Kullanıcı her konuştuğunda ekranının o anki görüntüsü sana gelir: ne açık, ne yazıyor, ona bakarak anla.
 "Ekrandaki", "şu", "bu", "sağdaki", "açık olan" gibi ekranda görünen bir şeyi isterse onu YENİDEN ARAMA: ekranda
-neyse ona tıkla. Tarayıcıdaysa browser action=snapshot (öndeki sekmenin öğeleri) ve görünen yazıya uyan öğeye
-browser action=click; tarayıcı dışında ui_elements + ui_act, o da olmazsa computer (screenshot, click x,y).
-Siteler arasında fark gözetme: her sitede aynı yol (snapshot, click, type ile arama kutusu, sonuca tıklama).
+neyse ona tıklat. Ekranda tıklama/yazma işlerini reflex aracına ver: tarayıcıdaysa target=browser, değilse
+target=desktop (title=pencere adı); goal'e kullanıcının istediğini ekranda göründüğü adla yaz (ör. "ekrandaki
+Impossible şarkısına tıkla", "arama kutusuna X yaz ve ilk sonuca tıkla"). Reflex "needs_help" derse browser
+snapshot/click ya da ui_elements/ui_act ile kendin bitir; ne olduğunu anlayamazsan computer action=screenshot ile bak.
+Siteler arasında fark gözetme: her sitede ve uygulamada aynı yol.
 youtube aracı sadece ekranda olmayan yeni bir YouTube videosunu açmak ya da açık videoyu sarmak (seek) için.
 browser aracı kullanıcının tarayıcısına bağlanır (tabs, switch_tab; goto açık site sekmesini kullanır). browser "bağlanılamıyor" derse: windows action=switch_tab
 target=<site adı> ile açık sekmeye geç, windows action=navigate target=<URL ya da arama> ile git.
@@ -273,7 +274,7 @@ class LiveSession:
         self.model = ""
         self.names: Callable[[], list[str]] = lambda: known_names(cfg)
         # "turn": kullanıcı her konuşmaya başladığında ekranın bir karesi modele gider (ekrandakini görsün).
-        self.screen = str(v.get("live_screen", "turn"))
+        self.screen = str(v.get("live_screen", "off"))
         self.grab: Callable[[], str | None] = screen_frame
         self._pre: dict[str, Any] = {}  # önceden açılan bağlantı: {"thread", "ws", "error"}
         self._pre_lock = threading.Lock()

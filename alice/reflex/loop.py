@@ -51,6 +51,21 @@ def rank(elements: list[Element], goal: str, limit: int, typed: set[int]) -> lis
     return [el for _, _, el in scored[:limit]]
 
 
+def _named_in_goal(key: str, by_key: dict[str, Element], elements: list[Element], goal: str) -> bool:
+    """Seçilen tıklama, hedefte adı geçen ve ekranda o adı taşıyan TEK öğe mi? ("ekrandaki Impossible'a tıkla")
+    Öyleyse karar motorunun güveni düşük olsa da (tıkla mı arama kutusuna mı yaz, kararsız kalıyor) uygula."""
+    el = by_key.get(key)
+    if el is None or not key.startswith("click_"):
+        return False
+    gw = _words(goal)
+
+    def hits(e: Element) -> int:
+        return len(gw & _words(e.label))
+
+    best = hits(el)
+    return best > 0 and all(hits(e) < best for e in elements if e.id != el.id)
+
+
 @dataclass
 class ReflexResult:
     status: str  # done | needs_help | max_steps | error
@@ -123,7 +138,7 @@ class ReflexLoop:
                 return ReflexResult("done", step - 1, "hedefe ulaşıldı", log, ob.title, ob.location)
             if nxt.value == "stuck":
                 return ReflexResult("needs_help", step - 1, "uygun seçenek yok", log, ob.title, ob.location)
-            if nxt.confidence < self.min_conf:
+            if nxt.confidence < self.min_conf and not _named_in_goal(nxt.value, by_key, ob.elements, goal):
                 return ReflexResult("needs_help", step - 1,
                                     f"düşük güven ({nxt.confidence:.2f}) - '{options.get(nxt.value, nxt.value)}'",
                                     log, ob.title, ob.location)
