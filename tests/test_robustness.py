@@ -105,7 +105,7 @@ def test_wake_gate_recovers_after_single_error():
             self.n += 1
             if self.n == 1:
                 raise RuntimeError("CUDA out of memory")
-            return iter([type("S", (), {"text": "Hey Alice"})()]), None
+            return iter([type("S", (), {"text": "Hey Alice, saat kaç?", "avg_logprob": -0.2})()]), None
 
     model = Model()
     gate = WakeGate()
@@ -113,7 +113,7 @@ def test_wake_gate_recovers_after_single_error():
     gate._load = lambda: model
     gate._model = model
     assert gate.heard(tone(1.0)) is None
-    assert gate.heard(tone(1.0)) == "Hey Alice"  # kalıcı kapanmadı
+    assert gate.heard(tone(1.0)) == "Hey Alice, saat kaç?"  # kalıcı kapanmadı
 
 
 def test_tts_router_falls_back_on_any_engine_error():

@@ -95,6 +95,36 @@ class SimHub:
                 return f"kuruldu: üsse {nm:.0f} mil kalınca sesli söylenecek"
         return "kurulamadı: şu an uçuşta değilsin"
 
+    def _flying(self):
+        return next((c for c in self.companions.values() if c.last_state is not None and c.phase == "air"), None)
+
+    def alert_altitude(self, ft: float) -> str:
+        """'X feet'e gelince söyle': irtifa hangi yönden geçilirse geçilsin bir kez söyle."""
+        c = self._flying()
+        if c is None:
+            return "kurulamadı: şu an uçuşta değilsin"
+        c.alt_alert_ft, c.alt_alert_above = float(ft), None
+        return f"kuruldu: {ft:,.0f} feet'e gelince sesli söylenecek".replace(",", ".")
+
+    def alert_fuel(self, kg: float) -> str:
+        c = self._flying()
+        if c is None:
+            return "kurulamadı: şu an uçuşta değilsin"
+        s = c.last_state
+        if s.fuel_kg is None:
+            return "kurulamadı: oyun yakıt miktarını vermiyor"
+        if s.fuel_kg <= kg:
+            return f"kurulmadı: yakıt zaten {s.fuel_kg:.0f} kg, {kg:.0f} kg'nin altında"
+        c.fuel_alert_kg = float(kg)
+        return f"kuruldu: yakıt {kg:.0f} kg'ye inince sesli söylenecek"
+
+    def clear_alerts(self) -> str:
+        n = 0
+        for c in self.companions.values():
+            n += sum(v is not None for v in (c.home_alert_nm, c.alt_alert_ft, c.fuel_alert_kg))
+            c.home_alert_nm = c.alt_alert_ft = c.alt_alert_above = c.fuel_alert_kg = None
+        return f"{n} uyarı kaldırıldı" if n else "kurulu uyarı yoktu"
+
     def status(self) -> str:
         lines = []
         for src, c in self.companions.items():
@@ -131,6 +161,10 @@ class SimHub:
                                                      else "oyun bu uçak için vermedi, BİLİNMİYOR"))
             if c.home_alert_nm is not None:
                 lines.append(f"  kurulu uyarı: üsse {c.home_alert_nm:.0f} mil kalınca söylenecek")
+            if c.alt_alert_ft is not None:
+                lines.append(f"  kurulu uyarı: {c.alt_alert_ft:.0f} ft'e gelince söylenecek")
+            if c.fuel_alert_kg is not None:
+                lines.append(f"  kurulu uyarı: yakıt {c.fuel_alert_kg:.0f} kg'ye inince söylenecek")
             if s.chaff is not None:
                 lines.append(f"  chaff {s.chaff}, flare {s.flare}")
         if lines:

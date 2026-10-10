@@ -31,6 +31,8 @@ LIVE_PROMPT = """# Canlı sesli konuşma
 Kullanıcıyla sesli, canlı konuşuyorsun. Doğal, sıcak ve kısa konuş (genelde 1-2 cümle), Türkçe.
 Liste, kod, yol ya da uzun sayı okuma; gerekirse ekrana koyduğunu söyle.
 Bir iş istenince ilgili aracı hemen çağır.
+Birkaç araç sürecek bir işe başlarken önce tek kısa cümleyle ne yapacağını söyle (kullanıcı sessizlikte
+bekletilmesin). 3-4 denemede sonuç alamazsan araç çağırmayı bırak, bulduğunu söyle ve kullanıcıya sor.
 Web işlerini her zaman kullanıcının açık tarayıcısında, açık sekmelerinde yap; sıfırdan pencere açma.
 "Ekrandaki", "şu", "bu", "sağdaki", "açık olan" gibi ekranda görünen bir şeyi isterse onu YENİDEN ARAMA: ekranda
 neyse ona tıklat. Ekranda tıklama/yazma işlerini reflex aracına ver: tarayıcıdaysa target=browser, değilse
@@ -65,6 +67,10 @@ verebilirsin.
 Bir işe özel araç varsa (ör. 3B/Blender için blender) run_command ya da write_file yerine onu kullan; iş bitince
 sonucu kullanıcının ekranında aç (blender action=open gibi), çünkü kullanıcı ekranda görmek ister.
 Bir araç "onay gerekli" derse kullanıcıya kısaca sor; "evet" derse aynı çağrıyı tekrarla.
+Kullanıcı tek istekte birbirine bağlı birkaç iş isterse (ör. "son faturayı indir ve Ahmet'e gönder", "hava durumuna
+bak, yağmur varsa hatırlatma kur") run_plan'a ver: planlar, adım adım yapar, kontrol eder; arka planda sürer.
+Görev "[görev onay bekliyor]" yazarsa soruyu kullanıcıya sor ve cevabına göre task_control action=approve/reject
+çağır; kullanıcı açıkça evet demeden asla approve verme. "Dur/vazgeç" derse task_control action=stop.
 İç düşüncelerini, planını, araç hatalarını ya da düzeltmelerini asla sesli söyleme; sadece kullanıcıya Türkçe konuş.
 Konuşma tanıma Türkçe cümle içindeki uygulama/site adlarını bozabilir. Kullanıcının bilgisayarındaki ve sık kullandığı
 adlar: {names}. Duyduğun bir kelime anlamsızsa ya da bu adlardan birine sesçe benziyorsa o adı kastediyordur.
@@ -335,6 +341,10 @@ class LiveSession:
         self._pre_lock = threading.Lock()
         self._tools_q: queue.Queue | None = None  # araç iş parçacığının kuyruğu
         self._bg = 0  # arka planda süren uzun işler (computer_task): bitene kadar konuşma kapanmasın
+        # Tek istekte en fazla bu kadar araç: model bazen kullanıcıya hiç dönmeden 40 run_command art arda çağırıp
+        # iki dakika sessiz kalıyordu. Sınırda elindekini söyleyip devam edeyim mi diye sormaya yönlendirilir.
+        self.tool_budget = int(v.get("live_tool_budget", 10))
+        self._turn: dict[str, Any] = {"n": 0, "last": None}
 
     @property
     def available(self) -> bool:
@@ -358,7 +368,9 @@ class LiveSession:
             now=f"{now:%d.%m.%Y %H:%M} ({spoken_time(now.hour, now.minute)})", names=", ".join(self.names()),
             monitors=monitor_layout())
         enabled = self.agent.ctx.state.setdefault("tool_groups", set())
-        enabled |= LIVE_GROUPS
+        from alice import plugins
+
+        enabled |= LIVE_GROUPS | plugins.live_groups()
         return {"setup": {
             "model": f"models/{model}",
             "generationConfig": {"responseModalities": ["AUDIO"], "speechConfig": {
@@ -477,6 +489,15 @@ class LiveSession:
         def touch() -> None:
             state["active"] = time.monotonic()
 
+        def say(text: str) -> None:  # arka plandaki görevin ilerlemesi/onay sorusu: Alice kullanıcıya söylesin
+            ws.send(json.dumps({"clientContent": {"turns": [{"role": "user", "parts": [{"text": text}]}],
+                                                  "turnComplete": True}}))
+            touch()
+
+        task_state = getattr(getattr(self.agent, "ctx", None), "state", None)
+        if isinstance(task_state, dict):
+            task_state["task_hooks"] = {"say": say, "run_tool": self._on_tool_thread, "log": self.log}
+
         def send_frame() -> None:
             frame = self.grab()
             if frame:
@@ -509,6 +530,7 @@ class LiveSession:
                                 threading.Thread(target=send_frame, daemon=True).start()
                             state["heard"].append(t)
                             state["asked"], state["spoke"] = time.monotonic(), False
+                            self._new_turn()
                             ui.last_user = "".join(state["heard"])[-200:]
                             touch()
                         if (t := (sc.get("outputTranscription") or {}).get("text")):
@@ -578,6 +600,7 @@ class LiveSession:
             # önüne ya da arasına girip modele karışık sırayla gitmesin.
             threading.Thread(target=sender, daemon=True, name="alice-live-mic").start()
             state["asked"], state["spoke"] = time.monotonic(), False
+            self._new_turn()
             while not done.is_set() and not stop.is_set():
                 try:
                     fc = calls.get(timeout=0.3)
@@ -603,12 +626,14 @@ class LiveSession:
                 time.sleep(0.1)
             out.close()
             self.agent.ui = old_ui
+            if isinstance(task_state, dict) and (task_state.get("task_hooks") or {}).get("say") is say:
+                task_state.pop("task_hooks", None)
             if getattr(out, "dead", None) is not None:
                 self.log(f"live ses çıkışı açılamadı: {out.dead}")
             self.log("live kapandı")
 
     TOOL_TIMEOUT = 25.0  # sn: araç takılırsa modele hata dön, konuşma kilitlenmesin
-    BACKGROUND = {"computer_task"}  # dakikalar sürebilir: arka planda çalışır, bitince sonuç konuşmaya yazılır
+    BACKGROUND = {"computer_task", "run_plan"}  # dakikalar sürebilir: arka planda çalışır, bitince sonuç konuşmaya yazılır
 
     def _run_background(self, ws, fc: dict[str, Any]) -> None:
         name = fc.get("name", "")
@@ -674,6 +699,19 @@ class LiveSession:
             return None
         return job["res"]
 
+    def _on_tool_thread(self, fn: Callable[[], ToolResult], timeout: float = 600.0) -> ToolResult:
+        """Arka plandaki görevin aracını konuşmanın araç iş parçacığında çalıştır (tarayıcı bağlantısı orada)."""
+        q = getattr(self, "_tools_q", None)
+        if q is None:
+            q = queue.Queue()
+            self._tools_q = q
+            threading.Thread(target=self._tool_worker, args=(q,), daemon=True, name="alice-live-tools").start()
+        job: dict[str, Any] = {"fn": fn, "done": threading.Event()}
+        q.put(job)
+        if not job["done"].wait(timeout):
+            return ToolResult(f"araç {timeout:.0f} sn içinde bitmedi", is_error=True)
+        return job["res"]
+
     def _tool_worker(self, q: "queue.Queue[dict[str, Any]]") -> None:
         try:
             import comtypes  # UI Automation bu iş parçacığında da çalışsın
@@ -683,20 +721,75 @@ class LiveSession:
             pass
         while True:
             job = q.get()
-            call = job["call"]
+            call = job.get("call")
             try:
-                self.agent._enable_groups_for(tool_names=(call["function"]["name"],))
-                job["res"] = self.agent._execute_calls([call])[0]
+                if "fn" in job:  # arka plandaki görevin aracı: tarayıcı/UIA nesneleri bu iş parçacığına bağlı
+                    job["res"] = job["fn"]()
+                else:
+                    self.agent._enable_groups_for(tool_names=(call["function"]["name"],))
+                    job["res"] = self.agent._execute_calls([call])[0]
             except Exception as e:  # noqa: BLE001
                 job["res"] = ToolResult(f"{type(e).__name__}: {e}", is_error=True)
             job["done"].set()
 
+    def _new_turn(self) -> None:
+        """Kullanıcı yeni bir şey söyledi: araç sayacı ve tekrar kontrolü sıfırlanır."""
+        self._turn = {"n": 0, "last": None}
+
+    def _guard(self, fc: dict[str, Any]) -> str | None:
+        """Aracı çalıştırmadan modele dönülecek cevap (None = çalıştır). İki durum:
+        aynı çağrı art arda gelirse (ör. checklist_next iki kez, adım atlanıyordu) önceki sonuç döner;
+        istek başına araç sayısı aşılırsa model durdurulur ve kullanıcıya dönmeye yönlendirilir."""
+        turn = getattr(self, "_turn", None)
+        if turn is None:
+            turn = self._turn = {"n": 0, "last": None}
+        name, args = fc.get("name", ""), fc.get("args") or {}
+        key = name + json.dumps(args, sort_keys=True, ensure_ascii=False)
+        last = turn.get("last")
+        repeatable = any(w in str(args.get("action", "")) for w in ("scroll", "key", "wait", "press", "screenshot"))
+        if last and last[0] == key and time.monotonic() - last[1] < 5 and not repeatable:
+            self.log(f"live aynı araç çağrısı tekrarlandı, çalıştırılmadı: {name}")
+            return ("Bu çağrıyı az önce aynen yaptın, tekrar çalıştırılmadı. Önceki sonuç: " + last[2][:1500]
+                    + "\nAynı aracı tekrar çağırma; bu sonuca göre kullanıcıya cevap ver.")
+        turn["n"] += 1
+        budget = int(getattr(self, "tool_budget", 10))
+        if turn["n"] > budget:
+            if turn["n"] == budget + 1:
+                self.log(f"live araç sınırı: bu istekte {budget} araç çağrıldı, model kullanıcıya dönmeye zorlandı")
+            return (f"DUR: bu istek için {budget} araç çağrısı sınırına geldin, araç ÇALIŞTIRILMADI. Daha fazla araç "
+                    "çağırma. Kullanıcıya şimdi tek iki cümleyle neyi bulduğunu, neyin olmadığını söyle ve devam "
+                    "etmemi ister misin diye sor.")
+        return None
+
+    def _remember(self, fc: dict[str, Any], text: str) -> None:
+        turn = getattr(self, "_turn", None)
+        if turn is not None:
+            key = fc.get("name", "") + json.dumps(fc.get("args") or {}, sort_keys=True, ensure_ascii=False)
+            turn["last"] = (key, time.monotonic(), text)
+
     def _run_call(self, ws, fc: dict[str, Any]) -> None:
+        early = self._guard(fc)
+        if early is not None:
+            try:
+                ws.send(json.dumps({"toolResponse": {"functionResponses": [
+                    {"id": fc.get("id"), "name": fc.get("name"), "response": {"result": early}}]}}))
+            except Exception:  # noqa: BLE001 - bağlantı kapanmış olabilir
+                pass
+            return
         if fc.get("name") in self.BACKGROUND:
             self._run_background(ws, fc)
             return
         call = {"id": fc.get("id") or fc.get("name"), "type": "function",
                 "function": {"name": fc.get("name", ""), "arguments": json.dumps(fc.get("args") or {})}}
+        if fc.get("name") == "task_control":  # anında: araç iş parçacığı görevin bir adımıyla meşgul olabilir
+            res = self.agent._execute_calls([call])[0]
+            self.log(f"live görev kontrolü {json.dumps(fc.get('args') or {}, ensure_ascii=False)}: {res.text[:120]}")
+            try:
+                ws.send(json.dumps({"toolResponse": {"functionResponses": [
+                    {"id": fc.get("id"), "name": "task_control", "response": {"result": res.text}}]}}))
+            except Exception:  # noqa: BLE001
+                pass
+            return
         lock = threading.Lock()
         answered = [False]
 
@@ -730,6 +823,7 @@ class LiveSession:
         elif res.is_error:
             text = "HATA: " + text
         timer.cancel()
+        self._remember(fc, text)
         for img in (getattr(res, "images", None) or [])[:1]:  # araç görüntüsü (ekran/sekme): modele göster
             frame = _to_jpeg(img)
             if frame:

@@ -22,6 +22,7 @@ class VAD:
     def __init__(self, aggressiveness: int = 2, threshold: float = 0.0):
         self.noise = 0.004
         self.threshold = threshold  # 0 = uyarlanır
+        self._levels: deque[float] = deque(maxlen=50)
         self.boost = 1.0            # ALICE konuşurken yankıyı konuşma sanmamak için yükseltilir
         try:
             import webrtcvad
@@ -32,20 +33,25 @@ class VAD:
 
     def is_speech(self, frame: bytes, rate: int = 16000) -> bool:
         level = rms(frame)
-        floor = self.threshold or max(0.01, self.noise * 3.0)
+        if self._vad is None:
+            floor = self.threshold or max(0.01, self.noise * 3.0)
+            result = level > floor * self.boost
+            if not result:
+                self.noise = self.noise * 0.95 + level * 0.05  # gürültü tabanını yavaşça izle
+            return result
+        # Gürültü tabanı = son 1,5 sn'nin en sessiz karesi. webrtcvad oyun/motor/fan sesini de konuşma sayıyor;
+        # o zaman taban "sessiz" karelerden izlenemiyordu ve kayıt 30 sn'lik gürültü parçası oluyordu: arada
+        # söylenen "Hey Alice" başta değil ortada kaldığı için kaçıyordu. Konuşmada heceler arası boşluklar
+        # tabanı aşağıda tutar; sabit gürültüde taban gürültünün kendisi olur ve konuşma sayılmaz.
+        self._levels.append(level)
+        self.noise = min(self._levels)
+        floor = self.threshold or max(0.004, self.noise * 1.8)
         loud = level > floor * self.boost
-        if self._vad is not None:
-            try:
-                speech = self._vad.is_speech(frame, rate)
-            except Exception:
-                speech = loud
-            # webrtcvad yankıya karşı da hassas; ALICE konuşurken enerji eşiğini de iste.
-            result = speech and (self.boost <= 1.0 or loud)
-        else:
-            result = loud
-        if not result:
-            self.noise = self.noise * 0.95 + level * 0.05  # gürültü tabanını yavaşça izle
-        return result
+        try:
+            speech = self._vad.is_speech(frame, rate)
+        except Exception:
+            speech = loud
+        return speech and loud
 
 
 class SpeechGate:
@@ -118,14 +124,23 @@ _NAMES = {"alice", "alis", "alise", "alize", "aliz", "alisa", "alys", "elis", "e
 _TR = str.maketrans("ıİçÇşŞğĞöÖüÜ", "iIcCsSgGoOuU")
 
 
-def _name_like(word: str, after_hey: bool) -> bool:
+_REAL_HEYS = {"hey", "hay", "hei", "heyy", "ey", "hej"}
+# "Alice"e benzeyen gerçek Türkçe adlar: "Selam Aliye" uyandırmasın.
+_NOT_NAMES = {"aliye", "alisan"}
+
+
+def _name_like(word: str, after_hey: bool | str) -> bool:
     import difflib
 
     w = word.lower().translate(_TR)
     if w in {n.translate(_TR) for n in _NAMES}:
         return True
-    if after_hey and w == "ali":  # "Hey Ali" sık bir yanlış duyma; "hey" olmadan Ali bir isim olabilir
-        return True
+    # "Hey Ali" sık bir yanlış duyma; ama "Selam Ali", "Merhaba Ali" gerçek bir Ali'ye (Discord, oda) söylenmiş
+    # olabilir: sadece gerçek "hey"den sonra kabul et.
+    if after_hey and w == "ali":
+        return after_hey is True or after_hey in _REAL_HEYS
+    if after_hey and w in _NOT_NAMES:
+        return False
     # Benzerlik yalnızca "hey"den sonra: tek başına "Alicem nerede" gibi cümleler uyandırmasın.
     return after_hey and len(w) >= 4 and max(difflib.SequenceMatcher(None, w, n).ratio() for n in ("alis", "alice", "elis")) >= 0.8
 
@@ -159,9 +174,9 @@ def strip_wake(text: str) -> str | None:
         for h in ("hey", "hay", "ey"):
             if w.startswith(h) and len(w) > len(h) + 2 and _name_like(w[len(h):], True):
                 return text[words[i].end():].lstrip(" ,.!?;:-").strip()
-    after_hey = False
+    after_hey: bool | str = False
     if i < len(words) and words[i].group().lower().translate(_TR) in _HEYS:
-        after_hey = True
+        after_hey = words[i].group().lower().translate(_TR)
         i += 1
     # "Alice" -> "Ali C", "Ali J'e" diye bölünmüş yazım: Ali + tek harf (+ ek)
     if (i < len(words) - 1 and i <= 2 and words[i].group().lower().translate(_TR) == "ali"

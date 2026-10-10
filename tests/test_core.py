@@ -376,3 +376,14 @@ def test_corrupt_task_file_keeps_memory(tmp_path):
     ts.load()
     assert len(ts.tasks) == 1
     assert TaskStore(tmp_path / "tasks.json").tasks == []
+
+
+def test_core_prime_writes_mode_before_first_tick_and_hooks_get_policy(tmp_path):
+    core, _ = make_core(tmp_path)
+    core.prime()  # DCS açık: ses modülü daha başlamadan "GPU yok" görsün
+    assert json.loads((alice_home() / "core-state.json").read_text())["policy"]["local_gpu"] is False
+    seen = []
+    core.hooks.append(lambda pol: seen.append(pol.local_gpu))
+    core.hooks.append(lambda pol: 1 / 0)  # çöken kanca turu bozmasın
+    core.tick(1000)
+    assert seen == [False]

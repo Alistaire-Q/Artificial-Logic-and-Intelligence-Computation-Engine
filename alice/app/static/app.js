@@ -20,6 +20,10 @@ const S = {
   queue: [],          // meşgulken yazılan mesajlar
   commands: [],
   popup: null,        // {kind, items, sel, start}
+  turnStart: 0,       // işin başladığı an (performance.now)
+  sent: [],           // yukarı okla geri çağrılacak gönderilmiş mesajlar
+  sentIdx: -1,
+  online: true,
 };
 
 async function api(path, body) {
@@ -128,7 +132,7 @@ async function copyText(text, btn) {
 
 /* ================================================================== kaydırma */
 function nearBottom() { return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 140; }
-function toBottom(force) { if (force || nearBottom()) scroller.scrollTop = scroller.scrollHeight; }
+function toBottom(force) { if (force || nearBottom()) scroller.scrollTop = scroller.scrollHeight; updateJump(); }
 function add(node, force) {
   const stick = force || nearBottom();
   setEmpty(false);
@@ -138,8 +142,9 @@ function add(node, force) {
 }
 function setEmpty(v) { app.classList.toggle("empty", v); }
 function clearChat() {
+  hideWorking();
   list.replaceChildren();
-  S.tools.clear(); S.perms.clear(); S.cur = null; S.working = null;
+  S.tools.clear(); S.perms.clear(); S.cur = null;
   setEmpty(true);
   greet();
 }
@@ -182,14 +187,23 @@ function addUser(text, mi, images) {
   return add(wrap, true);
 }
 
+// Göstergede geçen süre de yazar: uzun bir adımda arayüz donmuş gibi görünmesin.
 function showWorking(label) {
   if (S.working) { S.working.querySelector(".lbl").textContent = label; return; }
   const w = el("div", "working");
   w.appendChild(svg(IC.spark, "spark"));
   w.appendChild(el("span", "lbl shimmer", label));
+  const secs = el("span", "secs");
+  w.appendChild(secs);
+  const t0 = S.turnStart || performance.now();
+  w._timer = setInterval(() => {
+    const s = Math.round((performance.now() - t0) / 1000);
+    secs.textContent = s >= 3 ? fmtSecs(s) : "";
+  }, 1000);
   S.working = add(w);
 }
-function hideWorking() { if (S.working) { S.working.remove(); S.working = null; } }
+function hideWorking() { if (S.working) { clearInterval(S.working._timer); S.working.remove(); S.working = null; } }
+function fmtSecs(s) { return s < 60 ? `${s} sn` : `${Math.floor(s / 60)} dk ${s % 60} sn`; }
 
 function ensureAi() {
   if (S.cur) return S.cur;
@@ -247,6 +261,7 @@ function onDelta(t) {
       setMd(c.prose, c.text);
       c.prose.classList.add("cursor");
       if (stick) scroller.scrollTop = scroller.scrollHeight;
+      else updateJump();
     });
   }
 }
@@ -274,7 +289,18 @@ function addAiStatic(text) {
   aiActions(root, text, "");
   add(root);
 }
-function addNote(text, kind) { add(el("div", "note" + (kind ? " " + kind : ""), text)); }
+// Aynı not art arda gelirse (model atlandı, limit...) satır çoğalmasın, sayaç artsın.
+function addNote(text, kind) {
+  const last = lastContent();
+  if (last && last.classList.contains("note") && last._text === text) {
+    last._n = (last._n || 1) + 1;
+    last.textContent = `${text} (×${last._n})`;
+    return last;
+  }
+  const n = el("div", "note" + (kind ? " " + kind : ""), text);
+  n._text = text;
+  return add(n);
+}
 
 /* =================================================================== araçlar */
 const VERBS = {
@@ -504,8 +530,10 @@ function markFinals() {
 }
 
 function setBusy(v) {
+  if (v && !S.busy) S.turnStart = performance.now();
   S.busy = !!v;
   app.classList.toggle("busy", S.busy);
+  document.title = S.busy ? "● ALICE" : "ALICE";
   $("#sendBtn").title = S.busy ? "Durdur (Esc)" : "Gönder (Enter)";
   if (S.busy && !S.cur && !S.working) showWorking("Çalışıyor");
   if (!S.busy) { hideWorking(); markFinals(); flushQueue(); }
@@ -546,7 +574,7 @@ async function refreshStatus() { const s = await api("/api/state"); if (s && s.v
 function renderHistory(items) {
   clearChat();
   for (const it of items || []) {
-    if (it.type === "user") addUser(it.text, it.mi);
+    if (it.type === "user") { addUser(it.text, it.mi); remember(it.text); }
     else if (it.type === "assistant") addAiStatic(it.text);
     else if (it.type === "info") addNote(it.text);
     else if (it.type === "tool") finishTool(toolRow(null, it.name, it.summary, false), { is_error: it.is_error, text: it.text });
@@ -703,13 +731,21 @@ function settingsMenu() {
 }
 
 /* =================================================================== dialoglar */
+let onDialogClose = null;
 function showDialog(build) {
+  if (onDialogClose) closeDialog();
   const d = $("#dialog");
   d.replaceChildren();
   build(d);
   $("#overlay").hidden = false;
 }
-function closeDialog() { $("#overlay").hidden = true; }
+// Esc ya da dışarı tıklamak da "Vazgeç" sayılır; onay bekleyen kod askıda kalmasın.
+function closeDialog() {
+  $("#overlay").hidden = true;
+  const f = onDialogClose;
+  onDialogClose = null;
+  if (f) f();
+}
 $("#overlay").addEventListener("mousedown", (e) => { if (e.target.id === "overlay") closeDialog(); });
 function dialogClose(d, label) {
   const row = el("div", "row");
@@ -721,12 +757,13 @@ function dialogClose(d, label) {
 function confirmDialog(title, text, okLabel) {
   return new Promise((resolve) => {
     showDialog((d) => {
+      onDialogClose = () => resolve(false);
       d.append(el("h2", "", title), el("p", "", text));
       const row = el("div", "row");
       const no = el("button", "btn", "Vazgeç");
       const yes = el("button", "btn accent", okLabel || "Tamam");
-      no.addEventListener("click", () => { closeDialog(); resolve(false); });
-      yes.addEventListener("click", () => { closeDialog(); resolve(true); });
+      no.addEventListener("click", closeDialog);
+      yes.addEventListener("click", () => { onDialogClose = null; closeDialog(); resolve(true); });
       row.append(no, yes);
       d.appendChild(row);
       setTimeout(() => yes.focus(), 0);
@@ -819,7 +856,7 @@ function showHelp() {
       d.appendChild(row);
     }
     d.appendChild(el("div", "sec", "Kısayollar"));
-    for (const [k, v] of [["Enter", "Gönder (çalışırken sıraya ekler)"], ["Shift+Enter", "Yeni satır"], ["Esc", "Durdur / menüyü kapat"],
+    for (const [k, v] of [["Enter", "Gönder (çalışırken sıraya ekler)"], ["Shift+Enter", "Yeni satır"], ["↑ / ↓", "Önceki mesajları geri getir (kutu boşken)"], ["Esc", "Durdur / menüyü kapat"],
       ["Shift+Tab", "İzin modunu değiştir"], ["Ctrl+B", "Kenar çubuğu"], ["Ctrl+Shift+O", "Yeni sohbet"], ["Ctrl+V", "Görsel yapıştır"]]) {
       const row = el("div", "list-row");
       row.append(el("span", "l", k), el("span", "r", v));
@@ -982,16 +1019,42 @@ async function submit(textArg) {
     if (textArg === undefined) { input.value = ""; autosize(); }
     return;
   }
+  if (textArg === undefined) remember(text);
   if (S.busy) {
     S.queue.push({ text, images });
     drawQueue();
   } else {
     const r = await api("/api/send", { text, images });
-    if (!r.ok) { toast(r.error || "Gönderilemedi"); return; }
+    if (!r.ok) {
+      // Sesli asistan aynı anda iş başlatmış olabilir: mesaj kaybolmasın, sıraya girsin.
+      if (/çalışıyor/.test(r.error || "")) {
+        S.queue.push({ text, images }); drawQueue();
+        await refreshStatus();
+        if (!S.busy) flushQueue();
+      }
+      else { toast(r.error || "Gönderilemedi"); return; }
+    }
   }
   if (textArg === undefined) {
     input.value = ""; S.attachments = []; drawAttachments(); autosize();
   }
+}
+// Kutu boşken (ya da geri çağrılmış bir mesaj değişmeden duruyorken) oklar önceki mesajlarda gezer.
+function recallSent(dir) {
+  const cur = S.sentIdx >= 0 ? S.sent[S.sent.length - 1 - S.sentIdx] : "";
+  if (input.value !== cur || !S.sent.length) return false;
+  const i = S.sentIdx + dir;
+  if (i < -1 || i >= S.sent.length) return true;
+  S.sentIdx = i;
+  input.value = i < 0 ? "" : S.sent[S.sent.length - 1 - i];
+  autosize();
+  input.setSelectionRange(input.value.length, input.value.length);
+  return true;
+}
+function remember(text) {
+  if (!text || text.startsWith("/")) return;
+  S.sent = S.sent.filter((t) => t !== text).concat(text).slice(-50);
+  S.sentIdx = -1;
 }
 function drawQueue() {
   const q = $("#queue");
@@ -1021,9 +1084,10 @@ input.addEventListener("keydown", (e) => {
     if (e.key === "ArrowDown") { e.preventDefault(); S.popup.sel = (S.popup.sel + 1) % S.popup.items.length; drawPopup(); return; }
     if (e.key === "ArrowUp") { e.preventDefault(); S.popup.sel = (S.popup.sel - 1 + S.popup.items.length) % S.popup.items.length; drawPopup(); return; }
     if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) { e.preventDefault(); choosePopup(S.popup.sel); return; }
-    if (e.key === "Escape") { e.preventDefault(); hidePopup(); return; }
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); hidePopup(); return; }
   }
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); submit(); }
+  if ((e.key === "ArrowUp" || e.key === "ArrowDown") && !e.shiftKey && recallSent(e.key === "ArrowUp" ? 1 : -1)) e.preventDefault();
   if (e.key === "Tab" && e.shiftKey) { e.preventDefault(); cycleMode(); }
 });
 input.addEventListener("paste", (e) => {
@@ -1114,12 +1178,39 @@ const handlers = {
 };
 // Çalışıyor göstergesini her zaman en altta tut.
 const keepWorkingLast = () => { if (S.working && S.working !== list.lastElementChild) list.appendChild(S.working); };
-new MutationObserver(keepWorkingLast).observe(list, { childList: true });
+new MutationObserver(() => { keepWorkingLast(); updateJump(); }).observe(list, { childList: true });
+
+// Yukarı kaydırılmışken yeni içerik gelirse "en alta in" düğmesi çıkar.
+function updateJump() { $("#jump").hidden = app.classList.contains("empty") || nearBottom(); }
+scroller.addEventListener("scroll", updateJump, { passive: true });
+$("#jump").addEventListener("click", () => { scroller.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" }); });
+
+// Sunucu kapanınca (çekirdek yeniden başlarken) sessizce donmak yerine bunu söyle.
+function setOnline(v) {
+  if (S.online === v) return;
+  S.online = v;
+  clearTimeout(setOnline._t);
+  if (v) { $("#conn").hidden = true; return; }
+  // Kısa kopmalarda (uyku, ağ) yanıp sönmesin.
+  setOnline._t = setTimeout(() => { if (!S.online) $("#conn").hidden = false; }, 1500);
+}
 
 let connectedOnce = false;
 function connect() {
   const es = new EventSource("/api/events?t=" + encodeURIComponent(TOKEN));
-  es.onopen = () => { if (connectedOnce) loadHistory(); connectedOnce = true; };
+  es.onopen = () => {
+    setOnline(true);
+    if (connectedOnce) {
+      loadHistory().then(() => { if (S.busy) showWorking("Çalışıyor"); });
+      loadSessions();
+    }
+    connectedOnce = true;
+  };
+  es.onerror = () => {
+    setOnline(false);
+    // Tarayıcı kendisi yeniden dener; bağlantı tamamen kapandıysa biz deneriz.
+    if (es.readyState === EventSource.CLOSED) { es.close(); setTimeout(connect, 3000); }
+  };
   es.onmessage = (m) => {
     let ev;
     try { ev = JSON.parse(m.data); } catch { return; }

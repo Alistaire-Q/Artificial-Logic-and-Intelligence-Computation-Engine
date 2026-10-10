@@ -77,7 +77,7 @@ def make_agent_runner(cfg: Config, cwd: Path | None = None) -> Callable[[str], s
         decider = Decider.from_config(cfg, router)
         ctx = ToolContext(cwd=cwd or Path.home(), config=cfg, router=router, decider=decider)
         mode = cfg.data.get("core", {}).get("task_permission_mode", "auto")
-        agent = Agent(cfg, router, all_tools(), ctx, Permissions(mode), NullUI(approve="n"), decider)
+        agent = Agent(cfg, router, all_tools(cfg), ctx, Permissions(mode), NullUI(approve="n"), decider)
         try:
             text = agent.run_turn(
                 prompt + "\n\n(Bu görev arka planda, kullanıcı başında değilken çalışıyor. Soru sorma; "
@@ -117,6 +117,8 @@ class Core:
                                  mode=lambda: self.modes.current)
         self.stop_event = threading.Event()
         self.running_tasks: set[str] = set()
+        # Her turda mod politikasıyla çağrılır (ör. ses: DCS açılınca modelleri ekran kartından çıkar).
+        self.hooks: list[Callable[[Policy], None]] = []
         self._last_prune = 0.0
         self._last_files = 0.0
         self._lock = threading.Lock()
@@ -136,12 +138,28 @@ class Core:
         if rows:
             self.store.add_many(rows, now)
         self._update_mode(now)
+        for hook in self.hooks:
+            try:
+                hook(self.modes.policy)
+            except Exception as e:  # noqa: BLE001 - bir kanca çökse de tur sürsün
+                self.store.add_event("error", "çekirdek kancası hata verdi", repr(e)[:300], topic="core")
         self._reload_if_changed()
         self.engine.evaluate(now)
         self._run_due(now)
         if now - self._last_prune > 3600:
             self._last_prune = now
             self.store.prune(self.retention_days, now)
+        self.write_state(now)
+
+    def prime(self) -> None:
+        """Açılışta, ses ve diğer modüller başlamadan modu belirle ve yaz. Yoksa ilk tur gelene kadar durum dosyası
+        olmuyor, ses modülü "GPU serbest" sanıp DCS açıkken bile modelleri ekran kartına yüklüyordu."""
+        now = time.time()
+        try:
+            self.pc._procs()  # sadece süreç adları; sıcaklık/GPU sorguları ilk tura kalsın
+        except Exception:  # noqa: BLE001
+            pass
+        self._update_mode(now)
         self.write_state(now)
 
     def _update_mode(self, now: float) -> None:
