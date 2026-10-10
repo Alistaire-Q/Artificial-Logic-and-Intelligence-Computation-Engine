@@ -46,7 +46,8 @@ function setImage(b64) {
 
 async function send(text) {
   text = (text ?? q.value).trim();
-  if ((!text && !image) || busy) return;
+  if (!text && !image) return;
+  if (busy) { setStatus("önceki iş sürüyor (Esc durdurur)"); return; }
   const r = await api("/api/send", { text: text || "Bu ekran görüntüsünde ne var? Bir hata varsa açıkla ve çözümünü söyle.",
                                      images: image ? [image] : [] });
   if (!r.ok) { addErr(r.error || "gönderilemedi"); return; }
@@ -94,6 +95,12 @@ const handlers = {
 
 function connect() {
   const es = new EventSource("/api/events?t=" + encodeURIComponent(TOKEN));
+  es.onopen = () => { if (statusEl.dataset.offline) { delete statusEl.dataset.offline; setStatus(busy ? "düşünüyor…" : ""); } };
+  es.onerror = () => {
+    statusEl.dataset.offline = "1";
+    setStatus("ALICE'e bağlantı koptu, yeniden bağlanıyor…");
+    if (es.readyState === EventSource.CLOSED) { es.close(); setTimeout(connect, 3000); }
+  };
   es.onmessage = (m) => {
     let ev;
     try { ev = JSON.parse(m.data); } catch { return; }
