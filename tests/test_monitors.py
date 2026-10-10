@@ -83,6 +83,9 @@ def fake_ps(monkeypatch):
         run_out={},
         run_calls=[],
     )
+    # Yeni açılmış CI makinesinde time.monotonic() < 60 olabiliyor; o zaman ilk disk/sıcaklık okuması
+    # "dakikada bir" kısıtına takılır. Sabit, büyük bir saat kullan.
+    monkeypatch.setattr(monitors.time, "monotonic", lambda: 1_000_000.0)
     monkeypatch.setattr(monitors.psutil, "cpu_percent", lambda interval=None: state.cpu)
     monkeypatch.setattr(monitors.psutil, "virtual_memory", lambda: state.vm)
     monkeypatch.setattr(monitors.psutil, "disk_partitions", lambda all=False: state.parts)
