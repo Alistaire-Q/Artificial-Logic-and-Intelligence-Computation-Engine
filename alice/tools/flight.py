@@ -15,7 +15,9 @@ ACTIONS = ["status", "alert_home", "last_debrief", "checklist_list", "checklist_
 class Flight(Tool):
     name = "flight"
     description = ("DCS/War Thunder. status: canlı yakıt/kalan dk/eve dönüş, üssün yönü ve mesafesi, sağa/sola kaç "
-                   "derece dönmeli (yön/mesafe/yakıt sorulunca HER SEFER status çağır, tahmin etme). alert_home (nm): "
+                   "derece dönmeli (yön/mesafe/yakıt/silah sorulunca HER SEFER status çağır). status'ta olmayan ya da "
+                   "BİLİNMİYOR yazan bir bilgiyi (silah sayısı, mesafe, yön...) ASLA uydurma ve genel bilginden "
+                   "tahmin etme: 'oyun bu bilgiyi vermiyor' de. alert_home (nm): "
                    "üsse nm mil kalınca otomatik sesli uyarı kurar; 'X mile gelince söyle' denince bunu çağır, "
                    "başka türlü uyarı söz verme. checklist_start (name: iniş, kalkış...): "
                    "sesliyken sadece dönen adımı oku, 'tamam/devam' gelince checklist_next. kneeboard_note (text): "
