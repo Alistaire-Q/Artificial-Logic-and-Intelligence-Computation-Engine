@@ -2,8 +2,18 @@
 -- Oyuna hiçbir komut göndermez. `alice dcs install` bunu Saved Games\DCS\Scripts altına koyar
 -- ve Export.lua'ya tek satır ekler. Diğer export betikleriyle (SRS, TacView, Helios) birlikte çalışır.
 do
+  -- Export ortamında LuaSocket'in yolu tanımlı değil: diğer export betikleri (SRS, TacView) gibi ekle.
+  package.path = package.path .. ";.\\LuaSocket\\?.lua"
+  package.cpath = package.cpath .. ";.\\LuaSocket\\?.dll"
+  local function note(msg)
+    if log and log.write then pcall(log.write, "ALICE", log.INFO, msg) end
+  end
   local ok_socket, socket = pcall(require, "socket")
-  if not ok_socket then return end
+  if not ok_socket then
+    note("LuaSocket yuklenemedi: " .. tostring(socket))
+    return
+  end
+  note("export betigi yuklendi")
 
   local HOST, PORT, HZ = "127.0.0.1", 41230, 10
   local udp, next_send = nil, 0
@@ -80,6 +90,7 @@ do
     udp = socket.udp()
     udp:settimeout(0)
     udp:setpeername(HOST, PORT)
+    note("veri gonderiliyor: " .. HOST .. ":" .. PORT)
     send({ event = "start" })
   end
 
