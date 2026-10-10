@@ -126,6 +126,9 @@ class SimHub:
             from alice.sims.flight import describe_extra
 
             lines += describe_extra(s)
+            if "weapons" not in s.extra:
+                lines.append("  silah/mühimmat: " + ("War Thunder bu bilgiyi yayınlamıyor, BİLİNMİYOR" if src == "warthunder"
+                                                     else "oyun bu uçak için vermedi, BİLİNMİYOR"))
             if c.home_alert_nm is not None:
                 lines.append(f"  kurulu uyarı: üsse {c.home_alert_nm:.0f} mil kalınca söylenecek")
             if s.chaff is not None:
