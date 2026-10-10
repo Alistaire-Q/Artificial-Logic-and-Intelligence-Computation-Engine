@@ -18,7 +18,7 @@ CORE = {"read_file", "write_file", "edit_file", "multi_edit", "list_dir", "glob"
 
 # grup -> (araçlar, kısa açıklama, anahtar kelime regex'i)
 GROUPS: dict[str, tuple[set[str], str, str]] = {
-    "desktop": ({"computer", "ui_elements", "ui_act", "clipboard", "reflex"},
+    "desktop": ({"computer", "computer_task", "ui_elements", "ui_act", "clipboard", "reflex"},
                 "ekran görüntüsü, fare/klavye, masaüstü uygulamalarında tıklama, pano",
                 r"tıkla|ekran|pencere|fare|mouse|klavye|screenshot|buton|düğme|menü|click|screen|pano|kopyala|"
                 r"yapıştır|clipboard|oyun|ayarlar|uygulamada|arayüz|simge|ikon"),

@@ -42,6 +42,9 @@ youtube aracı sadece ekranda olmayan yeni bir YouTube videosunu açmak ya da a�
 browser aracı kullanıcının tarayıcısına bağlanır (tabs, switch_tab; goto açık site sekmesini kullanır). browser "bağlanılamıyor" derse: windows action=switch_tab
 target=<site adı> ile açık sekmeye geç, windows action=navigate target=<URL ya da arama> ile git.
 Yeni sekme ya da ayrı pencere sadece kullanıcı isterse.
+Birkaç adım süren ekran işlerini (uygulamada menülerden geçmek, form doldurmak, bir şey çizmek/kurmak, dosya
+kaydetmek) computer_task'a ver: ekranı görerek fare ve klavyeyle kendi yapar, arka planda sürer, bitince sonucu
+sana yazar. Tek tıklık işler için reflex daha hızlı.
 Bir işe özel araç varsa (ör. 3B/Blender için blender) run_command ya da write_file yerine onu kullan; iş bitince
 sonucu kullanıcının ekranında aç (blender action=open gibi), çünkü kullanıcı ekranda görmek ister.
 Bir araç "onay gerekli" derse kullanıcıya kısaca sor; "evet" derse aynı çağrıyı tekrarla.
@@ -280,6 +283,7 @@ class LiveSession:
         self.grab: Callable[[], str | None] = screen_frame
         self._pre: dict[str, Any] = {}  # önceden açılan bağlantı: {"thread", "ws", "error"}
         self._pre_lock = threading.Lock()
+        self._bg = 0  # arka planda süren uzun işler (computer_task): bitene kadar konuşma kapanmasın
 
     @property
     def available(self) -> bool:
@@ -522,7 +526,7 @@ class LiveSession:
                     self._run_call(ws, fc)
                     touch()
                     continue
-                if out.playing:
+                if out.playing or self._bg:
                     touch()
                 if time.monotonic() - state["active"] > self.idle:
                     break
@@ -541,8 +545,50 @@ class LiveSession:
             self.log("live kapandı")
 
     TOOL_TIMEOUT = 25.0  # sn: araç takılırsa modele hata dön, konuşma kilitlenmesin
+    BACKGROUND = {"computer_task"}  # dakikalar sürebilir: arka planda çalışır, bitince sonuç konuşmaya yazılır
+
+    def _run_background(self, ws, fc: dict[str, Any]) -> None:
+        name = fc.get("name", "")
+        args = fc.get("args") or {}
+        call = {"id": fc.get("id") or name, "type": "function",
+                "function": {"name": name, "arguments": json.dumps(args)}}
+        try:
+            ws.send(json.dumps({"toolResponse": {"functionResponses": [{"id": fc.get("id"), "name": name, "response": {
+                "result": "başladı, arka planda yapılıyor; bitince sonucu sana yazacağım. Kullanıcıya kısaca "
+                          "başladığını söyle, sonucu uydurma."}}]}}))
+        except Exception:  # noqa: BLE001
+            return
+        self._bg += 1
+        self.log(f"live arka plan işi başladı: {name} {json.dumps(args, ensure_ascii=False)[:160]}")
+
+        def run() -> None:
+            try:
+                import comtypes  # UI Automation bu thread'de de çalışsın
+
+                comtypes.CoInitialize()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                self.agent._enable_groups_for(tool_names=(name,))
+                res: ToolResult = self.agent._execute_calls([call])[0]
+                text = res.text[:3000]
+            except Exception as e:  # noqa: BLE001
+                text = f"HATA {type(e).__name__}: {e}"
+            self.log(f"live arka plan işi bitti: {name}: {text[:300]}")
+            try:
+                ws.send(json.dumps({"clientContent": {"turns": [{"role": "user", "parts": [{"text": (
+                    f"[{name} bitti, sonucu kullanıcıya kısaca söyle] {text}")}]}], "turnComplete": True}}))
+            except Exception:  # noqa: BLE001 - konuşma kapanmış
+                pass
+            finally:
+                self._bg -= 1
+
+        threading.Thread(target=run, daemon=True, name=f"alice-live-bg-{name}").start()
 
     def _run_call(self, ws, fc: dict[str, Any]) -> None:
+        if fc.get("name") in self.BACKGROUND:
+            self._run_background(ws, fc)
+            return
         call = {"id": fc.get("id") or fc.get("name"), "type": "function",
                 "function": {"name": fc.get("name", ""), "arguments": json.dumps(fc.get("args") or {})}}
         lock = threading.Lock()
