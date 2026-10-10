@@ -502,6 +502,7 @@ def collect_ui_elements(ctx: ToolContext, title: str | None = None, limit: int =
                 "auto_id": (info.automation_id or "")[:40],
                 "enabled": el.is_enabled(),
                 "center": ((r.left + r.right) // 2, (r.top + r.bottom) // 2),
+                "rect": (r.left, r.top, r.right, r.bottom),
             })
             if len(items) >= limit:
                 break

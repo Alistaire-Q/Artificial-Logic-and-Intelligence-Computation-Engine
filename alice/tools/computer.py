@@ -210,4 +210,28 @@ class Computer(Tool):
         return ToolResult(msg)
 
 
-TOOLS = [Computer()]
+class ComputerTask(Tool):
+    name = "computer_task"
+    description = (
+        "Bilgisayarı kullanıcı gibi kullanarak çok adımlı bir işi baştan sona yap (Codex/Claude computer use gibi): "
+        "her adımda ekranı görür, fare ve klavyeyle tıklar, yazar, kaydırır, uygulama açar, sonucu kontrol edip "
+        "düzeltir. Her uygulamada çalışır (UIA vermeyenler dahil: Blender arayüzü, oyunlar, Opera). goal'e işi "
+        "kullanıcının istediği gibi, net ve eksiksiz yaz (ör. 'Not Defteri'ni aç, alışveriş listesi yaz ve "
+        "masaüstüne liste.txt olarak kaydet'). Tek tıklık işler için reflex/ui_act/browser daha hızlıdır."
+    )
+    parameters = obj({"goal": {"type": "string"},
+                      "max_steps": {"type": "integer", "description": "varsayılan 30"}}, ["goal"])
+    risk = COMPUTER
+
+    def run(self, ctx: ToolContext, goal: str, max_steps: int = 30) -> ToolResult:
+        from alice.computer_agent import ComputerAgent, Screen, router_asker
+
+        if ctx.router is None:
+            raise ToolError("model yönlendirici yok")
+        agent = ComputerAgent(Screen(ctx), router_asker(ctx.router, str(ctx.config.agent.get("computer_role", "vision"))),
+                              emit=ctx.emit, stop=ctx.cancelled)
+        res = agent.run(goal, max_steps=max(1, min(int(max_steps or 30), 60)))
+        return ToolResult(res.report(), is_error=res.status in ("error",))
+
+
+TOOLS = [Computer(), ComputerTask()]
