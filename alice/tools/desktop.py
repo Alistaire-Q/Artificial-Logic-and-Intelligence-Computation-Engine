@@ -468,7 +468,8 @@ class Windows(Tool):
             if not target:
                 raise ToolError("open için target gerekli")
             msg = open_app(target)
-            time.sleep(1.5)
+            if "://" not in target:  # uygulama penceresinin gelmesini bekle; site açmak beklemeye değmez
+                time.sleep(1.5)
             return ToolResult(msg)
         if not title:
             raise ToolError(f"{action} için title gerekli")
