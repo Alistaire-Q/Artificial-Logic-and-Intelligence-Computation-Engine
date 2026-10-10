@@ -42,9 +42,15 @@ youtube aracı sadece ekranda olmayan yeni bir YouTube videosunu açmak ya da a�
 browser aracı kullanıcının tarayıcısına bağlanır (tabs, switch_tab; goto açık site sekmesini kullanır). browser "bağlanılamıyor" derse: windows action=switch_tab
 target=<site adı> ile açık sekmeye geç, windows action=navigate target=<URL ya da arama> ile git.
 Yeni sekme ya da ayrı pencere sadece kullanıcı isterse.
-Birkaç adım süren ekran işlerini (uygulamada menülerden geçmek, form doldurmak, bir şey çizmek/kurmak, dosya
-kaydetmek) computer_task'a ver: ekranı görerek fare ve klavyeyle kendi yapar, arka planda sürer, bitince sonucu
-sana yazar. Tek tıklık işler için reflex daha hızlı.
+Bilgisayarın TAMAMINI kullanabilirsin: masaüstü, Windows ayarları, her uygulama, fare ve klavye. "Sadece
+tarayıcıyı görebiliyorum", "yetkim yok" deme; bir yolunu bul.
+Birkaç adım süren ekran işlerini (masaüstünde/Windows'ta bir ayar, uygulamada menülerden geçmek, form doldurmak,
+bir şey çizmek/kurmak, dosya kaydetmek) computer_task'a ver: ekranı görerek fare ve klavyeyle kendi yapar, arka
+planda sürer, bitince sonucu sana yazar. goal'e işi net yaz (ör. "masaüstüne geç, boş yere sağ tıkla, Görünüm >
+Masaüstü simgelerini göster'i aç"). Tek tıklık işler için reflex daha hızlı.
+Monitörler: {monitors}. Her konuşmada sana öndeki pencerenin olduğu monitörün görüntüsü gelir. Başka monitörü ya da
+hepsini görmek için computer action=screenshot monitor=<numara> (0 = hepsi yan yana); computer_task'a da monitor
+verebilirsin.
 Bir işe özel araç varsa (ör. 3B/Blender için blender) run_command ya da write_file yerine onu kullan; iş bitince
 sonucu kullanıcının ekranında aç (blender action=open gibi), çünkü kullanıcı ekranda görmek ister.
 Bir araç "onay gerekli" derse kullanıcıya kısaca sor; "evet" derse aynı çağrıyı tekrarla.
@@ -68,6 +74,25 @@ def looks_internal(text: str) -> bool:
 
 class LiveError(Exception):
     pass
+
+
+def monitor_layout() -> str:
+    """'1: ana, 3440x1440, sağda; 2: 3440x1440, solda' gibi kısa açıklama."""
+    try:
+        import mss
+
+        with mss.mss() as sct:
+            mons = sct.monitors[1:]
+    except Exception:  # noqa: BLE001
+        return "bilinmiyor"
+    if len(mons) <= 1:
+        return "tek monitör (1)"
+    xs = sorted(m["left"] for m in mons)
+    out = []
+    for i, m in enumerate(mons, 1):
+        side = "solda" if m["left"] == xs[0] else "sağda" if m["left"] == xs[-1] else "ortada"
+        out.append(f"{i}: {'ana, ' if m.get('is_primary') else ''}{m['width']}x{m['height']}, {side}")
+    return "; ".join(out)
 
 
 def _to_jpeg(b64_png: str) -> str | None:
@@ -306,7 +331,8 @@ class LiveSession:
 
         now = datetime.now()
         system = self.agent.messages[0]["content"] + "\n\n" + LIVE_PROMPT.format(
-            now=f"{now:%d.%m.%Y %H:%M} ({spoken_time(now.hour, now.minute)})", names=", ".join(self.names()))
+            now=f"{now:%d.%m.%Y %H:%M} ({spoken_time(now.hour, now.minute)})", names=", ".join(self.names()),
+            monitors=monitor_layout())
         enabled = self.agent.ctx.state.setdefault("tool_groups", set())
         enabled |= LIVE_GROUPS
         return {"setup": {

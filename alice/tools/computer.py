@@ -148,7 +148,7 @@ class Computer(Tool):
         "amount": {"type": "integer", "description": "scroll: pozitif yukarı, negatif aşağı (tık sayısı)"},
         "seconds": {"type": "number"},
         "grid": {"type": "boolean"},
-        "monitor": {"type": "integer", "description": "1 = ana monitör"},
+        "monitor": {"type": "integer", "description": "1 = ana monitör, 2 = ikinci, 0 = hepsi yan yana"},
         "screenshot_after": {"type": "boolean", "description": "aksiyondan sonra yeni ekran görüntüsü döndür"},
     }, ["action"])
     risk = COMPUTER
@@ -220,15 +220,16 @@ class ComputerTask(Tool):
         "masaüstüne liste.txt olarak kaydet'). Tek tıklık işler için reflex/ui_act/browser daha hızlıdır."
     )
     parameters = obj({"goal": {"type": "string"},
+                      "monitor": {"type": "integer", "description": "1, 2...; boş = öndeki pencerenin monitörü"},
                       "max_steps": {"type": "integer", "description": "varsayılan 30"}}, ["goal"])
     risk = COMPUTER
 
-    def run(self, ctx: ToolContext, goal: str, max_steps: int = 30) -> ToolResult:
+    def run(self, ctx: ToolContext, goal: str, max_steps: int = 30, monitor: int = 0) -> ToolResult:
         from alice.computer_agent import ComputerAgent, Screen, router_asker
 
         if ctx.router is None:
             raise ToolError("model yönlendirici yok")
-        agent = ComputerAgent(Screen(ctx), router_asker(ctx.router, str(ctx.config.agent.get("computer_role", "vision"))),
+        agent = ComputerAgent(Screen(ctx, monitor=int(monitor or 0)), router_asker(ctx.router, str(ctx.config.agent.get("computer_role", "vision"))),
                               emit=ctx.emit, stop=ctx.cancelled)
         res = agent.run(goal, max_steps=max(1, min(int(max_steps or 30), 60)))
         return ToolResult(res.report(), is_error=res.status in ("error",))

@@ -72,8 +72,9 @@ def parse_action(text: str) -> dict[str, Any]:
 class Screen:
     """Gerçek ekran: görüntü + UIA öğeleri + fare/klavye."""
 
-    def __init__(self, ctx, max_width: int = 1280, max_elements: int = 60):
+    def __init__(self, ctx, max_width: int = 1280, max_elements: int = 60, monitor: int = 0):
         self.ctx = ctx
+        self.monitor = monitor  # 0: öndeki pencerenin monitörü
         self.max_width = max_width
         self.max_elements = max_elements
 
@@ -94,7 +95,7 @@ class Screen:
         except Exception:  # noqa: BLE001 - UIA yoksa sadece görüntü
             pass
         with mss.mss() as sct:
-            mon = self._monitor(sct)
+            mon = sct.monitors[self.monitor] if 0 < self.monitor < len(sct.monitors) else self._monitor(sct)
             raw = sct.grab(mon)
         img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
         scale = min(1.0, self.max_width / img.width)
