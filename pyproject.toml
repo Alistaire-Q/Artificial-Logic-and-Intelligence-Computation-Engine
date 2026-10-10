@@ -31,8 +31,6 @@ app = ["pywebview>=5.1; sys_platform == 'win32' or sys_platform == 'darwin'"]
 core = ["pystray>=0.19"]
 voice = ["sounddevice>=0.4.6", "pynput>=1.7", "webrtcvad-wheels>=2.0.11", "edge-tts>=7.0", "av>=12", "websockets>=13"]
 voice-local = ["faster-whisper>=1.0", "openwakeword>=0.6"]
-# Tam çevrimdışı mod: yerel Türkçe ses (Piper) ve konuşma tanıma. Yerel model Ollama'da (alice offline install).
-offline = ["faster-whisper>=1.0", "piper-tts>=1.3"]
 # XTTS v2 (yerel, Kore sesini taklit eder). transformers 5 XTTS'i bozuyor.
 voice-xtts = ["coqui-tts>=0.27", "transformers<5"]
 all = ["alice-harness[computer,browser,app,core,voice]"]
