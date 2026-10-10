@@ -296,7 +296,13 @@ class VoiceAssistant:
             armed = time.monotonic() <= self.armed_until  # canlı konuşma az önce bitti: "Alice" demeden devam
             full = self._full_text(audio) if pre else None
             head = full[0] if full else gate.heard(audio)
-            woke = head is not None and (strip_wake(head) is not None or (armed and len(head.strip()) > 1))
+            if head is not None and not head.strip() and not full:
+                audio, head = self._scan_wake(gate, audio, head)
+            conf = full[1] if full else getattr(gate, "last_conf", 0.0)
+            # "Alice" demeden devam: gürültüden uydurulmuş ya da çok güvensiz döküm canlı konuşmayı yeniden açmasın.
+            follow = (armed and len(head.strip()) > 1 and not is_hallucination(head) and conf > -1.2
+                      if head is not None else False)
+            woke = head is not None and (strip_wake(head) is not None or follow)
             if pre and not woke:
                 self.live.discard()
             if head is not None:
@@ -323,6 +329,25 @@ class VoiceAssistant:
             return
         voice_log(f"duyulan [{getattr(self.stt, 'last', '')}]{' (doğrudan)' if direct else ''}: {text}")
         self.handle_text(text, direct)
+
+    def _scan_wake(self, gate, audio: Audio, head: str, step: float = 2.0, limit: int = 5) -> tuple[Audio, str]:
+        """Cümlenin başı konuşma değilse (oyun/müzik sesiyle başlayan uzun kayıt) "Hey Alice" ileride olabilir:
+        sonraki pencerelere bak, bulursa kaydı oradan başlat. Başta gerçek konuşma varsa (başkasıyla konuşma)
+        bakılmaz, yani normal sohbet ek iş çıkarmaz."""
+        head_s = getattr(gate, "HEAD_SECONDS", 2.5)
+        start = step
+        for _ in range(limit):
+            if audio.seconds - start < 0.8:
+                break
+            part = Audio(audio.pcm[int(start * audio.rate) * 2:], audio.rate)
+            text = gate.heard(part)
+            if text and strip_wake(text) is not None:
+                voice_log(f"uyandırma kaydın {start:.0f}. saniyesinde bulundu: {text}")
+                return part, text
+            if text and text.strip():
+                break  # orada gerçek konuşma var ama uyandırma yok
+            start += min(step, head_s)
+        return audio, head
 
     def _full_text(self, audio: Audio) -> tuple[str, float] | None:
         """Kısa cümlede uyandırma kontrolü ve Live'a gidecek yazı için TEK yerel geçiş (iki ayrı geçiş ~0,5 sn

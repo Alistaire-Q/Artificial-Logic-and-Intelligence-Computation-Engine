@@ -6,6 +6,8 @@ uçuş arkadaşı gibi bakar:
   - Yaklaşma: teker açık, alçakta, yavaşken AoA ve alçalma hızına kısa geri bildirim
   - Uzun süre yüksek G, chaff/flare azalması
   - İnişten sonra kısa değerlendirme (+ saat verisi varsa nabız)
+  - Pilotun kurduğu hatırlatmalar: "10 bin feet'e gelince söyle", "yakıt 1500 kiloya inince söyle"
+  - Kendi yer yaklaşma uyarısı olmayan uçaklarda yere hızla yaklaşma, açık unutulan flap, boşalan dış tank
 
 Kaynaktan (DCS, War Thunder) bağımsızdır: hepsi FlightState üretir, FlightCompanion tüketir.
 Birimler SI: m, m/s, kg, derece.
@@ -64,13 +66,15 @@ class Profile:
     g_warn_seconds: float = 5.0
     chaff_low: int = 20
     flare_low: int = 10
+    has_gpws: bool = False           # uçağın kendi yer yaklaşma uyarısı var: ALICE tekrarlamaz
+    auto_flaps: bool = False         # flaplar otomatik: "flap açık kaldı" hatırlatması anlamsız
 
 
 PROFILES = {
     "F-16C_50": Profile("F-16C", internal_fuel_kg=3249, reserve_kg=450, aoa_on_speed=(11.0, 15.0),
-                        approach_ias_max=95, g_warn=7.5),
+                        approach_ias_max=95, g_warn=7.5, has_gpws=True, auto_flaps=True),
     "FA-18C_hornet": Profile("F/A-18C", internal_fuel_kg=4900, reserve_kg=680, aoa_on_speed=(7.4, 8.8),
-                             approach_ias_max=80, g_warn=6.5),
+                             approach_ias_max=80, g_warn=6.5, has_gpws=True, auto_flaps=True),
     "default": Profile("uçak"),
 }
 
@@ -169,6 +173,14 @@ class FlightCompanion:
         self._series_t = -1e9
         self.restricted_said = False
         self._touchdown_vv: float | None = None
+        self.alt_alert_ft: float | None = None   # pilotun kurduğu tek seferlik irtifa hatırlatması
+        self.alt_alert_above: bool | None = None  # kurulduğunda hedefin üstünde miydik
+        self.fuel_alert_kg: float | None = None
+        self.ground_last_warn = -1e9
+        self.flaps_since: float | None = None
+        self.flaps_said = False
+        self.ext_last: float | None = None
+        self.ext_said = False
 
     # ---------------------------------------------------------------- girişler
     def restricted(self) -> None:
@@ -206,6 +218,10 @@ class FlightCompanion:
         self._gear_check(s)
         self._waypoint(s)
         self._weapons(s)
+        self._pilot_alerts(s)
+        self._ground(s)
+        self._flaps(s)
+        self._ext_tanks(s)
 
     # ------------------------------------------------------------------- evre
     def _airborne(self, s: FlightState) -> bool:
@@ -367,6 +383,62 @@ class FlightCompanion:
                          "warn", self._urgent())
             elif v < limit - 8:
                 self.heat_flags.discard(key)
+
+    def _pilot_alerts(self, s: FlightState) -> None:
+        """'10 bin feet'e gelince söyle' / 'yakıt 1500 kiloya inince söyle': eşik geçilince bir kez."""
+        if self.alt_alert_ft is not None and s.alt is not None:
+            ft = s.alt / FT
+            if self.alt_alert_above is None:
+                self.alt_alert_above = ft > self.alt_alert_ft
+            elif (ft <= self.alt_alert_ft) == self.alt_alert_above:
+                self.say(f"{self.alt_alert_ft:,.0f} feet.".replace(",", "."), "info", "calm")
+                self.alt_alert_ft = self.alt_alert_above = None
+        if self.fuel_alert_kg is not None and s.fuel_kg is not None and s.fuel_kg <= self.fuel_alert_kg:
+            self.say(f"Yakıt {self.fuel_alert_kg:.0f} kiloya indi.", "warn", "calm")
+            self.fuel_alert_kg = None
+
+    GROUND_TTI = 5.0     # sn: bu kadar sürede yere çarpacaksa uyar
+    GROUND_REPEAT = 8.0
+
+    def _ground(self, s: FlightState) -> None:
+        """Yere hızla yaklaşma (kendi GPWS'i olmayan uçaklarda). İniş yaklaşmasında susar."""
+        if self.profile.has_gpws or s.agl is None or s.vv is None or s.vv >= -8 or s.agl > 600:
+            return
+        if (s.gear or 0) > 0.9 and (s.ias or 1e9) < self.profile.approach_ias_max * 1.2:
+            return  # teker açık, yaklaşma hızında: inişe geliyor
+        if s.agl / -s.vv < self.GROUND_TTI and s.t - self.ground_last_warn >= self.GROUND_REPEAT:
+            self.ground_last_warn = s.t
+            self.say("Yere yaklaşıyorsun, burnu kaldır!", "critical", "urgent")
+
+    def _flaps(self, s: FlightState) -> None:
+        """Kalkıştan sonra açık unutulan flap: hızlı ve yüksekte 20 sn sürerse bir kez hatırlat."""
+        flaps = s.extra.get("flaps")
+        if self.profile.auto_flaps or flaps is None:
+            return
+        if flaps < 0.1:
+            self.flaps_since, self.flaps_said = None, False
+            return
+        cruising = (s.gear is None or s.gear < 0.1) and (s.ias or 0) > self.profile.approach_ias_max * 1.4 \
+            and (s.agl is None or s.agl > 600)
+        if not cruising:
+            self.flaps_since = None
+            return
+        self.flaps_since = s.t if self.flaps_since is None else self.flaps_since
+        if s.t - self.flaps_since >= 20 and not self.flaps_said:
+            self.flaps_said = True
+            self.say("Flaplar hâlâ açık, toplamayı unutma.", "warn", "serious")
+
+    def _ext_tanks(self, s: FlightState) -> None:
+        """Dış tanklar yavaş yavaş boşaldıysa (atılmadıysa) bir kez söyle."""
+        ext = s.extra.get("fuel_ext_kg")
+        if ext is None:
+            return
+        last, self.ext_last = self.ext_last, ext
+        if ext > 50:
+            self.ext_said = False
+        elif last is not None and 0.5 < last < 60 and ext <= 0.5 and not self.ext_said:
+            self.ext_said = True
+            self.say("Dış tanklar boşaldı.", "info", "calm")
 
     def _gear_check(self, s: FlightState) -> None:
         if s.gear is not None and s.ias is not None and (s.gear < 0.1 or s.ias < 140):
