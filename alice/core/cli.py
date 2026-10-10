@@ -39,6 +39,7 @@ def core_cmd(argv: list[str]) -> int:
 
         router = Router(cfg)
         core = service.Core(cfg, decider=Decider.from_config(cfg, router), run_agent=service.make_agent_runner(cfg))
+        core.prime()  # DCS açık mı: ses modülü ekran kartını kullanıp kullanmayacağını buna göre seçer
         voice = _start_voice(cfg, core) if cfg.data.get("voice", {}).get("enabled") and "--once" not in argv else None
         sims = _start_sims(cfg, core) if "--once" not in argv else None
         phone = _start_phone(cfg, core) if cfg.data.get("phone", {}).get("enabled") and "--once" not in argv else None
@@ -156,13 +157,30 @@ def _start_quick(cfg):
 def _start_voice(cfg, core):
     """Sesli asistanı çekirdekle aynı süreçte başlat; bildirimler de seslendirilsin."""
     import threading
+    import time
 
-    from alice.voice.assistant import VoiceAssistant, build_voice_agent, live_text_options, make_live
+    from alice.voice.assistant import VoiceAssistant, build_voice_agent, live_text_options, make_live, voice_log
     from alice.voice.audio import mic_available
     from alice.voice.stt import make_stt
+    from alice.voice.vocab import known_names
 
+    t0 = time.monotonic()
     v = cfg.data.get("voice", {})
+    # En uzun süren iş uyandırma modelinin yüklenmesi (ekran kartında ilk CUDA çağrısı dahil birkaç sn): ajan,
+    # ses ve mikrofon hazırlanırken paralel başlasın. Uygulama/site adları da ilk "Hey Alice"i bekletmesin.
+    stt = make_stt(cfg)
+    if stt.wake_gate is not None and mic_available():
+        stt.wake_gate.warm_up(log=voice_log)
+    threading.Thread(target=known_names, args=(cfg,), daemon=True, name="alice-vocab").start()
     agent, speaker, _ = build_voice_agent(cfg)
+
+    def gpu_hook(pol) -> None:
+        gpu_ok = pol.local_gpu is not False
+        stt.trim(gpu_ok)
+        if not gpu_ok and hasattr(speaker.tts, "release_gpu"):
+            speaker.tts.release_gpu()
+
+    core.hooks.append(gpu_hook)
 
     def speak(n, pol):
         # Sessiz modda (voice = false) bildirim sadece yazılı gelir.
@@ -173,12 +191,13 @@ def _start_voice(cfg, core):
     if not mic_available():
         console.print("[yellow]mikrofon yok;[/] ALICE sadece bildirimleri seslendirecek")
         return None
-    va = VoiceAssistant(agent, speaker, make_stt(cfg), ptt_key=v.get("ptt_key", ""),
+    va = VoiceAssistant(agent, speaker, stt, ptt_key=v.get("ptt_key", ""),
                         wake_model=v.get("wake_model", ""), wake_phrase=v.get("wake_phrase", True),
                         barge_in=v.get("barge_in", True), follow_up=float(v.get("follow_up", 8)),
                         live=make_live(cfg, agent),
                         end_silence=float(v.get("end_silence", 0.5)), **live_text_options(v))
     threading.Thread(target=va.run, daemon=True, name="alice-voice").start()
+    voice_log(f"ses modülü başladı: {time.monotonic() - t0:.1f} sn")
     return va
 
 

@@ -1006,7 +1006,7 @@ def test_wake_gate_falls_back_to_cpu_when_cuda_runtime_fails(monkeypatch):
     from alice.voice import stt
 
     class Model:
-        def __init__(self, name, device, compute_type):
+        def __init__(self, name, device, compute_type, **k):
             self.device = device
 
         def transcribe(self, *a, **k):
@@ -1189,3 +1189,79 @@ def test_speech_gate_sends_silence_for_noise_and_preroll_for_speech():
     assert g.feed(b"c" * 960) == [b"c" * 960]  # konuşma bitince kısa süre açık kalır
     g.feed(b"d" * 960)
     assert g.feed(b"e" * 960) == [b"\x00" * 960]
+
+
+def _fake_whisper(monkeypatch, loaded):
+    import sys
+    import types
+
+    class Model:
+        def __init__(self, name, device, compute_type, **k):
+            self.name, self.device, self.compute_type = name, device, compute_type
+            loaded.append((name, device, compute_type))
+
+        def transcribe(self, *a, **k):
+            return iter([]), None
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=Model))
+
+
+def test_wake_gate_moves_off_gpu_in_flight_and_back(monkeypatch):
+    import threading
+
+    from alice.voice import stt
+
+    loaded = []
+    _fake_whisper(monkeypatch, loaded)
+    gpu = [True]
+    gate = stt.WakeGate("base", "tr", gpu_model="small", allow_gpu=lambda: gpu[0])
+    gate._model = gate._load()
+    assert loaded[-1] == ("small", "cuda", "int8_float16")  # ekran kartında yarı bellek
+
+    def wait_moves():
+        for t in threading.enumerate():
+            if t.name == "alice-wake-move":
+                t.join(2)
+
+    gpu[0] = False
+    gate.sync(False)
+    wait_moves()
+    assert gate.device == "cpu" and gate._model.device == "cpu" and gate._model.name == "base"
+    gate.sync(False)  # zaten işlemcide: yeniden yükleme yok
+    wait_moves()
+    assert len(loaded) == 2
+    gpu[0] = True
+    gate.sync(True)
+    wait_moves()
+    assert gate.device == "cuda" and gate._model.name == "small"
+
+
+def test_local_whisper_trim_drops_gpu_model_in_flight_and_idle_models(monkeypatch):
+    from alice.voice import stt
+
+    w = stt.LocalWhisper("large-v3-turbo", "small", "tr")
+    w._models = {"cuda": object(), "cpu": object()}
+    w.last_used = stt.time.monotonic()
+    w.trim(True)
+    assert set(w._models) == {"cuda", "cpu"}
+    w.trim(False)
+    assert set(w._models) == {"cpu"}
+    w.last_used = stt.time.monotonic() - 3600
+    w.trim(True)
+    assert w._models == {}
+
+
+def test_tts_router_release_gpu_reaches_local_engine():
+    from alice.voice.tts import TTSRouter
+
+    class Local:
+        name = "chatterbox"
+        released = 0
+
+        def release_gpu(self):
+            self.released += 1
+
+    local = Local()
+    TTSRouter(None, local, policy=lambda: {}).release_gpu()
+    TTSRouter(None, None, policy=lambda: {}).release_gpu()  # yerel motor yoksa sorun yok
+    assert local.released == 1

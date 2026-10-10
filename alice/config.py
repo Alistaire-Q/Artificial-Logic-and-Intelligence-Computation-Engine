@@ -97,6 +97,9 @@ end_silence = 0.5
 # "Hey Alice" kontrolü: ekran kartı varsa wake_local_gpu (daha iyi duyar, ~0,1 sn), yoksa işlemcide wake_local.
 wake_local = "base"
 wake_local_gpu = "small"
+# Ekran kartındaki Whisper modelleri: int8_float16 belleği yarıya indirir (doğruluk aynı); float16 = eski hali.
+# DCS açılınca (uçuş modu) modeller ekran kartından çıkar, kapanınca geri döner.
+gpu_compute = "int8_float16"
 # Bulut sesi "gemini:<ses>"; yerel motor "xtts" ya da "chatterbox" (boş = yok).
 tts_cloud = "gemini:Aoede"
 tts_local = ""
