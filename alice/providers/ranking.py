@@ -296,6 +296,24 @@ def _diversify(ranked: list[Probe], score: Callable[[Probe], float], gap: float 
     return out
 
 
+def vision_backups(results: dict[str, Any], providers_cfg: dict[str, Any], have: list[str],
+                   limit: int = 2) -> list[str]:
+    """Görme zincirinin başı genelde hep Gemini: hepsi aynı günlük kotada tükeniyor, ekran görevi de "görme modeli
+    yok" diye düşüyordu. Zincirde olmayan sağlayıcılardan ölçümde çalışmış en iyi görsel modeller (sağlayıcı başına
+    bir) yedek olarak sona eklenir."""
+    used = {r.split(":", 1)[0] for r in have}
+    out: list[str] = []
+    for ref, r in sorted(results.items(), key=lambda kv: -brain_score_of(kv[1].get("quality", 0),
+                                                                          kv[1].get("latency", 0))):
+        prov, _, model = ref.partition(":")
+        pc = providers_cfg.get(prov)
+        if (len(out) < limit and r.get("ok") and prov not in used and ref not in have and pc
+                and pc.supports_vision(model) and quality(ref) > 0):
+            used.add(prov)
+            out.append(ref)
+    return out
+
+
 def build_chains(results: list[Probe], providers_cfg: dict[str, Any], limit: int = 10) -> dict[str, list[str]]:
     ok = [r for r in results if r.ok and r.quality > 0]
 
@@ -325,9 +343,12 @@ def build_chains(results: list[Probe], providers_cfg: dict[str, Any], limit: int
     fast.sort(key=lambda r: -fast_score(r))
     vision = [r for r in ok if (pc := provider_cfg(r.ref)) and pc.supports_vision(r.ref.split(":", 1)[1])]
     vision.sort(key=lambda r: -brain_score(r))
+    vision = vision[:4]
+    vision += [next(r for r in ok if r.ref == ref) for ref in vision_backups(
+        {r.ref: asdict(r) for r in ok}, providers_cfg, [r.ref for r in vision])]
     return {"brain": [r.ref for r in brain][:limit], "voice": [r.ref for r in voice][:6] + [r.ref for r in transient],
             "fast": [r.ref for r in fast][:6],
-            "vision": [r.ref for r in vision][:4]}
+            "vision": [r.ref for r in vision]}
 
 
 def refresh(router, emit: Callable[[str], None] = lambda s: None, path: Path | None = None,
