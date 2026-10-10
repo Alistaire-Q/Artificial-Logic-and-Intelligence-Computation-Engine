@@ -63,7 +63,11 @@ def _named_in_goal(key: str, by_key: dict[str, Element], elements: list[Element]
         return len(gw & _words(e.label))
 
     best = hits(el)
-    return best > 0 and all(hits(e) < best for e in elements if e.id != el.id)
+    if best == 0:
+        return False
+    # Aynı şey sayfada birkaç kez geçebilir (başlık, kapak resmi, "oynat" düğmesi): hepsi aynı öğeyse sorun yok.
+    rivals = [_words(e.label) & gw for e in elements if e.id != el.id and hits(e) >= best]
+    return all(r == (_words(el.label) & gw) for r in rivals)
 
 
 @dataclass
