@@ -84,3 +84,43 @@ def test_agent_runs_batched_actions():
     s = FakeScreen()
     res = ComputerAgent(s, lambda m: next(answers), settle=0).run("merhaba yaz")
     assert res.status == "done" and [a["action"] for a in s.acts] == ["click", "type"]
+
+
+def test_agent_stops_when_vision_model_unavailable():
+    def ask(messages):
+        raise RuntimeError("429 You exceeded your current quota")
+
+    s = FakeScreen()
+    res = ComputerAgent(s, ask, settle=0).run("x")
+    assert res.status == "error" and "kota" in res.summary and s.acts == []
+
+
+def test_parse_action_nested():
+    assert parse_action('{"action": {"point": [10, 20]}}') == {"action": "click", "point": [10, 20]}
+
+
+def test_live_refuses_second_screen_task_while_one_runs(monkeypatch):
+    import threading
+    from types import SimpleNamespace
+
+    from alice.tools.base import ToolResult
+    from alice.voice.live import LiveSession
+
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    release = threading.Event()
+    runs = []
+
+    def execute(calls):
+        runs.append(calls)
+        release.wait(3)
+        return [ToolResult("done")]
+
+    sent = []
+    s = LiveSession(SimpleNamespace(data={"voice": {}}),
+                    SimpleNamespace(_enable_groups_for=lambda **k: None, _execute_calls=execute))
+    ws = SimpleNamespace(send=lambda d: sent.append(json.loads(d)))
+    s._run_call(ws, {"id": "1", "name": "computer_task", "args": {"goal": "a"}})
+    s._run_call(ws, {"id": "2", "name": "computer_task", "args": {"goal": "a"}})
+    release.set()
+    results = [m["toolResponse"]["functionResponses"][0]["response"]["result"] for m in sent if "toolResponse" in m]
+    assert "başladı" in results[0] and "zaten" in results[1]
