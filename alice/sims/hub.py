@@ -121,8 +121,11 @@ class SimHub:
                             f", şu an burnun {s.heading:03.0f}°: {abs(t):.0f}° {'sağa' if t > 0 else 'sola'} dön")
                 lines.append(f"  üs (kalkış noktası): {nav['bearing']:03.0f}° yönünde (gerçek kuzey), "
                              f"{nav['nm']:.0f} nm{turn}")
-            else:
+            elif s.source == "dcs":
                 lines.append("  üsse yön bilinmiyor (kalkış noktası kaydedilmedi)")
+            from alice.sims.flight import describe_extra
+
+            lines += describe_extra(s)
             if c.home_alert_nm is not None:
                 lines.append(f"  kurulu uyarı: üsse {c.home_alert_nm:.0f} mil kalınca söylenecek")
             if s.chaff is not None:

@@ -80,8 +80,60 @@ do
     local sn = try(LoGetSnares)
     if sn then d.chaff = sn.chaff; d.flare = sn.flare end
     local mech = try(LoGetMechInfo)
-    if mech and mech.gear then d.gear = mech.gear.value end
+    if mech then
+      if mech.gear then d.gear = mech.gear.value end
+      if mech.flaps then d.flaps = mech.flaps.value end
+      if mech.speedbrakes then d.speedbrake = mech.speedbrakes.value end
+      if mech.hook then d.hook = mech.hook.value end
+    end
     d.pilot = try(LoGetPilotName)
+
+    -- Ayrıntı: hepsi kendi uçağının, kokpitte de görülen verisi (resmi Export API; başka uçakların konumu yok).
+    d.mach = try(LoGetMachNumber)
+    d.mag_heading = try(LoGetMagneticYaw)
+    d.radalt = try(LoGetRadarAltimeter)
+    d.slip = try(LoGetSlipBallPosition)
+    local ok_pby, pitch, bank = pcall(LoGetADIPitchBankYaw)
+    if ok_pby then d.pitch = pitch; d.bank = bank end
+    local wind = try(LoGetVectorWindVelocity)
+    if wind then d.wind_x = wind.x; d.wind_z = wind.z end
+    if eng then
+      if eng.RPM then d.rpm_l = eng.RPM.left; d.rpm_r = eng.RPM.right end
+      if eng.Temperature then d.egt_l = eng.Temperature.left; d.egt_r = eng.Temperature.right end
+    end
+    local route = try(LoGetRoute)
+    if route and route.goto_point and route.goto_point.world_point then
+      d.wp_x = route.goto_point.world_point.x
+      d.wp_z = route.goto_point.world_point.z
+      d.wp_num = route.goto_point.point_num
+    end
+    local mcp = try(LoGetMCPState)
+    if mcp then
+      local on = {}
+      for k, v in pairs(mcp) do if v == true then on[#on + 1] = k end end
+      table.sort(on)
+      d.warnings = table.concat(on, ",")
+    end
+    local pl = try(LoGetPayloadInfo)
+    if pl and pl.Stations then
+      local counts, order = {}, {}
+      for _, st in pairs(pl.Stations) do
+        if st.count and st.count > 0 and st.weapon then
+          local w = st.weapon
+          local name = (LoGetNameByType and try(LoGetNameByType, w.level1, w.level2, w.level3, w.level4)) or "?"
+          if not counts[name] then order[#order + 1] = name; counts[name] = 0 end
+          counts[name] = counts[name] + st.count
+        end
+      end
+      local parts = {}
+      for _, n in ipairs(order) do parts[#parts + 1] = n .. " x" .. counts[n] end
+      d.weapons = table.concat(parts, ", ")
+      if pl.Cannon then d.gun = pl.Cannon.shells end
+    end
+    d.ils_glide = try(LoGetGlideDeviation)
+    d.ils_side = try(LoGetSideDeviation)
+    local nav = try(LoGetNavigationInfo)
+    if nav and nav.SystemMode then d.mode = tostring(nav.SystemMode.master or "") .. "/" .. tostring(nav.SystemMode.submode or "") end
     return d
   end
 

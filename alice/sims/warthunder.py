@@ -33,7 +33,30 @@ def to_state(state: dict[str, Any], indicators: dict[str, Any], t: float) -> Fli
     return FlightState(t=t, source="warthunder", aircraft=str(indicators.get("type") or ""),
                        ias=kmh(_f(state, "IAS, km/h")), tas=kmh(_f(state, "TAS, km/h")), alt=_f(state, "H, m"),
                        agl=_f(indicators, "radio_altitude"), vv=_f(state, "Vy, m/s"), aoa=_f(state, "AoA, deg"),
-                       g=_f(state, "Ny"), fuel_kg=_f(state, "Mfuel, kg"), gear=None if gear is None else gear / 100)
+                       g=_f(state, "Ny"), fuel_kg=_f(state, "Mfuel, kg"), gear=None if gear is None else gear / 100,
+                       heading=_f(indicators, "compass", "compass1"), extra=_extra(state, indicators))
+
+
+def _extra(st: dict[str, Any], ind: dict[str, Any]) -> dict[str, Any]:
+    """Oyunun yerel göstergelerinden ek değerler (kokpitte/HUD'da görülenler; başka oyuncu bilgisi yok)."""
+    fuel, fuel0 = _f(st, "Mfuel, kg"), _f(st, "Mfuel0, kg")
+    pct = lambda v: None if v is None else v / 100  # noqa: E731
+    e: dict[str, Any] = {
+        "mach": _f(st, "M"),
+        "pitch": _f(ind, "aviahorizon_pitch"),
+        "bank": _f(ind, "aviahorizon_roll"),
+        "radalt": None if _f(ind, "radio_altitude") is None else _f(ind, "radio_altitude") / 0.3048,
+        "throttle": _f(st, "throttle 1, %"),
+        "rpm": _f(st, "RPM throttle 1, %"),
+        "oil_temp": _f(st, "oil temp 1, C"),
+        "water_temp": _f(st, "water temp 1, C"),
+        "flaps": pct(_f(st, "flaps, %")),
+        "speedbrake": pct(_f(st, "airbrake, %")),
+        "fuel_pct": None if not fuel0 or fuel is None else 100 * fuel / fuel0,
+    }
+    if e["rpm"] is None and _f(st, "RPM 1") is not None:
+        e["rpm_abs"] = _f(st, "RPM 1")
+    return {k: v for k, v in e.items() if v is not None}
 
 
 class WarThunderPoller:
