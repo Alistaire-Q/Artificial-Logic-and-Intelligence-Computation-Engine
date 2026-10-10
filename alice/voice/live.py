@@ -273,7 +273,9 @@ class LiveSession:
                                   "")
         self.models = list(v.get("live_models") or DEFAULT_MODELS)
         self.voice = str(v.get("live_voice", "Kore"))
-        self.idle = float(v.get("live_idle", 20))
+        self.idle = float(v.get("live_idle", 30))
+        # Live'ın "kullanıcı sustu" kararı: kısa = cevaba erken başlar; çok kısa olursa cümle ortasında keser.
+        self.silence_ms = int(v.get("live_silence_ms", 600))
         self._connect = connect
         self._out_factory = out_factory
         self.model = ""
@@ -315,6 +317,8 @@ class LiveSession:
             "tools": [{"functionDeclarations": declarations(self._specs())}],
             "inputAudioTranscription": {},
             "outputAudioTranscription": {},
+            "realtimeInputConfig": {"automaticActivityDetection": {
+                "endOfSpeechSensitivity": "END_SENSITIVITY_HIGH", "silenceDurationMs": self.silence_ms}},
         }}
 
     def _specs(self) -> list[dict[str, Any]]:
@@ -443,6 +447,9 @@ class LiveSession:
                         for part in (sc.get("modelTurn") or {}).get("parts", []):
                             data = (part.get("inlineData") or {}).get("data")
                             if data and not part.get("thought") and not state["mute"]:
+                                if state.get("asked") and not state.get("spoke"):
+                                    state["spoke"] = True  # kullanıcının son sözünden ilk sese kadar geçen süre
+                                    self.log(f"live cevap gecikmesi: {time.monotonic() - state['asked']:.1f} sn")
                                 out.put(base64.b64decode(data))
                                 touch()
                         if (t := (sc.get("inputTranscription") or {}).get("text")):
@@ -451,6 +458,7 @@ class LiveSession:
                                 state["framed"] = True
                                 threading.Thread(target=send_frame, daemon=True).start()
                             state["heard"].append(t)
+                            state["asked"], state["spoke"] = time.monotonic(), False
                             ui.last_user = "".join(state["heard"])[-200:]
                             touch()
                         if (t := (sc.get("outputTranscription") or {}).get("text")):
@@ -517,6 +525,7 @@ class LiveSession:
                                                       "turnComplete": True}}))
                 state["heard"].append(first_text)
                 ui.last_user = first_text
+            state["asked"], state["spoke"] = time.monotonic(), False
             while not done.is_set() and not stop.is_set():
                 try:
                     fc = calls.get(timeout=0.3)

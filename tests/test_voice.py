@@ -1135,3 +1135,32 @@ def test_vocab_names_from_bookmarks_and_start_menu(tmp_path):
     assert vocab.start_menu_apps([sm]) == ["Steam"]
     assert vocab.merge([["GitHub"], ["github", "Steam"]]) == ["GitHub", "Steam"]
     assert vocab.whisper_prompt(["GitHub", "Steam"]) == "Hey Alice. GitHub, Steam."
+
+
+def test_live_follow_up_without_wake_word_after_conversation():
+    class Gate:
+        model_name, last_seconds = "small", 0.1
+
+        def heard(self, audio):
+            return "simgeleri göster"
+
+        def transcribe(self, audio, prompt=""):
+            return "Masaüstü simgelerini göster.", -0.2
+
+    class STT:
+        wake_gate = Gate()
+
+    class HintLive(FakeLive):
+        names = staticmethod(lambda: [])
+
+        def converse(self, text, frames, stop, first_audio=b"", hint=None):
+            self.texts.append(hint())
+
+    live = HintLive()
+    va = VoiceAssistant(FakeAgent(), FakeSpeaker(), stt=STT(), live=live)
+    va.handle_audio(Audio(b"\1\0" * 16000, 16000), direct=False)
+    time.sleep(0.2)
+    assert live.texts == []  # konuşma yokken "Alice" olmadan uyanmaz
+    va.armed_until = time.monotonic() + 5  # canlı konuşma az önce bitti
+    va.handle_audio(Audio(b"\1\0" * 16000, 16000), direct=False)
+    assert wait_for(lambda: live.texts == ["Masaüstü simgelerini göster."])
