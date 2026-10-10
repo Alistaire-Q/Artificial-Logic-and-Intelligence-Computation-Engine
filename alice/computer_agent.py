@@ -79,6 +79,42 @@ def parse_action(text: str) -> dict[str, Any]:
     return a
 
 
+ACTIONS = {"click", "double_click", "right_click", "type", "key", "scroll", "drag", "open", "wait", "done", "fail"}
+
+
+def normalize_action(b: dict[str, Any]) -> dict[str, Any]:
+    """Model bazen aksiyon adını unutuyor ya da alanları karıştırıyor: {"key": "ctrl+f"},
+    {"type": "stalk", "enter": true}. Alanlardan ne demek istediğini çıkar."""
+    b = dict(b)
+    kind = b.get("action")
+    if isinstance(b.get("type"), str) and b["type"] not in ACTIONS and kind in (None, "", "type"):
+        b.setdefault("text", b.pop("type"))  # {"type": "metin"}: yazılacak metin
+        kind = b["action"] = "type"
+    if isinstance(b.get("key"), str) and not b.get("keys"):
+        b["keys"] = b.pop("key")
+    if not kind:
+        if b.get("type") in ACTIONS:
+            kind = b.pop("type")
+        elif b.get("keys"):
+            kind = "key"
+        elif "text" in b:
+            kind = "type"
+        elif b.get("target"):
+            kind = "open"
+        elif "seconds" in b:
+            kind = "wait"
+        elif "to" in b and "point" in b:
+            kind = "drag"
+        elif "direction" in b:
+            kind = "scroll"
+        elif "point" in b or "id" in b:
+            kind = "click"
+        elif "summary" in b:
+            kind = "done"
+        b["action"] = kind or ""
+    return b
+
+
 _RUNNING = threading.Lock()  # fare/klavye tek: aynı anda tek ekran görevi
 
 
@@ -164,8 +200,24 @@ class Screen:
         if kind == "open":
             from alice.tools.desktop import open_app
 
-            res = open_app(str(a.get("target", "")))
+            from alice.tools.desktop import is_script_target
+
+            target = str(a.get("target", ""))
+            if is_script_target(target):  # ekrandan okunan bir betiği onaysız çalıştırma
+                raise ValueError("betik/kurulum dosyası ekran görevinden açılmaz; kullanıcıya sor")
+            res = open_app(target)
             time.sleep(1.5)
+            # Zaten açık uygulamayı yeniden "açmak" Windows'ta onu öne getirmiyor (öndeki oyun kilidi):
+            # pencere varsa gerçekten öne al, yoksa model öndekinin hâlâ eski pencere olduğunu bilsin.
+            name = target.strip()
+            if name and "://" not in name and "\\" not in name and "/" not in name:
+                try:
+                    from alice.tools.desktop import focus_window
+
+                    focus_window(name)
+                except Exception as e:  # noqa: BLE001
+                    if "öne alınamadı" in str(e):
+                        res += f"; {e}"
             return res
         if kind == "wait":
             time.sleep(max(0.5, min(float(a.get("seconds", 1)), 5.0)))
@@ -247,7 +299,8 @@ class ComputerAgent:
                 model_errors += 1
                 self.emit(f"görme modeli hatası: {str(e)[:200]}")
                 if model_errors >= 2:
-                    quota = "429" in str(e) or "quota" in str(e).lower()
+                    low = str(e).lower()
+                    quota = "429" in low or "quota" in low or "soğumada" in low or "rate" in low
                     return TaskResult("error", "görme modeli kullanılamıyor" + (
                         " (günlük ücretsiz kota dolmuş)" if quota else f": {str(e)[:120]}"), steps)
                 continue
@@ -258,7 +311,7 @@ class ComputerAgent:
                 steps.append(f"{n}. model cevabı okunamadı: {e}")
                 continue
             batch = a.get("actions") if isinstance(a.get("actions"), list) else [a]
-            batch = [b for b in batch if isinstance(b, dict)][:5]
+            batch = [normalize_action(b) for b in batch if isinstance(b, dict)][:5]
             if not batch:
                 steps.append(f"{n}. boş aksiyon")
                 continue

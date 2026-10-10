@@ -145,6 +145,21 @@ def _name_like(word: str, after_hey: bool | str) -> bool:
     return after_hey and len(w) >= 4 and max(difflib.SequenceMatcher(None, w, n).ratio() for n in ("alis", "alice", "elis")) >= 0.8
 
 
+YES_WORDS = {"evet", "tamam", "tamamdır", "olur", "onay", "onayla", "onaylıyorum", "yap", "yapabilirsin", "devam",
+             "peki", "tabii", "elbette"}
+NO_WORDS = {"hayır", "hayir", "yapma", "dur", "durdur", "iptal", "vazgeç", "istemiyorum", "onaylama", "etme",
+            "silme", "açma", "kapatma", "gönderme", "olmaz", "yok", "bekle"}
+
+
+def is_yes(text: str) -> bool:
+    """Sesli onay cevabı evet mi? Kelime bazlı: "yapma" ya da "onaylama" evet sayılmasın (eskiden alt dize
+    eşleşmesiyle "yap" geçtiği için evet sayılıyordu). Olumsuz bir kelime varsa her zaman hayır."""
+    words = re.findall(r"\w+", text.lower())
+    if any(w in NO_WORDS for w in words):
+        return False
+    return any(w in YES_WORDS or w.startswith(("evet", "tamam", "onaylı")) for w in words)
+
+
 def strip_wake(text: str) -> str | None:
     """'Hey Alice, saat kaç?' -> 'saat kaç?'. Uyandırma yoksa None.
     Başta bir dolgu sözcüğüne ("ee", "şey") ve Whisper'ın farklı yazımlarına izin verir."""

@@ -244,8 +244,13 @@ class Microphone:
         return st
 
     def __enter__(self) -> "Microphone":
-        self._stream = self._open()
-        self._stream.start()
+        st = self._open()
+        try:
+            st.start()
+        except Exception:
+            st.close()
+            raise
+        self._stream = st
         return self
 
     def __exit__(self, *exc) -> None:
@@ -263,6 +268,8 @@ class Microphone:
         self.__enter__()
 
     def read(self) -> bytes:
+        if self._stream is None:  # yeniden açma başarısız oldu: çağıran tekrar denesin
+            raise OSError("mikrofon kapalı")
         data, _ = self._stream.read(self.FRAME)
         data = bytes(data)
         return self._apply_gain(data) if self.auto_gain else data

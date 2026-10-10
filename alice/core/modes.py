@@ -47,7 +47,9 @@ class Policy:
         if topic and topic in self.topics:
             return True
         rank = SEVERITIES.index(severity) if severity in SEVERITIES else 0
-        return rank >= SEVERITIES.index(self.min_severity)
+        # Ayarda yazım hatası ("warning") her bildirimi ValueError ile düşürmesin: bilinmeyen seviye = info.
+        floor = SEVERITIES.index(self.min_severity) if self.min_severity in SEVERITIES else 0
+        return rank >= floor
 
 
 def parse_hours(spec: str) -> tuple[dtime, dtime] | None:

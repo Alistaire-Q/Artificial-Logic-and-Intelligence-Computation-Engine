@@ -442,8 +442,13 @@ def load_config(path: Path | None = None, cwd: Path | None = None) -> Config:
     data = default_config_dict()
     cfg_path = path or (home / "config.toml")
     if cfg_path.is_file():
-        with open(cfg_path, "rb") as f:
-            user = tomllib.load(f)
+        try:
+            # utf-8-sig: Not Defteri'nin eklediği BOM'u tomllib reddediyor.
+            user = tomllib.loads(cfg_path.read_text(encoding="utf-8-sig"))
+        except (tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
+            # Elle düzenlemede tek yazım hatası çekirdeği/uygulamayı açılışta sessizce düşürmesin: varsayılanlarla aç.
+            print(f"UYARI: {cfg_path} okunamadı, varsayılan ayarlar kullanılıyor: {e}", file=sys.stderr)
+            user = {}
         # Rol listeleri birleştirilmez, kullanıcınınki tamamen geçerlidir.
         data = _deep_merge(data, user)
     return Config(data=data, path=cfg_path if cfg_path.is_file() else None)
