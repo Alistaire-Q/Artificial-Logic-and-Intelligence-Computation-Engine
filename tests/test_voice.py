@@ -1363,7 +1363,6 @@ def test_follow_up_without_wake_rejects_noise_text():
 
 
 def test_wake_gate_adds_flight_words_in_flight_mode():
-
     from alice.voice import stt
 
     class Model:
