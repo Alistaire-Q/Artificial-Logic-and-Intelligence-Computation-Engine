@@ -83,7 +83,6 @@ def _cuda_ok(model) -> bool:
 
 
 class GroqWhisper:
-    cloud = True  # internet ister: çevrimdışıyken atlanır
     URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 
     def __init__(self, api_key: str, model: str = "whisper-large-v3-turbo", language: str = "tr",
@@ -384,31 +383,9 @@ class WakeGate:
         return text, min(s.avg_logprob for s in segs)
 
 
-class GateSTT:
-    """Çevrimdışı konuşma tanıma: zaten yüklü uyandırma modeliyle (ekran kartında ikinci Whisper yok)."""
-
-    name = "local-wake"
-
-    def __init__(self, gate: "WakeGate", prompt: str = ""):
-        self.gate = gate
-        self.prompt = prompt
-
-    def transcribe(self, audio: Audio) -> str:
-        r = self.gate.transcribe(audio, prompt=self.prompt or "Hey Alice.")
-        if r is None:
-            raise STTError("yerel uyandırma modeli kullanılamıyor")
-        return r[0]
-
-    def transcribe_file(self, data: bytes, filename: str) -> str:
-        raise STTError("uyandırma modeli dosya çözmez")
-
-
 class STTRouter:
-    def __init__(self, engines: list[STT], cooldown: float = 300, online: Callable[[], bool] | None = None,
-                 offline_stt: str = "wake"):
+    def __init__(self, engines: list[STT], cooldown: float = 300):
         self.wake_gate: WakeGate | None = None
-        self.online = online or (lambda: True)
-        self.offline_stt = offline_stt  # wake: uyandırma modelini paylaş, local: zincirdeki yerel model
         self.engines = engines
         self.cooldown = cooldown
         self.down: dict[str, float] = {}
@@ -420,13 +397,6 @@ class STTRouter:
     def transcribe_file(self, data: bytes, filename: str) -> str:
         return self._try(lambda e: e.transcribe_file(data, filename))
 
-    def active(self) -> list[STT]:
-        """İnternet yoksa buluttakiler atlanır; yerel model hiç tanımlı değilse uyandırma modeli devreye girer."""
-        if self.online():
-            return self.engines
-        local = [e for e in self.engines if not getattr(e, "cloud", False)]
-        gate = [GateSTT(self.wake_gate, PROMPT)] if self.wake_gate is not None and self.wake_gate.available() else []
-        return gate + local if self.offline_stt == "wake" else local + gate
     def trim(self, gpu_ok: bool) -> None:
         """Çekirdeğin her turunda: ekran kartı izni değiştiyse modelleri taşı, boştaki yedekleri bırak."""
         if self.wake_gate is not None:
@@ -438,7 +408,7 @@ class STTRouter:
     def _try(self, fn) -> str:
         errors = []
         now = time.monotonic()
-        for e in self.active():
+        for e in self.engines:
             if self.down.get(e.name, 0) > now:
                 continue
             try:
@@ -490,9 +460,7 @@ def make_stt(cfg: Config) -> STTRouter:
             engines.append(LocalWhisper(model or "large-v3-turbo", v.get("stt_cpu_model", "small"), lang,
                                         allow_gpu=lambda: core_policy().get("local_gpu", True) is not False,
                                         prompt=PROMPT, compute=compute))
-    from alice import offline
-
-    router = STTRouter(engines, online=offline.online, offline_stt=offline.settings(cfg.data)["stt"])
+    router = STTRouter(engines)
     gate_model = v.get("wake_local", "base")
     if gate_model:
         router.wake_gate = WakeGate(gate_model, lang, gpu_model=str(v.get("wake_local_gpu", "small") or ""),

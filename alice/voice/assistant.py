@@ -40,12 +40,9 @@ def with_clock(text: str) -> str:
     from datetime import datetime
 
     days = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
-    from alice import offline
-
     now = datetime.now()
-    note = "" if offline.online() else "\n" + offline.offline_note()
     return (f"{text}\n\n[şu an: {now:%d.%m.%Y} {days[now.weekday()]}, saat {now:%H:%M}, "
-            f"söylenişi: {spoken_time(now.hour, now.minute)}]{note}")
+            f"söylenişi: {spoken_time(now.hour, now.minute)}]")
 
 
 NUMS = ["", "bir", "iki", "üç", "dört", "beş", "altı", "yedi", "sekiz", "dokuz", "on", "on bir", "on iki"]
@@ -230,9 +227,6 @@ class VoiceAssistant:
         self._answers: queue.Queue = queue.Queue()
         self._awaiting_answer = False
         self._busy = threading.Event()
-        from alice import offline
-
-        offline.state().on_change(self._net_changed)
         threading.Thread(target=self._worker, daemon=True, name="alice-voice-turns").start()
 
     # ---------------------------------------------------------------- olaylar
@@ -414,18 +408,7 @@ class VoiceAssistant:
         return result
 
     def _live_ready(self) -> bool:
-        from alice import offline
-
-        return (self.live is not None and self.live.available and time.monotonic() > self._live_down
-                and offline.online())
-
-    def _net_changed(self, is_online: bool) -> None:
-        """İnternet gitti/geldi: günlüğe yaz, arayüze not düş, kısaca söyle (konuşma sürmüyorsa)."""
-        msg = "İnternet geldi, buluta döndüm." if is_online else "İnternet yok, yerel moda geçtim."
-        voice_log(f"ağ: {'çevrimiçi' if is_online else 'çevrimdışı'}")
-        self.emit(msg)
-        if not self._busy.is_set() and not self.speaker.speaking:
-            self.speaker.say(msg, "calm")
+        return self.live is not None and self.live.available and time.monotonic() > self._live_down
 
     def _converse_live(self, text: str, audio: Audio | None = None) -> bool:
         """Live oturumu aç ve sessizliğe kadar konuş. Açılamazsa False (eski yola dönülür)."""
@@ -612,13 +595,7 @@ def build_voice_agent(cfg, inner_ui=None, speaker: Speaker | None = None, cwd=No
     from alice.tools import ToolContext, all_tools
     from alice.voice.tts import make_tts
 
-    from alice import offline
-
     router = Router(cfg)
-    preload = offline.Preloader(cfg.data, log=voice_log)
-    offline.state().on_change(preload)
-    if not offline.online():  # internetsiz açıldı: yerel model ilk soruyu beklemeden yüklensin
-        preload(False)
     decider = Decider.from_config(cfg, router)
     ctx = ToolContext(cwd=cwd or Path.home(), config=cfg, router=router, decider=decider)
     if speaker is None:
