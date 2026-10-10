@@ -307,7 +307,11 @@ class Browser(Tool):
             text: str | None = None, submit: bool = False, keys: str | None = None, amount: int = 600,
             js: str | None = None, index: int | None = None, separate: bool = False) -> ToolResult:
         if action == "close":
-            b = ctx.state.pop("browser", None)
+            b = ctx.state.get("browser")
+            if b is not None and b.attached:
+                # Kullanıcının kendi tarayıcısı: bağlantıyı açık tut, yeniden bağlanmak Opera'da yine izin sorar.
+                return ToolResult("kullanıcının tarayıcısı açık bırakıldı (ALICE'in ayrı penceresi yok)")
+            ctx.state.pop("browser", None)
             if b:
                 b.close()
             return ToolResult("tarayıcı kapatıldı")
@@ -331,6 +335,8 @@ class Browser(Tool):
             if b.attached:  # kullanıcının kendi tarayıcısı: açık site sekmesini kullan, her seferinde yeni açma
                 b.page = page = b.tab_for(url)
                 page.bring_to_front()
+                if host_of(page.url) == host_of(url) and urlparse(url).path.strip("/") == "" and not urlparse(url).query:
+                    return snap(f"zaten açık sekmeye geçildi: {page.title()}")  # içindekini (çalan video) bozma
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=45000)
             except Exception as e:  # noqa: BLE001
