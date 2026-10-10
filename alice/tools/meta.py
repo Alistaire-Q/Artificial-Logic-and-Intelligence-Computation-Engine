@@ -73,9 +73,11 @@ class Task(Tool):
 class Reflex(Tool):
     name = "reflex"
     description = (
-        "Hızlı reflex modu (System One / Jev): kısa ve net bir arayüz hedefini (ör. 'Ayarlar > Gizlilik sayfasını aç', "
+        "Hızlı reflex modu (System One / Jev): ekranda görünen bir şeye tıklama, arama kutusuna yazma gibi kısa ve net "
+        "bir arayüz hedefini (ör. 'ekrandaki Impossible şarkısına tıkla', 'Ayarlar > Gizlilik sayfasını aç', "
         "'arama kutusuna X yazıp ilk sonuca tıkla') büyük modele her adımı sormadan, adım başına ~100-500 ms kararla yürütür. "
-        "target=browser (Playwright sayfası; url verilirse önce oraya gider) ya da desktop (Windows UI Automation, "
+        "Sayfayı görüntüyle değil öğe listesiyle okur, her sitede/uygulamada aynı çalışır. "
+        "target=browser (kullanıcının açık tarayıcısında o an öndeki sekme; url verilirse o siteye gider) ya da desktop (Windows UI Automation, "
         "title ile pencere seçilir). inputs: alan adı parçası -> yazılacak metin. Sonuç 'needs_help' ise kalan kısmı sen yap."
     )
     parameters = obj({

@@ -54,10 +54,18 @@ class BrowserObserver:
         from alice.tools.browser import get_browser
 
         self.ctx = ctx
-        self.b = get_browser(ctx, separate=True)  # reflex modu kendi penceresini ister
+        # Kullanıcının kendi tarayıcısı ve o an baktığı sekme (ayrı pencere sadece ayarlarda izin varsa).
+        self.b = get_browser(ctx)
+        if self.b.attached:
+            seen = self.b._visible_page()
+            if seen is not None:
+                self.b.page = seen
         if start_url:
             if "://" not in start_url:
                 start_url = "https://" + start_url
+            if self.b.attached:
+                self.b.page = self.b.tab_for(start_url)
+                self.b.page.bring_to_front()
             self.b.page.goto(start_url, wait_until="domcontentloaded", timeout=45000)
 
     def observe(self) -> Observation:

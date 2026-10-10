@@ -224,7 +224,7 @@ def test_live_sends_screen_frame_each_turn(monkeypatch):
                  {"serverContent": {"inputTranscription": {"text": "şunu aç"}}}])
     agent = SimpleNamespace(messages=[{"role": "system", "content": "s"}], ctx=SimpleNamespace(state={}), ui=None,
                             tool_specs=lambda: [], _enable_groups_for=lambda **k: None, _execute_calls=lambda c: [])
-    cfg = SimpleNamespace(data={"voice": {"live_idle": 0.5, "live_models": ["m1"]}})
+    cfg = SimpleNamespace(data={"voice": {"live_idle": 0.5, "live_models": ["m1"], "live_screen": "turn"}})
     s = LiveSession(cfg, agent, connect=lambda url, **k: ws, out_factory=FakeOut)
     s.names = lambda: []
     s.grab = lambda: "IMG"
@@ -233,3 +233,22 @@ def test_live_sends_screen_frame_each_turn(monkeypatch):
     assert first[0] == {"inlineData": {"mimeType": "image/jpeg", "data": "IMG"}}
     frames = [m for m in ws.sent if "video" in m.get("realtimeInput", {})]
     assert len(frames) == 1  # ilk tur yazıyla birlikte gitti; ikinci tur başında bir kare daha
+
+
+def test_live_screen_off_by_default(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    cfg = SimpleNamespace(data={"voice": {}})
+    assert LiveSession(cfg, SimpleNamespace()).screen == "off"
+
+
+def test_reflex_works_in_users_visible_tab(monkeypatch):
+    from alice.reflex import observers
+    from alice.tools import browser
+
+    calls = []
+    visible = SimpleNamespace(url="https://music.youtube.com/")
+    fake = SimpleNamespace(attached=True, page=SimpleNamespace(url="about:blank"), _visible_page=lambda: visible)
+    monkeypatch.setattr(browser, "get_browser", lambda ctx, separate=False: calls.append(separate) or fake)
+    ob = observers.BrowserObserver(SimpleNamespace())
+    assert calls == [False]  # ayrı pencere istemedi
+    assert ob.b.page is visible
