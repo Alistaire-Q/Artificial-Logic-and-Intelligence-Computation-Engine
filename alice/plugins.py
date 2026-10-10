@@ -224,8 +224,8 @@ from alice.tools.base import READ, Tool, ToolContext, ToolResult, obj
 
 class Hello(Tool):
     name = "{name}_hello"
-    description = "Örnek araç: verilen ada selam verir."
-    parameters = obj({{"who": {{"type": "string", "description": "kime"}}}}, ["who"])
+    description = "Örnek araç: verilen ada selam verir. Gerçek bir iş yapmaz; kendi aracını yazarken şablon olarak kullan."
+    parameters = obj({{"who": {{"type": "string", "description": "Selam verilecek kişinin adı, ör. 'Ayşe'."}}}}, ["who"])
     risk = READ
     parallel_safe = True
 

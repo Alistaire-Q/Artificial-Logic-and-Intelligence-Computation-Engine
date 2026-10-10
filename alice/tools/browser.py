@@ -388,29 +388,34 @@ def format_snapshot(page_title: str, url: str, items: list[dict[str, Any]]) -> s
 class Browser(Tool):
     name = "browser"
     description = (
-        "Tarayıcıyı kontrol et: kullanıcının açık tarayıcısına bağlanabiliyorsa onu, yoksa varsayılan tarayıcıyı "
-        "(ör. Opera GX) ALICE profiliyle açar. Sadece bir siteyi/videoyu açmak için bunu değil, "
-        "windows action=open target=<URL> kullan: kullanıcının kendi tarayıcısında, girişleriyle açılır. "
-        "Kullanıcının tarayıcısında goto, site zaten bir sekmede açıksa O SEKMEYİ kullanır; tabs ile açık sekmeleri "
-        "görüp switch_tab ile geçebilirsin. Kullanıcının tarayıcısına bağlanamıyorsa ayrı pencere AÇMAZ (separate=true sadece kullanıcı açıkça isterse): "
-        "o durumda windows switch_tab/navigate + ui_elements/ui_act ile kullanıcının kendi sekmelerinde çalış. Aksiyonlar:\n"
-        "goto(url) | snapshot: tıklanabilir öğeleri ID'leriyle listeler | click(element_id) | "
-        "type(element_id, text, submit?) | select(element_id, text) | press(keys, ör. Enter) | "
-        "scroll(amount, + aşağı) | back | text: sayfanın düz metni | screenshot | eval(js) | tabs | switch_tab(index) | close.\n"
-        "click/type/goto sonrası güncel snapshot otomatik döner."
+        "Kullanıcının kendi açık tarayıcısında (Opera vb., kendi girişleriyle) web sayfalarıyla çalışır: siteye "
+        "gitme, sayfayı okuma, tıklama, form doldurma. Her sitede aynı şekilde çalışır.\n"
+        "- Akış: goto ya da snapshot ile öğe listesini al, sonra click/type ile ID üzerinden işlem yap. ID'ler her "
+        "snapshot'ta yenilenir; sayfa değişince eski ID'yi kullanma.\n"
+        "- goto, site zaten bir sekmede açıksa o sekmeyi kullanır; yeni sekme açmaz.\n"
+        "- Sayfanın içeriğini okumak için text, görsel düzen için screenshot.\n"
+        "- 'Bağlanılamıyor' derse ayrı pencere açma: windows switch_tab/navigate + ui_elements/ui_act ile kullanıcının "
+        "sekmelerinde çalış.\n"
+        "- Ekrandaki bir şeye tek tıklama/yazma için reflex daha hızlı; birçok adımlı iş için run_plan."
     )
     parameters = obj({
         "action": {"type": "string", "enum": ["goto", "snapshot", "click", "type", "select", "press", "scroll", "back",
-                                              "text", "screenshot", "eval", "tabs", "switch_tab", "close"]},
-        "url": {"type": "string"},
-        "element_id": {"type": "integer"},
-        "text": {"type": "string"},
-        "submit": {"type": "boolean"},
-        "keys": {"type": "string"},
-        "amount": {"type": "integer"},
-        "js": {"type": "string"},
-        "index": {"type": "integer"},
-        "separate": {"type": "boolean", "description": "ayrı ALICE penceresi aç; sadece kullanıcı açıkça isterse"},
+                                              "text", "screenshot", "eval", "tabs", "switch_tab", "close"],
+                   "description": "goto: url'ye git | snapshot: tıklanabilir öğeleri [ID] ile listele | click: "
+                   "element_id'ye tıkla | type: element_id alanına text yaz (submit=true Enter'a basar) | select: "
+                   "açılır listede text seçeneğini seç | press: keys tuşuna bas | scroll: amount piksel kaydır | "
+                   "back: geri | text: sayfanın düz metni | screenshot: sayfa görüntüsü | eval: js çalıştır | tabs: açık "
+                   "sekmeler | switch_tab: index'li sekmeye geç | close. goto/click/type/press/scroll sonrası güncel "
+                   "snapshot otomatik döner."},
+        "url": {"type": "string", "description": "goto için adres, ör. 'https://mail.google.com' ya da 'github.com'."},
+        "element_id": {"type": "integer", "description": "click/type/select için son snapshot'taki [ID]."},
+        "text": {"type": "string", "description": "type için yazılacak metin; select için seçeneğin görünen adı."},
+        "submit": {"type": "boolean", "description": "type sonrası Enter'a bas (arama kutuları için). Varsayılan false."},
+        "keys": {"type": "string", "description": "press için tuş, ör. 'Enter', 'Escape', 'Control+A'."},
+        "amount": {"type": "integer", "description": "scroll için piksel; pozitif aşağı, negatif yukarı. Varsayılan 600."},
+        "js": {"type": "string", "description": "eval için JavaScript ifadesi, ör. 'document.title'."},
+        "index": {"type": "integer", "description": "switch_tab için tabs çıktısındaki sekme numarası (0'dan başlar)."},
+        "separate": {"type": "boolean", "description": "Ayrı ALICE penceresi aç. Sadece kullanıcı açıkça isterse."},
     }, ["action"])
     risk = COMPUTER
 
@@ -523,11 +528,11 @@ class Browser(Tool):
         if action == "switch_tab":
             pages = b.ctx.pages
             if index is None or not 0 <= index < len(pages):
-                raise ToolError("geçersiz sekme index")
+                raise ToolError(f"geçersiz sekme index: {index}; 0 ile {len(pages) - 1} arası olmalı (action=tabs ile bak)")
             b.page = pages[index]
             b.page.bring_to_front()
             return snap(f"sekme {index}")
-        raise ToolError(f"bilinmeyen aksiyon {action}")
+        raise ToolError(f"bilinmeyen action: {action}. Geçerli: {', '.join(self.parameters['properties']['action']['enum'])}")
 
 
 def cleanup(ctx: ToolContext) -> None:

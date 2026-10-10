@@ -671,25 +671,30 @@ def ui_act(ctx: ToolContext, element_id: int, action: str, text: str | None = No
 # ----------------------------------------------------------------------- araçlar
 class Windows(Tool):
     name = "windows"
-    description = ("Pencere yönetimi, kurulu program bulma ve uygulama açma. "
-                   "action: list | focus | minimize | maximize | restore | close | open | find | navigate | switch_tab. "
-                   "open için target: uygulama adı (ör. 'Discord', 'notepad', 'blender'), exe yolu, dosya ya da URL "
-                   "(URL kullanıcının varsayılan tarayıcısında, kendi girişleriyle açılır). "
-                   "navigate: kullanıcının açık tarayıcısında (Opera vb.) target'a (URL ya da arama) gider: site zaten "
-                   "bir sekmede açıksa O SEKMEYE geçip orada açar (ör. youtube.com/results?search_query=... açık "
-                   "YouTube sekmesinde arar), öndeki sekme boşsa orada, yoksa yeni sekmede. new_tab=true/false zorlar. "
-                   "switch_tab: başlığında target geçen açık sekmeye geçer (ör. 'YouTube', 'Gmail'). "
-                   "Web işleri için browser aracı yerine bunları + ui_elements/ui_act kullan. "
-                   "Zaten açık bir pencerede iş için: list ile bul, focus ile öne al, sonra ui_elements/ui_act. "
-                   "find: kurulu bir programın exe yolunu bulur (Başlat menüsü, kayıt defteri, Program Files, Steam); "
-                   "bir programın kurulu olup olmadığını ya da exe yolunu (ör. komut satırından script çalıştırmak için) "
-                   "öğrenmek için shell'de arama yapmak yerine bunu kullan.")
+    description = ("Masaüstü pencereleri ve uygulamalar: uygulama/dosya açma, pencereyi öne alma, küçültme, kapatma; "
+                   "kurulu programı bulma; kullanıcının tarayıcısında klavyeyle sekme değiştirme ve adres açma.\n"
+                   "- Bir uygulamayı açmak için ilk tercih open (Başlat menüsü ve Store uygulamaları dahil); "
+                   "simgesine tıklamaya çalışma.\n"
+                   "- Bir programın kurulu olup olmadığını ya da exe yolunu öğrenmek için find; glob ya da shell "
+                   "araması yapma.\n"
+                   "- Açık bir pencerede iş: list ile bul, focus ile öne al, sonra ui_elements/ui_act.\n"
+                   "- Web sayfasında okuma/tıklama için önce browser aracı. navigate ve switch_tab, browser "
+                   "'bağlanılamıyor' dediğinde ya da sadece bir siteyi/aramayı açmak için.")
     parameters = obj({
         "action": {"type": "string", "enum": ["list", "focus", "minimize", "maximize", "restore", "close", "open", "find",
-                                              "navigate", "switch_tab"]},
-        "title": {"type": "string", "description": "pencere başlığının bir parçası"},
-        "target": {"type": "string"},
-        "new_tab": {"type": "boolean"},
+                                              "navigate", "switch_tab"],
+                   "description": "list: açık pencereler | focus/minimize/maximize/restore/close: title'daki pencere | "
+                   "open: target'ı aç (uygulama adı, exe, dosya ya da URL; URL varsayılan tarayıcıda açılır) | find: "
+                   "target programın exe yolunu bul (Başlat menüsü, kayıt defteri, Program Files, Steam) | navigate: "
+                   "kullanıcının tarayıcısında target'a git; site zaten bir sekmede açıksa o sekmeyi kullanır, öndeki "
+                   "sekme boşsa onu, yoksa yeni sekme açar | switch_tab: başlığında target geçen sekmeye geç."},
+        "title": {"type": "string", "description": "Pencere başlığından bir parça, ör. 'Discord' ya da 'Not Defteri'. "
+                  "focus/minimize/maximize/restore/close için gerekli; navigate/switch_tab'da tarayıcı penceresi."},
+        "target": {"type": "string", "description": "open: 'Discord', 'notepad', 'C:/yol/dosya.pdf' ya da "
+                   "'https://...' | find: program adı | navigate: URL ya da arama ifadesi, ör. 'github.com' | "
+                   "switch_tab: sekme başlığından parça, ör. 'Gmail'."},
+        "new_tab": {"type": "boolean", "description": "navigate için: true yeni sekme, false öndeki sekme. Boş: "
+                    "otomatik."},
     }, ["action"])
     risk = COMPUTER
 
@@ -736,9 +741,14 @@ class Windows(Tool):
 
 class UIElements(Tool):
     name = "ui_elements"
-    description = ("Windows: öndeki (ya da title verilen) pencerenin tıklanabilir öğelerini ID'leriyle listele. "
-                   "Pixel tahmini yerine bunu kullan, sonra ui_act ile ID üzerinden işlem yap.")
-    parameters = obj({"title": {"type": "string"}, "limit": {"type": "integer"}})
+    description = ("Windows: öndeki (ya da title verilen) masaüstü penceresinin düğme, alan ve menü gibi öğelerini "
+                   "[ID] ile listeler (UI Automation); sonra ui_act ile ID üzerinden tıkla/yaz. Koordinat tahmini "
+                   "yerine bunu kullan. Liste her çağrıda yenilenir. Web sayfaları için browser daha iyi; liste boş "
+                   "ya da işe yaramazsa (oyunlar, Blender) computer_task kullan.")
+    parameters = obj({
+        "title": {"type": "string", "description": "Pencere başlığından bir parça. Boş: öndeki pencere."},
+        "limit": {"type": "integer", "description": "En fazla öğe. Varsayılan 150."},
+    })
 
     def run(self, ctx: ToolContext, title: str | None = None, limit: int = 150) -> ToolResult:
         t, items = collect_ui_elements(ctx, title, limit)
@@ -747,12 +757,15 @@ class UIElements(Tool):
 
 class UIAct(Tool):
     name = "ui_act"
-    description = "ui_elements'ten gelen bir öğe ID'si üzerinde işlem: click, double_click, right_click, focus, set_text, type, toggle, expand, collapse, select."
+    description = ("Son ui_elements listesindeki bir öğede işlem yapar (tıkla, yaz, aç/kapa). ID'ler sadece son "
+                   "listede geçerli; pencere değiştiyse önce ui_elements'i yeniden çağır.")
     parameters = obj({
-        "element_id": {"type": "integer"},
+        "element_id": {"type": "integer", "description": "ui_elements çıktısındaki [ID]."},
         "action": {"type": "string", "enum": ["click", "double_click", "right_click", "focus", "set_text", "type",
-                                              "toggle", "expand", "collapse", "select"]},
-        "text": {"type": "string"},
+                                              "toggle", "expand", "collapse", "select"],
+                   "description": "set_text: alanın içeriğini text ile değiştir | type: imleç konumuna text'i yaz | "
+                   "toggle: onay kutusu | expand/collapse: ağaç/menü | select: liste öğesini seç."},
+        "text": {"type": "string", "description": "set_text ve type için metin."},
     }, ["element_id", "action"])
     risk = COMPUTER
 
@@ -762,8 +775,12 @@ class UIAct(Tool):
 
 class Clipboard(Tool):
     name = "clipboard"
-    description = "Panoyu oku (action=get) ya da yaz (action=set)."
-    parameters = obj({"action": {"type": "string", "enum": ["get", "set"]}, "text": {"type": "string"}}, ["action"])
+    description = ("Panodaki metni okur (get) ya da panoya metin koyar (set). 'Kopyaladığım şey', 'panodaki' "
+                   "denince get; kullanıcının yapıştıracağı bir şey hazırlamak için set.")
+    parameters = obj({
+        "action": {"type": "string", "enum": ["get", "set"], "description": "get: oku | set: text'i panoya koy."},
+        "text": {"type": "string", "description": "set için metin."},
+    }, ["action"])
     risk = COMPUTER
 
     def risk_for(self, args: dict[str, Any]) -> str:

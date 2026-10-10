@@ -103,12 +103,14 @@ def snapshot(ctx: ToolContext, p: Path) -> None:
 class ReadFile(Tool):
     name = "read_file"
     parallel_safe = True
-    description = ("Dosya oku. Satır numaralarıyla döner. Büyük dosyalarda offset/limit kullan. "
-                   "Görseller (png/jpg) görüntü olarak döner.")
+    description = ("Bir dosyanın içeriğini satır numaralarıyla okur; png/jpg görseller görüntü olarak döner.\n"
+                   "- Düzenlemeden önce dosyayı bununla oku; edit_file'a buradan birebir kopyala (satır numarası hariç).\n"
+                   "- Büyük dosyada önce grep ile yeri bul, sonra offset/limit ile o bölümü oku.\n"
+                   "- Klasör için list_dir, dosya aramak için glob kullan.")
     parameters = obj({
-        "path": {"type": "string"},
-        "offset": {"type": "integer", "description": "1'den başlayan ilk satır"},
-        "limit": {"type": "integer", "description": "okunacak satır sayısı (varsayılan 2000)"},
+        "path": {"type": "string", "description": "Dosya yolu; mutlak ya da çalışma klasörüne göre, ör. 'src/main.py'."},
+        "offset": {"type": "integer", "description": "Okumaya başlanacak satır (1'den başlar). Varsayılan 1."},
+        "limit": {"type": "integer", "description": "Okunacak en fazla satır. Varsayılan 2000."},
     }, ["path"])
 
     def summary(self, args: dict[str, Any]) -> str:
@@ -138,8 +140,15 @@ class ReadFile(Tool):
 
 class WriteFile(Tool):
     name = "write_file"
-    description = "Dosyayı verilen içerikle oluştur ya da tamamen üzerine yaz. Klasörler otomatik açılır."
-    parameters = obj({"path": {"type": "string"}, "content": {"type": "string"}}, ["path", "content"])
+    description = ("Yeni dosya oluşturur ya da var olan dosyanın TAMAMINI verilen içerikle değiştirir; eksik klasörler "
+                   "açılır.\n"
+                   "- Var olan dosyada küçük değişiklik için bunu değil edit_file/multi_edit kullan; tüm dosyayı yeniden "
+                   "yazmak hem yavaş hem riskli.\n"
+                   "- Var olan bir dosyanın üzerine yazmadan önce read_file ile oku.")
+    parameters = obj({
+        "path": {"type": "string", "description": "Yazılacak dosyanın yolu; mutlak ya da çalışma klasörüne göre."},
+        "content": {"type": "string", "description": "Dosyanın yeni içeriğinin tamamı."},
+    }, ["path", "content"])
     risk = WRITE
 
     def summary(self, args: dict[str, Any]) -> str:
@@ -180,14 +189,16 @@ def _apply_edit(text: str, old: str, new: str, replace_all: bool, where: str = "
 
 class EditFile(Tool):
     name = "edit_file"
-    description = ("Dosyada birebir metin değiştir. old_string dosyada tam olarak (boşluklar dahil) ve "
+    description = ("Var olan bir dosyada birebir metin değiştirir. old_string dosyada tam olarak (girinti ve boşluklar dahil) ve "
                    "tek bir kez geçmeli; birden fazla geçiyorsa daha fazla bağlam ekle ya da replace_all=true ver. "
                    "Aynı dosyada birden fazla değişiklik için multi_edit kullan.")
     parameters = obj({
-        "path": {"type": "string"},
-        "old_string": {"type": "string"},
-        "new_string": {"type": "string"},
-        "replace_all": {"type": "boolean"},
+        "path": {"type": "string", "description": "Düzenlenecek dosyanın yolu."},
+        "old_string": {"type": "string", "description": "Değiştirilecek metin; read_file çıktısından birebir, satır "
+                       "numarası olmadan. Tek olması için gerekirse önceki/sonraki satırları da ekle."},
+        "new_string": {"type": "string", "description": "Yerine yazılacak metin; old_string'den farklı olmalı."},
+        "replace_all": {"type": "boolean", "description": "true: old_string'in geçtiği her yeri değiştir (ör. yeniden "
+                        "adlandırma). Varsayılan false."},
     }, ["path", "old_string", "new_string"])
     risk = WRITE
 
@@ -212,11 +223,11 @@ class MultiEdit(Tool):
                    "sonucuna); biri bile başarısız olursa dosyaya HİÇBİR şey yazılmaz. Her edit edit_file kurallarına "
                    "uyar: old_string birebir ve tek olmalı ya da replace_all=true. Yeni dosya için write_file kullan.")
     parameters = obj({
-        "path": {"type": "string"},
-        "edits": {"type": "array", "minItems": 1, "items": obj({
-            "old_string": {"type": "string"},
-            "new_string": {"type": "string"},
-            "replace_all": {"type": "boolean"},
+        "path": {"type": "string", "description": "Düzenlenecek dosyanın yolu."},
+        "edits": {"type": "array", "minItems": 1, "description": "Sırayla uygulanacak değişiklikler.", "items": obj({
+            "old_string": {"type": "string", "description": "Değiştirilecek metin (birebir)."},
+            "new_string": {"type": "string", "description": "Yerine yazılacak metin."},
+            "replace_all": {"type": "boolean", "description": "Her geçtiği yeri değiştir. Varsayılan false."},
         }, ["old_string", "new_string"])},
     }, ["path", "edits"])
     risk = WRITE
@@ -248,8 +259,9 @@ class MultiEdit(Tool):
 class ListDir(Tool):
     name = "list_dir"
     parallel_safe = True
-    description = "Klasör içeriğini listele (boyut ve tür ile)."
-    parameters = obj({"path": {"type": "string", "description": "varsayılan: çalışma klasörü"}})
+    description = ("Bir klasördeki dosya ve alt klasörleri boyut ve türleriyle listeler (alt klasörlerin içine inmez). "
+                   "Desene göre dosya aramak için glob, içerik aramak için grep kullan.")
+    parameters = obj({"path": {"type": "string", "description": "Klasör yolu. Varsayılan: çalışma klasörü."}})
 
     def summary(self, args: dict[str, Any]) -> str:
         return str(args.get("path") or ".")
@@ -270,8 +282,14 @@ class ListDir(Tool):
 class Glob(Tool):
     name = "glob"
     parallel_safe = True
-    description = "Desene uyan dosyaları bul, ör. '**/*.py' ya da 'src/**/*.cs'. Son değiştirilen önce."
-    parameters = obj({"pattern": {"type": "string"}, "path": {"type": "string"}}, ["pattern"])
+    description = ("Adı desene uyan dosya ve klasörleri bulur; en son değiştirilen önce, en fazla 300 sonuç. Dosyanın "
+                   "İÇİNDE metin aramak için grep kullan. Kurulu bir programı bulmak için bunu değil windows action=find "
+                   "kullan. Kullanıcı klasörü ya da disk kökü gibi büyük yerlerde '**' arama yavaştır; dar bir path ver.")
+    parameters = obj({
+        "pattern": {"type": "string", "description": "Glob deseni, path'e göre: '**/*.py' (her derinlik), '*.txt' "
+                    "(sadece o klasör), 'src/**/test_*.py'."},
+        "path": {"type": "string", "description": "Aramanın başlayacağı klasör. Varsayılan: çalışma klasörü."},
+    }, ["pattern"])
 
     def summary(self, args: dict[str, Any]) -> str:
         return str(args.get("pattern", ""))
@@ -312,14 +330,18 @@ class Glob(Tool):
 class Grep(Tool):
     name = "grep"
     parallel_safe = True
-    description = "Dosya içeriklerinde regex ara. ripgrep varsa onu kullanır."
+    description = ("Dosyaların içinde düzenli ifade (regex) arar; 'dosya:satır: metin' satırları döner. ripgrep varsa "
+                   "onu kullanır. Kodda/metinde bir şeyin nerede geçtiğini bulmak için run_command'da grep/findstr "
+                   "yerine bunu kullan. Dosya ADI aramak için glob kullan.")
     parameters = obj({
-        "pattern": {"type": "string"},
-        "path": {"type": "string"},
-        "glob": {"type": "string", "description": "dosya filtresi, ör. *.py"},
-        "ignore_case": {"type": "boolean"},
-        "max_results": {"type": "integer"},
+        "pattern": {"type": "string", "description": "Regex, ör. 'def \\w+_test' ya da 'TODO'. Özel karakterleri "
+                    "(. ( [ {) birebir aramak için kaçır."},
+        "path": {"type": "string", "description": "Aranacak klasör ya da dosya. Varsayılan: çalışma klasörü."},
+        "glob": {"type": "string", "description": "Sadece bu desene uyan dosyalar, ör. '*.py' ya da '*.{ts,tsx}'."},
+        "ignore_case": {"type": "boolean", "description": "Büyük/küçük harf duyarsız ara. Varsayılan false."},
+        "max_results": {"type": "integer", "description": "En fazla sonuç satırı. Varsayılan 200."},
     }, ["pattern"])
+
 
     def summary(self, args: dict[str, Any]) -> str:
         where = f" ({args['glob']})" if args.get("glob") else ""

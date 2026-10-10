@@ -72,6 +72,37 @@ class Tool:
             "name": self.name, "description": self.description, "parameters": self.parameters}}
 
 
+def check_args(tool: Tool, args: dict[str, Any]) -> str:
+    """Argümanları aracın şemasına göre kabaca denetle (zorunlu alanlar, enum). Sorun varsa modelin kendini
+    düzeltebileceği bir hata metni, yoksa "" döner. Claude Code ve Codex de hatalı çağrıyı aracı çalıştırmadan,
+    neyin eksik/yanlış olduğunu ve geçerli değerleri söyleyerek geri çevirir."""
+    schema = tool.parameters if isinstance(tool.parameters, dict) else {}
+    props = schema.get("properties") or {}
+    missing = [k for k in schema.get("required") or [] if args.get(k) is None]  # "" geçerli: new_string="" siler
+    if missing:
+        return f"{tool.name}: eksik zorunlu parametre: {', '.join(missing)}. {_param_hint(props, missing)}"
+    for k, v in args.items():
+        enum = (props.get(k) or {}).get("enum")
+        if enum and isinstance(v, str) and v not in enum:
+            return f"{tool.name}: {k}='{v}' geçersiz. Geçerli değerler: {', '.join(map(str, enum))}."
+    return ""
+
+
+def unknown_params(tool: Tool, args: dict[str, Any]) -> str:
+    """Şemada olmayan parametreler için hata metni (TypeError'ı anlaşılır kılmak için)."""
+    props = (tool.parameters or {}).get("properties") or {}
+    extra = [k for k in args if k not in props]
+    if not extra or not props:
+        return ""
+    return (f"{tool.name}: bilinmeyen parametre: {', '.join(extra)}. Geçerli parametreler: "
+            f"{', '.join(props)}.")
+
+
+def _param_hint(props: dict[str, Any], names: list[str]) -> str:
+    hints = [f"{n}: {props[n]['description']}" for n in names if (props.get(n) or {}).get("description")]
+    return " ".join(hints)
+
+
 def obj(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
     return {"type": "object", "properties": properties, "required": required or []}
 

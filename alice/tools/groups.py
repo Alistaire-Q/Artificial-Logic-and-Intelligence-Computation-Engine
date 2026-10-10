@@ -23,7 +23,7 @@ GROUPS: dict[str, tuple[set[str], str, str]] = {
                 "ekran görüntüsü, fare/klavye, masaüstü uygulamalarında tıklama, pano",
                 r"tıkla|ekran|pencere|fare|mouse|klavye|screenshot|buton|düğme|menü|click|screen|pano|kopyala|"
                 r"yapıştır|clipboard|oyun|ayarlar|uygulamada|arayüz|simge|ikon"),
-    "browser": ({"browser"}, "web sitelerinde gezinme, form doldurma, tıklama (Playwright)",
+    "browser": ({"browser"}, "kullanıcının tarayıcısında web sayfası okuma, tıklama, form doldurma",
                 r"site|tarayıcı|browser|chrome|edge|firefox|opera|youtube|google|sayfa|link|https?://|www\.|\.com|"
                 r"giriş yap|login|online|internetten|instagram|twitter|github|e-?posta|mail"),
     "system": ({"system_info", "process_list", "process_kill", "metrics"},
@@ -99,11 +99,13 @@ class LoadTools(Tool):
 
     @property
     def description(self) -> str:  # eklenti grupları sonradan yüklendiği için her seferinde kurulur
-        return ("Ek araç grubu aç (sonraki adımdan itibaren kullanılabilir). Gruplar: "
+        return ("Şu an listede olmayan bir araç grubunu açar; araçlar bir sonraki adımdan itibaren kullanılabilir. "
+                "İş için gereken araç listede yoksa ('yapamam' demeden önce) bunu çağır. Gruplar: "
                 + "; ".join(f"{g}: {desc}" for g, (_, desc, _) in all_groups().items())
                 + "; MCP sunucuları için 'mcp:<sunucu>' (ör. mcp:github). Hepsi için 'all'.")
 
-    parameters = obj({"groups": {"type": "array", "items": {"type": "string"}}}, ["groups"])
+    parameters = obj({"groups": {"type": "array", "items": {"type": "string"},
+                                 "description": "Açılacak grup adları, ör. [\"desktop\", \"browser\"]."}}, ["groups"])
     risk = READ
 
     def run(self, ctx: ToolContext, groups: list[str] | str) -> ToolResult:

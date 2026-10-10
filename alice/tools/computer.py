@@ -134,24 +134,30 @@ def press_keys(keys: str) -> None:
 class Computer(Tool):
     name = "computer"
     description = (
-        "Ekranı gör ve fare/klavyeyi kullan. Önce action=screenshot al; x,y koordinatları o görüntünün "
-        "piksel uzayındadır. grid=true koordinat ızgarası çizer (hassas tıklama için). "
-        "Mümkünse önce ui_elements/browser araçlarını tercih et, pixel tıklama son çare olsun. "
-        "Aksiyonlar: screenshot, click, double_click, right_click, middle_click, move, drag, scroll, "
-        "type, key (ör. 'ctrl+s', 'alt+tab', 'enter'), wait, cursor_position."
+        "Ekranın görüntüsünü alır ve fare/klavyeyi tek tek adımlarla kullanır (düşük seviye).\n"
+        "- Önce action=screenshot al; x,y koordinatları o görüntünün piksel uzayındadır. Görmeden koordinat "
+        "tahmin etme.\n"
+        "- Birkaç adımlı ekran işleri için computer_task, ekranda tek tıklama/yazma için reflex daha iyi; masaüstü "
+        "öğeleri için ui_elements/ui_act, web sayfaları için browser. Koordinatla tıklama son çaredir.\n"
+        "- 'Ekranda ne var' sorusunda screenshot yeter."
     )
     parameters = obj({
         "action": {"type": "string", "enum": ["screenshot", "click", "double_click", "right_click", "middle_click",
-                                              "move", "drag", "scroll", "type", "key", "wait", "cursor_position"]},
-        "x": {"type": "number"}, "y": {"type": "number"},
-        "to_x": {"type": "number"}, "to_y": {"type": "number"},
-        "text": {"type": "string", "description": "type için metin"},
-        "keys": {"type": "string", "description": "key için kombinasyon, ör. ctrl+shift+esc"},
-        "amount": {"type": "integer", "description": "scroll: pozitif yukarı, negatif aşağı (tık sayısı)"},
-        "seconds": {"type": "number"},
-        "grid": {"type": "boolean"},
-        "monitor": {"type": "integer", "description": "1 = ana monitör, 2 = ikinci, 0 = hepsi yan yana"},
-        "screenshot_after": {"type": "boolean", "description": "aksiyondan sonra yeni ekran görüntüsü döndür"},
+                                              "move", "drag", "scroll", "type", "key", "wait", "cursor_position"],
+                   "description": "screenshot | click/double_click/right_click/middle_click/move: x,y | drag: x,y'den "
+                   "to_x,to_y'ye | scroll: x,y üzerinde amount | type: text'i yaz | key: keys kombinasyonuna bas | "
+                   "wait: seconds bekle | cursor_position."},
+        "x": {"type": "number", "description": "Son ekran görüntüsünde yatay piksel."},
+        "y": {"type": "number", "description": "Son ekran görüntüsünde dikey piksel."},
+        "to_x": {"type": "number", "description": "drag için bitiş x."},
+        "to_y": {"type": "number", "description": "drag için bitiş y."},
+        "text": {"type": "string", "description": "type için yazılacak metin (Türkçe karakter olur)."},
+        "keys": {"type": "string", "description": "key için tuş ya da kombinasyon, ör. 'enter', 'ctrl+s', 'alt+tab'."},
+        "amount": {"type": "integer", "description": "scroll için çentik; pozitif yukarı, negatif aşağı. Varsayılan -5."},
+        "seconds": {"type": "number", "description": "wait için saniye, en fazla 30. Varsayılan 1."},
+        "grid": {"type": "boolean", "description": "screenshot'a koordinat ızgarası çiz (hassas tıklama için)."},
+        "monitor": {"type": "integer", "description": "1 ana monitör, 2 ikinci, 0 hepsi yan yana. Varsayılan 1."},
+        "screenshot_after": {"type": "boolean", "description": "İşlemden sonra yeni ekran görüntüsü döndür."},
     }, ["action"])
     risk = COMPUTER
 
@@ -215,15 +221,20 @@ class Computer(Tool):
 class ComputerTask(Tool):
     name = "computer_task"
     description = (
-        "Bilgisayarı kullanıcı gibi kullanarak çok adımlı bir işi baştan sona yap (Codex/Claude computer use gibi): "
-        "her adımda ekranı görür, fare ve klavyeyle tıklar, yazar, kaydırır, uygulama açar, sonucu kontrol edip "
-        "düzeltir. Her uygulamada çalışır (UIA vermeyenler dahil: Blender arayüzü, oyunlar, Opera). goal'e işi "
-        "kullanıcının istediği gibi, net ve eksiksiz yaz (ör. 'Not Defteri'ni aç, alışveriş listesi yaz ve "
-        "masaüstüne liste.txt olarak kaydet'). Tek tıklık işler için reflex/ui_act/browser daha hızlıdır."
+        "Bilgisayarı kullanıcı gibi kullanarak çok adımlı bir ekran işini baştan sona yapar: her adımda ekranı görür, "
+        "fare ve klavyeyle tıklar, yazar, kaydırır, sonucu kontrol edip düzeltir. Dakikalar sürebilir (sesli "
+        "konuşmada arka planda çalışır). Her uygulamada çalışır (UI Automation vermeyenler dahil: oyunlar, Blender arayüzü).\n"
+        "- Kullan: masaüstünde/Windows ayarlarında bir değişiklik, uygulamada menülerden geçmek, mesaj yazıp "
+        "göndermek, form doldurmak, dosya kaydetmek.\n"
+        "- Kullanma: tek tıklık işler (reflex), uygulama açmak (windows open), dosya ya da komut işleri (dosya "
+        "araçları, run_command). Aynı anda tek görev çalışır; sürerken tekrar başlatma."
     )
-    parameters = obj({"goal": {"type": "string"},
-                      "monitor": {"type": "integer", "description": "1, 2...; boş = öndeki pencerenin monitörü"},
-                      "max_steps": {"type": "integer", "description": "varsayılan 30"}}, ["goal"])
+    parameters = obj({
+        "goal": {"type": "string", "description": "Yapılacak iş; kullanıcının istediği gibi, adlarıyla, net ve "
+                 "eksiksiz. Ör. 'Not Defteri'ni aç, alışveriş listesi yaz, masaüstüne liste.txt olarak kaydet'."},
+        "monitor": {"type": "integer", "description": "Çalışılacak monitör (1, 2...). Boş: öndeki pencerenin monitörü."},
+        "max_steps": {"type": "integer", "description": "En fazla adım. Varsayılan 30."},
+    }, ["goal"])
     risk = COMPUTER
 
     def run(self, ctx: ToolContext, goal: str, max_steps: int = 30, monitor: int = 0) -> ToolResult:

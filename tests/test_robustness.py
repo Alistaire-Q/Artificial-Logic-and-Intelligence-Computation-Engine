@@ -258,7 +258,7 @@ def test_bad_tool_args_return_error_and_keep_history_valid(workdir, args):
     agent, _, _ = make_agent(script, workdir)
     assert agent.run_turn("çalıştır") == "düzelttim"
     tool_msgs = [m for m in agent.messages if m["role"] == "tool"]
-    assert tool_msgs and "geçersiz" in tool_msgs[0]["content"]
+    assert tool_msgs and any(w in tool_msgs[0]["content"] for w in ("geçersiz", "eksik"))
 
 
 def test_unexpected_error_repairs_tool_calls(workdir, monkeypatch):

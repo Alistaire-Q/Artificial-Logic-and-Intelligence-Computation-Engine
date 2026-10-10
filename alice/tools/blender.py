@@ -114,23 +114,24 @@ def _section(out: str, name: str) -> str:
 class Blender(Tool):
     name = "blender"
     description = (
-        "Blender'da 3B sahne oluştur/düzenle. Blender penceresine tıklamak yerine bunu kullan. "
-        "action=run: code (bpy Python betiği) Blender'da penceresiz çalışır, sahne .blend dosyasına kaydedilir; "
-        "hata izi, print çıktısı ve sahnedeki nesnelerin listesi (ad, tür, konum, boyut) döner. Hata gelirse betiği "
-        "düzeltip tekrar çalıştır. new=true boş başlangıç sahnesinden başlar (varsayılan küp, kamera, ışık içerir; "
-        "istemiyorsan sil), aksi halde önceki run'ın sahnesi üzerinde devam eder. preview=true kameradan küçük bir "
-        "önizleme görüntüsü döndürür (kamera yoksa sahneyi otomatik çerçeveler). action=open: bitmiş sahneyi Blender penceresinde açar. "
-        "Betik ipuçları: bpy.ops.mesh.primitive_cube_add(size=..., location=(x,y,z)), "
-        "obj = bpy.context.active_object; obj.scale = (sx,sy,sz); malzeme için bpy.data.materials.new(...) ve "
-        "mat.diffuse_color = (r,g,b,1); z ekseni yukarıdır, birim metredir."
+        "Blender'da Python (bpy) betiğiyle 3B sahne oluşturur/düzenler; Blender penceresine tıklamak yerine bunu "
+        "kullan. run: betik penceresiz çalışır, sahne .blend dosyasına kaydedilir; hata izi, print çıktısı ve "
+        "nesnelerin listesi (ad, tür, konum, boyut) döner. Hata gelirse betiği düzeltip tekrar çalıştır. open: "
+        "bitmiş sahneyi Blender penceresinde açar.\n"
+        "Betik ipuçları: bpy.ops.mesh.primitive_cube_add(size=..., location=(x,y,z)); obj = "
+        "bpy.context.active_object; obj.scale = (sx,sy,sz); malzeme: mat = bpy.data.materials.new('ad'); "
+        "mat.diffuse_color = (r,g,b,1). z ekseni yukarı, birim metre."
     )
     parameters = obj({
-        "action": {"type": "string", "enum": ["run", "open"]},
-        "code": {"type": "string", "description": "run için bpy Python betiği"},
-        "file": {"type": "string", "description": ".blend yolu (varsayılan: ALICE klasöründe blender/sahne.blend)"},
-        "new": {"type": "boolean", "description": "boş sahneden başla"},
-        "preview": {"type": "boolean", "description": "kameradan önizleme görüntüsü al"},
-        "timeout": {"type": "integer", "description": "saniye, varsayılan 300"},
+        "action": {"type": "string", "enum": ["run", "open"], "description": "run: betiği çalıştır | open: sahneyi "
+                   "Blender penceresinde aç."},
+        "code": {"type": "string", "description": "run için bpy Python betiği."},
+        "file": {"type": "string", "description": ".blend yolu. Varsayılan: ALICE klasöründe blender/sahne.blend."},
+        "new": {"type": "boolean", "description": "true: boş başlangıç sahnesinden başla (varsayılan küp, kamera ve "
+                "ışık içerir; istemiyorsan sil). false: önceki run'ın sahnesinde devam et."},
+        "preview": {"type": "boolean", "description": "Kameradan küçük önizleme görüntüsü döndür (kamera yoksa sahne "
+                    "otomatik çerçevelenir)."},
+        "timeout": {"type": "integer", "description": "Saniye. Varsayılan 300."},
     }, ["action"])
     risk = EXEC
 

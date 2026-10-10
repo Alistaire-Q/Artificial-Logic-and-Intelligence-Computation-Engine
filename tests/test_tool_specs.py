@@ -1,0 +1,72 @@
+"""Araç tanımlarının kalitesi: Claude Code / Codex'teki gibi her parametre açıklanmış, açıklama Live sınırına
+sığıyor, hatalı çağrı modelin düzeltebileceği bir mesajla geri dönüyor."""
+
+from __future__ import annotations
+
+import pytest
+
+from alice.tools import builtin_tools
+from alice.tools.base import check_args, unknown_params
+from alice.voice.live import declarations
+
+TOOLS = builtin_tools()
+
+
+def _props(schema: dict) -> dict:
+    return schema.get("properties") or {}
+
+
+@pytest.mark.parametrize("tool", TOOLS, ids=lambda t: t.name)
+def test_description_fits_live_limit(tool):
+    # Gemini Live açıklamayı 1000 karakterde kesiyor (live.declarations): sonu kaybolmasın.
+    assert 40 <= len(tool.description) <= 1000
+
+
+@pytest.mark.parametrize("tool", TOOLS, ids=lambda t: t.name)
+def test_every_parameter_is_described(tool):
+    def walk(schema: dict, path: str) -> None:
+        for name, p in _props(schema).items():
+            assert (p.get("description") or "").strip(), f"{tool.name}: {path}{name} açıklamasız"
+            if p.get("type") == "array" and isinstance(p.get("items"), dict):
+                walk(p["items"], f"{path}{name}[].")
+
+    walk(tool.parameters, "")
+    assert set(tool.parameters.get("required") or []) <= set(_props(tool.parameters))
+
+
+def test_tool_names_unique_and_live_declarations_build():
+    names = [t.name for t in TOOLS]
+    assert len(names) == len(set(names))
+    decls = declarations([t.spec() for t in TOOLS])
+    assert all(d["description"] == t.description for d, t in zip(decls, TOOLS))
+
+
+def _tool(name):
+    return next(t for t in TOOLS if t.name == name)
+
+
+def test_check_args_reports_missing_required_with_hint():
+    msg = check_args(_tool("edit_file"), {"path": "a.py", "new_string": "x"})
+    assert "old_string" in msg and "eksik" in msg and "read_file" in msg
+
+
+def test_check_args_reports_bad_enum_with_valid_values():
+    msg = check_args(_tool("windows"), {"action": "launch", "target": "notepad"})
+    assert "launch" in msg and "open" in msg and "navigate" in msg
+
+
+def test_check_args_accepts_valid_call():
+    assert check_args(_tool("windows"), {"action": "open", "target": "notepad"}) == ""
+    assert check_args(_tool("process_list"), {}) == ""
+
+
+def test_unknown_params_lists_valid_ones():
+    msg = unknown_params(_tool("web_search"), {"query": "x", "lang": "tr"})
+    assert "lang" in msg and "max_results" in msg
+    assert unknown_params(_tool("web_search"), {"query": "x"}) == ""
+
+
+def test_empty_string_is_not_missing():
+    # edit_file new_string="" metni silmek demek; boş içerikli dosya yazmak da geçerli.
+    assert check_args(_tool("edit_file"), {"path": "a", "old_string": "x", "new_string": ""}) == ""
+    assert check_args(_tool("write_file"), {"path": "a", "content": ""}) == ""
