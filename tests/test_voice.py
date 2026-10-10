@@ -955,3 +955,38 @@ def test_assistant_uses_live_and_falls_back():
     va2.handle_text("Hey Alice, saat kaç?", direct=False)
     assert wait_for(lambda: agent2.turns == ["saat kaç?"])   # Live açılamadı -> eski yol
     assert not va2._live_ready()
+
+
+def test_strip_wake_split_ali_spelling():
+    from alice.voice.listen import strip_wake
+
+    assert strip_wake("Ali C'e hava nasıl?") == "hava nasıl?"
+    assert strip_wake("Hey Ali J.") == ""
+    assert strip_wake("Ali bugün geldi") is None
+
+
+def test_live_wake_sends_audio_without_cloud_stt():
+    class Gate:
+        model_name, last_seconds = "small", 0.1
+
+        def heard(self, audio):
+            return "Hey Alice"
+
+    class CloudSTT:
+        def __init__(self):
+            self.calls = 0
+            self.wake_gate = Gate()
+
+        def transcribe(self, audio):
+            self.calls += 1
+            return "Hey Alice, saat kaç?"
+
+    class AudioLive(FakeLive):
+        def converse(self, text, frames, stop, first_audio=b""):
+            self.texts.append((text, len(first_audio)))
+
+    agent, stt, live = FakeAgent(), CloudSTT(), AudioLive()
+    va = VoiceAssistant(agent, FakeSpeaker(), stt=stt, live=live)
+    va.handle_audio(Audio(b"\1\0" * 16000, 16000), direct=False)
+    assert wait_for(lambda: live.texts == [("", 32000)])
+    assert stt.calls == 0 and agent.turns == []
