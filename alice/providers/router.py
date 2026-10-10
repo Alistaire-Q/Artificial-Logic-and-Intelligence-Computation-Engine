@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from alice.config import Config, ProviderConfig, alice_home
-from alice.providers import ranking, thinking
+from alice.providers import context, ranking, thinking
 from alice.providers.openai_compat import ChatResult, OpenAICompatProvider, ProviderError, StreamCancelled
 
 COOLDOWNS = {"rate_limit": 20.0, "quota": 3600.0, "server": 30.0, "network": 30.0, "unreachable": 600.0}
@@ -349,6 +349,12 @@ class Router:
             return False, f"soğumada ({int(until - now)} sn)"
         return True, "hazır"
 
+    def context_limit(self, ref: str) -> int:
+        """Modelin bağlam penceresi: bilinen modelde modelin kendisi, değilse sağlayıcı ayarı (bkz. context.py)."""
+        p, model = parse_ref(ref)
+        pc = self.providers_cfg.get(p)
+        return context.context_limit(pc.max_input_tokens if pc else 32000, model, self.size_limit.get(ref))
+
     def first_available(self, role: str) -> str | None:
         for ref in self.chain(role):
             if self.available(ref)[0]:
@@ -390,8 +396,9 @@ class Router:
                     continue
                 p, model = parse_ref(ref)
                 pc = self.providers_cfg[p]
-                if est > pc.max_input_tokens:
-                    errors.append(f"{ref}: istek ~{est} token, sağlayıcı sınırı {pc.max_input_tokens}")
+                limit = self.context_limit(ref)
+                if est > limit:
+                    errors.append(f"{ref}: istek ~{est} token, model sınırı {limit}")
                     continue
                 if tools and ref in self.no_tools:
                     errors.append(f"{ref}: tool desteklemiyor")

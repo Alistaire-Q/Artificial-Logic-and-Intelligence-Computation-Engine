@@ -132,6 +132,8 @@ def parse_args(raw: str | dict | None) -> dict[str, Any]:
     return val
 
 
+# Eski sabit özetleme sınırı. Eski config.toml'larda yazılı kaldığı için "auto" sayılır (modelin penceresine göre).
+LEGACY_COMPACT_AT = 48000
 PLAN_NOTE = ("[PLAN MODU: Şu an sadece okuyup araştırabilirsin; dosya değiştiren, komut çalıştıran ya da ekrana "
              "dokunan araçlar reddedilecek. İşi incele, sonra adım adım net bir uygulama planı yaz ve kullanıcının "
              "onayını bekle.]\n\n")
@@ -162,7 +164,8 @@ class Agent:
         self.messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt or build_system_prompt(ctx.cwd)}]
         a = config.agent
         self.max_steps = int(a.get("max_steps", 80))
-        self.compact_at = int(a.get("compact_at_tokens", 48000))
+        self._compact_cfg = a.get("compact_at_tokens", "auto")
+        self._last_prompt: tuple[int, int, Any] | None = None  # (sağlayıcının saydığı token, mesaj sayısı, son mesaj)
         self.output_limit = int(a.get("tool_output_chars", 12000))
         self.keep_images = int(a.get("keep_images", 2))
         self.stream = bool(a.get("stream", True))
@@ -280,9 +283,12 @@ class Agent:
                 self._prune_images()
                 sink.parts.clear()
                 self.ui.stream_start()
+                sent = len(self.messages)
                 res = self._interruptible(self.router.chat, self.role, list(self.messages), tools=self.tool_specs(),
                                           stream=sink if self.stream else None)
                 msg = res.message
+                pt = int((res.usage or {}).get("prompt_tokens") or 0)
+                self._last_prompt = (pt, sent, self.messages[sent - 1]) if pt else None
                 if not self.stream and msg.get("content"):
                     self.ui.stream_delta(msg["content"])
                 self.messages.append(msg)
@@ -559,9 +565,39 @@ class Agent:
             self.messages[i] = {"role": "user", "content": "[eski ekran görüntüsü yer kazanmak için kaldırıldı]", "_image": False}
 
     # -------------------------------------------------------------- context
+    @property
+    def compact_at(self) -> int:
+        """Özetleme sınırı. "auto": kullanılan modelin bağlam penceresinin %80'i (GLM 5.3 ve Gemini'de ~840K,
+        Groq gibi dar ücretsiz katmanlarda sağlayıcı sınırı). Sayı yazılırsa o kullanılır."""
+        v = self._compact_cfg
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and int(v) > 0 and int(v) != LEGACY_COMPACT_AT:
+            return int(v)
+        try:
+            ref = self.router.last_ref.get(self.role) or self.router.first_available(self.role)
+        except KeyError:
+            ref = None
+        if not ref:
+            return LEGACY_COMPACT_AT
+        return max(16000, int(self.router.context_limit(ref) * 0.8))
+
+    @compact_at.setter
+    def compact_at(self, value: int) -> None:
+        self._compact_cfg = int(value)
+
+    def context_tokens(self) -> int:
+        """Bağlamdaki token sayısı. Son istekte sağlayıcının kendi saydığı değer (araç tanımları ve sistem istemi
+        dahil) esas alınır, ondan sonra eklenen mesajlar tahminle eklenir; yoksa tamamen tahmin."""
+        est = estimate_tokens(self.messages, self.tool_specs())
+        lp = self._last_prompt
+        if lp and lp[0] > 0 and 0 < lp[1] <= len(self.messages) and self.messages[lp[1] - 1] is lp[2]:
+            real = lp[0] + (estimate_tokens(self.messages[lp[1]:]) if lp[1] < len(self.messages) else 0)
+            # Tahminden 4 kat küçükse sağlayıcının sayısı güvenilmez (ör. önbellekli kısmı saymayan uç): tahmin kalsın.
+            if real * 4 >= est:
+                return real
+        return est
+
     def _maybe_compact(self, force: bool = False) -> bool:
-        total = estimate_tokens(self.messages, self.tool_specs())
-        if not force and total < self.compact_at:
+        if not force and self.context_tokens() < self.compact_at:
             return False
         budget = int(self.compact_at * 0.35)
         users = [i for i, m in enumerate(self.messages) if i > 0 and m["role"] == "user" and not m.get("_image")]
@@ -590,7 +626,7 @@ class Agent:
         try:
             res: ChatResult = self.router.chat("brain", [
                 {"role": "system", "content": COMPACT_PROMPT},
-                {"role": "user", "content": "\n\n".join(transcript)[-120000:]},
+                {"role": "user", "content": "\n\n".join(transcript)[-max(120000, self.compact_at * 2):]},
             ], max_tokens=2000)
         except AllProvidersFailed as e:
             self.ui.info(f"özetleme başarısız: {e}")

@@ -27,7 +27,7 @@ from alice.agent import Agent, parse_args
 from alice.config import Config, alice_home
 from alice.decider import Decider
 from alice.permissions import MODES, Permissions
-from alice.providers.router import Router, estimate_tokens, parse_ref
+from alice.providers.router import Router, parse_ref
 from alice.tools import ToolContext, all_tools, attach_mcp, cleanup
 from alice.tools.base import ToolResult
 
@@ -326,8 +326,9 @@ class AppState:
             "version": __version__,
             "model": self.router.last_ref.get("brain") or self.router.first_available("brain") or "",
             "mode": a.permissions.mode,
-            "ctx_tokens": estimate_tokens(a.messages),
+            "ctx_tokens": a.context_tokens(),
             "ctx_limit": a.compact_at,
+            "ctx_window": self._ctx_window(),
             "today_requests": sum(r["requests"] for r in self.router.usage.today().values()),
             "decider": self.decider.names[0] if self.decider.names else "",
             "cwd": str(self.ctx.cwd),
@@ -341,6 +342,14 @@ class AppState:
             "user": _user_name(),
             "checkpoints": sorted(self.agent.checkpoints),
         }
+
+    def _ctx_window(self) -> int:
+        """Şu anki ana modelin bağlam penceresi (arayüzde gösterilen sınır)."""
+        try:
+            ref = self.router.last_ref.get("brain") or self.router.first_available("brain")
+        except KeyError:
+            ref = None
+        return self.router.context_limit(ref) if ref else 0
 
     def send(self, text: str, images: list[str] | None = None) -> tuple[bool, str | None]:
         if self.agent.busy or self._queued:
