@@ -20,6 +20,12 @@ def isolated_home(tmp_path, monkeypatch):
     return home
 
 
+def rm_rf(name: str) -> str:
+    """Özyinelemeli silme komutu: Windows'ta PowerShell, diğerlerinde bash."""
+    import sys
+    return f"Remove-Item -Recurse -Force {name}" if sys.platform == "win32" else f"rm -rf {name}"
+
+
 class FakeProvider:
     """Sıradaki cevabı ya da hatayı script'ten döndüren sahte sağlayıcı."""
 

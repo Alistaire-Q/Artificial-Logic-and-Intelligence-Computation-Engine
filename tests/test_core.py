@@ -283,8 +283,9 @@ def test_core_runs_due_task(tmp_path):
     core, sent = make_core(tmp_path, run_agent=agent)
     core.modes.forced = None
     core.monitors[0].processes = set()
-    t = core.tasks.add(ScheduledTask("* * * * *", "rapor yaz", created=900))
-    core.tick(1000)
+    now = 1_760_000_000  # 1970'e yakın değerler Windows'ta datetime.timestamp() hatası verir
+    t = core.tasks.add(ScheduledTask("* * * * *", "rapor yaz", created=now - 100))
+    core.tick(now)
     assert done.wait(5)
     for _ in range(100):
         if not core.running_tasks:

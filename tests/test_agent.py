@@ -5,7 +5,7 @@ from alice.permissions import Permissions
 from alice.providers.router import Router
 from alice.tools import ToolContext, all_tools
 from alice.tools.base import Tool, ToolResult
-from tests.conftest import FakeProvider, make_config, tool_call
+from tests.conftest import FakeProvider, make_config, rm_rf, tool_call
 
 
 def make_agent(script, workdir, mode="auto", approve="y", providers=None, **agent_cfg):
@@ -53,7 +53,7 @@ def test_dangerous_command_asks_and_denial_is_reported(workdir):
 
 def test_yolo_never_asks(workdir):
     (workdir / "gone").mkdir()
-    script = [tool_call("run_command", {"command": "rm -rf gone"}), "silindi"]
+    script = [tool_call("run_command", {"command": rm_rf("gone")}), "silindi"]
     agent, _, ui = make_agent(script, workdir, mode="yolo")
     agent.run_turn("sil")
     assert not any(e[0] == "ask" for e in ui.events)
