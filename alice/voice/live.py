@@ -42,6 +42,8 @@ youtube aracı sadece ekranda olmayan yeni bir YouTube videosunu açmak ya da a�
 browser aracı kullanıcının tarayıcısına bağlanır (tabs, switch_tab; goto açık site sekmesini kullanır). browser "bağlanılamıyor" derse: windows action=switch_tab
 target=<site adı> ile açık sekmeye geç, windows action=navigate target=<URL ya da arama> ile git.
 Yeni sekme ya da ayrı pencere sadece kullanıcı isterse.
+Bir işe özel araç varsa (ör. 3B/Blender için blender) run_command ya da write_file yerine onu kullan; iş bitince
+sonucu kullanıcının ekranında aç (blender action=open gibi), çünkü kullanıcı ekranda görmek ister.
 Bir araç "onay gerekli" derse kullanıcıya kısaca sor; "evet" derse aynı çağrıyı tekrarla.
 İç düşüncelerini, planını, araç hatalarını ya da düzeltmelerini asla sesli söyleme; sadece kullanıcıya Türkçe konuş.
 Konuşma tanıma Türkçe cümle içindeki uygulama/site adlarını bozabilir. Kullanıcının bilgisayarındaki ve sık kullandığı
@@ -306,10 +308,19 @@ class LiveSession:
             "generationConfig": {"responseModalities": ["AUDIO"], "speechConfig": {
                 "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": self.voice}}, "languageCode": "tr-TR"}},
             "systemInstruction": {"parts": [{"text": system}]},
-            "tools": [{"functionDeclarations": declarations(self.agent.tool_specs())}],
+            "tools": [{"functionDeclarations": declarations(self._specs())}],
             "inputAudioTranscription": {},
             "outputAudioTranscription": {},
         }}
+
+    def _specs(self) -> list[dict[str, Any]]:
+        """Live'a bildirilen araçlar. Araç listesi oturum açılırken bir kez gider, sonradan load_tools ile eklenen
+        grup Live'a ulaşmıyordu (Blender aracı yerine run_command ile penceresiz Blender). Bu yüzden yerleşik
+        araçların hepsi baştan bildirilir; MCP sunucularının çok sayıdaki aracı ve işe yaramayan load_tools hariç."""
+        tools = getattr(self.agent, "tools", None)
+        if not isinstance(tools, dict):
+            return self.agent.tool_specs()
+        return [t.spec() for name, t in tools.items() if not name.startswith("mcp__") and name != "load_tools"]
 
     def _open(self):
         connect = self._connect
