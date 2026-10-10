@@ -188,8 +188,12 @@ class VoiceAssistant:
     def __init__(self, agent, speaker: Speaker, stt, mic_factory: Callable[[], Microphone] = Microphone,
                  ptt_key: str = "", wake_model: str = "", wake_phrase: bool = True, barge_in: bool = True,
                  follow_up: float = 8.0, emit: Callable[[str], None] = lambda s: None,
-                 keep_turns: int = 4, idle_reset: float = 300.0, live=None, end_silence: float = 0.5):
+                 keep_turns: int = 4, idle_reset: float = 300.0, live=None, end_silence: float = 0.5,
+                 live_text_min: float | None = -0.7, live_text_wait: float = 1.5):
         self.agent = agent
+        # İlk cümlenin yerel dökümü bu güvenin (ortalama log olasılık) üstündeyse Live'a ses yerine yazı gider.
+        self.live_text_min = live_text_min
+        self.live_text_wait = live_text_wait
         self.end_silence = end_silence  # konuşma bitti saymak için sessizlik (sn)
         self.live = live  # Gemini Live: "Hey Alice"ten sonra sesten sese canlı konuşma
         self._live_q: queue.Queue | None = None  # doluyken mikrofon kareleri Live'a gider
@@ -308,6 +312,38 @@ class VoiceAssistant:
         voice_log(f"duyulan [{getattr(self.stt, 'last', '')}]{' (doğrudan)' if direct else ''}: {text}")
         self.handle_text(text, direct)
 
+    def _local_text(self, audio: Audio):
+        """İlk cümleyi Live bağlanırken yerelde (GPU) ad ipuçlarıyla yazıya dök. Döküm güvenilirse Live'a ses
+        yerine bu yazı gider. Dönen fonksiyon sonucu bekler (en çok live_text_wait sn)."""
+        gate = getattr(self.stt, "wake_gate", None)
+        if gate is None or not hasattr(gate, "transcribe") or self.live_text_min is None:
+            return None
+        box: dict[str, Any] = {}
+        names = getattr(self.live, "names", None)
+
+        def run() -> None:
+            from alice.voice.vocab import whisper_prompt
+
+            box["r"] = gate.transcribe(audio, whisper_prompt((names() if names else [])[:40]))
+
+        t = threading.Thread(target=run, daemon=True, name="alice-live-text")
+        t.start()
+
+        def result() -> str | None:
+            t.join(self.live_text_wait)
+            r = box.get("r")
+            if not r:
+                voice_log("yerel döküm yetişmedi, ses gönderiliyor")
+                return None
+            text, conf = r
+            rest = strip_wake(text)
+            if not rest or is_hallucination(rest) or conf < self.live_text_min:
+                voice_log(f"yerel döküm güvenilmez ({conf:.2f}), ses gönderiliyor: {text}")
+                return None
+            return rest
+
+        return result
+
     def _live_ready(self) -> bool:
         return self.live is not None and self.live.available and time.monotonic() > self._live_down
 
@@ -321,7 +357,9 @@ class VoiceAssistant:
         self._live_q = q
         try:
             if audio is not None:
-                self.live.converse("", q, self.stop_event, first_audio=audio.resample(16000).pcm)
+                hint = self._local_text(audio)
+                self.live.converse("", q, self.stop_event, first_audio=audio.resample(16000).pcm,
+                                   **({"hint": hint} if hint else {}))
             else:
                 self.live.converse(text, q, self.stop_event)
             return True
@@ -460,6 +498,13 @@ class VoiceAssistant:
     def stop(self) -> None:
         self.stop_event.set()
         self.speaker.stop()
+
+
+def live_text_options(v: dict[str, Any]) -> dict[str, Any]:
+    """[voice] live_text_min: ilk cümlenin yerel dökümüne güven eşiği (boş/false = hep ses gönder)."""
+    m = v.get("live_text_min", -0.7)
+    return {"live_text_min": None if m in ("", False, None) else float(m),
+            "live_text_wait": float(v.get("live_text_wait", 1.5))}
 
 
 def make_live(cfg, agent):

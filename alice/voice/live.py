@@ -18,6 +18,7 @@ import time
 from typing import Any, Callable
 
 from alice.tools.base import ToolResult
+from alice.voice.vocab import known_names
 
 URL = ("wss://generativelanguage.googleapis.com/ws/"
        "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key={key}")
@@ -38,6 +39,10 @@ target=<site adı> ile açık sekmeye geç, windows action=navigate target=<URL 
 Yeni sekme ya da ayrı pencere sadece kullanıcı isterse.
 Bir araç "onay gerekli" derse kullanıcıya kısaca sor; "evet" derse aynı çağrıyı tekrarla.
 İç düşüncelerini, planını, araç hatalarını ya da düzeltmelerini asla sesli söyleme; sadece kullanıcıya Türkçe konuş.
+Konuşma tanıma Türkçe cümle içindeki uygulama/site adlarını bozabilir. Kullanıcının bilgisayarındaki ve sık kullandığı
+adlar: {names}. Duyduğun bir kelime anlamsızsa ya da bu adlardan birine sesçe benziyorsa o adı kastediyordur.
+Hangi ad olduğundan emin değilsen işe başlamadan tek kısa soruyla teyit et.
+Konuşmanın ilk mesajı yazıyla gelirse, kullanıcının sesinin yerel yazı dökümüdür.
 Şu an: {now}."""
 
 
@@ -211,6 +216,7 @@ class LiveSession:
         self._connect = connect
         self._out_factory = out_factory
         self.model = ""
+        self.names: Callable[[], list[str]] = lambda: known_names(cfg)
         self._pre: dict[str, Any] = {}  # önceden açılan bağlantı: {"thread", "ws", "error"}
         self._pre_lock = threading.Lock()
 
@@ -233,7 +239,7 @@ class LiveSession:
 
         now = datetime.now()
         system = self.agent.messages[0]["content"] + "\n\n" + LIVE_PROMPT.format(
-            now=f"{now:%d.%m.%Y %H:%M} ({spoken_time(now.hour, now.minute)})")
+            now=f"{now:%d.%m.%Y %H:%M} ({spoken_time(now.hour, now.minute)})", names=", ".join(self.names()))
         enabled = self.agent.ctx.state.setdefault("tool_groups", set())
         enabled |= LIVE_GROUPS
         return {"setup": {
@@ -318,10 +324,20 @@ class LiveSession:
         return self._open()
 
     def converse(self, first_text: str, frames: "queue.Queue[bytes]", stop: threading.Event,
-                 first_audio: bytes = b"") -> None:
+                 first_audio: bytes = b"", hint: Callable[[], str | None] | None = None) -> None:
         """Mikrofon karelerini (16 kHz, 30 ms) modele akıt, cevabı çal, araçları çalıştır. Sessizlikte döner.
-        Bu fonksiyon araçları çağıran thread'de çalışır (tarayıcı gibi thread'e bağlı araçlar için)."""
+        Bu fonksiyon araçları çağıran thread'de çalışır (tarayıcı gibi thread'e bağlı araçlar için).
+        hint: ilk cümlenin yerelde güvenilir bulunmuş yazı dökümü; varsa ses yerine o gönderilir, çünkü Live'ın kendi
+        tanıması Türkçe cümledeki İngilizce adları bozuyor ("GitHub" -> "kitabım")."""
         ws = self._take()
+        if first_audio and hint is not None:
+            try:
+                local = hint()
+            except Exception:  # noqa: BLE001
+                local = None
+            if local:
+                self.log(f"live ilk cümle yerel dökümle: {local}")
+                first_text, first_audio = local, b""
         out = self._out_factory()
         ui = LiveUI(self.agent.ui)
         old_ui, self.agent.ui = self.agent.ui, ui
