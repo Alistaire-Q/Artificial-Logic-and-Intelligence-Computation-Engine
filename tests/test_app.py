@@ -186,3 +186,43 @@ def test_plan_mode_via_api(app, workdir):
     t.join()
     end = next(e for e in events if e["type"] == "tool_end")
     assert end["is_error"] and "Plan modundasın" in end["text"]
+
+
+def test_changes_panel_lists_and_reverts_session_edits(app, workdir):
+    state, srv, client, prov = app
+    (workdir / "eski.txt").write_text("bir\niki\n", encoding="utf-8")
+    prov.script.extend([tool_call("write_file", {"path": "yeni.txt", "content": "selam\n"}, "c1"),
+                        tool_call("edit_file", {"path": "eski.txt", "old_string": "iki", "new_string": "üç"}, "c2"),
+                        "tamam"])
+    events, t = collect(state, lambda e: e["type"] == "status")
+    assert client.post("/api/send", json={"text": "yaz"}).json()["ok"]
+    t.join()
+    changes = {c["path"]: c for c in client.get("/api/changes").json()}
+    assert changes["yeni.txt"]["status"] == "eklendi" and changes["yeni.txt"]["added"] == 1
+    assert changes["eski.txt"]["status"] == "değişti"
+    assert (changes["eski.txt"]["added"], changes["eski.txt"]["removed"]) == (1, 1)
+    assert "+üç" in changes["eski.txt"]["diff"]
+    r = client.post("/api/changes/revert", json={"path": changes["eski.txt"]["abs"]}).json()
+    assert r["ok"] and [c["path"] for c in r["changes"]] == ["yeni.txt"]
+    assert (workdir / "eski.txt").read_text(encoding="utf-8") == "bir\niki\n"
+    r = client.post("/api/changes/revert", json={"path": changes["yeni.txt"]["abs"]}).json()
+    assert r["ok"] and r["changes"] == [] and not (workdir / "yeni.txt").exists()
+    # oturumda dokunulmamış bir dosya geri alınamaz
+    assert client.post("/api/changes/revert", json={"path": str(workdir / "x")}).status_code == 404
+
+
+def test_git_branch_and_session_times(app, workdir):
+    from alice.app.server import git_branch
+
+    state, srv, client, prov = app
+    (workdir / ".git").mkdir()
+    (workdir / ".git" / "HEAD").write_text("ref: refs/heads/ozellik/arayuz\n", encoding="utf-8")
+    (workdir / "alt").mkdir()
+    assert git_branch(workdir / "alt") == "ozellik/arayuz"
+    assert client.get("/api/state").json()["branch"] == "ozellik/arayuz"
+    prov.script.append("selam")
+    events, t = collect(state, lambda e: e["type"] == "status")
+    client.post("/api/send", json={"text": "merhaba"})
+    t.join()
+    row = client.get("/api/sessions").json()[0]
+    assert row["title"] == "merhaba" and row["updated"] > 0

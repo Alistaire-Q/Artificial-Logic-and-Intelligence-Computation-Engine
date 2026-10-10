@@ -116,7 +116,7 @@ alice models --write  # canlı ücretsiz katalogdan rol zincirlerini günceller 
 
 ![Başlangıç](docs/app-baslangic.png)
 
-**Görünüm:** sıcak krem/kömür renkler, cevaplarda serif yazı, araç çağrıları kart yerine sade açılır satırlar. Yeni sohbette selamlama ve yazma kutusu ortada duruyor. Açık ve koyu tema Windows ayarını takip ediyor.
+**Görünüm:** sıcak krem/kömür renkler, cevaplarda serif yazı, araç çağrıları sade açılır satırlar. Yeni sohbette selamlama ve yazma kutusu ortada duruyor. Tema Windows ayarını izliyor ya da Ayarlar'dan açık/koyu sabitlenebiliyor.
 
 **Yazma kutusu**
 * Enter gönderir, Shift+Enter yeni satır açar.
@@ -127,22 +127,38 @@ alice models --write  # canlı ücretsiz katalogdan rol zincirlerini günceller 
 
 **Sohbet**
 * Cevaplar akarak geliyor. Model akıl yürütme metni gönderiyorsa açılır bir "düşündü" bölümü olarak görünüyor.
-* Dosya düzenlemeleri kırmızı/yeşil diff olarak açılıyor. Komut çıktıları ve ekran görüntüleri satıra tıklayınca açılıyor.
-* ALICE plan tuttuğunda görev listesi işaretli kutularla çiziliyor.
-* Tehlikeli işlemde sohbetin içinde "İzin ver / Bu oturumda hep izin ver / Reddet" kartı çıkıyor.
+* Her araç satırında çalışırken dönen bir gösterge ve canlı süre var. Bitince yeşil ya da kırmızı nokta, süre ve sonucun ilk satırları görünüyor.
+* Dosya düzenlemeleri satır numaralı, renklendirilmiş diff olarak açılıyor. Komutlar terminal görünümünde, çıkış koduyla gösteriliyor.
+* Kod blokları sözdizimine göre renkleniyor (Python, JS/TS, PowerShell, bash, JSON, CSS, Lua, SQL, C ailesi...).
+* ALICE plan tuttuğunda görev listesi ilerleme çubuğuyla çiziliyor. İş sürerken mesaj kutusunun üstünde o anki görev duruyor.
+* Tehlikeli işlemde sohbetin içinde "İzin ver / Bu oturumda hep izin ver / Reddet" kartı çıkıyor. 1, 2, 3 tuşlarıyla da cevaplanıyor.
+* Her işin sonunda süre, araç sayısı ve değişen dosyalarla tek satırlık bir özet çıkıyor.
 * Kod bloklarında ve cevaplarda Kopyala butonu var.
+
+**Yan panel (Ctrl+J):** üç sekme var.
+* **Plan:** güncel görev listesi.
+* **Değişiklikler:** bu oturumda değişen bütün dosyalar +/− sayılarıyla. Her dosyanın farkı açılıyor, dosya bazında **Geri al** var. Üst çubuktaki `+12 −3` düğmesi de buraya açılıyor.
+* **Bağlam:** context doluluğu, model, mod, klasör, git dalı ve oturum bilgisi.
+
+**Komut paleti (Ctrl+K):** eylemler, izin modları, düşünme seviyeleri, modeller, slash komutları ve geçmiş sohbetler tek arama kutusunda.
+
+**Ayarlar (Ctrl+,):** Genel (tema, yazı boyutu, araç ayrıntıları, yan panel, izin modu, klasör), Modeller, Araçlar, Hafıza, Kullanım ve Kısayollar sekmeleri.
 
 **Geri sarma**
 * Her mesajın altında **Düzenle** ve **Geri sar** var. Konuşma o mesajın öncesine dönüyor.
 * ALICE'in o mesajdan sonra dosya araçlarıyla değiştirdiği ya da oluşturduğu dosyalar eski haline geliyor. Shell komutlarının yaptığı değişiklikler izlenemiyor.
 
-**Kenar çubuğu:** yeni sohbet, geçmiş sohbetler (üzerine gelince sil), alttaki menüde Modeller, Araçlar, Hafıza, Kullanım ve Komutlar. Ctrl+B ile gizlenip açılıyor.
+**Kenar çubuğu:** yeni sohbet, sohbetlerde arama, Bugün/Dün/Bu hafta diye gruplanmış geçmiş (üzerine gelince sil), altta Ayarlar. Ctrl+B ile gizlenip açılıyor.
 
-**Durum satırı:** cevap veren model, context doluluğu, bugünkü istek sayısı, karar motoru.
+**Durum satırı:** cevap veren model, context doluluğu, bugünkü istek sayısı, karar motoru, git dalı ve oturum süresi.
 
 **Pencere ve güvenlik:** Pencere sırasıyla şöyle açılıyor: pywebview kuruluysa gerçek bir uygulama penceresi (Windows'ta Edge WebView2), değilse Edge/Chrome'un adres çubuğu olmayan uygulama modu, o da yoksa varsayılan tarayıcı. Arayüz sadece `127.0.0.1`'de çalışıyor ve her açılışta değişen rastgele bir token istiyor. Böylece tarayıcıda açık başka bir site ALICE'e komut gönderemiyor. Model çıktısı ekrana basılmadan önce DOMPurify ile temizleniyor.
 
 ![Sohbet](docs/app-acik.png)
+
+![Komut paleti](docs/app-palet.png)
+
+![Ayarlar](docs/app-ayarlar.png)
 
 ## Claude Code'daki özellikler
 

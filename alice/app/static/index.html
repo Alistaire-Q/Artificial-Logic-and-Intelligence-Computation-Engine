@@ -9,6 +9,7 @@
 <link rel="stylesheet" href="/static/app.css">
 <script src="/static/marked.min.js"></script>
 <script src="/static/purify.min.js"></script>
+<script src="/static/highlight.js"></script>
 <script src="/static/app.js" defer></script>
 </head>
 <body>
@@ -24,7 +25,10 @@
       <span class="plus"><svg viewBox="0 0 24 24"><path d="M12 6v12M6 12h12"/></svg></span>
       Yeni sohbet
     </button>
-    <div class="side-label">Son sohbetler</div>
+    <label class="side-search">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.3-4.3"/></svg>
+      <input id="sessSearch" type="text" placeholder="Sohbetlerde ara" spellcheck="false" autocomplete="off">
+    </label>
     <nav id="sessions"></nav>
     <div class="side-foot">
       <button class="user-chip" id="settingsBtn" title="Modeller ve ayarlar">
@@ -44,6 +48,22 @@
         <svg viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v7a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5z"/></svg>
         <span id="cwd">…</span>
       </button>
+      <span id="branchChip" class="branch-chip" hidden title="Git dalı">
+        <svg viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7v10M18 10c0 4-6 3-11.2 7.3"/></svg>
+        <span id="branch"></span>
+      </span>
+      <span class="grow"></span>
+      <button id="paletteBtn" class="top-btn" title="Komut paleti (Ctrl+K)">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.3-4.3"/></svg>
+        <span>Ara</span><kbd>Ctrl K</kbd>
+      </button>
+      <button id="changesBtn" class="top-btn changes" hidden title="Bu oturumdaki değişiklikler">
+        <svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 14h6M12 11v6"/></svg>
+        <span class="a" id="chA">+0</span><span class="d" id="chD">−0</span>
+      </button>
+      <button class="icon-btn" id="panelBtn" title="Yan paneli aç/kapat (Ctrl+J)">
+        <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M15 4v16"/></svg>
+      </button>
     </header>
 
     <section id="scroller">
@@ -62,6 +82,12 @@
         </button>
       </div>
       <div id="queue"></div>
+      <button id="planbar" hidden title="Planı yan panelde aç">
+        <span class="pb-ring"><svg viewBox="0 0 36 36"><circle cx="18" cy="18" r="15" class="bg"/><circle cx="18" cy="18" r="15" class="fg" id="pbArc"/></svg></span>
+        <span class="pb-count" id="pbCount">0/0</span>
+        <span class="pb-text" id="pbText"></span>
+        <span class="pb-next" id="pbNext"></span>
+      </button>
       <div id="composerWrap">
         <div id="popup" hidden></div>
         <div id="composer">
@@ -106,9 +132,39 @@
         <span id="stReq"></span>
         <span class="sep">·</span>
         <span id="stDec"></span>
+        <span class="sep st-br">·</span>
+        <span id="stBranch" class="st-br"></span>
+        <span class="sep">·</span>
+        <span id="stClock" title="Oturum süresi"></span>
       </div>
     </div>
   </main>
+
+  <aside id="panel">
+    <div class="panel-head">
+      <div class="tabs" role="tablist">
+        <button class="tab" data-tab="plan">Plan</button>
+        <button class="tab" data-tab="changes">Değişiklikler <span class="badge" id="chCount"></span></button>
+        <button class="tab" data-tab="context">Bağlam</button>
+      </div>
+      <button class="icon-btn" id="panelClose" title="Kapat (Ctrl+J)">
+        <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div class="panel-body" id="panelBody"></div>
+  </aside>
+</div>
+
+<div id="palette" hidden>
+  <div class="pal">
+    <div class="pal-in">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.3-4.3"/></svg>
+      <input id="palInput" type="text" placeholder="Komut, sohbet ya da ayar ara…" spellcheck="false" autocomplete="off">
+      <kbd>Esc</kbd>
+    </div>
+    <div class="pal-list" id="palList"></div>
+    <div class="pal-foot"><span><kbd>↑</kbd><kbd>↓</kbd> gez</span><span><kbd>Enter</kbd> seç</span><span><kbd>Esc</kbd> kapat</span></div>
+  </div>
 </div>
 
 <div id="menu" hidden></div>
