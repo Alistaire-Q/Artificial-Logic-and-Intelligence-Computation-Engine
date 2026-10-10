@@ -307,7 +307,11 @@ class Browser(Tool):
             text: str | None = None, submit: bool = False, keys: str | None = None, amount: int = 600,
             js: str | None = None, index: int | None = None, separate: bool = False) -> ToolResult:
         if action == "close":
-            b = ctx.state.pop("browser", None)
+            b = ctx.state.get("browser")
+            if b is not None and b.attached:
+                # Kullanıcının kendi tarayıcısı: bağlantıyı açık tut, yeniden bağlanmak Opera'da yine izin sorar.
+                return ToolResult("kullanıcının tarayıcısı açık bırakıldı (ALICE'in ayrı penceresi yok)")
+            ctx.state.pop("browser", None)
             if b:
                 b.close()
             return ToolResult("tarayıcı kapatıldı")
