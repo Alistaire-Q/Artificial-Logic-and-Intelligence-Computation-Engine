@@ -31,7 +31,7 @@ def test_agent_loops_until_done_and_sends_screenshot():
     assert s.acts == [{"action": "click", "id": 1, "thought": "kaydet"}]
     parts = seen[0][1]["content"]
     assert "[1] Button 'Kaydet'" in parts[0]["text"] and parts[1]["image_url"]["url"].endswith("IMG")
-    assert "1. click" in seen[1][1]["content"][0]["text"]  # geçmiş adımlar sonraki adıma gider
+    assert "1. [{\"action\": \"click\"" in seen[1][1]["content"][0]["text"]  # geçmiş adımlar sonraki adıma gider
 
 
 def test_agent_stops_on_repeated_action():
@@ -75,3 +75,12 @@ def test_live_runs_computer_task_in_background(monkeypatch):
     assert done.wait(3)
     assert "ev yapıldı" in sent[-1]["clientContent"]["turns"][0]["parts"][0]["text"]
     assert s._bg == 0
+
+
+def test_agent_runs_batched_actions():
+    answers = iter(['{"thought": "kutu görünüyor", "actions": [{"action": "click", "id": 1}, '
+                    '{"action": "type", "text": "merhaba", "enter": true}]}',
+                    '{"action": "done", "summary": "Gönderildi."}'])
+    s = FakeScreen()
+    res = ComputerAgent(s, lambda m: next(answers), settle=0).run("merhaba yaz")
+    assert res.status == "done" and [a["action"] for a in s.acts] == ["click", "type"]

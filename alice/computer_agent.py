@@ -23,8 +23,12 @@ from typing import Any, Callable
 SYSTEM = """You operate a Windows computer for the user with the mouse and keyboard, like a careful human.
 Each step you get: the GOAL, what you already did, and a fresh SCREENSHOT of the screen. Interactive elements of
 the foreground window are marked with numbered boxes on the screenshot and listed as ELEMENTS.
-Reply with ONE next action as a JSON object, nothing else:
+Reply with the next action as a JSON object, nothing else:
 {"thought": "<short: what you see and why this action>", "action": "<action>", ...arguments}
+When several actions are certain from the CURRENT screenshot (e.g. click the message box, type the text, press
+Enter), send them together to save time, up to 5, executed in order:
+{"thought": "...", "actions": [{"action": "click", "id": 7}, {"action": "type", "text": "merhaba", "enter": true}]}
+Do not batch past something you cannot see yet (a menu that will open, a page that will load).
 Actions:
 - click / double_click / right_click: {"id": <element number>} or {"point": [y, x]} (y,x normalized 0-1000)
 - type: {"text": "..."} types into the focused field (click the field first); add "enter": true to press Enter after
@@ -188,7 +192,7 @@ class Screen:
 
 class ComputerAgent:
     def __init__(self, screen, ask: Callable[[list[dict[str, Any]]], str], emit: Callable[[str], None] = lambda s: None,
-                 settle: float = 0.8, stop: Callable[[], bool] = lambda: False):
+                 settle: float = 0.5, stop: Callable[[], bool] = lambda: False):
         self.screen = screen
         self.ask = ask  # mesajlar -> model cevabı (metin)
         self.emit = emit
@@ -218,26 +222,41 @@ class ComputerAgent:
             except Exception as e:  # noqa: BLE001
                 steps.append(f"{n}. model cevabı okunamadı: {e}")
                 continue
-            kind = a.get("action", "")
+            batch = a.get("actions") if isinstance(a.get("actions"), list) else [a]
+            batch = [b for b in batch if isinstance(b, dict)][:5]
+            if not batch:
+                steps.append(f"{n}. boş aksiyon")
+                continue
+            kind = batch[0].get("action", "")
             if kind in ("done", "fail"):
-                return TaskResult(kind, str(a.get("summary", "")), steps)
-            key = json.dumps({k: v for k, v in a.items() if k != "thought"}, sort_keys=True, ensure_ascii=False)
+                return TaskResult(kind, str(batch[0].get("summary") or a.get("summary", "")), steps)
+            key = json.dumps([{k: v for k, v in b.items() if k != "thought"} for b in batch], sort_keys=True,
+                             ensure_ascii=False)
             last.append(key)
             if len(last) >= 3 and len(set(last[-3:])) == 1:
                 return TaskResult("fail", "aynı adım tekrarlanıyor, ilerleyemedim", steps)
-            try:
-                res = self.screen.act(a, shot)
-            except Exception as e:  # noqa: BLE001
-                res = f"HATA {e}"
-            line = f"{n}. {kind} {key[:120]} -> {res} ({str(a.get('thought', ''))[:100]})"
+            results = []
+            for b in batch:
+                if b.get("action") in ("done", "fail"):
+                    break
+                try:
+                    results.append(self.screen.act(b, shot))
+                except Exception as e:  # noqa: BLE001
+                    results.append(f"HATA {e}")
+                    break  # sonrakiler bu adıma dayanıyor olabilir
+                time.sleep(0.25)
+            line = f"{n}. {key[:160]} -> {'; '.join(results)} ({str(a.get('thought', ''))[:100]})"
             steps.append(line)
             self.emit(line)
             time.sleep(self.settle)
         return TaskResult("max_steps", "adım sınırı doldu", steps)
 
 
-def router_asker(router, role: str = "vision") -> Callable[[list[dict[str, Any]]], str]:
+def router_asker(router, role: str = "vision", effort: str = "low") -> Callable[[list[dict[str, Any]]], str]:
+    # Düşük düşünme: aynı ekranda aynı kararı ~2x hızlı veriyor (ölçüm: 4,7 sn -> 2,4 sn).
+    extra = {"reasoning_effort": effort} if effort else None
+
     def ask(messages: list[dict[str, Any]]) -> str:
-        return router.chat(role, messages, temperature=0, max_tokens=2000).text
+        return router.chat(role, messages, temperature=0, max_tokens=2000, gemini_extra=extra).text
 
     return ask
