@@ -1360,3 +1360,33 @@ def test_follow_up_without_wake_rejects_noise_text():
         va.armed_until = time.monotonic() + 5
         va.handle_audio(Audio(b"\1\0" * 16000, 16000), direct=False)
         assert stt.calls == want, text
+
+
+def test_wake_gate_adds_flight_words_in_flight_mode():
+    from alice.voice import stt
+
+    class Model:
+        def transcribe(self, *a, **k):
+            self.prompt = k.get("initial_prompt")
+            return iter([]), None
+
+    gpu = [True]
+    gate = stt.WakeGate("base", "tr", gpu_model="small", allow_gpu=lambda: gpu[0])
+    gate.available = lambda: True
+    gate._model = Model()
+    audio = Audio(b"\1\0" * 16000, 16000)
+    gate.transcribe(audio, "Hey Alice.")
+    assert gate._model.prompt == "Hey Alice."
+    gpu[0] = False  # DCS açık: uçuş modu
+    gate.transcribe(audio, "Hey Alice.")
+    assert "Bingo" in gate._model.prompt
+
+
+def test_speech_segments_drop_echo_of_custom_prompt():
+    from types import SimpleNamespace as S
+
+    from alice.voice.stt import speech_segments
+
+    echo = S(text="Bingo, cannon, waypoint.", no_speech_prob=0.5, avg_logprob=-1.0, compression_ratio=1.0)
+    real = S(text="Cannon kaç mermi kaldı?", no_speech_prob=0.05, avg_logprob=-0.3, compression_ratio=1.0)
+    assert speech_segments([echo, real], "Hey Alice. Bingo, cannon, waypoint, tanker.") == [real]

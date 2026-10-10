@@ -209,14 +209,15 @@ class LocalWhisper:
             self._lock.release()
 
 
-def _wake_echo(text: str) -> bool:
-    return re.sub(r"[^a-zçğıöşü ]", "", text.lower()).strip() in {"hey alice", "alice", "hey alis", "hey"}
+def _norm(text: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-zçğıöşü0-9 ]", " ", text.lower())).strip()
 
 
-def speech_segments(segments) -> list:
+def speech_segments(segments, prompt: str = "Hey Alice.") -> list:
     """Gerçek konuşma olmayan Whisper parçalarını at. initial_prompt "Hey Alice." olduğu için Whisper oyun/motor
     sesi ya da müzikte ipucunu aynen geri yazabiliyor: kimse konuşmadan ALICE uyanıyordu. Ayrıca kendini tekrar
     eden döngüler (sıkıştırma oranı yüksek) ve "konuşma yok" olasılığı yüksek + güvensiz parçalar atılır."""
+    hint = _norm(prompt)
     out = []
     for s in segments:
         nsp = float(getattr(s, "no_speech_prob", 0.0) or 0.0)
@@ -224,10 +225,16 @@ def speech_segments(segments) -> list:
         cr = float(getattr(s, "compression_ratio", 1.0) or 1.0)
         if cr > 2.4 or (nsp > 0.6 and lp < -0.7):
             continue
-        if _wake_echo(getattr(s, "text", "")) and (nsp > 0.35 or lp < -0.9):
+        t = _norm(getattr(s, "text", ""))
+        echo = t in {"hey alice", "alice", "hey alis", "hey"} or (len(t) > 3 and t in hint)
+        if echo and (nsp > 0.35 or lp < -0.9):
             continue
         out.append(s)
     return out
+
+
+# Uçuşta sık söylenen ve yanlış duyulan kelimeler ("yakıtım" -> "yakıştın", "cannon" -> "Canon").
+FLIGHT_HINT = "Yakıtım ne kadar kaldı? Bingo, cannon, waypoint, tanker, AoA, stall, iniş takımı, flap."
 
 
 class WakeGate:
@@ -324,6 +331,15 @@ class WakeGate:
 
         threading.Thread(target=run, daemon=True, name="alice-wake-move").start()
 
+    def flying(self) -> bool:
+        """Uçuş modu: ekran kartı var ama kullanımı kapalı (local_gpu = false)."""
+        if not self.gpu_model or getattr(self, "_cuda_failed", False):
+            return False
+        try:
+            return not self.allow_gpu()
+        except Exception:  # noqa: BLE001
+            return False
+
     def heard(self, audio: Audio) -> str | None:
         """Cümlenin başının yerel yazıya dökümü; yerel model kullanılamıyorsa None."""
         if not self.available():
@@ -354,9 +370,11 @@ class WakeGate:
             with self._lock:
                 if self._model is None:
                     self._model = self._load()
+                if self.flying():
+                    prompt = f"{prompt} {FLIGHT_HINT}".strip()
                 segments, _ = self._model.transcribe(io.BytesIO(wav), language=self.language, beam_size=1,
                                                      initial_prompt=prompt, condition_on_previous_text=False)
-                segs = speech_segments(segments)
+                segs = speech_segments(segments, prompt)
         except Exception:  # noqa: BLE001
             return None
         text = " ".join(s.text.strip() for s in segs).strip()
