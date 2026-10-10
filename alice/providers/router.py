@@ -291,6 +291,7 @@ class Router:
         max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
         stream: "StreamSink | None" = None,
+        gemini_extra: dict[str, Any] | None = None,
     ) -> ChatResult:
         """stream verilirse cevap parça parça stream.on_delta'ya akar. Bir model akışın ortasında
         düşerse stream.on_reset() çağrılır ve sıradaki model baştan dener."""
@@ -327,8 +328,11 @@ class Router:
                 msgs = clean_messages(messages if pc.supports_vision(model) else strip_images(messages),
                                       gemini=is_gemini(pc))
                 client = self.client(p)
+                extra = dict(self.config.model_extra(ref) or {})
+                if gemini_extra and is_gemini(pc):  # ör. reasoning_effort: sadece Gemini'nin anladığı ayarlar
+                    extra.update(gemini_extra)
                 kw = dict(tools=tools, temperature=temperature, max_tokens=max_tokens,
-                          response_format=response_format, extra=self.config.model_extra(ref) or None)
+                          response_format=response_format, extra=extra or None)
                 emitted = [False]
                 try:
                     if stream is not None and hasattr(client, "chat_stream"):

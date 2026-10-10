@@ -48,6 +48,9 @@ Birkaç adım süren ekran işlerini (masaüstünde/Windows'ta bir ayar, uygulam
 bir şey çizmek/kurmak, dosya kaydetmek) computer_task'a ver: ekranı görerek fare ve klavyeyle kendi yapar, arka
 planda sürer, bitince sonucu sana yazar. goal'e işi net yaz (ör. "masaüstüne geç, boş yere sağ tıkla, Görünüm >
 Masaüstü simgelerini göster'i aç"). Tek tıklık işler için reflex daha hızlı.
+Ekranda birden fazla adım gereken işi (bir uygulamada yazmak, mesaj göndermek, ayar değiştirmek) DOĞRUDAN
+computer_task'a ver; önce screenshot/ui_elements/reflex ile denemeye çalışma. computer aracıyla görmeden (koordinat
+tahmin ederek) tıklama.
 Monitörler: {monitors}. Her konuşmada sana öndeki pencerenin olduğu monitörün görüntüsü gelir. Başka monitörü ya da
 hepsini görmek için computer action=screenshot monitor=<numara> (0 = hepsi yan yana); computer_task'a da monitor
 verebilirsin.
