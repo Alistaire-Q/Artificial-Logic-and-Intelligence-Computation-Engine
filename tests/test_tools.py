@@ -353,3 +353,18 @@ def test_youtube_search_results_are_cached(monkeypatch):
     extras._YT_CACHE.clear()
     assert extras.youtube_search("Kedi") == extras.youtube_search("kedi ") == [("A", "abcdefghijk")]
     assert len(calls) == 1
+
+
+def test_browser_evaluate_wraps_with_timeout():
+    from types import SimpleNamespace
+
+    from alice.tools.browser import BrowserSession
+
+    calls = []
+    loc = SimpleNamespace(evaluate=lambda js, arg, timeout: calls.append((js, arg, timeout)) or 1)
+    b = BrowserSession.__new__(BrowserSession)
+    b.attached, b.page = False, SimpleNamespace(locator=lambda sel: loc)
+    b.evaluate("(limit) => limit", 5)
+    b.evaluate("document.title")
+    assert calls[0] == ("(_el, arg) => ((limit) => limit)(arg)", 5, 10000)
+    assert calls[1][0] == "(_el, arg) => (() => (document.title))(arg)"
