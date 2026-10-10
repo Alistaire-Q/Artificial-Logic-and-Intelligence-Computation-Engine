@@ -85,6 +85,16 @@ class SimHub:
         if ACTIVE is self:
             ACTIVE = None
 
+    def alert_home(self, nm: float) -> str:
+        """Havadaki uçuşa 'üsse nm mil kalınca söyle' uyarısı kur."""
+        for c in self.companions.values():
+            if c.last_state is not None and c.phase == "air":
+                if c.home is None:
+                    return "kurulamadı: üssün konumu bilinmiyor (kalkış kaydedilmedi)"
+                c.home_alert_nm = float(nm)
+                return f"kuruldu: üsse {nm:.0f} mil kalınca sesli söylenecek"
+        return "kurulamadı: şu an uçuşta değilsin"
+
     def status(self) -> str:
         lines = []
         for src, c in self.companions.items():
@@ -102,11 +112,24 @@ class SimHub:
                          if "home_min" in fs else "")
                 lines.append(f"  yakıt {s.fuel_kg:.0f} kg, tüketim {fs['burn_kgs'] * 3600:.0f} kg/sa, "
                              f"{fs['left_min']:.0f} dk kaldı{extra}")
+            nav = c.home_nav(s)
+            if nav:
+                turn = ""
+                if "turn" in nav:
+                    t = nav["turn"]
+                    turn = (" (burnun zaten üsse dönük)" if abs(t) < 10 else
+                            f", şu an burnun {s.heading:03.0f}°: {abs(t):.0f}° {'sağa' if t > 0 else 'sola'} dön")
+                lines.append(f"  üs (kalkış noktası): {nav['bearing']:03.0f}° yönünde (gerçek kuzey), "
+                             f"{nav['nm']:.0f} nm{turn}")
+            else:
+                lines.append("  üsse yön bilinmiyor (kalkış noktası kaydedilmedi)")
+            if c.home_alert_nm is not None:
+                lines.append(f"  kurulu uyarı: üsse {c.home_alert_nm:.0f} mil kalınca söylenecek")
             if s.chaff is not None:
                 lines.append(f"  chaff {s.chaff}, flare {s.flare}")
         if lines:
             return "\n".join(lines)
         if self.cfg.get("dcs", True) and "dcs" in self.companions and self.companions["dcs"].last_state is None:
-            return ("DCS'ten bu oturumda hiç veri gelmedi. DCS açıksa: veri betiği yeni kurulduysa DCS'i yeniden "
-                    "başlatmak gerekir (görevi yeniden başlatmak yetmez); kuruluysa `alice dcs status` ile kontrol et.")
+            return ("DCS'ten bu oturumda hiç veri gelmedi. DCS açıksa görevi yeniden başlatmak gerekir (veri betiği "
+                    "görev açılırken yüklenir); olmazsa `alice dcs status` ile kontrol et.")
         return "şu an uçuşta değilsin"

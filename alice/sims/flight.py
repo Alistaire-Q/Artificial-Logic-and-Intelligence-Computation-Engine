@@ -47,6 +47,7 @@ class FlightState:
     gear: float | None = None        # 0 = yukarı, 1 = aşağı
     x: float | None = None           # harita koordinatı m (DCS: x kuzey, z doğu)
     z: float | None = None
+    heading: float | None = None     # burnun yönü, derece (gerçek kuzey)
     wall: float = field(default_factory=time.time)
 
 
@@ -139,6 +140,7 @@ class FlightCompanion:
         self.fuel_hist: deque[tuple[float, float]] = deque()
         self.burn_hist: deque[tuple[float, float]] = deque()
         self.home: tuple[float, float] | None = None
+        self.home_alert_nm: float | None = None
         self.fuel_flags: set[str] = set()
         self.g_since: float | None = None
         self.g_last_warn = -1e9
@@ -183,6 +185,7 @@ class FlightCompanion:
         if self.phase != "air":
             return
         self._record(s)
+        self._home_alert(s)
         self._fuel(s)
         self._g(s)
         self._countermeasures(s)
@@ -246,6 +249,16 @@ class FlightCompanion:
             return None
         return math.hypot(s.x - self.home[0], s.z - self.home[1])
 
+    def home_nav(self, s: FlightState) -> dict[str, float] | None:
+        """Üsse yön (gerçek kuzeye göre derece), mesafe (nm) ve dönülecek açı (+ sağa, - sola)."""
+        if self.home is None or s.x is None or s.z is None:
+            return None
+        dx, dz = self.home[0] - s.x, self.home[1] - s.z  # DCS: x kuzey, z doğu
+        out = {"bearing": math.degrees(math.atan2(dz, dx)) % 360, "nm": math.hypot(dx, dz) / NM}
+        if s.heading is not None:
+            out["turn"] = (out["bearing"] - s.heading + 540) % 360 - 180
+        return out
+
     def fuel_status(self, s: FlightState) -> dict[str, float] | None:
         burn = self.burn_rate()
         if s.fuel_kg is None or not burn or burn <= 0:
@@ -261,6 +274,15 @@ class FlightCompanion:
             need = cruise * home_min * 60 + self.profile.reserve_kg
             out.update(home_min=home_min, home_nm=dist / NM, margin_min=(s.fuel_kg - need) / burn / 60)
         return out
+
+    def _home_alert(self, s: FlightState) -> None:
+        """'Üsse 10 mil kalınca söyle' (flight alert_home): mesafe altına inince bir kez söyle."""
+        if self.home_alert_nm is None:
+            return
+        nav = self.home_nav(s)
+        if nav and nav["nm"] <= self.home_alert_nm:
+            self.home_alert_nm = None
+            self.say(f"Üsse {nav['nm']:.0f} mil kaldı.", "warn", "calm")
 
     def _fuel(self, s: FlightState) -> None:
         if s.fuel_kg is None:

@@ -8,24 +8,37 @@ from typing import Any
 
 from alice.tools.base import READ, WRITE, Tool, ToolContext, ToolError, ToolResult, obj
 
-ACTIONS = ["status", "last_debrief", "checklist_list", "checklist_start", "checklist_next", "checklist_prev",
+ACTIONS = ["status", "alert_home", "last_debrief", "checklist_list", "checklist_start", "checklist_next", "checklist_prev",
            "checklist_stop", "kneeboard_build", "kneeboard_note", "kneeboard_clear", "kneeboard_show"]
 
 
 class Flight(Tool):
     name = "flight"
-    description = ("DCS/War Thunder. status: canlı yakıt/kalan dk/eve dönüş. checklist_start (name: iniş, kalkış...): "
+    description = ("DCS/War Thunder. status: canlı yakıt/kalan dk/eve dönüş, üssün yönü ve mesafesi, sağa/sola kaç "
+                   "derece dönmeli (yön/mesafe/yakıt sorulunca HER SEFER status çağır, tahmin etme). alert_home (nm): "
+                   "üsse nm mil kalınca otomatik sesli uyarı kurar; 'X mile gelince söyle' denince bunu çağır, "
+                   "başka türlü uyarı söz verme. checklist_start (name: iniş, kalkış...): "
                    "sesliyken sadece dönen adımı oku, 'tamam/devam' gelince checklist_next. kneeboard_note (text): "
                    "uçuşta not. kneeboard_build (mission: .miz, boşsa son görev).")
     parameters = obj({"action": {"type": "string", "enum": ACTIONS}, "name": {"type": "string"},
-                      "text": {"type": "string"}, "mission": {"type": "string"}}, ["action"])
+                      "text": {"type": "string"}, "mission": {"type": "string"},
+                      "nm": {"type": "number", "description": "alert_home için mil"}}, ["action"])
     risk = READ
 
     def risk_for(self, args: dict[str, Any]) -> str:
         a = args.get("action", "")
         return WRITE if a in ("kneeboard_build", "kneeboard_note", "kneeboard_clear") else READ
 
-    def run(self, ctx: ToolContext, action: str, name: str = "", text: str = "", mission: str = "") -> ToolResult:
+    def run(self, ctx: ToolContext, action: str, name: str = "", text: str = "", mission: str = "",
+            nm: float | None = None) -> ToolResult:
+        if action == "alert_home":
+            from alice.sims import hub
+
+            if hub.ACTIVE is None:
+                return ToolResult("uçuş takibi bu süreçte çalışmıyor (alice core run ile başlar)")
+            if not nm or nm <= 0:
+                raise ToolError("nm gerekli (ör. 10)")
+            return ToolResult(hub.ACTIVE.alert_home(nm))
         if action.startswith("checklist_"):
             return self._checklist(ctx, action[len("checklist_"):], name)
         if action.startswith("kneeboard_"):

@@ -357,3 +357,22 @@ def test_checklist_after_takeoff_exists():
 
     cl = find("kalkış sonrası")
     assert cl is not None and cl.key == "kalkis-sonrasi"
+
+
+def test_home_nav_bearing_turn_and_alert():
+    from alice.sims.flight import NM, FlightCompanion, FlightState
+
+    said = []
+    c = FlightCompanion(lambda text, sev="info", emo=None: said.append(text), lambda a, b: None, lambda: None,
+                        lambda d: None)
+    c.home = (0.0, 0.0)
+    # üssün 20 nm güneybatısındayız (x kuzey, z doğu), burun 212°: üs kuzeydoğuda (~045°)
+    s = FlightState(t=1, x=-20 * NM * 0.7071, z=-20 * NM * 0.7071, heading=212)
+    nav = c.home_nav(s)
+    assert round(nav["bearing"]) == 45 and round(nav["nm"]) == 20
+    assert round(nav["turn"]) == -167  # 167° sola (en kısa dönüş)
+    c.home_alert_nm = 10
+    c._home_alert(s)
+    assert said == []
+    c._home_alert(FlightState(t=2, x=-9 * NM, z=0, heading=0))
+    assert said == ["Üsse 9 mil kaldı."] and c.home_alert_nm is None
