@@ -192,6 +192,18 @@ class FakeHub:
         self.alerts.append(nm)
         return f"{nm} mil uyarısı kuruldu"
 
+    def alert_altitude(self, ft):
+        self.alerts.append(("ft", ft))
+        return f"{ft} ft uyarısı kuruldu"
+
+    def alert_fuel(self, kg):
+        self.alerts.append(("kg", kg))
+        return f"{kg} kg uyarısı kuruldu"
+
+    def clear_alerts(self):
+        self.alerts.clear()
+        return "uyarılar silindi"
+
 
 def test_alert_home_without_hub(ctx, no_hub):
     assert "çalışmıyor" in flight_mod.Flight().run(ctx, action="alert_home", nm=10).text
@@ -436,3 +448,17 @@ def test_kneeboard_note_saved_even_when_dcs_missing(ctx, dcs_env):
     with pytest.raises(ToolError):
         flight_mod.Flight().run(ctx, action="kneeboard_note", text="kayıp mı?")
     assert [n["text"] for n in kb.load_notes()] == ["kayıp mı?"]
+
+
+def test_alt_fuel_alerts_and_clear(ctx, monkeypatch):
+    from alice.sims import hub
+
+    fake = FakeHub()
+    monkeypatch.setattr(hub, "ACTIVE", fake)
+    f = flight_mod.Flight()
+    assert "ft" in f.run(ctx, action="alert_alt", ft=5000).text
+    assert "kg" in f.run(ctx, action="alert_fuel", kg=1500).text
+    assert fake.alerts == [("ft", 5000), ("kg", 1500)]
+    with pytest.raises(ToolError, match="kg"):
+        f.run(ctx, action="alert_fuel", kg=0)
+    assert f.run(ctx, action="alerts_clear").text == "uyarılar silindi" and fake.alerts == []

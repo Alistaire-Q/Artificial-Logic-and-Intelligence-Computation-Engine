@@ -39,7 +39,7 @@ class FakeWhisperModel:
     segments: list[Seg] = [Seg(" merhaba "), Seg(" dünya ")]
     raise_on_transcribe: Exception | None = None
 
-    def __init__(self, name, device="cpu", compute_type="int8"):
+    def __init__(self, name, device="cpu", compute_type="int8", **kw):
         if device in self.fail_devices:
             raise RuntimeError(f"{device} yok")
         self.name, self.device = name, device
@@ -192,7 +192,7 @@ def test_local_whisper_cpu_when_gpu_not_allowed(fake_fw):
 def test_local_whisper_prefers_cuda(fake_fw):
     lw = LocalWhisper(gpu_model="big", prompt="ipucu")
     lw.transcribe_file(b"x", "a.wav")
-    assert fake_fw.created == [("big", "cuda", "float16")]
+    assert fake_fw.created == [("big", "cuda", stt.GPU_COMPUTE)]
     assert lw._models["cuda"].calls[0]["initial_prompt"] == "ipucu"
 
 
@@ -297,7 +297,7 @@ def test_wakegate_gpu_model_when_allowed(fake_fw):
     g = WakeGate("base", gpu_model="small", allow_gpu=lambda: True)
     g.heard(Audio.silence(0.5, 16000))
     assert g.device == "cuda" and g.model_name == "small"
-    assert fake_fw.created == [("small", "cuda", "float16")]
+    assert fake_fw.created == [("small", "cuda", stt.GPU_COMPUTE)]
 
 
 def test_wakegate_gpu_failure_falls_back_to_cpu(fake_fw):
