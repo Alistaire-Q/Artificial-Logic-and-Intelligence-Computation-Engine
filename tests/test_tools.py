@@ -319,3 +319,37 @@ def test_devtools_active_port_endpoint(tmp_path, monkeypatch):
     monkeypatch.setattr(browser, "_port_open", lambda port, timeout=0.3: False)
     assert browser.devtools_active_endpoint([d]) is None
     assert browser.host_of("https://www.youtube.com/watch?v=1") == "youtube.com"
+
+
+def test_navigate_site_root_only_switches_tab(monkeypatch):
+    from alice.tools import computer, desktop
+
+    did = []
+    monkeypatch.setattr(desktop, "browser_window_title", lambda: "Opera")
+    monkeypatch.setattr(desktop, "focus_window", lambda t: "x")
+    monkeypatch.setattr(desktop, "active_title", lambda: "Concorde - YouTube - Opera")
+    monkeypatch.setattr(desktop.time, "sleep", lambda s: None)
+    monkeypatch.setattr(computer, "press_keys", lambda k: did.append(k))
+    monkeypatch.setattr(computer, "type_text", lambda t: did.append(t))
+    res = desktop.Windows().run(None, "navigate", target="https://www.youtube.com/")
+    assert did == [] and "geçildi" in res.text
+    assert desktop.is_site_root("youtube.com") and not desktop.is_site_root("youtube.com/watch?v=1")
+
+
+def test_youtube_search_results_are_cached(monkeypatch):
+    import httpx
+
+    from alice.tools import extras
+
+    calls = []
+    html = '"videoRenderer":{"videoId":"abcdefghijk","title":{"runs":[{"text":"A"}]}'
+    real = httpx.Client
+
+    def fake_client(*a, **k):
+        calls.append(1)
+        return real(transport=httpx.MockTransport(lambda r: httpx.Response(200, text=html)))
+
+    monkeypatch.setattr(extras.httpx, "Client", fake_client)
+    extras._YT_CACHE.clear()
+    assert extras.youtube_search("Kedi") == extras.youtube_search("kedi ") == [("A", "abcdefghijk")]
+    assert len(calls) == 1

@@ -350,6 +350,12 @@ def site_key(target: str) -> str | None:
     return parts[-2] if len(parts) >= 2 else parts[0]
 
 
+def is_site_root(target: str) -> bool:
+    """'youtube.com', 'https://www.youtube.com/' gibi sadece site adresi mi (yol/sorgu yok)?"""
+    rest = re.sub(r"^[a-z]+://", "", target.strip().lower()).split("/", 1)
+    return len(rest) == 1 or rest[1].strip("/") == ""
+
+
 def active_title() -> str:
     try:
         import pygetwindow as gw
@@ -427,6 +433,8 @@ def navigate_tab(target: str, title: str | None = None, new_tab: bool | None = N
     key = site_key(target)
     if new_tab is None and key:
         found = switch_tab(key, name)
+        if found and is_site_root(target):  # sadece siteyi aç: açık sekmeye geçmek yeter, içindekini bozma
+            return f"zaten açık sekmeye geçildi: {found}"
         if found:
             new_tab, where = False, f"açık '{found}' sekmesinde"
     if new_tab is None:
