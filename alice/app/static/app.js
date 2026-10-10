@@ -449,6 +449,15 @@ function toolRow(id, name, summary, running) {
   }
   return add(t);
 }
+// 1.8k, 840k, 1M gibi kısa token yazımı.
+function fmtTok(n) {
+  if (n >= 1e6) {
+    const m = n / 1048576;
+    return String(Math.abs(m - Math.round(m)) < 0.01 ? Math.round(m) : (n / 1e6).toFixed(1)).replace(".", ",") + "M";
+  }
+  if (n >= 1e4) return `${Math.round(n / 1000)}k`;
+  return `${(n / 1000).toFixed(1).replace(".", ",")}k`;
+}
 function fmtDur(s) { return s < 10 ? `${s.toFixed(1).replace(".", ",")} sn` : fmtSecs(Math.round(s)); }
 
 // Satır numaralı, renklendirilmiş unified diff (Codex/Claude Code'daki gibi).
@@ -729,11 +738,14 @@ function applyStatus(s) {
   $("#modelBtn").title = st.model || "";
   $("#stModel").textContent = st.model || "model yok";
   if (st.ctx_limit) {
-    const pct = Math.min(100, (100 * st.ctx_tokens) / st.ctx_limit);
+    const win = st.ctx_window || st.ctx_limit;
+    const pct = Math.min(100, (100 * st.ctx_tokens) / win);
     const m = $("#stCtx .meter");
     m.firstElementChild.style.width = pct + "%";
     m.classList.toggle("hot", pct > 75);
-    $("#stCtx span").textContent = `${(st.ctx_tokens / 1000).toFixed(1)}k / ${Math.round(st.ctx_limit / 1000)}k`;
+    $("#stCtx span").textContent = `${fmtTok(st.ctx_tokens)} / ${fmtTok(win)}`;
+    $("#stCtx").title = `Bağlam: ${st.ctx_tokens.toLocaleString("tr-TR")} / ${win.toLocaleString("tr-TR")} token. ` +
+      `${fmtTok(st.ctx_limit)} token'da eski konuşma otomatik özetlenir.`;
   }
   if (st.today_requests !== undefined) $("#stReq").textContent = `bugün ${st.today_requests} istek`;
   if (st.decider) $("#stDec").textContent = `karar: ${st.decider}`;
@@ -1137,10 +1149,11 @@ function renderPanel() {
     }
   } else {
     const st = S.status;
-    const pct = st.ctx_limit ? Math.min(100, (100 * st.ctx_tokens) / st.ctx_limit) : 0;
+    const win = st.ctx_window || st.ctx_limit || 0;
+    const pct = win ? Math.min(100, (100 * st.ctx_tokens) / win) : 0;
     const ctx = el("div", "ctx-card");
     const big = el("div", "ctx-big");
-    big.append(el("b", "", `${Math.round(pct)}%`), el("span", "", `${((st.ctx_tokens || 0) / 1000).toFixed(1)}k / ${Math.round((st.ctx_limit || 0) / 1000)}k token`));
+    big.append(el("b", "", `${Math.round(pct)}%`), el("span", "", `${fmtTok(st.ctx_tokens || 0)} / ${fmtTok(win)} token`));
     const meter = el("i", "ctx-meter" + (pct > 75 ? " hot" : ""));
     const fill = el("i");
     fill.style.width = pct + "%";
@@ -1148,7 +1161,8 @@ function renderPanel() {
     const cp = el("button", "btn", "Şimdi özetle");
     cp.addEventListener("click", () => runCommand("/compact"));
     ctx.append(el("div", "sec", "Bağlam doluluğu"), big, meter,
-      el("p", "", "Sınıra yaklaşınca eski konuşma otomatik özetlenir."), cp);
+      el("p", "", `Modelin penceresi ${fmtTok(win)} token. ${fmtTok(st.ctx_limit || 0)} token'a gelince eski konuşma otomatik özetlenir. ` +
+        "Sayı, sağlayıcının son istekte saydığı token'dır (araç tanımları dahil)."), cp);
     body.appendChild(ctx);
     const kv = el("dl", "kv");
     const mins = Math.floor((Date.now() - S.started) / 60000);

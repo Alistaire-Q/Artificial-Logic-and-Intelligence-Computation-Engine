@@ -243,17 +243,20 @@ def _check_ready(router: Router) -> bool:
 
 
 # ----------------------------------------------------------------------- REPL
-def status_line(agent: Agent, router: Router, ctx: ToolContext) -> str:
-    from alice.providers.router import estimate_tokens
+def _ktok(n: int) -> str:
+    return f"{n / 1_000_000:.1f}M" if n >= 1_000_000 else f"{n / 1000:.1f}k"
 
+
+def status_line(agent: Agent, router: Router, ctx: ToolContext) -> str:
     model = router.last_ref.get("brain") or router.first_available("brain") or "model yok"
-    toks = estimate_tokens(agent.messages)
+    toks = agent.context_tokens()
     req = sum(r["requests"] for r in router.usage.today().values())
     dec = agent.decider.names[0] if agent.decider else "-"
     cwd = str(ctx.cwd)
     if len(cwd) > 40:
         cwd = "…" + cwd[-39:]
-    return (f" {model} │ izin: {agent.permissions.mode} │ context {toks / 1000:.1f}k/{agent.compact_at // 1000}k │ "
+    window = router.context_limit(model) if ":" in model else agent.compact_at
+    return (f" {model} │ izin: {agent.permissions.mode} │ context {_ktok(toks)}/{_ktok(window)} │ "
             f"bugün {req} istek │ karar: {dec} │ {cwd} ")
 
 

@@ -34,8 +34,9 @@ DEFAULT_CONFIG_TOML = r'''
 # yolo = hiçbir şey sormaz, tam erişim
 permission_mode = "auto"
 max_steps = 80
-# Free tier'larda TPM limiti dar, context'i bu sınırda özetleyip küçültüyoruz.
-compact_at_tokens = 48000
+# Konuşma bu token sayısını geçince eski kısmı özetlenir. "auto": kullanılan modelin bağlam penceresinin %80'i
+# (GLM 5.3 ve Gemini'de 1M pencere, Groq gibi dar ücretsiz katmanlarda sağlayıcının max_input_tokens'ı).
+compact_at_tokens = "auto"
 tool_output_chars = 12000
 # Geçmişte tutulacak en fazla ekran görüntüsü (eski görüntüler metne çevrilir).
 keep_images = 2
@@ -207,7 +208,8 @@ voice = "off"
 # sabit modeller de yazabilirsin, ör. brain = ["gemini:gemini-flash-latest", "auto"].
 [roles]
 # Ana beyin (System 2): planlama, kod yazma, araç kullanma.
-brain = ["auto", "ollama:qwen3:8b"]
+# Başta GLM 5.3 (NVIDIA, 1M bağlam); kotası dolar ya da hata verirse ölçülen en iyi ücretsiz modellere geçer.
+brain = ["nvidia:z-ai/glm-5.3", "auto", "ollama:qwen3:8b"]
 # Sesli asistan: beyin kadar yetenekli ama ilk kelimesi en çabuk gelen modeller (konuşmaya geç başlamasın).
 voice = ["auto", "ollama:qwen3:8b"]
 # Hızlı, kısa işler: özet, input'a yazılacak metni üretme, decider emülasyonu.
@@ -464,9 +466,24 @@ def load_config(path: Path | None = None, cwd: Path | None = None) -> Config:
             # Elle düzenlemede tek yazım hatası çekirdeği/uygulamayı açılışta sessizce düşürmesin: varsayılanlarla aç.
             print(f"UYARI: {cfg_path} okunamadı, varsayılan ayarlar kullanılıyor: {e}", file=sys.stderr)
             user = {}
+        _drop_legacy_defaults(user)
         # Rol listeleri birleştirilmez, kullanıcınınki tamamen geçerlidir.
         data = _deep_merge(data, user)
     return Config(data=data, path=cfg_path if cfg_path.is_file() else None)
+
+
+# `alice init` eski varsayılanları config.toml'a yazmıştı. Kullanıcı bunlara dokunmadıysa yeni varsayılan geçerli
+# olsun (ör. ana modelin GLM 5.3 olması); kullanıcının değiştirdiği değerler olduğu gibi kalır.
+LEGACY_DEFAULTS: list[tuple[tuple[str, str], Any]] = [
+    (("roles", "brain"), ["auto", "ollama:qwen3:8b"]),
+]
+
+
+def _drop_legacy_defaults(user: dict[str, Any]) -> None:
+    for (section, key), old in LEGACY_DEFAULTS:
+        sec = user.get(section)
+        if isinstance(sec, dict) and sec.get(key) == old:
+            del sec[key]
 
 
 def _add_missing_env_keys(env: Path) -> bool:

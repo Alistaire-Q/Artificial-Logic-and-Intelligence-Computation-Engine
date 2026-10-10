@@ -400,7 +400,7 @@ Varsayılanı `auto` yaptım çünkü tam erişim istedin ama bir free modelin y
 ```toml
 [agent]
 permission_mode = "auto"
-compact_at_tokens = 48000   # bu boyutta context özetlenir (free TPM limitleri dar)
+compact_at_tokens = "auto"   # "auto": modelin bağlam penceresinin %80'inde özetlenir (GLM 5.3, Gemini: 1M); sayı yazılırsa o
 keep_images = 2             # geçmişte tutulan ekran görüntüsü sayısı
 browser_headless = false
 
