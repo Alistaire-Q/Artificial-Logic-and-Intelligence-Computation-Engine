@@ -146,6 +146,7 @@ class FlightCompanion:
         self.warn_seen: set[str] = set()
         self.heat_flags: set[str] = set()
         self.gear_last_warn = -1e9
+        self.gear_fast_said = False
         self.wp_called: float | None = None
         self.weapons_last: dict[str, int] = {}
         self.gun_start: float | None = None
@@ -367,14 +368,17 @@ class FlightCompanion:
                 self.heat_flags.discard(key)
 
     def _gear_check(self, s: FlightState) -> None:
+        if s.gear is not None and s.ias is not None and (s.gear < 0.1 or s.ias < 140):
+            self.gear_fast_said = False
         if s.gear is None or s.ias is None or s.t - self.gear_last_warn < 30:
             return
         agl = s.agl if s.agl is not None else s.extra.get("radalt", 0) * FT if s.extra.get("radalt") else None
         if s.gear < 0.1 and agl is not None and agl < 300 and s.ias < 85 and (s.vv or 0) < -2:
             self.gear_last_warn = s.t
             self.say("Teker kapalı! Alçak ve yavaşsın.", "critical", "urgent")
-        elif s.gear > 0.9 and s.ias > 150:
+        elif s.gear > 0.9 and s.ias > 150 and not self.gear_fast_said:
             self.gear_last_warn = s.t
+            self.gear_fast_said = True  # teker kapanana ya da yavaşlayana kadar bir kez
             self.say(f"Teker açık ve hızın {s.ias / 0.514444:.0f} knot, tekeri kapat ya da yavaşla.", "warn", "serious")
 
     def _waypoint(self, s: FlightState) -> None:

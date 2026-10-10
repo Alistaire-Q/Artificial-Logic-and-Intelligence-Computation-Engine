@@ -70,8 +70,25 @@ class Notifier:
         self.store = store
         self.policy = policy
         self.channels: list[Callable[[Notification, Policy], None]] = []
+        self._toasted: dict[str, float] = {}
         if desktop:
-            self.channels.append(lambda n, p: desktop_notify(n))
+            self.channels.append(self._desktop)
+
+    TOAST_REPEAT = 600.0  # sn: aynı bildirim balonu bu süre içinde tekrar gösterilmez
+
+    def _desktop(self, n: Notification, pol: Policy) -> None:
+        """Windows bildirim balonu. Uçuş anonsları sesli söyleniyor, oyun sırasında balon spam oluyordu: gösterme.
+        Aynı bildirim 10 dk içinde tekrar gelirse de gösterme."""
+        if n.kind == "flight" or n.topic == "flight":
+            return
+        import time
+
+        key = f"{n.title}|{n.body}"
+        now = time.monotonic()
+        if now - self._toasted.get(key, -1e9) < self.TOAST_REPEAT:
+            return
+        self._toasted[key] = now
+        desktop_notify(n)
 
     def send(self, n: Notification) -> bool:
         """Bildirimi gönder. Mod politikası susturduysa False."""
