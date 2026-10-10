@@ -229,9 +229,24 @@ class ComputerTask(Tool):
 
         if ctx.router is None:
             raise ToolError("model yönlendirici yok")
-        agent = ComputerAgent(Screen(ctx, monitor=int(monitor or 0)), router_asker(ctx.router, str(ctx.config.agent.get("computer_role", "vision"))),
-                              emit=ctx.emit, stop=ctx.cancelled)
-        res = agent.run(goal, max_steps=max(1, min(int(max_steps or 30), 60)))
+        from alice.computer_agent import _RUNNING, log_line
+
+        if not _RUNNING.acquire(blocking=False):
+            return ToolResult("zaten bir ekran görevi sürüyor; bitmesini bekle, aynı işi tekrar başlatma.", is_error=True)
+        try:
+            log_line(f"başladı: {goal}")
+
+            def emit(s: str) -> None:
+                ctx.emit(s)
+                log_line(s)
+
+            agent = ComputerAgent(Screen(ctx, monitor=int(monitor or 0)),
+                                  router_asker(ctx.router, str(ctx.config.agent.get("computer_role", "vision"))),
+                                  emit=emit, stop=ctx.cancelled)
+            res = agent.run(goal, max_steps=max(1, min(int(max_steps or 30), 60)))
+            log_line(f"bitti: {res.status}: {res.summary}")
+        finally:
+            _RUNNING.release()
         return ToolResult(res.report(), is_error=res.status in ("error",))
 
 

@@ -51,6 +51,8 @@ Masaüstü simgelerini göster'i aç"). Tek tıklık işler için reflex daha h�
 Ekranda birden fazla adım gereken işi (bir uygulamada yazmak, mesaj göndermek, ayar değiştirmek) DOĞRUDAN
 computer_task'a ver; önce screenshot/ui_elements/reflex ile denemeye çalışma. computer aracıyla görmeden (koordinat
 tahmin ederek) tıklama.
+Mesaj yazmak/göndermek gibi geri alınamayan işlerde hedef, kullanıcının söylediği uygulama ve sohbet olmalı;
+ne dediğini tam anlamadıysan önce sor. Bir işi yaptığını ancak araç sonucu "done" derse söyle.
 Monitörler: {monitors}. Her konuşmada sana öndeki pencerenin olduğu monitörün görüntüsü gelir. Başka monitörü ya da
 hepsini görmek için computer action=screenshot monitor=<numara> (0 = hepsi yan yana); computer_task'a da monitor
 verebilirsin.
@@ -589,6 +591,14 @@ class LiveSession:
     def _run_background(self, ws, fc: dict[str, Any]) -> None:
         name = fc.get("name", "")
         args = fc.get("args") or {}
+        if self._bg:  # fare/klavye tek: ikinci ekran görevi ilkini bozar
+            try:
+                ws.send(json.dumps({"toolResponse": {"functionResponses": [{"id": fc.get("id"), "name": name,
+                    "response": {"result": "zaten bir ekran görevi sürüyor; aynı işi tekrar başlatma, bitince "
+                                           "sonucu sana yazacağım."}}]}}))
+            except Exception:  # noqa: BLE001
+                pass
+            return
         call = {"id": fc.get("id") or name, "type": "function",
                 "function": {"name": name, "arguments": json.dumps(args)}}
         try:

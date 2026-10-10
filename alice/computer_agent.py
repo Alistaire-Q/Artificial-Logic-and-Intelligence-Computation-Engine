@@ -16,6 +16,7 @@ import base64
 import io
 import json
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -70,7 +71,26 @@ def parse_action(text: str) -> dict[str, Any]:
     m = re.search(r"\{.*\}", text or "", re.S)
     if not m:
         raise ValueError(f"JSON yok: {text[:120]}")
-    return json.loads(m.group(0))
+    a = json.loads(m.group(0))
+    if isinstance(a.get("action"), dict):  # {"action": {"action": "click", ...}} ya da {"action": {"point": ...}}
+        inner = a.pop("action")
+        a = {**a, **inner}
+        a.setdefault("action", "click" if ("point" in inner or "id" in inner) else "")
+    return a
+
+
+_RUNNING = threading.Lock()  # fare/klavye tek: aynı anda tek ekran görevi
+
+
+def log_line(text: str) -> None:
+    """Ekran görevinin adımlarını voice.log'a yaz (neden olmadı, sonradan anlaşılsın)."""
+    try:
+        from alice.config import alice_home
+
+        with open(alice_home() / "voice.log", "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} computer_task {text[:400]}\n")
+    except OSError:
+        pass
 
 
 class Screen:
@@ -199,12 +219,16 @@ class ComputerAgent:
         self.settle = settle
         self.stop = stop
 
-    def run(self, goal: str, max_steps: int = 30) -> TaskResult:
+    def run(self, goal: str, max_steps: int = 30, max_seconds: float = 180.0) -> TaskResult:
         steps: list[str] = []
         last: list[str] = []
+        model_errors = 0
+        deadline = time.monotonic() + max_seconds
         for n in range(1, max_steps + 1):
             if self.stop():
                 return TaskResult("stopped", "durduruldu", steps)
+            if time.monotonic() > deadline:
+                return TaskResult("fail", f"{max_seconds:.0f} sn içinde bitmedi", steps)
             try:
                 shot = self.screen.observe()
             except Exception as e:  # noqa: BLE001
@@ -218,7 +242,18 @@ class ComputerAgent:
                         {"role": "user", "content": [{"type": "text", "text": text}, {"type": "image_url", "image_url": {
                             "url": f"data:image/png;base64,{shot.png_b64}"}}]}]
             try:
-                a = parse_action(self.ask(messages))
+                answer = self.ask(messages)
+            except Exception as e:  # noqa: BLE001 - kota/bağlantı: görmeden devam etme
+                model_errors += 1
+                self.emit(f"görme modeli hatası: {str(e)[:200]}")
+                if model_errors >= 2:
+                    quota = "429" in str(e) or "quota" in str(e).lower()
+                    return TaskResult("error", "görme modeli kullanılamıyor" + (
+                        " (günlük ücretsiz kota dolmuş)" if quota else f": {str(e)[:120]}"), steps)
+                continue
+            model_errors = 0
+            try:
+                a = parse_action(answer)
             except Exception as e:  # noqa: BLE001
                 steps.append(f"{n}. model cevabı okunamadı: {e}")
                 continue
