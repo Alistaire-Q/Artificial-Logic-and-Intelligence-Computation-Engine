@@ -358,14 +358,14 @@ def test_impossible_cron_rejected_and_skipped(tmp_path):
     with pytest.raises(ValueError):
         ScheduledTask("0 9 30 2 *", "x")
     path = tmp_path / "tasks.json"
-    good = ScheduledTask("* * * * *", "iyi", created=0)
+    good = ScheduledTask("* * * * *", "iyi", created=1_760_000_000)  # 1970 civarı Windows'ta OSError verir
     from dataclasses import asdict
 
     bad = asdict(good) | {"cron": "0 9 30 2 *", "id": "bad"}
     path.write_text(_json.dumps([bad, asdict(good)]), encoding="utf-8")
     ts = TaskStore(path)
     assert [t.id for t in ts.tasks] == [good.id]
-    assert [t.id for t, _ in ts.due(now=10_000)] == [good.id]
+    assert [t.id for t, _ in ts.due(now=1_760_010_000)] == [good.id]
 
 
 def test_corrupt_task_file_keeps_memory(tmp_path):
