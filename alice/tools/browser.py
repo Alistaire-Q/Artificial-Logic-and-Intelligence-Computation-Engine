@@ -164,9 +164,12 @@ class BrowserSession:
             raise ToolError("playwright kurulu değil: pip install 'alice-harness[browser]' && playwright install chromium") from e
         self._pw = sync_playwright().start()
         self.attached = False
+        self._browser = None
+        self._cdp = None
         if endpoint:
             # Tarayıcı bağlantı için kullanıcıdan bir kez onay isteyebilir: ona zaman tanı.
             browser = self._pw.chromium.connect_over_cdp(endpoint, timeout=60000)
+            self._browser = browser
             self.ctx = browser.contexts[0] if browser.contexts else browser.new_context()
             self.attached = True
             self.page = self._visible_page() or (self.ctx.pages[-1] if self.ctx.pages else self.ctx.new_page())
@@ -199,18 +202,63 @@ class BrowserSession:
             except Exception:  # noqa: BLE001
                 return self._pw.chromium.launch_persistent_context(str(profile), **kwargs)
 
-    def _visible_page(self):
-        """Kullanıcının şu an baktığı sekme (öndeki pencerede görünen)."""
-        visible = []
-        for p in self.ctx.pages:
+    def targets(self) -> list[dict[str, Any]]:
+        """Sekmelerin başlık/adresleri tarayıcının kendisinden (sayfaya sormadan: arka planda uyutulan sekmeler
+        sayfa içi komutlara hiç cevap vermiyor, ALICE kilitleniyordu)."""
+        if self._browser is None:
+            return []
+        try:
+            if self._cdp is None:
+                self._cdp = self._browser.new_browser_cdp_session()
+            infos = self._cdp.send("Target.getTargets")["targetInfos"]
+        except Exception:  # noqa: BLE001
+            return []
+        return [t for t in infos if t.get("type") == "page"]
+
+    def title_of(self, page) -> str:
+        if not self.attached:
             try:
-                st = p.evaluate("[document.visibilityState, document.hasFocus()]")
+                return page.title()
             except Exception:  # noqa: BLE001
-                continue
-            if st[0] == "visible":
-                visible.append((bool(st[1]), p))
-        visible.sort(key=lambda t: not t[0])
-        return visible[0][1] if visible else None
+                return ""
+        for t in self.targets():
+            if t.get("url") == page.url:
+                return t.get("title", "")
+        return ""
+
+    def _visible_page(self):
+        """Kullanıcının şu an baktığı sekme: öndeki tarayıcı penceresinin başlığıyla eşleşen sekme."""
+        try:
+            from alice.tools.desktop import active_title
+
+            fg = re.sub(r"\s+-\s+[^-]+$", "", active_title()).strip()
+        except Exception:  # noqa: BLE001
+            fg = ""
+        if not fg:
+            return None
+        urls = [t.get("url") for t in self.targets() if t.get("title", "").strip() == fg]
+        for p in self.ctx.pages:
+            if p.url in urls:
+                return p
+        return None
+
+    def evaluate(self, js: str, arg: Any = None, timeout: float = 10000) -> Any:
+        """Sayfada JS çalıştır, ama süre sınırıyla (page.evaluate sınırsız bekler)."""
+        page = self.page
+        if self.attached:
+            try:
+                page.bring_to_front()  # uyutulmuş sekmeyi uyandır
+            except Exception:  # noqa: BLE001
+                pass
+        body = js.strip()
+        fn = body if (body.startswith(("(", "function", "async")) and "=>" in body or body.startswith("function")) \
+            else f"() => ({body})"
+        try:
+            return page.locator("html").evaluate(f"(_el, arg) => ({fn})(arg)", arg, timeout=timeout)
+        except Exception as e:  # noqa: BLE001
+            if "Timeout" in type(e).__name__ or "timeout" in str(e).lower():
+                raise ToolError(f"sayfa {timeout / 1000:.0f} sn içinde cevap vermedi (sekme donmuş/uyutulmuş olabilir)") from e
+            raise
 
     def tab_for(self, url: str):
         """Kullanıcının tarayıcısında goto için sekme: aynı site açıksa o sekme, öndeki sekme boşsa o, yoksa yeni."""
@@ -226,7 +274,7 @@ class BrowserSession:
         self.page = page  # yeni sekme açılınca ona geç
 
     def snapshot(self, limit: int = 120) -> list[dict[str, Any]]:
-        return self.page.evaluate(SNAPSHOT_JS, limit)
+        return self.evaluate(SNAPSHOT_JS, limit)
 
     def locator(self, element_id: int):
         loc = self.page.locator(f'[data-alice-id="{int(element_id)}"]')
@@ -325,7 +373,7 @@ class Browser(Tool):
             except Exception:  # noqa: BLE001
                 pass
             p = b.page
-            return ToolResult(truncate(f"{prefix}\n{format_snapshot(p.title(), p.url, b.snapshot())}", limit))
+            return ToolResult(truncate(f"{prefix}\n{format_snapshot(b.title_of(p), p.url, b.snapshot())}", limit))
 
         if action == "goto":
             if not url:
@@ -336,7 +384,7 @@ class Browser(Tool):
                 b.page = page = b.tab_for(url)
                 page.bring_to_front()
                 if host_of(page.url) == host_of(url) and urlparse(url).path.strip("/") == "" and not urlparse(url).query:
-                    return snap(f"zaten açık sekmeye geçildi: {page.title()}")  # içindekini (çalan video) bozma
+                    return snap(f"zaten açık sekmeye geçildi: {b.title_of(page)}")  # içindekini (çalan video) bozma
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=45000)
             except Exception as e:  # noqa: BLE001
@@ -378,7 +426,7 @@ class Browser(Tool):
             page.go_back(wait_until="domcontentloaded")
             return snap("geri")
         if action == "text":
-            return ToolResult(truncate(f"{page.title()}\n{page.url}\n\n{page.evaluate(TEXT_JS)}", limit))
+            return ToolResult(truncate(f"{b.title_of(page)}\n{page.url}\n\n{b.evaluate(TEXT_JS)}", limit))
         if action == "screenshot":
             png = page.screenshot(type="png")
             from io import BytesIO
@@ -392,9 +440,9 @@ class Browser(Tool):
         if action == "eval":
             if not js:
                 raise ToolError("eval için js gerekli")
-            return ToolResult(truncate(repr(page.evaluate(js)), limit))
+            return ToolResult(truncate(repr(b.evaluate(js)), limit))
         if action == "tabs":
-            rows = [f"{i}: {p.title()} - {p.url}{'  <- aktif' if p is b.page else ''}" for i, p in enumerate(b.ctx.pages)]
+            rows = [f"{i}: {b.title_of(p)} - {p.url}{'  <- aktif' if p is b.page else ''}" for i, p in enumerate(b.ctx.pages)]
             return ToolResult("\n".join(rows))
         if action == "switch_tab":
             pages = b.ctx.pages

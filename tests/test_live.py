@@ -166,3 +166,16 @@ def test_live_mutes_leaked_internal_note(monkeypatch):
     s.converse("selam", queue.Queue(), threading.Event())
     assert out.chunks == [b"\x01\x00" * 10]  # düşünce ve iç not çalınmadı, sonraki tur çalındı
     assert any("iç not susturuldu" in line for line in logs)
+
+
+def test_live_tool_timeout_answers_model(monkeypatch):
+    sent = []
+    ws = SimpleNamespace(send=lambda d: sent.append(json.loads(d)))
+    agent = SimpleNamespace(_enable_groups_for=lambda **k: None,
+                            _execute_calls=lambda c: time.sleep(0.3) or [ToolResult("geç sonuç")])
+    s = LiveSession.__new__(LiveSession)
+    s.agent, s.log = agent, lambda m: None
+    s.TOOL_TIMEOUT = 0.05
+    s._run_call(ws, {"id": "c1", "name": "browser", "args": {"action": "snapshot"}})
+    assert len(sent) == 1  # geç gelen sonuç ikinci kez gönderilmez
+    assert "bitmedi" in sent[0]["toolResponse"]["functionResponses"][0]["response"]["result"]

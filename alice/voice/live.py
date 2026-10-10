@@ -131,6 +131,7 @@ class AudioOut:
         self.q: queue.Queue[bytes | None] = queue.Queue()
         self._gen = 0
         self.busy_until = 0.0
+        self.underruns = 0
         self._t = threading.Thread(target=self._run, daemon=True, name="alice-live-out")
         self._t.start()
 
@@ -154,7 +155,7 @@ class AudioOut:
         self.clear()
         self.q.put(None)
 
-    PREBUFFER = 0.2  # sn: konuşma başında/boşluktan sonra bu kadar ses birikmeden çalmaya başlama
+    PREBUFFER = 0.4  # sn: konuşma başında/boşluktan sonra bu kadar ses birikmeden çalmaya başlama
 
     def _gather(self, pcm: bytes) -> bytes | None:
         """Sessizlikten sonra ilk parçayı PREBUFFER kadar biriktir: ağdan parçalar düzensiz gelir, beklemeden
@@ -191,7 +192,8 @@ class AudioOut:
                         break
                     piece = pcm[i:i + step]
                     self.busy_until = time.monotonic() + len(piece) / 2 / self.rate + 0.2
-                    out.write(piece)
+                    if out.write(piece):  # True: çalarken ses bitti (takılma duyuldu)
+                        self.underruns += 1
 
 
 class LiveSession:
@@ -356,6 +358,9 @@ class LiveSession:
                                 out.clear()
                                 self.log(f"live iç not susturuldu: {''.join(state['said'])[-160:]}")
                         if sc.get("turnComplete") or sc.get("interrupted"):
+                            if getattr(out, "underruns", 0):
+                                self.log(f"live ses takıldı: {out.underruns} kez")
+                                out.underruns = 0
                             self._flush_log(state, ui)
                             state["mute"] = False
                     if msg.get("toolCall"):
@@ -430,9 +435,32 @@ class LiveSession:
             self.agent.ui = old_ui
             self.log("live kapandı")
 
+    TOOL_TIMEOUT = 25.0  # sn: araç takılırsa modele hata dön, konuşma kilitlenmesin
+
     def _run_call(self, ws, fc: dict[str, Any]) -> None:
         call = {"id": fc.get("id") or fc.get("name"), "type": "function",
                 "function": {"name": fc.get("name", ""), "arguments": json.dumps(fc.get("args") or {})}}
+        lock = threading.Lock()
+        answered = [False]
+
+        def respond(text: str) -> None:
+            with lock:
+                if answered[0]:
+                    return
+                answered[0] = True
+            try:
+                ws.send(json.dumps({"toolResponse": {"functionResponses": [
+                    {"id": fc.get("id"), "name": fc.get("name"), "response": {"result": text}}]}}))
+            except Exception:  # noqa: BLE001 - bağlantı kapanmış olabilir
+                pass
+
+        def too_slow() -> None:
+            self.log(f"live araç zaman aşımı: {fc.get('name')} {json.dumps(fc.get('args') or {}, ensure_ascii=False)[:120]}")
+            respond(f"HATA: araç {self.TOOL_TIMEOUT:.0f} sn içinde bitmedi; kullanıcıya olmadığını kısaca söyle.")
+
+        timer = threading.Timer(self.TOOL_TIMEOUT, too_slow)
+        timer.daemon = True
+        timer.start()
         try:
             self.agent._enable_groups_for(tool_names=(call["function"]["name"],))
             res: ToolResult = self.agent._execute_calls([call])[0]
@@ -443,8 +471,8 @@ class LiveSession:
             text = "onay gerekli: kullanıcıya kısaca sor, 'evet' derse aynı çağrıyı tekrarla."
         elif res.is_error:
             text = "HATA: " + text
-        ws.send(json.dumps({"toolResponse": {"functionResponses": [
-            {"id": fc.get("id"), "name": fc.get("name"), "response": {"result": text}}]}}))
+        timer.cancel()
+        respond(text)
 
     def _flush_log(self, state: dict[str, Any], ui: LiveUI) -> None:
         heard, said = "".join(state["heard"]).strip(), "".join(state["said"]).strip()
