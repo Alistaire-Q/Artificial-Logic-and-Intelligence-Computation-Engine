@@ -1285,3 +1285,49 @@ def test_follow_up_without_wake_rejects_noise_text():
         va.armed_until = time.monotonic() + 5
         va.handle_audio(Audio(b"\1\0" * 16000, 16000), direct=False)
         assert stt.calls == want, text
+
+
+def test_wake_gate_leaves_gpu_in_flight_mode(monkeypatch):
+    import sys
+    import types
+
+    from alice.voice import stt
+
+    loaded = []
+
+    class Model:
+        def __init__(self, name, device, compute_type):
+            self.name, self.device = name, device
+            loaded.append((name, device))
+
+        def transcribe(self, *a, **k):
+            seg = types.SimpleNamespace(text="Hey Alice, yakıtım ne kadar?", no_speech_prob=0.05, avg_logprob=-0.2,
+                                        compression_ratio=1.0)
+            self.prompt = k.get("initial_prompt")
+            return iter([seg]), None
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=Model))
+    monkeypatch.setattr(stt, "_cuda_ok", lambda m: True)
+    gpu = [True]
+    gate = stt.WakeGate("base", "tr", gpu_model="small", allow_gpu=lambda: gpu[0])
+    audio = Audio(b"\1\0" * 16000, 16000)
+    assert gate.heard(audio) and gate.device == "cuda" and gate.model_name == "small"
+    gpu[0] = False  # DCS açıldı: uçuş modu
+    gate._gpu_checked = (-1e9, True)
+    assert gate.transcribe(audio, "Hey Alice.")[0].startswith("Hey Alice")
+    assert gate.device == "cpu" and gate.model_name == "base" and "cuda" not in gate._models
+    assert "Bingo" in gate._model.prompt
+    gpu[0] = True
+    gate._gpu_checked = (-1e9, False)
+    gate.heard(audio)
+    assert gate.device == "cuda" and loaded == [("small", "cuda"), ("base", "cpu"), ("small", "cuda")]
+
+
+def test_speech_segments_drop_echo_of_custom_prompt():
+    from types import SimpleNamespace as S
+
+    from alice.voice.stt import speech_segments
+
+    echo = S(text="Bingo, cannon, waypoint.", no_speech_prob=0.5, avg_logprob=-1.0, compression_ratio=1.0)
+    real = S(text="Cannon kaç mermi kaldı?", no_speech_prob=0.05, avg_logprob=-0.3, compression_ratio=1.0)
+    assert speech_segments([echo, real], "Hey Alice. Bingo, cannon, waypoint, tanker.") == [real]

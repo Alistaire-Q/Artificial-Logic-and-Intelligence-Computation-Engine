@@ -177,14 +177,15 @@ class LocalWhisper:
             return " ".join(s.text.strip() for s in segments).strip()
 
 
-def _wake_echo(text: str) -> bool:
-    return re.sub(r"[^a-zçğıöşü ]", "", text.lower()).strip() in {"hey alice", "alice", "hey alis", "hey"}
+def _norm(text: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-zçğıöşü0-9 ]", " ", text.lower())).strip()
 
 
-def speech_segments(segments) -> list:
+def speech_segments(segments, prompt: str = "Hey Alice.") -> list:
     """Gerçek konuşma olmayan Whisper parçalarını at. initial_prompt "Hey Alice." olduğu için Whisper oyun/motor
     sesi ya da müzikte ipucunu aynen geri yazabiliyor: kimse konuşmadan ALICE uyanıyordu. Ayrıca kendini tekrar
     eden döngüler (sıkıştırma oranı yüksek) ve "konuşma yok" olasılığı yüksek + güvensiz parçalar atılır."""
+    hint = _norm(prompt)
     out = []
     for s in segments:
         nsp = float(getattr(s, "no_speech_prob", 0.0) or 0.0)
@@ -192,10 +193,16 @@ def speech_segments(segments) -> list:
         cr = float(getattr(s, "compression_ratio", 1.0) or 1.0)
         if cr > 2.4 or (nsp > 0.6 and lp < -0.7):
             continue
-        if _wake_echo(getattr(s, "text", "")) and (nsp > 0.35 or lp < -0.9):
+        t = _norm(getattr(s, "text", ""))
+        echo = t in {"hey alice", "alice", "hey alis", "hey"} or (len(t) > 3 and t in hint)
+        if echo and (nsp > 0.35 or lp < -0.9):
             continue
         out.append(s)
     return out
+
+
+# Uçuşta sık söylenen ve yanlış duyulan kelimeler ("yakıtım" -> "yakıştın", "cannon" -> "Canon").
+FLIGHT_HINT = "Yakıtım ne kadar kaldı? Bingo, cannon, waypoint, tanker, AoA, stall, iniş takımı, flap."
 
 
 class WakeGate:
@@ -209,6 +216,7 @@ class WakeGate:
     def __init__(self, model: str = "base", language: str = "tr", gpu_model: str = "",
                  allow_gpu: Callable[[], bool] = lambda: False):
         self.model_name = model
+        self.cpu_name = model
         self.gpu_model = gpu_model  # ekran kartı varsa daha iyi duyan model (ör. small): ~0,1-0,2 sn
         self.allow_gpu = allow_gpu
         self.device = ""
@@ -216,6 +224,9 @@ class WakeGate:
         self.last_conf = 0.0  # son baş dökümünün güveni (ortalama log olasılık)
         self.language = language
         self._model: Any = None
+        self._models: dict[str, Any] = {}
+        self._cuda_failed = False
+        self._gpu_checked = (-1e9, False)
         self._failed = False
         self._lock = threading.Lock()
 
@@ -241,19 +252,59 @@ class WakeGate:
                     return m
             except Exception:  # noqa: BLE001 - CUDA yoksa işlemcide küçük model
                 pass
-        self.device = "cpu"
-        return WhisperModel(self.model_name, device="cpu", compute_type="int8")
+        self.device, self.model_name = "cpu", self.cpu_name
+        return WhisperModel(self.cpu_name, device="cpu", compute_type="int8")
+
+    def _gpu_allowed(self) -> bool:
+        t, ok = self._gpu_checked
+        if time.monotonic() - t > 3:
+            try:
+                ok = bool(self.allow_gpu())
+            except Exception:  # noqa: BLE001
+                ok = False
+            self._gpu_checked = (time.monotonic(), ok)
+        return ok
+
+    def _current(self):
+        """Modele her seferinde mod kontrolüyle ulaş. Model eskiden bir kez yüklenip hep ekran kartında kalıyordu:
+        DCS açıkken (uçuş modu, local_gpu = false) oyunla GPU için yarışıp uyandırma 3-26 sn sürüyordu. Uçuşta
+        işlemcideki modele geçer ve ekran kartındakini bırakır; uçuş bitince geri döner."""
+        want_gpu = bool(self.gpu_model) and not self._cuda_failed and self._gpu_allowed()
+        key = "cuda" if want_gpu else "cpu"
+        m = self._models.get(key)
+        if m is None:
+            if want_gpu:
+                m = self._load()
+                if self.device != "cuda":
+                    self._cuda_failed, key = True, "cpu"
+            else:
+                m = self._load_cpu()
+            self._models[key] = m
+        if key == "cpu":
+            self._models.pop("cuda", None)  # ekran kartı belleğini oyuna bırak
+        self.device = key
+        self.model_name = self.gpu_model if key == "cuda" else self.cpu_name
+        self._model = m
+        return m
+
+    def flying(self) -> bool:
+        """Uçuş modu: ekran kartı varken kullanımı kapalı (local_gpu = false)."""
+        return bool(self.gpu_model) and not self._cuda_failed and not self._gpu_allowed()
+
+    def _load_cpu(self):
+        from faster_whisper import WhisperModel
+
+        return WhisperModel(self.cpu_name, device="cpu", compute_type="int8")
 
     def warm_up(self) -> None:
         """Modeli arka planda yükle: ilk "Hey Alice" model yüklemesini beklemesin."""
         def run() -> None:
             if self.available():
                 with self._lock:
-                    if self._model is None:
-                        try:
-                            self._model = self._load()
-                        except Exception:  # noqa: BLE001
-                            self._failed = True
+                    try:
+                        self._current()
+                    except Exception:  # noqa: BLE001
+                        self._failed = True
 
         threading.Thread(target=run, daemon=True, name="alice-wake-warm").start()
 
@@ -265,9 +316,7 @@ class WakeGate:
         t0 = time.monotonic()
         try:
             with self._lock:
-                if self._model is None:
-                    self._model = self._load()
-                segments, _ = self._model.transcribe(io.BytesIO(head.to_wav()), language=self.language,
+                segments, _ = self._current().transcribe(io.BytesIO(head.to_wav()), language=self.language,
                                                      beam_size=1, initial_prompt="Hey Alice.",
                                                      condition_on_previous_text=False)
                 segs = speech_segments(segments)
@@ -285,11 +334,12 @@ class WakeGate:
         wav = audio.resample(16000).to_wav()
         try:
             with self._lock:
-                if self._model is None:
-                    self._model = self._load()
-                segments, _ = self._model.transcribe(io.BytesIO(wav), language=self.language, beam_size=1,
-                                                     initial_prompt=prompt, condition_on_previous_text=False)
-                segs = speech_segments(segments)
+                model = self._current()
+                if self.flying():
+                    prompt = f"{prompt} {FLIGHT_HINT}".strip()
+                segments, _ = model.transcribe(io.BytesIO(wav), language=self.language, beam_size=1,
+                                               initial_prompt=prompt, condition_on_previous_text=False)
+                segs = speech_segments(segments, prompt)
         except Exception:  # noqa: BLE001
             return None
         text = " ".join(s.text.strip() for s in segs).strip()
