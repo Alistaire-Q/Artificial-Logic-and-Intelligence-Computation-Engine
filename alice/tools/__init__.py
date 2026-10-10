@@ -5,10 +5,20 @@ from alice.tools import (blender, browser, computer, core, desktop, extras, flig
 from alice.tools.base import Tool, ToolContext, ToolError, ToolResult
 
 
-def all_tools() -> list[Tool]:
+def builtin_tools() -> list[Tool]:
     return [*files.TOOLS, *shell.TOOLS, *web.TOOLS, *system.TOOLS, *computer.TOOLS, *desktop.TOOLS,
             *browser.TOOLS, *blender.TOOLS, *meta.TOOLS, *groups.TOOLS, *core.TOOLS, *flight.TOOLS, *extras.TOOLS,
             *tasks.TOOLS]
+
+
+def all_tools(config=None, emit=lambda s: None) -> list[Tool]:
+    """Yerleşik araçlar + eklentilerin araçları (bkz. alice/plugins.py)."""
+    from alice import plugins
+
+    tools = builtin_tools()
+    reserved = {t.name for t in tools} | set(groups.GROUPS) | {"all"}
+    plugins.load_plugins(config, emit, reserved=reserved)
+    return tools + plugins.plugin_tools()
 
 
 def attach_mcp(agent, ctx: ToolContext, emit=lambda s: None) -> int:
@@ -28,9 +38,12 @@ def cleanup(ctx: ToolContext) -> None:
     if st is not None:
         st.close()
     browser.cleanup(ctx)
+    from alice import plugins
+
+    plugins.cleanup(ctx)
     from alice.mcp import close_all
 
     close_all(ctx.state.pop("mcp_servers", []))
 
 
-__all__ = ["Tool", "ToolContext", "ToolError", "ToolResult", "all_tools", "attach_mcp", "cleanup"]
+__all__ = ["Tool", "ToolContext", "ToolError", "ToolResult", "all_tools", "attach_mcp", "builtin_tools", "cleanup"]

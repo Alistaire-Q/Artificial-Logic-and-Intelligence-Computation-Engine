@@ -464,3 +464,91 @@ def test_approach_calls_are_calm_and_not_contradictory():
         t += 0.5
         c._approach(st(t, gear=1.0, ias=70, agl=400, aoa=7, vv=-3))
     assert "Hızlısın." not in r.texts()
+
+
+def test_pilot_alerts_altitude_and_fuel():
+    c, tr, r = make()
+    c.phase = "air"
+    c.alt_alert_ft = 10000
+    c._pilot_alerts(st(1, alt=8000 * 0.3048))
+    c._pilot_alerts(st(2, alt=9990 * 0.3048))
+    assert r.texts() == []
+    c._pilot_alerts(st(3, alt=10010 * 0.3048))
+    c._pilot_alerts(st(4, alt=9000 * 0.3048))
+    c._pilot_alerts(st(5, alt=11000 * 0.3048))
+    assert r.texts() == ["10.000 feet."]  # bir kez
+    c.fuel_alert_kg = 1500
+    c._pilot_alerts(st(6, fuel_kg=1600))
+    c._pilot_alerts(st(7, fuel_kg=1499))
+    c._pilot_alerts(st(8, fuel_kg=1400))
+    assert r.texts()[1:] == ["Yakıt 1500 kiloya indi."]
+
+
+def test_hub_alert_setup_and_clear():
+    from alice.sims.hub import SimHub
+
+    hub = SimHub({}, None, None)
+    assert "uçuşta değilsin" in hub.alert_altitude(5000)
+    c = hub.companion("dcs")
+    c.phase, c.last_state = "air", st(1, fuel_kg=2000)
+    assert hub.alert_altitude(5000).startswith("kuruldu: 5.000")
+    assert "zaten" in hub.alert_fuel(2500)
+    assert hub.alert_fuel(1000).startswith("kuruldu")
+    assert hub.clear_alerts() == "2 uyarı kaldırıldı"
+    assert c.alt_alert_ft is None and c.fuel_alert_kg is None
+
+
+def test_ground_proximity_only_without_own_gpws():
+    c, tr, r = make()
+    from alice.sims.flight import profile_for
+
+    c.phase, c.profile = "air", profile_for("F-16C_50")
+    c._ground(st(1, agl=200, vv=-50))  # F-16: kendi uyarısı var
+    assert r.texts() == []
+    c.profile = c.profile.__class__("uçak")
+    c._ground(st(2, aircraft="P-51D", agl=200, vv=-50))
+    c._ground(st(3, aircraft="P-51D", agl=150, vv=-50))  # tekrar için çok erken
+    assert r.texts() == ["Yere yaklaşıyorsun, burnu kaldır!"]
+    c._ground(st(20, aircraft="P-51D", agl=500, vv=-20))  # 25 sn var: sessiz
+    c._ground(st(30, aircraft="P-51D", agl=100, vv=-10, gear=1.0, ias=70))  # inişe geliyor: sessiz
+    assert len(r.texts()) == 1
+
+
+def test_flaps_forgotten_and_external_tanks():
+    c, tr, r = make()
+    c.phase = "air"
+    c.profile = c.profile.__class__("uçak")
+    for t in range(0, 30, 2):
+        c._flaps(st(t, extra={"flaps": 0.5}, ias=180, agl=2000))
+    assert r.texts() == ["Flaplar hâlâ açık, toplamayı unutma."]
+    for kg in (300, 100, 40, 10, 0):
+        c._ext_tanks(st(40, extra={"fuel_ext_kg": kg}))
+    c._ext_tanks(st(41, extra={"fuel_ext_kg": 0}))
+    assert r.texts()[1:] == ["Dış tanklar boşaldı."]
+    # F-16: otomatik flap, hatırlatma yok
+    c2, _, r2 = make()
+    c2.phase, c2.profile = "air", c2.profile.__class__("F-16C", auto_flaps=True)
+    for t in range(0, 30, 2):
+        c2._flaps(st(t, extra={"flaps": 0.5}, ias=180, agl=2000))
+    assert r2.texts() == []
+
+
+def test_new_checklists_found():
+    for q, key in (("savaş girişi", "savas-girisi"), ("fence out", "savas-cikisi"),
+                   ("motor çalıştırma", "motor-calistirma"), ("motor arızası", "motor-arizasi")):
+        assert checklists.find(q).key == key
+
+
+def test_flight_tool_alert_actions(monkeypatch):
+    from alice.sims import hub as hubmod
+    from alice.sims.hub import SimHub
+    from alice.tools.flight import Flight
+
+    h = SimHub({}, None, None)
+    c = h.companion("dcs")
+    c.phase, c.last_state = "air", st(1)
+    monkeypatch.setattr(hubmod, "ACTIVE", h)
+    tool = Flight()
+    assert tool.run(None, "alert_alt", ft=20000).text.startswith("kuruldu")
+    assert c.alt_alert_ft == 20000
+    assert tool.run(None, "alerts_clear").text == "1 uyarı kaldırıldı"

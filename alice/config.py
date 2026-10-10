@@ -73,6 +73,14 @@ programs = ["dcs.exe", "dcs_server.exe", "aces.exe"]
 [core.modes.dev]
 programs = ["unity.exe", "unity hub.exe", "code.exe", "devenv.exe", "rider64.exe"]
 
+# Eklentiler: ~/.alice/plugins/*.py ve buradaki yollar yeni araç ekler (bkz. docs/PLUGINS.md, `alice plugins`).
+[plugins]
+enabled = true
+# Kapatılacak eklenti adları.
+disabled = []
+# Ek eklenti dosyaları/klasörleri.
+paths = []
+
 # ALICE'in sesi ve kulağı (`alice voice`). Ses seçimi: `alice voice audition`.
 [voice]
 # true: çekirdek (alice core run) sesli asistanı da başlatır, bildirimleri seslendirir.
@@ -97,6 +105,9 @@ end_silence = 0.5
 # "Hey Alice" kontrolü: ekran kartı varsa wake_local_gpu (daha iyi duyar, ~0,1 sn), yoksa işlemcide wake_local.
 wake_local = "base"
 wake_local_gpu = "small"
+# Ekran kartındaki Whisper modelleri: int8_float16 belleği yarıya indirir (doğruluk aynı); float16 = eski hali.
+# DCS açılınca (uçuş modu) modeller ekran kartından çıkar, kapanınca geri döner.
+gpu_compute = "int8_float16"
 # Bulut sesi "gemini:<ses>"; yerel motor "xtts" ya da "chatterbox" (boş = yok).
 tts_cloud = "gemini:Aoede"
 tts_local = ""

@@ -350,7 +350,9 @@ class LiveSession:
             now=f"{now:%d.%m.%Y %H:%M} ({spoken_time(now.hour, now.minute)})", names=", ".join(self.names()),
             monitors=monitor_layout())
         enabled = self.agent.ctx.state.setdefault("tool_groups", set())
-        enabled |= LIVE_GROUPS
+        from alice import plugins
+
+        enabled |= LIVE_GROUPS | plugins.live_groups()
         return {"setup": {
             "model": f"models/{model}",
             "generationConfig": {"responseModalities": ["AUDIO"], "speechConfig": {

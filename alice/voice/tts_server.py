@@ -6,6 +6,7 @@ asistan ve hızlı bar tarafından paylaşılsın. Bu dosya ALICE paketini içe 
 
 Sadece 127.0.0.1'e bağlanır.
   GET  /health                 -> {"ok": true, "device": "cuda", "loaded": true}
+  POST /release                -> modelleri bellekten at (uçuşta ekran kartını oyuna bırakmak için)
   POST /synth  (JSON)          -> audio/wav
        {"text", "language": "tr", "ref": "C:/.../calm.wav" | "", "exaggeration", "cfg_weight", "temperature",
         "device": "cuda"|"cpu", "verify": true, "whisper_model": "small"}
@@ -111,6 +112,23 @@ def chunks(text: str, limit: int = 160) -> list:
 
 
 WHISPER = {"model": None, "key": None}
+
+
+def release() -> None:
+    """Ses ve Whisper modellerini at, ekran kartı belleğini işletim sistemine geri ver. Sonraki cümle yeniden
+    yükler (istenen cihazda; uçuşta işlemci)."""
+    import gc
+
+    STATE.update(model=None, device=None, ref=None)
+    WHISPER.update(model=None, key=None)
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
 
 
 def load_whisper(name: str, device: str):
@@ -299,6 +317,10 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, json.dumps(body).encode(), "application/json")
 
     def do_POST(self):  # noqa: N802
+        if self._host_ok() and self.path == "/release":
+            with LOCK:
+                release()
+            return self._send(200, b'{"ok": true}', "application/json")
         if not self._host_ok() or self.path != "/synth":
             return self._send(404, b"{}", "application/json")
         try:
