@@ -1084,3 +1084,54 @@ def test_strip_wake_greetings_and_name_in_first_words():
     assert strip_wake("Merhaba nasılsın?") is None
     assert strip_wake("Ali bana bir çay getir") is None
     assert strip_wake("dün akşam yemekte Alice vardı") is None
+
+
+def test_live_wake_passes_trusted_local_text():
+    class Gate:
+        model_name, last_seconds = "small", 0.1
+
+        def __init__(self, conf):
+            self.conf = conf
+
+        def heard(self, audio):
+            return "Hey Alice"
+
+        def transcribe(self, audio, prompt=""):
+            assert "GitHub" in prompt
+            return "Hey Alice, GitHub'ı açar mısın?", self.conf
+
+    class STT:
+        def __init__(self, conf):
+            self.wake_gate = Gate(conf)
+
+    class HintLive(FakeLive):
+        names = staticmethod(lambda: ["GitHub"])
+
+        def converse(self, text, frames, stop, first_audio=b"", hint=None):
+            self.texts.append(hint())
+
+    for conf, want in ((-0.2, "GitHub'ı açar mısın?"), (-1.5, None)):
+        live = HintLive()
+        va = VoiceAssistant(FakeAgent(), FakeSpeaker(), stt=STT(conf), live=live)
+        va.handle_audio(Audio(b"\1\0" * 16000, 16000), direct=False)
+        assert wait_for(lambda: live.texts == [want])
+
+
+def test_vocab_names_from_bookmarks_and_start_menu(tmp_path):
+    from alice.voice import vocab
+
+    bm = tmp_path / "Bookmarks"
+    bm.write_text(json.dumps({"roots": {"bookmark_bar": {"type": "folder", "children": [
+        {"type": "url", "name": "GitHub - Where the world builds software", "url": "https://github.com"},
+        {"type": "folder", "children": [{"type": "url", "name": "YouTube Music", "url": "https://music.youtube.com"}]},
+    ]}}}), encoding="utf-8")
+    sm = tmp_path / "Programs"
+    (sm / "Steam").mkdir(parents=True)
+    (sm / "Steam" / "Steam.lnk").write_bytes(b"")
+    (sm / "Steam" / "Uninstall Steam.lnk").write_bytes(b"")
+    (sm / "Windows Tools").mkdir()
+    (sm / "Windows Tools" / "Disk Cleanup.lnk").write_bytes(b"")
+    assert vocab.bookmark_names([bm]) == ["GitHub", "YouTube Music"]
+    assert vocab.start_menu_apps([sm]) == ["Steam"]
+    assert vocab.merge([["GitHub"], ["github", "Steam"]]) == ["GitHub", "Steam"]
+    assert vocab.whisper_prompt(["GitHub", "Steam"]) == "Hey Alice. GitHub, Steam."

@@ -47,6 +47,9 @@ browser_headless = false
 browser_executable = ""
 # Açık tarayıcın --remote-debugging-port=9222 ile çalışıyorsa ALICE yeni pencere açmak yerine ona bağlanır.
 browser_cdp = "http://127.0.0.1:9222"
+# Kullanıcının tarayıcısına (opera://inspect "Allow remote debugging") ALICE'ten bağımsız küçük bir köprü süreci
+# bağlanır; çekirdek yeniden başlasa da tarayıcı izni tekrar sormaz. 0 = köprü yok, doğrudan bağlan.
+browser_bridge_port = 9339
 # true: rol zincirinde "auto" yazmasan da ölçülen en iyi ücretsiz modeller zincirin sonuna eklenir.
 auto_models = true
 
@@ -81,6 +84,11 @@ live_voice = "Kore"
 live_models = ["gemini-3.8-live", "gemini-3.1-flash-live-preview", "gemini-2.5-flash-native-audio-latest"]
 # Bu kadar saniye kimse konuşmazsa canlı konuşma kapanır, yeniden "Hey Alice" beklenir.
 live_idle = 20
+# "Hey Alice" cümlesi yerelde (ekran kartında) uygulama/site adı ipuçlarıyla yazıya dökülür; döküm bu güvenin
+# üstündeyse Live'a ses yerine yazı gider (Live Türkçe cümledeki "GitHub" gibi adları bozuyor). Boş = hep ses.
+live_text_min = -0.7
+# Konuşma tanımaya ve Live'a ipucu olarak verilen adlar: bunlar + Başlat menüsü programları + yer imleri.
+vocab = []
 # Konuşman bitti saymak için sessizlik (sn). Kısa = hızlı cevap; çok kısa olursa cümle ortasında keser.
 end_silence = 0.5
 # "Hey Alice" kontrolü: ekran kartı varsa wake_local_gpu (daha iyi duyar, ~0,1 sn), yoksa işlemcide wake_local.

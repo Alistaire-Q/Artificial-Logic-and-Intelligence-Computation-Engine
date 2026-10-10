@@ -254,6 +254,25 @@ class WakeGate:
             self._failed = True
             return None
 
+    def transcribe(self, audio: Audio, prompt: str = "Hey Alice.") -> tuple[str, float] | None:
+        """Cümlenin tamamının yerel dökümü ve güveni (ortalama log olasılık; 0'a yakın = emin). Model yoksa None."""
+        if not self.available():
+            return None
+        wav = audio.resample(16000).to_wav()
+        try:
+            with self._lock:
+                if self._model is None:
+                    self._model = self._load()
+                segments, _ = self._model.transcribe(io.BytesIO(wav), language=self.language, beam_size=1,
+                                                     initial_prompt=prompt, condition_on_previous_text=False)
+                segs = list(segments)
+        except Exception:  # noqa: BLE001
+            return None
+        text = " ".join(s.text.strip() for s in segs).strip()
+        if not segs:
+            return text, -9.0
+        return text, min(s.avg_logprob for s in segs)
+
 
 class STTRouter:
     def __init__(self, engines: list[STT], cooldown: float = 300):

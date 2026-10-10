@@ -179,3 +179,31 @@ def test_live_tool_timeout_answers_model(monkeypatch):
     s._run_call(ws, {"id": "c1", "name": "browser", "args": {"action": "snapshot"}})
     assert len(sent) == 1  # geç gelen sonuç ikinci kez gönderilmez
     assert "bitmedi" in sent[0]["toolResponse"]["functionResponses"][0]["response"]["result"]
+
+
+def test_live_first_turn_uses_local_text_and_names(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    ws = FakeWS([{"serverContent": {"turnComplete": True}}])
+    agent = SimpleNamespace(messages=[{"role": "system", "content": "s"}], ctx=SimpleNamespace(state={}), ui=None,
+                            tool_specs=lambda: [], _enable_groups_for=lambda **k: None, _execute_calls=lambda c: [])
+    cfg = SimpleNamespace(data={"voice": {"live_idle": 0.3, "live_models": ["m1"]}})
+    s = LiveSession(cfg, agent, connect=lambda url, **k: ws, out_factory=FakeOut)
+    s.names = lambda: ["GitHub", "YouTube Music"]
+    s.converse("", queue.Queue(), threading.Event(), first_audio=b"\0\0" * 1600, hint=lambda: "GitHub'ı açar mısın")
+    assert "GitHub, YouTube Music" in ws.sent[0]["setup"]["systemInstruction"]["parts"][0]["text"]
+    assert not [m for m in ws.sent if "realtimeInput" in m]  # ses yerine yazı gitti
+    turn = next(m for m in ws.sent if "clientContent" in m)["clientContent"]["turns"][0]
+    assert turn["parts"][0]["text"] == "GitHub'ı açar mısın"
+
+
+def test_live_first_turn_falls_back_to_audio_without_text(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    ws = FakeWS([])
+    agent = SimpleNamespace(messages=[{"role": "system", "content": "s"}], ctx=SimpleNamespace(state={}), ui=None,
+                            tool_specs=lambda: [], _enable_groups_for=lambda **k: None, _execute_calls=lambda c: [])
+    cfg = SimpleNamespace(data={"voice": {"live_idle": 0.3, "live_models": ["m1"]}})
+    s = LiveSession(cfg, agent, connect=lambda url, **k: ws, out_factory=FakeOut)
+    s.names = lambda: []
+    s.converse("", queue.Queue(), threading.Event(), first_audio=b"\0\0" * 1600, hint=lambda: None)
+    assert len([m for m in ws.sent if "realtimeInput" in m]) == 2
+    assert not [m for m in ws.sent if "clientContent" in m]

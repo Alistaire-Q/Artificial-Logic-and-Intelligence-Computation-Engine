@@ -132,10 +132,53 @@ def devtools_active_endpoint(dirs: list[Path] | None = None) -> str | None:
     return None
 
 
-def user_browser_endpoint(cdp: str | None) -> str | None:
+def bridge_alive(port: int, timeout: float = 0.4) -> bool:
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(f"http://127.0.0.1:{port}/alice-bridge", timeout=timeout) as r:
+            return r.read().startswith(b"alice-bridge")
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def ensure_bridge(port: int, wait: float = 8.0) -> bool:
+    """Tarayıcı köprüsü çalışmıyorsa çekirdekten bağımsız (ayrık) bir süreç olarak başlat."""
+    if bridge_alive(port):
+        return True
+    import subprocess
+    import time
+
+    exe = Path(sys.executable)
+    if sys.platform == "win32" and (exe.parent / "pythonw.exe").exists():
+        exe = exe.parent / "pythonw.exe"  # konsol penceresi açılmasın
+    flags = 0
+    if sys.platform == "win32":
+        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+    try:
+        subprocess.Popen([str(exe), "-m", "alice.tools.browser_bridge", "--port", str(port)], creationflags=flags,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         close_fds=True, start_new_session=sys.platform != "win32")
+    except OSError:
+        return False
+    deadline = time.monotonic() + wait
+    while time.monotonic() < deadline:
+        if bridge_alive(port):
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def user_browser_endpoint(cdp: str | None, bridge_port: int | None = None) -> str | None:
     if cdp and cdp_alive(cdp):
         return cdp
-    return devtools_active_endpoint()
+    found = devtools_active_endpoint()
+    if found and bridge_port:
+        # Doğrudan bağlanmak yerine köprü üzerinden: çekirdek yeniden başlasa da tarayıcı izni tekrar sormaz.
+        from alice.tools.browser_bridge import endpoint
+
+        if ensure_bridge(bridge_port):
+            return endpoint(bridge_port)
+    return found
 
 
 def host_of(url: str) -> str:
@@ -154,8 +197,8 @@ class BrowserSession:
     varsayılan tarayıcıyı (Chromium tabanlıysa, ör. Opera GX) ALICE profiliyle açar."""
 
     def __init__(self, headless: bool = False, executable: str | None = None, cdp: str | None = None,
-                 allow_launch: bool = True):
-        endpoint = user_browser_endpoint(cdp)
+                 allow_launch: bool = True, bridge_port: int | None = None):
+        endpoint = user_browser_endpoint(cdp, bridge_port)
         if not allow_launch and not endpoint:
             raise ToolError(NO_SEPARATE)
         try:
@@ -296,7 +339,8 @@ def get_browser(ctx: ToolContext, separate: bool = False) -> BrowserSession:
         a = ctx.config.agent
         allow = separate or bool(a.get("browser_headless", False)) or bool(a.get("browser_allow_separate", False))
         b = BrowserSession(headless=bool(a.get("browser_headless", False)), executable=a.get("browser_executable") or None,
-                           cdp=a.get("browser_cdp") or None, allow_launch=allow)
+                           cdp=a.get("browser_cdp") or None, allow_launch=allow,
+                           bridge_port=int(a.get("browser_bridge_port", 9339) or 0) or None)
         ctx.state["browser"] = b
     return b
 
