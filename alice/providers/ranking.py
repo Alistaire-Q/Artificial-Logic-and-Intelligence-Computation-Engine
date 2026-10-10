@@ -54,7 +54,7 @@ PER_PROVIDER = 15
 PROVIDER_CAP = {"openrouter": 6}
 # Kota hesap genelinde olan sağlayıcılar: bir modelde kota hatası gelince diğerleri denenmez (hepsi aynı kotada).
 ACCOUNT_QUOTA = ("openrouter",)
-SLOW = 20.0  # saniye: beyin rolünde bundan yavaş modeller geri itilir
+SLOW = 3.0  # saniye: beyin rolünde bundan yavaş modeller geri itilir
 
 # Önbellek yokken (ilk açılış, ölçüm henüz bitmemişken) kullanılan sıra: 9 Ekim 2026 ölçümü.
 # Ölçüm gelince yerini alır; anahtarı olmayan sağlayıcıların modelleri zaten atlanır.
@@ -258,8 +258,14 @@ def probe_all(router, refs: list[str], emit: Callable[[str], None] = lambda s: N
 
 # -------------------------------------------------------------------- sıralama
 def brain_score(pr: Probe) -> float:
-    slow = max(0.0, pr.latency - SLOW)
-    return pr.quality - min(25.0, slow * 0.5)
+    return brain_score_of(pr.quality, pr.latency)
+
+
+def brain_score_of(quality: float, latency: float) -> float:
+    # Ajan bir işte 10-20 kez model çağırıyor: 3 sn üstündeki her saniye kaliteden 1,5 puan götürür.
+    # (Önce 20 sn sonrası cezalıydı; ~8 sn'lik NVIDIA glm-5.3 zincirin başında kalıyor, basit iş 4 dk sürüyordu.)
+    slow = max(0.0, latency - SLOW)
+    return quality - min(30.0, slow * 1.5)
 
 
 def fast_score(pr: Probe) -> float:

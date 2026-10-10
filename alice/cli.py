@@ -392,6 +392,15 @@ def handle_slash(text: str, agent: Agent, router: Router, ctx: ToolContext, cfg:
                     return None
                 router.role_overrides[role] = [ref]
         print_status(router)
+    elif cmd == "/think":
+        from alice.providers.thinking import LEVELS
+
+        if args and args[-1] in LEVELS:
+            role = args[0] if len(args) >= 2 else "*"
+            router.thinking_overrides[role] = args[-1]
+        roles = ["brain", "fast", "voice", "vision"]
+        console.print("düşünme: " + ", ".join(f"{r}={router.thinking_level(r)}" for r in roles)
+                      + f"  [dim](kalıcı için config.toml [thinking]; seçenekler: {' | '.join(LEVELS)})[/]")
     elif cmd == "/usage":
         print_usage(router)
     elif cmd == "/tools":

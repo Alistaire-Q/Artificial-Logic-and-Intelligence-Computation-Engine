@@ -27,6 +27,7 @@ BUILTINS: dict[str, str] = {
     "mode": "İzin modu: plan | ask | auto | yolo",
     "plan": "Plan moduna geç (sadece okur, plan yazar)",
     "model": "Rol zincirleri / modeli sabitle",
+    "think": "Düşünme seviyesi: off | low | medium | high | default (rol verilebilir: /think brain off)",
     "rewind": "Bir önceki mesaja geri sar (dosyalar dahil)",
     "usage": "Bugünkü istek ve token kullanımı",
     "cwd": "Çalışma klasörünü göster/değiştir",

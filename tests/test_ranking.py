@@ -45,8 +45,8 @@ def test_build_chains_quality_speed_diversity_and_limits():
     ]
     ch = build_chains(res, pcs())
     brain = ch["brain"]
-    assert brain[:2] == ["g:gemini-3.8-flash", "g:gemini-flash-latest"]
-    assert brain[2] == "n:z-ai/glm-5.3"  # üçüncü Gemini yerine başka sağlayıcı (çeşitlilik)
+    # Hız da sayılır: 3 sn üstü her saniye 1,5 puan (ajan bir işte çok kez çağırıyor).
+    assert brain[:3] == ["g:gemini-3.6-flash", "g:gemini-3.8-flash", "n:z-ai/glm-5.3"]
     assert "q:qwen3.8-27b" not in brain and "o:dead" not in brain and "n:timeout" not in brain
     assert brain.index("o:slow-but-smart") > brain.index("g:gemini-3.6-flash")
     assert brain[-1] == "o:busy"
@@ -148,7 +148,7 @@ def test_voice_chain_prefers_low_ttft():
     res = [Probe("n:glm", True, 95, latency=12, ttft=5.5), Probe("g:flash", True, 90, latency=3, ttft=0.8),
            Probe("q:tiny", True, 90, latency=1, ttft=0.3)]
     ch = build_chains(res, pcs())
-    assert ch["brain"][0] == "n:glm"
+    assert ch["brain"][0] == "g:flash"  # 12 sn'lik model 5 puan yüksek kaliteye rağmen geride
     assert ch["voice"] == ["q:tiny", "g:flash", "n:glm"]  # küçük bağlamlı hızlı model de sese girer
 
 
