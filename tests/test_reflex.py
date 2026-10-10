@@ -100,3 +100,15 @@ def test_low_confidence_click_on_element_named_in_goal_proceeds():
     # adı hedefte geçmeyen öğe: yine beyne döner
     res = ReflexLoop(FakeObserver(), ScriptedDecider([("click_1", 0.45, 0.0)]), settle=0).run("ayarları aç")
     assert res.status == "needs_help"
+
+
+def test_named_target_repeated_on_page_still_counts():
+    from alice.reflex.loop import _named_in_goal
+
+    els = [Element(1, "a", "Wish Me Luck", False), Element(2, "button", "Play Wish Me Luck", False),
+           Element(3, "a", "Lucky Day", False)]
+    by_key = {"click_1": els[0]}
+    assert _named_in_goal("click_1", by_key, els, "ekrandaki Wish Me Luck şarkısını aç")
+    els.append(Element(4, "a", "Wish You Were Here", False))
+    by_key = {"click_4": els[3]}
+    assert not _named_in_goal("click_4", by_key, els, "ekrandaki Wish Me Luck şarkısını aç")

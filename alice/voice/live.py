@@ -618,6 +618,8 @@ class LiveSession:
         except Exception as e:  # noqa: BLE001
             res = ToolResult(f"{type(e).__name__}: {e}", is_error=True)
         text = res.text[:6000]
+        if fc.get("name") in ("reflex", "computer_task", "browser", "ui_act"):  # neden olmadı, günlükten anlaşılsın
+            self.log(f"live araç sonucu {fc.get('name')}: {text[:200].replace(chr(10), ' | ')}")
         if res.is_error and "reddetti" in text:
             text = "onay gerekli: kullanıcıya kısaca sor, 'evet' derse aynı çağrıyı tekrarla."
         elif res.is_error:
