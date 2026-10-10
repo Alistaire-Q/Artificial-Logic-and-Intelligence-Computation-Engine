@@ -158,6 +158,7 @@ class FlightCompanion:
         self.cm_flags: set[str] = set()
         self.appr_last_say = -1e9
         self.appr_last_kind = ""
+        self.appr_cand, self.appr_cand_since = "", 0.0
         self.appr_samples: list[bool] = []
         self.max_sink_final: float | None = None
         self.slow_since: float | None = None
@@ -453,34 +454,51 @@ class FlightCompanion:
         slow = 30 < (s.ias or 1e9) < self.profile.approach_ias_max
         return (s.gear or 0) > 0.9 and slow and (low or s.agl is None)
 
+    APPR_MARGIN = 2.0   # derece: on speed bandının bu kadar dışına çıkmadan "hızlı/yavaş" deme
+    APPR_STABLE = 1.5   # sn: durum bu kadar sürmeden söyleme (anlık salınımlar susar)
+    APPR_REPEAT = 10.0  # sn: aynı uyarıyı en erken bu kadar sonra tekrarla
+    APPR_GAP = 3.0      # sn: iki anons arası en az
+
+    def _approach_kind(self, s: FlightState) -> str:
+        lo, hi = self.profile.aoa_on_speed
+        final = s.agl is not None and s.agl < 300
+        if final and s.vv is not None and s.vv < -7:
+            return "sink"
+        if s.aoa > hi + self.APPR_MARGIN:
+            return "slow"  # stall'a yaklaşıyor
+        if s.aoa < lo - self.APPR_MARGIN and (s.ias or 0) >= 0.85 * self.profile.approach_ias_max:
+            return "fast"  # yaklaşma hız sınırına geliyor
+        if lo <= s.aoa <= hi:
+            return "on"
+        return "band"  # bandın hemen dışında: söylenecek bir şey yok
+
     def _approach(self, s: FlightState) -> None:
         if not self.in_approach(s) or s.aoa is None:
             self.appr_last_kind = ""
+            self.appr_cand = ""
             return
         lo, hi = self.profile.aoa_on_speed
-        on_speed = lo <= s.aoa <= hi
-        final = s.agl is not None and s.agl < 300
-        if final:
-            self.appr_samples.append(on_speed)
+        if s.agl is not None and s.agl < 300:
+            self.appr_samples.append(lo <= s.aoa <= hi)
             if s.vv is not None:
                 self.max_sink_final = max(self.max_sink_final or 0.0, -s.vv)
-        if final and s.vv is not None and s.vv < -7:
-            kind, text = "sink", "Çok hızlı alçalıyorsun."
-        elif s.aoa < lo:
-            kind, text = "fast", "Hızlısın."
-        elif s.aoa > hi:
-            kind, text = "slow", "Yavaşsın, güç ver."
-        else:
-            kind, text = "on", "On speed, iyi."
+        kind = self._approach_kind(s)
+        if kind != self.appr_cand:
+            self.appr_cand, self.appr_cand_since = kind, s.t
+        stable = s.t - self.appr_cand_since >= self.APPR_STABLE or kind == "sink"
+        if not stable or kind == "band" or s.t - self.appr_last_say < self.APPR_GAP:
+            return
+        last = self.appr_last_kind
         if kind == "on":
-            # "On speed" sadece bir düzeltmeden sonra söylenir; doğru giderken susar.
-            say_it = self.appr_last_kind not in ("", "on")
+            say_it = last in ("fast", "slow", "sink")  # sadece bir düzeltmeden sonra, bir kez
         else:
-            say_it = kind != self.appr_last_kind or s.t - self.appr_last_say >= self.approach_every
-        if say_it:
-            self.appr_last_say = s.t
-            self.say(text, "info", "calm" if kind == "on" else "serious")
-        self.appr_last_kind = kind
+            say_it = kind != last or s.t - self.appr_last_say >= self.APPR_REPEAT
+        if not say_it:
+            return
+        text = {"sink": "Çok hızlı alçalıyorsun.", "slow": "Yavaşsın, stall'a yaklaşıyorsun, güç ver.",
+                "fast": "Hızlısın.", "on": "On speed, iyi."}[kind]
+        self.appr_last_say, self.appr_last_kind = s.t, kind
+        self.say(text, "info", "calm" if kind == "on" else "serious")
 
     # ------------------------------------------------------------ uçuş sonrası
     def _finish(self, s: FlightState, landed: bool) -> None:

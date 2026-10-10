@@ -78,10 +78,11 @@ def test_full_flight():
 
     # yaklaşma: önce hızlı, sonra on speed, sonra teker koyma
     r.said.clear()
-    for i, (agl, aoa) in enumerate([(500, 8), (450, 8), (400, 13), (350, 13), (250, 13), (150, 13), (80, 13),
+    for i, (agl, aoa) in enumerate([(500, 7), (450, 7), (400, 13), (350, 13), (250, 13), (150, 13), (80, 13),
                                     (40, 12.5), (10, 13), (2, 13), (0.3, 13)]):
         t += 2
-        tr.feed(st(t, gear=1.0, ias=75, agl=agl, aoa=aoa, vv=-3.5 if agl > 2 else -1.2, fuel_kg=fuel, x=0, flare=0))
+        tr.feed(st(t, gear=1.0, ias=88 if aoa < 10 else 75, agl=agl, aoa=aoa, vv=-3.5 if agl > 2 else -1.2,
+                   fuel_kg=fuel, x=0, flare=0))
     assert r.texts()[:2] == ["Hızlısın.", "On speed, iyi."]
     # durma
     for _ in range(7):
@@ -436,3 +437,30 @@ def test_proactive_callouts():
     assert "Son AIM-120C." in said and "Top mermisi azaldı, 90 kaldı." in said
     text = "\n".join(describe_extra(st(9, extra={"radios": "251.000,127.500"})))
     assert "UHF 251.000" in text and "VHF 127.500" in text
+
+
+def test_approach_calls_are_calm_and_not_contradictory():
+    c, tr, r = make()
+    c.phase = "air"
+    c.profile = c.profile.__class__("F-16C", aoa_on_speed=(11.0, 15.0), approach_ias_max=95)
+    t = 0.0
+    # band kenarında salınım (10-16 derece): hiçbir şey söylenmez
+    for aoa in [10, 16, 10.5, 15.8, 10.2, 16.5] * 3:
+        t += 0.5
+        c._approach(st(t, gear=1.0, ias=75, agl=400, aoa=aoa, vv=-3))
+    assert r.texts() == []
+    # stall'a yaklaşma (18 derece) kalıcı: bir kez "yavaşsın", 10 sn dolmadan tekrar yok
+    for _ in range(12):
+        t += 0.5
+        c._approach(st(t, gear=1.0, ias=60, agl=400, aoa=18, vv=-3))
+    assert r.texts() == ["Yavaşsın, stall'a yaklaşıyorsun, güç ver."]
+    # düzeltti: bir kez on speed
+    for _ in range(8):
+        t += 0.5
+        c._approach(st(t, gear=1.0, ias=70, agl=400, aoa=13, vv=-3))
+    assert r.texts()[-1] == "On speed, iyi." and r.texts().count("On speed, iyi.") == 1
+    # düşük AoA ama hız yaklaşma sınırından uzak: "hızlısın" yok
+    for _ in range(8):
+        t += 0.5
+        c._approach(st(t, gear=1.0, ias=70, agl=400, aoa=7, vv=-3))
+    assert "Hızlısın." not in r.texts()
