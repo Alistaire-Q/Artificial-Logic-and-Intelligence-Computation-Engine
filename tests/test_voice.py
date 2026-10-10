@@ -1189,3 +1189,99 @@ def test_speech_gate_sends_silence_for_noise_and_preroll_for_speech():
     assert g.feed(b"c" * 960) == [b"c" * 960]  # konuşma bitince kısa süre açık kalır
     g.feed(b"d" * 960)
     assert g.feed(b"e" * 960) == [b"\x00" * 960]
+
+
+# --------------------------------------------------- uyandırma doğruluğu
+def test_speech_segments_drop_prompt_echo_noise_and_loops():
+    from types import SimpleNamespace as S
+
+    from alice.voice.stt import speech_segments
+
+    keep = S(text="Hey Alice, saat kaç?", no_speech_prob=0.05, avg_logprob=-0.3, compression_ratio=1.1)
+    real_wake = S(text="Hey Alice.", no_speech_prob=0.1, avg_logprob=-0.3, compression_ratio=0.9)
+    echo = S(text="Hey Alice.", no_speech_prob=0.5, avg_logprob=-0.6, compression_ratio=0.9)
+    noise = S(text="Müzik", no_speech_prob=0.8, avg_logprob=-1.1, compression_ratio=1.0)
+    loop = S(text="YouTube YouTube YouTube YouTube YouTube YouTube", no_speech_prob=0.1, avg_logprob=-0.2,
+             compression_ratio=3.1)
+    assert speech_segments([keep, real_wake, echo, noise, loop]) == [keep, real_wake]
+
+
+def test_vad_ignores_steady_noise_that_webrtcvad_calls_speech():
+    import array as arr
+
+    vad = VAD()
+
+    class AlwaysSpeech:
+        def is_speech(self, frame, rate):
+            return True
+
+    vad._vad = AlwaysSpeech()
+
+    def frame(amp):
+        return arr.array("h", [int(amp * 32767 * math.sin(i / 3)) for i in range(480)]).tobytes()
+
+    hum = [vad.is_speech(frame(0.02)) for _ in range(200)]  # 6 sn oyun/fan sesi
+    assert sum(hum[-100:]) == 0
+    assert vad.is_speech(frame(0.15))  # üstünde konuşma
+
+
+def test_strip_wake_ali_only_after_real_hey():
+    assert strip_wake("Hey Ali, saat kaç") == "saat kaç"
+    assert strip_wake("Selam Ali nasılsın") is None
+    assert strip_wake("Merhaba Ali") is None
+    assert strip_wake("Selam Aliye") is None
+    assert strip_wake("Selam Alice nasılsın") == "nasılsın"
+
+
+def test_wake_found_later_in_noisy_recording():
+    class Gate:
+        model_name, last_seconds, HEAD_SECONDS = "small", 0.1, 2.5
+
+        def __init__(self):
+            self.calls = []
+
+        def heard(self, audio):
+            self.calls.append(audio.seconds)
+            return "Hey Alice, saat kaç?" if audio.seconds < 7 else ""
+
+    class STT:
+        def __init__(self):
+            self.wake_gate = Gate()
+            self.heard_audio = []
+
+        def transcribe(self, audio):
+            self.heard_audio.append(audio.seconds)
+            return "Hey Alice, saat kaç?"
+
+    agent, sp = FakeAgent(), FakeSpeaker()
+    stt = STT()
+    va = VoiceAssistant(agent, sp, stt=stt)
+    va.handle_audio(Audio(b"\1\0" * 16000 * 10, 16000), direct=False)  # 10 sn: baştaki 4 sn gürültü
+    assert stt.heard_audio and stt.heard_audio[0] == pytest.approx(6.0)
+
+
+def test_follow_up_without_wake_rejects_noise_text():
+    class Gate:
+        model_name, last_seconds, last_conf = "small", 0.1, -0.3
+
+        def __init__(self, text):
+            self.text = text
+
+        def heard(self, audio):
+            return self.text
+
+    class STT:
+        def __init__(self, text):
+            self.wake_gate = Gate(text)
+            self.calls = 0
+
+        def transcribe(self, audio):
+            self.calls += 1
+            return self.wake_gate.text
+
+    for text, want in (("Altyazı M.K.", 0), ("hava nasıl", 1)):
+        stt = STT(text)
+        va = VoiceAssistant(FakeAgent(), FakeSpeaker(), stt=stt)
+        va.armed_until = time.monotonic() + 5
+        va.handle_audio(Audio(b"\1\0" * 16000, 16000), direct=False)
+        assert stt.calls == want, text
