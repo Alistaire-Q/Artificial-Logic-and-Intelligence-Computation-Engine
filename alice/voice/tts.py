@@ -6,8 +6,8 @@ Yerel: XTTS v2 ve Chatterbox. İkisi de sesi bir referans kayıttan klonlar. Ref
 (~/.alice/voice/library/<duygu>.wav). Böylece DCS açıkken buluttan, kapalıyken yerelden
 konuşsa da hep aynı ALICE duyulur.
 
-Son çare: Microsoft Edge'in sinir ağı sesleri (edge-tts). Anahtar ve kota yok, ~1 sn'de hazır; bulut
-ve yerel ses düşünce (ya da yerel ses takılıp zaman aşımına uğrayınca) konuşur.
+Çevrimdışı: Piper (işlemcide, Türkçe, internetsiz) ve en son Windows'un kendi sesi (SAPI). İnternet
+yokken bulut ve Edge hiç denenmez (her biri zaman aşımıyla saniyeler kaybettirirdi).
 
 Son çare: Microsoft Edge'in sinir ağı sesleri (edge-tts). Anahtar ve kota yok, ~1 sn'de hazır; bulut
 ve yerel ses düşünce (ya da yerel ses takılıp zaman aşımına uğrayınca) konuşur.
@@ -599,6 +599,119 @@ class EdgeTTS:
         return Audio(decode_mp3(data, 24000), 24000)
 
 
+# Piper'da duygu yok: hızla biraz renk verilir (length_scale < 1 hızlı).
+PIPER_SPEED = {"excited": 0.9, "happy": 0.95, "urgent": 0.85, "serious": 1.05, "sad": 1.12}
+PIPER_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/main/{family}/{code}/{name}/{quality}/{voice}{ext}"
+
+
+def piper_dir() -> Path:
+    return alice_home() / "voice" / "piper"
+
+
+def piper_files(voice: str) -> tuple[Path, Path]:
+    model = piper_dir() / f"{voice}.onnx"
+    return model, model.with_suffix(".onnx.json")
+
+
+def piper_urls(voice: str) -> tuple[str, str]:
+    """tr_TR-dfki-medium -> Hugging Face'teki .onnx ve .onnx.json adresleri."""
+    code, name, quality = voice.split("-", 2)
+    fmt = dict(family=code.split("_")[0], code=code, name=name, quality=quality, voice=voice)
+    return PIPER_URL.format(ext=".onnx", **fmt), PIPER_URL.format(ext=".onnx.json", **fmt)
+
+
+class PiperTTS:
+    """Piper (pip install piper-tts): internetsiz, işlemcide, Türkçe. Ses dosyası ~60 MB, `alice offline install`
+    indirir. Model ilk cümlede yüklenir (~1 sn), sonra cümle başına ~0,1-0,3 sn."""
+
+    def __init__(self, voice: str = "tr_TR-dfki-medium"):
+        self.voice = voice
+        self.name = f"piper:{voice}"
+        self._model: Any = None
+        self._lock = threading.Lock()
+
+    def available(self) -> bool:
+        return piper_files(self.voice)[0].exists()
+
+    def _load(self):
+        try:
+            from piper import PiperVoice
+        except ImportError as e:
+            raise TTSError("piper-tts kurulu değil: alice offline install") from e
+        model, config = piper_files(self.voice)
+        if not model.exists():
+            raise TTSError(f"Piper sesi yok ({model.name}): alice offline install")
+        return PiperVoice.load(str(model), config_path=str(config))
+
+    def synth(self, text: str, emotion: str = "calm") -> Audio:
+        with self._lock:
+            if self._model is None:
+                self._model = self._load()
+            try:
+                from piper import SynthesisConfig
+
+                conf = SynthesisConfig(length_scale=PIPER_SPEED.get(emotion, 1.0))
+            except ImportError:
+                conf = None
+            pcm = bytearray()
+            rate = 22050
+            try:
+                for chunk in self._model.synthesize(text, syn_config=conf):
+                    pcm += chunk.audio_int16_bytes
+                    rate = chunk.sample_rate
+            except Exception as e:  # noqa: BLE001 - motor hatası tek türde dönsün
+                raise TTSError(f"piper sesi üretemedi: {type(e).__name__}: {e}") from e
+        if not pcm:
+            raise TTSError("piper sesi boş döndü")
+        return Audio(bytes(pcm), rate)
+
+
+class SapiTTS:
+    """Windows'un kendi konuşma motoru (System.Speech): kurulum gerektirmez, internetsiz. Türkçe ses paketi
+    (Ayarlar > Saat ve dil > Konuşma) kuruluysa onu seçer. Son çare: sesi mekanik ama hiç susmaz."""
+
+    name = "sapi"
+
+    def __init__(self, culture: str = "tr-TR", timeout: float = 20.0):
+        self.culture = culture
+        self.timeout = timeout
+
+    def synth(self, text: str, emotion: str = "calm") -> Audio:
+        import subprocess
+        import sys
+        import tempfile
+
+        if sys.platform != "win32":
+            raise TTSError("Windows sesi sadece Windows'ta")
+        rate = {"urgent": 2, "excited": 1, "sad": -1}.get(emotion, 0)
+        with tempfile.TemporaryDirectory() as d:
+            wav = Path(d) / "s.wav"
+            txt = Path(d) / "s.txt"
+            txt.write_text(text, encoding="utf-8")
+            script = (
+                "Add-Type -AssemblyName System.Speech;"
+                "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer;"
+                f"$v=$s.GetInstalledVoices()|?{{$_.Enabled -and $_.VoiceInfo.Culture.Name -eq '{self.culture}'}}"
+                "|select -First 1;"
+                "if($v){$s.SelectVoice($v.VoiceInfo.Name)};"
+                f"$s.Rate={rate};"
+                f"$s.SetOutputToWaveFile('{wav}');"
+                f"$s.Speak([IO.File]::ReadAllText('{txt}',[Text.Encoding]::UTF8));$s.Dispose()"
+            )
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            try:
+                r = subprocess.run(["powershell", "-NoProfile", "-Command", script], capture_output=True,
+                                   timeout=self.timeout, creationflags=flags)
+            except (OSError, subprocess.SubprocessError) as e:
+                raise TTSError(f"Windows sesi: {e}") from e
+            if r.returncode != 0 or not wav.exists():
+                raise TTSError(f"Windows sesi: {r.stderr.decode('utf-8', 'replace')[:200]}")
+            try:
+                return Audio.load(wav)
+            except (OSError, ValueError, EOFError) as e:
+                raise TTSError(f"Windows sesi okunamadı: {e}") from e
+
+
 def decode_mp3(data: bytes, rate: int) -> bytes:
     """MP3 -> int16 mono PCM (av, faster-whisper ile birlikte gelir)."""
     import io
@@ -670,7 +783,10 @@ class TTSRouter:
 
     def __init__(self, cloud: TTS | None, local: TTS | None, prefer: str = "cloud",
                  policy: Callable[[], dict[str, Any]] = core_policy, cooldown: float = 300,
-                 cache: SpeechCache | None = None, backup: TTS | None = None):
+                 cache: SpeechCache | None = None, backup: TTS | None = None,
+                 offline_engines: list[TTS] | None = None, online: Callable[[], bool] | None = None):
+        self.offline_engines = [e for e in offline_engines or [] if e is not None]  # internetsiz: Piper, Windows
+        self.online = online or (lambda: True)
         self.cloud = cloud
         self.local = local
         self.backup = backup  # hızlı son çare (Edge): bulut ve yerel ses düşünce
@@ -699,7 +815,11 @@ class TTSRouter:
         if self.policy().get("local_gpu") is False and self.local is not None:
             # Uçuşta GPU oyuna kalsın: önce bulut; yerel ancak işlemcide, son çare olarak.
             engines = [self.cloud, self.backup, self.local]
-        return [e for e in engines if e is not None]
+        if not self.online():
+            # İnternet yok: bulut ve Edge'i hiç deneme. Önce ALICE'in yerel sesi, sonra hızlı internetsiz sesler.
+            engines = [self.local] if self.policy().get("local_gpu") is not False else []
+            return [e for e in engines if e is not None] + self.offline_engines
+        return [e for e in engines if e is not None] + self.offline_engines
 
     def warm_up(self) -> None:
         """Yerel ses modelini arka planda ekran kartına yükle: ilk cevap 20-25 sn beklemesin."""
@@ -723,7 +843,9 @@ class TTSRouter:
         errors = []
         now = time.monotonic()
         if self.cache is not None:
-            for e in self.order():
+            # Önbellekteki ses internet istemez: çevrimdışıyken de bulut sesiyle kaydedilmiş kısa cümleler çalar.
+            order = self.order()
+            for e in order + [x for x in (self.cloud, self.backup) if x is not None and x not in order]:
                 hit = self.cache.get(e.name, emotion, text)
                 if hit is not None:
                     self.last = f"{e.name} (önbellek)"
@@ -784,4 +906,28 @@ def make_tts(cfg: Config) -> TTSRouter:
     v = cfg.data.get("voice", {})
     edge = str(v.get("tts_edge", "tr-TR-EmelNeural") or "")
     return TTSRouter(make_cloud(cfg), make_local(cfg), v.get("prefer", "cloud"), cache=SpeechCache(),
-                     backup=EdgeTTS(edge) if edge else None)
+                     backup=EdgeTTS(edge) if edge else None, offline_engines=make_offline(cfg),
+                     online=_online)
+
+
+def _online() -> bool:
+    from alice import offline
+
+    return offline.online()
+
+
+def make_offline(cfg: Config) -> list[TTS]:
+    """İnternetsiz sesler: Piper (Türkçe ses dosyası indirilmişse) ve Windows sesi."""
+    import sys
+
+    from alice import offline
+
+    o = offline.settings(cfg.data)
+    out: list[TTS] = []
+    if o["piper_voice"]:
+        p = PiperTTS(o["piper_voice"])
+        if p.available():
+            out.append(p)
+    if o["sapi"] and sys.platform == "win32":
+        out.append(SapiTTS())
+    return out

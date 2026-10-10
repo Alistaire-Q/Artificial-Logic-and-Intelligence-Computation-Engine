@@ -145,6 +145,27 @@ barge_in = true
 # ALICE cevap verdikten sonra bu kadar saniye "Hey Alice" demeden devam edebilirsin.
 follow_up = 8
 
+# Tam çevrimdışı mod (`alice offline`): internet yokken ya da bulut cevap vermezken ALICE yerelde çalışır.
+# Kurulum bir kez: alice offline install (Ollama + yerel model + Piper Türkçe ses).
+[offline]
+# auto: internet yoksa kendiliğinden geçer | on: hep yerel | off: hiç geçme
+mode = "auto"
+# Yerel beyin. alice-local = base_model + context (install oluşturur). RTX 4060 8 GB: qwen3:8b ~5,2 GB + bağlam.
+model = "ollama:alice-local"
+base_model = "qwen3:8b"
+# Bağlam (token). Büyüdükçe ekran kartı belleği artar; 12288 ile model + bağlam ~7 GB.
+context = 12288
+# Çevrimdışı ekran görüntüsü anlama (ör. "ollama:qwen2.5vl:7b"). Boş = yok.
+vision_model = ""
+# Yerel Türkçe ses (Piper, işlemcide). Yerel ALICE sesi (tts_local) kuruluysa önce o konuşur.
+piper_voice = "tr_TR-dfki-medium"
+# Son çare Windows'un kendi sesi (Türkçe ses paketi kuruluysa onu seçer).
+sapi = true
+# Konuşma tanıma: wake = uyandırma modelini paylaş (ekran kartında ek bellek yok), local = [voice] stt'deki yerel model.
+stt = "wake"
+# İnternet gidince yerel modeli ekran kartına önceden yükle, dönünce at.
+preload = true
+
 # Uçuş simülasyonları (çekirdekle çalışır). DCS için önce: alice dcs install
 [sims]
 dcs = true
@@ -363,6 +384,13 @@ class ProviderConfig:
     @property
     def enabled(self) -> bool:
         return not self.needs_key or self.api_key is not None
+
+    @property
+    def is_local(self) -> bool:
+        """Bu bilgisayarda çalışan sağlayıcı (Ollama gibi): internet olmadan da cevap verir."""
+        from alice.offline import is_local_url
+
+        return is_local_url(self.base_url)
 
     def supports_vision(self, model: str) -> bool:
         low = model.lower()

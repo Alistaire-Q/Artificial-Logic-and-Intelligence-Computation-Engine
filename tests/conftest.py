@@ -61,3 +61,13 @@ def workdir(tmp_path) -> Path:
     d = tmp_path / "work"
     d.mkdir()
     return d
+
+
+@pytest.fixture(autouse=True)
+def always_online():
+    """Testler gerçek ağı ölçmesin: internet hep var sayılır (çevrimdışı testleri kendi durumunu kurar)."""
+    from alice import offline
+
+    offline.reset(probe=lambda: True, mode="auto")
+    yield
+    offline.reset(probe=lambda: True, mode="auto")

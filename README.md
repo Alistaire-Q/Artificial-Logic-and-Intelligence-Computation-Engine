@@ -287,6 +287,25 @@ alice voice test      # mikrofonu dene
 
 `[voice] enabled = true` yaparsan çekirdek (`alice core run`) sesli asistanı da başlatır ve bildirimleri seslendirir. Sessiz modda bildirimler sadece yazılı gelir.
 
+## Çevrimdışı mod
+
+İnternet gidince ya da bulut servisleri hiç cevap vermeyince ALICE kendiliğinden yerelde çalışmaya devam eder,
+internet gelince buluta döner. Hiçbir ücretli servis kullanmaz.
+
+- **Beyin:** Ollama'daki yerel model. Varsayılan `qwen3:8b`, RTX 4060 8 GB'a sığacak bağlamla `alice-local` adıyla.
+- **Kulak:** faster-whisper. Uyandırma modeli paylaşılır, ekran kartına ikinci bir model yüklenmez.
+- **Ses:** kuruluysa ALICE'in kendi sesini taklit eden yerel motor, sonra Piper (Türkçe, işlemcide), en son Windows sesi.
+  Önbellekteki kısa cümleler internetsiz de ALICE'in bulut sesiyle çalar.
+- Gemini Live, Groq, Edge sesi internet yokken hiç denenmez; zaman aşımı beklenmez.
+- Geçişte yerel model ekran kartına önceden yüklenir, internet dönünce bellekten atılır.
+
+```
+alice offline install   # bir kez: Ollama, yerel model, Piper sesi
+alice offline test      # internet varken de yerel yolu dener
+alice offline           # durum
+alice offline on|off|auto
+```
+
 ## Hızlı bar
 
 Hangi programdayken olursan ol:
