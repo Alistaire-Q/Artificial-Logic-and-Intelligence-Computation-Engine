@@ -252,3 +252,15 @@ def test_reflex_works_in_users_visible_tab(monkeypatch):
     ob = observers.BrowserObserver(SimpleNamespace())
     assert calls == [False]  # ayrı pencere istemedi
     assert ob.b.page is visible
+
+
+def test_live_declares_all_builtin_tools_upfront(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+
+    def tool(name):
+        return SimpleNamespace(spec=lambda: {"type": "function", "function": {"name": name, "description": name}})
+
+    agent = SimpleNamespace(tools={n: tool(n) for n in ("blender", "computer", "load_tools", "mcp__github__x")},
+                            tool_specs=lambda: [])
+    s = LiveSession(SimpleNamespace(data={"voice": {}}), agent)
+    assert [d["function"]["name"] for d in s._specs()] == ["blender", "computer"]
