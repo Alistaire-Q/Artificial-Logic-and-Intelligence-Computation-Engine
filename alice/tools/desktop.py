@@ -315,6 +315,39 @@ def open_app(target: str) -> str:
     return f"açıldı: {target}"
 
 
+BROWSER_TITLES = {"opera": "Opera", "chrome": "Chrome", "msedge": "Edge", "brave": "Brave", "firefox": "Firefox",
+                  "vivaldi": "Vivaldi", "yandex": "Yandex"}
+
+
+def browser_window_title() -> str:
+    """Kullanıcının varsayılan tarayıcısının pencere başlığında geçen ad (ör. 'Opera')."""
+    from alice.tools.browser import default_browser_exe
+
+    exe = (default_browser_exe() or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
+    for key, name in BROWSER_TITLES.items():
+        if key in exe:
+            return name
+    return "Opera"
+
+
+def navigate_tab(target: str, title: str | None = None, new_tab: bool = False) -> str:
+    """Kullanıcının açık tarayıcısında, öndeki sekmenin adres çubuğuna yazıp git (CDP gerekmez)."""
+    from alice.tools.computer import press_keys, type_text
+
+    name = title or browser_window_title()
+    try:
+        shown = focus_window(name)
+    except ToolError:
+        open_app(target if "://" in target else f"https://www.google.com/search?q={target}")
+        return f"{name} açık değildi; varsayılan tarayıcıda açıldı: {target}"
+    time.sleep(0.25)
+    press_keys("ctrl+t" if new_tab else "ctrl+l")
+    time.sleep(0.15)
+    type_text(target)
+    press_keys("enter")
+    return f"{'yeni sekmede' if new_tab else 'açık sekmede'} açıldı ({shown}): {target}"
+
+
 # ------------------------------------------------------------------- UIA ağacı
 def _foreground_uia(title: str | None):
     try:
@@ -438,24 +471,30 @@ def ui_act(ctx: ToolContext, element_id: int, action: str, text: str | None = No
 class Windows(Tool):
     name = "windows"
     description = ("Pencere yönetimi, kurulu program bulma ve uygulama açma. "
-                   "action: list | focus | minimize | maximize | restore | close | open | find. "
+                   "action: list | focus | minimize | maximize | restore | close | open | find | navigate. "
                    "open için target: uygulama adı (ör. 'Discord', 'notepad', 'blender'), exe yolu, dosya ya da URL "
                    "(URL kullanıcının varsayılan tarayıcısında, kendi girişleriyle açılır). "
+                   "navigate: kullanıcının açık tarayıcısında (varsayılan: Opera vb., ya da title) öndeki sekmenin "
+                   "adres çubuğuna target'ı (URL ya da arama) yazıp gider; new_tab=true ise yeni sekmede. "
+                   "'Açık sekmede/bu sekmede' istekleri için browser aracı yerine bunu kullan. "
                    "Zaten açık bir pencerede iş için: list ile bul, focus ile öne al, sonra ui_elements/ui_act. "
                    "find: kurulu bir programın exe yolunu bulur (Başlat menüsü, kayıt defteri, Program Files, Steam); "
                    "bir programın kurulu olup olmadığını ya da exe yolunu (ör. komut satırından script çalıştırmak için) "
                    "öğrenmek için shell'de arama yapmak yerine bunu kullan.")
     parameters = obj({
-        "action": {"type": "string", "enum": ["list", "focus", "minimize", "maximize", "restore", "close", "open", "find"]},
+        "action": {"type": "string", "enum": ["list", "focus", "minimize", "maximize", "restore", "close", "open", "find",
+                                              "navigate"]},
         "title": {"type": "string", "description": "pencere başlığının bir parçası"},
         "target": {"type": "string"},
+        "new_tab": {"type": "boolean"},
     }, ["action"])
     risk = COMPUTER
 
     def risk_for(self, args: dict[str, Any]) -> str:
         return READ if args.get("action") in ("list", "find") else COMPUTER
 
-    def run(self, ctx: ToolContext, action: str, title: str | None = None, target: str | None = None) -> ToolResult:
+    def run(self, ctx: ToolContext, action: str, title: str | None = None, target: str | None = None,
+            new_tab: bool = False) -> ToolResult:
         if action == "list":
             return ToolResult("\n".join(list_windows()) or "pencere yok")
         if action == "find":
@@ -471,6 +510,10 @@ class Windows(Tool):
             if "://" not in target:  # uygulama penceresinin gelmesini bekle; site açmak beklemeye değmez
                 time.sleep(1.5)
             return ToolResult(msg)
+        if action == "navigate":
+            if not target:
+                raise ToolError("navigate için target gerekli")
+            return ToolResult(navigate_tab(target, title, new_tab))
         if not title:
             raise ToolError(f"{action} için title gerekli")
         if action == "focus":

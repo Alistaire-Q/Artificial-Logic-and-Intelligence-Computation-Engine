@@ -12,6 +12,7 @@ import base64
 import json
 import os
 import queue
+import re
 import threading
 import time
 from typing import Any, Callable
@@ -29,8 +30,22 @@ LIVE_PROMPT = """# Canlı sesli konuşma
 Kullanıcıyla sesli, canlı konuşuyorsun. Doğal, sıcak ve kısa konuş (genelde 1-2 cümle), Türkçe.
 Liste, kod, yol ya da uzun sayı okuma; gerekirse ekrana koyduğunu söyle.
 Bir iş istenince ilgili aracı hemen çağır; bir siteyi açmak için windows aracını action=open, target=<URL> ile kullan.
+Kullanıcı "açık sekmede / bu sekmede / şu anki sayfada" derse kendi açık tarayıcısında çalış: windows action=navigate
+target=<URL ya da arama> (sekmenin adres çubuğuna yazar); sayfada bir şeye tıklamak için sonra ui_elements/ui_act.
+browser aracı ayrı bir pencere açar, onu sadece kullanıcı açık sekmesini kastetmiyorsa kullan.
 Bir araç "onay gerekli" derse kullanıcıya kısaca sor; "evet" derse aynı çağrıyı tekrarla.
+İç düşüncelerini, planını, araç hatalarını ya da düzeltmelerini asla sesli söyleme; sadece kullanıcıya Türkçe konuş.
 Şu an: {now}."""
+
+
+# Modelin sesli okuduğu iç notları ("TIRED: I made a syntax error..." gibi) yakalar.
+_INTERNAL_TAG = re.compile(r"\b[A-Z]{4,}\s*:")
+_INTERNAL_EN = re.compile(r"`|\b(function call|syntax error|tool call|I made|I need to|I will call|let me call)\b", re.I)
+
+
+def looks_internal(text: str) -> bool:
+    """Cevap metni kullanıcıya değil modelin kendisine yazılmış bir not mu?"""
+    return bool(_INTERNAL_TAG.search(text) or _INTERNAL_EN.search(text))
 
 
 class LiveError(Exception):
@@ -285,7 +300,7 @@ class LiveSession:
         old_ui, self.agent.ui = self.agent.ui, ui
         calls: queue.Queue[dict[str, Any] | None] = queue.Queue()
         done = threading.Event()
-        state = {"active": time.monotonic(), "said": [], "heard": []}
+        state = {"active": time.monotonic(), "said": [], "heard": [], "mute": False}
         self.log(f"live açıldı [{self.model}]")
 
         def touch() -> None:
@@ -301,7 +316,7 @@ class LiveSession:
                             out.clear()
                         for part in (sc.get("modelTurn") or {}).get("parts", []):
                             data = (part.get("inlineData") or {}).get("data")
-                            if data:
+                            if data and not part.get("thought") and not state["mute"]:
                                 out.put(base64.b64decode(data))
                                 touch()
                         if (t := (sc.get("inputTranscription") or {}).get("text")):
@@ -310,8 +325,13 @@ class LiveSession:
                             touch()
                         if (t := (sc.get("outputTranscription") or {}).get("text")):
                             state["said"].append(t)
+                            if not state["mute"] and looks_internal("".join(state["said"])):
+                                state["mute"] = True  # iç notu okuyor: bu turun kalanını çalma
+                                out.clear()
+                                self.log(f"live iç not susturuldu: {''.join(state['said'])[-160:]}")
                         if sc.get("turnComplete") or sc.get("interrupted"):
                             self._flush_log(state, ui)
+                            state["mute"] = False
                     if msg.get("toolCall"):
                         for fc in msg["toolCall"].get("functionCalls", []):
                             calls.put(fc)
