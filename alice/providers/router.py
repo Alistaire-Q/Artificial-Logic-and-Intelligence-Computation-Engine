@@ -4,7 +4,10 @@ Her rol (brain, fast, vision) sıralı bir "provider:model" listesine sahip. İs
 listedeki ilk uygun modele gider; hata türüne göre:
 
   rate_limit -> o model kısa süre soğumaya alınır (retry-after ya da 20 sn)
-  quota      -> o model 1 saat soğumaya alınır (günlük limit dolmuş)
+  quota      -> günlük kota: sağlayıcının kotası sıfırlanana kadar (Gemini: Pasifik gece yarısı) kapanır ve
+                bu süre ~/.alice/cooldowns.json'a yazılır, ALICE yeniden başlasa da aynı modele boşuna gidilmez;
+                günlük olduğu anlaşılmayan kota hatası 1 saat soğuma
+  dakikalık kota (Gemini "PerMinute") -> rate_limit gibi, Gemini'nin söylediği kadar bekler
   auth       -> sağlayıcı oturum boyunca kapatılır (key yanlış/eksik)
   not_found  -> model oturum boyunca kapatılır (katalogdan kalkmış)
   too_large  -> sadece bu istek için atlanır (context o sağlayıcıya sığmıyor)
@@ -22,7 +25,7 @@ import json
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
@@ -31,6 +34,29 @@ from alice.providers import ranking, thinking
 from alice.providers.openai_compat import ChatResult, OpenAICompatProvider, ProviderError, StreamCancelled
 
 COOLDOWNS = {"rate_limit": 20.0, "quota": 3600.0, "server": 30.0, "network": 30.0, "unreachable": 600.0}
+
+
+def seconds_until_reset(provider: str, base_url: str = "", now: datetime | None = None) -> float:
+    """Günlük ücretsiz kotanın sıfırlanmasına kalan süre. Gemini kotaları Pasifik saatiyle gece yarısı,
+    OpenRouter ve diğerleri UTC gece yarısı sıfırlanıyor. Bilinmeyen saat dilimi verisinde (Windows'ta tzdata
+    yoksa) Pasifik için UTC-8 alınır: en fazla bir saat fazla beklenir."""
+    now = now or datetime.now(timezone.utc)
+    tz: Any = timezone.utc
+    if provider == "gemini" or "generativelanguage.googleapis.com" in base_url:
+        try:
+            from zoneinfo import ZoneInfo
+
+            tz = ZoneInfo("America/Los_Angeles")
+        except Exception:  # noqa: BLE001 - tzdata yok
+            tz = timezone(timedelta(hours=-8))
+    local = now.astimezone(tz)
+    midnight = (local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return max(60.0, (midnight - local).total_seconds() + 60)
+
+
+def account_key(provider: str) -> str:
+    """Hesap genelindeki günlük kotanın soğuma anahtarı (ör. OpenRouter'ın tüm :free modelleri tek kotada)."""
+    return f"{provider}:*:free"
 
 
 def parse_ref(ref: str) -> tuple[str, str]:
@@ -101,6 +127,11 @@ def clean_messages(messages: list[dict[str, Any]], gemini: bool = False) -> list
             m2["tool_calls"] = calls
         out.append(m2)
     return out
+
+
+def _has_images(messages: list[dict[str, Any]]) -> bool:
+    return any(isinstance(m.get("content"), list) and any(p.get("type") == "image_url" for p in m["content"])
+               for m in messages)
 
 
 class StreamSink(Protocol):
@@ -183,6 +214,35 @@ class Router:
         self.role_overrides: dict[str, list[str]] = {}
         self.log_path: Path | None = (usage_path.parent if usage_path else alice_home()) / "logs" / "providers.log"
         self.auto_cache: dict[str, Any] = ranking.load_cache() if auto_cache is None else auto_cache
+        self.no_vision: set[str] = set()  # görsel desteklediği sanılıp görseli reddeden modeller
+        self.cooldown_path: Path = (usage_path.parent if usage_path else alice_home()) / "cooldowns.json"
+        self._load_cooldowns()
+
+    def _load_cooldowns(self) -> None:
+        """Önceki oturumda günlük kotası dolan modeller: süre dolmadıysa yine kapalı başlar."""
+        try:
+            saved = json.loads(self.cooldown_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        wall, mono = time.time(), time.monotonic()
+        for ref, until in (saved or {}).items():
+            try:
+                left = float(until) - wall
+            except (TypeError, ValueError):
+                continue
+            if left > 0:
+                self.cooldown_until[ref] = mono + left
+                self.cooldown_kind[ref] = "quota"
+
+    def _save_cooldowns(self) -> None:
+        wall, mono = time.time(), time.monotonic()
+        data = {ref: round(wall + (until - mono)) for ref, until in self.cooldown_until.items()
+                if self.cooldown_kind.get(ref) == "quota" and until - mono > 600}
+        try:
+            self.cooldown_path.parent.mkdir(parents=True, exist_ok=True)
+            self.cooldown_path.write_text(json.dumps(data, indent=1), encoding="utf-8")
+        except OSError:
+            pass
 
     def thinking_level(self, role: str) -> str:
         return self.thinking_overrides.get(role) or self.thinking_overrides.get("*") or thinking.level_for(
@@ -223,6 +283,8 @@ class Router:
             res = self.auto_cache.get("results") or {}
             refs = sorted(refs or ranking.DEFAULT_AUTO["brain"],
                           key=lambda r: -(res[r].get("quality", 0) - res[r].get("ttft", 0) * 15) if r in res else 0)
+        if role == "vision" and res:
+            refs = list(refs) + ranking.vision_backups(res, self.providers_cfg, list(refs))
         return [r for r in refs if r.partition(":")[0] in self.providers_cfg]
 
     def _cached_dead(self) -> set[str]:
@@ -263,7 +325,7 @@ class Router:
     def supports_vision(self, ref: str) -> bool:
         p, m = parse_ref(ref)
         pc = self.providers_cfg.get(p)
-        return bool(pc and pc.supports_vision(m))
+        return bool(pc and pc.supports_vision(m)) and ref not in self.no_vision
 
     def available(self, ref: str, now: float | None = None) -> tuple[bool, str]:
         now = time.monotonic() if now is None else now
@@ -281,6 +343,8 @@ class Router:
         if ref in self.dead_models:
             return False, "model bulunamadı"
         until = self.cooldown_until.get(ref, 0.0)
+        if ref.endswith(":free"):
+            until = max(until, self.cooldown_until.get(account_key(p), 0.0))
         if until > now:
             return False, f"soğumada ({int(until - now)} sn)"
         return True, "hazır"
@@ -335,7 +399,8 @@ class Router:
                 if est > self.size_limit.get(ref, 10**9):
                     errors.append(f"{ref}: istek ~{est} token, bu model daha önce ~{self.size_limit[ref]} üstünü reddetti")
                     continue
-                msgs = clean_messages(messages if pc.supports_vision(model) else strip_images(messages),
+                vision = pc.supports_vision(model) and ref not in self.no_vision
+                msgs = clean_messages(messages if vision else strip_images(messages),
                                       gemini=is_gemini(pc))
                 client = self.client(p)
                 think = {} if ref in self.no_thinking else thinking.params(p, model, self.thinking_level(role))
@@ -378,7 +443,8 @@ class Router:
                         stream.on_reset()
                     self.usage.record(ref, {}, ok=False)
                     errors.append(f"{ref}: {e}")
-                    self._penalize(ref, p, e, tools is not None, response_format is not None, est)
+                    self._penalize(ref, p, e, tools is not None, response_format is not None, est,
+                                   images=vision and _has_images(msgs))
                     self._log(f"{role} {ref} ~{est}tk HATA {e}")
                     failed.append(f"{ref} ({e.status or e.kind})")
                     continue
@@ -407,9 +473,25 @@ class Router:
             raise AllProvidersFailed(role, errors)
 
     def _penalize(self, ref: str, provider: str, e: ProviderError, had_tools: bool, had_format: bool,
-                  est: int = 0) -> None:
+                  est: int = 0, images: bool = False) -> None:
         now = time.monotonic()
         low = str(e).lower()
+        if e.kind == "quota":
+            pc = self.providers_cfg.get(provider)
+            daily = getattr(e, "daily", False)
+            wait = seconds_until_reset(provider, pc.base_url if pc else "") if daily else COOLDOWNS["quota"]
+            self.cooldown_until[ref] = now + wait
+            self.cooldown_kind[ref] = "quota"
+            if daily and provider in ranking.ACCOUNT_QUOTA and ref.endswith(":free"):
+                self.cooldown_until[account_key(provider)] = now + wait
+                self.cooldown_kind[account_key(provider)] = "quota"
+            if daily:
+                self._save_cooldowns()
+            return
+        if e.kind == "bad_request" and images and any(w in low for w in ("image", "vision", "multimodal", "modality")):
+            # Görsel destekliyor sanılan model görseli reddetti: bu oturumda ona görsel gönderme, sıradakine geç.
+            self.no_vision.add(ref)
+            return
         if e.kind == "auth":
             self.dead_providers.add(provider)
         elif e.kind == "not_found":

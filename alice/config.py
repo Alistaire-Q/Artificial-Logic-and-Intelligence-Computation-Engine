@@ -337,6 +337,10 @@ def load_env_file(path: Path) -> None:
             os.environ[key] = value
 
 
+KNOWN_VISION = ("*gemma-3-*", "*gemma-4-*", "*llama-4-*", "*-vl-*", "*-vl", "*vision*", "*pixtral*")
+NOT_VISION = ("*-1b*", "*embed*", "*tts*", "*guard*")
+
+
 @dataclass
 class ProviderConfig:
     name: str
@@ -361,7 +365,13 @@ class ProviderConfig:
         return not self.needs_key or self.api_key is not None
 
     def supports_vision(self, model: str) -> bool:
-        return any(fnmatch.fnmatch(model.lower(), p.lower()) for p in self.vision_models)
+        low = model.lower()
+        if any(fnmatch.fnmatch(low, p.lower()) for p in self.vision_models):
+            return True
+        # Görsel anladığı bilinen aileler, sağlayıcı listesinde yazmasa da (ör. Gemini API'deki Gemma 4): Gemini
+        # günlük kotası dolunca görme rolü bunlara düşebilsin. Görseli reddederse router o modeli görmeden çıkarır.
+        return (any(fnmatch.fnmatch(low, p) for p in KNOWN_VISION)
+                and not any(fnmatch.fnmatch(low, p) for p in NOT_VISION))
 
 
 @dataclass
