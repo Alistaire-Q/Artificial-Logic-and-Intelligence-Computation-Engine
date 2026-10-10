@@ -12,8 +12,8 @@ yüksek kalırsa beni uyar" der, `parse_rule` bunu hızlı modelle kurala çevir
 from __future__ import annotations
 
 import fnmatch
-import json
 import operator
+import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -111,18 +111,23 @@ class RuleSet:
         if not self.path.exists():
             self.rules = [Rule.from_dict(asdict(r)) for r in DEFAULT_RULES]
             return
-        data = json.loads(self.path.read_text(encoding="utf-8") or "[]")
-        self.rules = []
+        from alice.core.schedule import read_json_list
+
+        data = read_json_list(self.path)
+        if data is None:  # bozuk dosya: eldekini koru, çekirdek düşmesin
+            return
+        rules = []
         for d in data:
             try:
-                self.rules.append(Rule.from_dict(d))
-            except (TypeError, ValueError):
+                rules.append(Rule.from_dict(d))
+            except (TypeError, ValueError, AttributeError):
                 continue
+        self.rules = rules
 
     def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps([asdict(r) for r in self.rules], ensure_ascii=False, indent=2),
-                             encoding="utf-8")
+        from alice.core.schedule import write_json_atomic
+
+        write_json_atomic(self.path, [asdict(r) for r in self.rules])
 
     def add(self, rule: Rule) -> Rule:
         self.rules = [r for r in self.rules if r.id != rule.id] + [rule]
@@ -167,6 +172,7 @@ class RuleEngine:
         self.notifier = notifier
         self.decider = decider
         self.run_agent = run_agent
+        self.sync_agent = False  # testler için: ajan eylemini aynı iş parçacığında çalıştır
         self.mode = mode
         self.last_fired: dict[tuple[str, str], float] = {}
 
@@ -204,15 +210,19 @@ class RuleEngine:
             for key in keys:
                 if now - self.last_fired.get((rule.id, key), -1e18) < rule.cooldown:
                     continue
-                value = self.check(rule, key, now)
-                if value is None:
-                    continue
-                text = self._format(rule, key, value)
-                if rule.confirm and not self._confirmed(rule, key, value, text):
-                    continue
-                self.last_fired[(rule.id, key)] = now
-                fired.append(Firing(rule, key, value, text))
-                self._act(fired[-1])
+                try:
+                    value = self.check(rule, key, now)
+                    if value is None:
+                        continue
+                    text = self._format(rule, key, value)
+                    if rule.confirm and not self._confirmed(rule, key, value, text):
+                        continue
+                    self.last_fired[(rule.id, key)] = now
+                    fired.append(Firing(rule, key, value, text))
+                    self._act(fired[-1])
+                except Exception as e:  # noqa: BLE001 - tek bozuk kural çekirdek turunu ve diğer kuralları durdurmasın
+                    self.last_fired[(rule.id, key)] = now  # her turda aynı hatayı tekrarlama
+                    print(f"kural hatası ({rule.id}, {key}): {e!r}")
         return fired
 
     @staticmethod
@@ -237,19 +247,29 @@ class RuleEngine:
                  f"User's own words: {rule.description}")
         try:
             d = self.decider.decide(state, {"notify": Noul(rule.confirm)})
-        except DeciderError:
-            return True  # karar motoru yoksa kural tek başına karar verir
-        return float(d["notify"].value) >= 0.5
+            return float(d["notify"].value) >= 0.5
+        except (DeciderError, Exception):  # noqa: BLE001 - karar motoru yoksa/bozuk cevap verirse kural tek başına karar verir
+            return True
 
     def _act(self, f: Firing) -> None:
         r = f.rule
         if r.action == "agent" and self.run_agent is not None:
-            prompt = f"{r.prompt}\n\n(Bu görevi şu uyarı tetikledi: {f.text})"
-            try:
-                body = self.run_agent(prompt)
-            except Exception as e:  # ajan çökse de uyarı kaybolmasın
-                body = f"{f.text}\n(araştırma başarısız: {e})"
-            self.notifier.send(Notification("ALICE", body[:500], r.severity, r.topic))
+            # Ajan turu dakikalar sürebilir: çekirdek turunu (izleme, görevler, durum dosyası) bekletmesin.
+            def work() -> None:
+                prompt = f"{r.prompt}\n\n(Bu görevi şu uyarı tetikledi: {f.text})"
+                try:
+                    body = self.run_agent(prompt)
+                except Exception as e:  # noqa: BLE001 - ajan çökse de uyarı kaybolmasın
+                    body = f"{f.text}\n(araştırma başarısız: {e})"
+                try:
+                    self.notifier.send(Notification("ALICE", (body or f.text)[:500], r.severity, r.topic))
+                except Exception:  # noqa: BLE001
+                    pass
+
+            if self.sync_agent:
+                work()
+            else:
+                threading.Thread(target=work, daemon=True, name="alice-rule-agent").start()
         else:
             self.notifier.send(Notification("ALICE", f.text, r.severity, r.topic))
 

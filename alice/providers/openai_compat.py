@@ -239,6 +239,8 @@ class OpenAICompatProvider:
                         chunk = json.loads(payload)
                     except json.JSONDecodeError:
                         continue
+                    if not isinstance(chunk, dict):  # "data: null" gibi: oturumu AttributeError ile düşürmesin
+                        continue
                     if chunk.get("error"):
                         err = chunk["error"]
                         code = err.get("code") if isinstance(err, dict) else None

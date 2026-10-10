@@ -355,10 +355,16 @@ class WakeGate:
                                                      condition_on_previous_text=False)
                 segs = speech_segments(segments)
                 self.last_seconds = time.monotonic() - t0
+                self._errors = 0
                 self.last_conf = min((s.avg_logprob for s in segs), default=-9.0)
                 return " ".join(s.text.strip() for s in segs).strip()
         except Exception:  # noqa: BLE001 - yerel model bozuksa buluta düş
-            self._failed = True
+            # Tek bir hata (oyun GPU belleğini doldurdu, CUDA OOM) kapıyı kalıcı kapatmasın: modeli bırak,
+            # sonraki cümlede yeniden yüklensin; üst üste birkaç kez olursa vazgeç.
+            self._errors = getattr(self, "_errors", 0) + 1
+            self._model = None
+            if self._errors >= 3:
+                self._failed = True
             return None
 
     def transcribe(self, audio: Audio, prompt: str = "Hey Alice.") -> tuple[str, float] | None:
@@ -415,9 +421,9 @@ class STTRouter:
                 text = fn(e)
                 self.last = e.name
                 return text
-            except STTError as ex:
+            except Exception as ex:  # noqa: BLE001 - CUDA belleği, model indirme, bozuk yanıt: sıradaki motora geç
                 self.down[e.name] = now + self.cooldown
-                errors.append(f"{e.name}: {ex}")
+                errors.append(f"{e.name}: {ex}" if isinstance(ex, STTError) else f"{e.name}: {type(ex).__name__}: {ex}")
         raise STTError("; ".join(errors) or "konuşma tanıma motoru yok")
 
 

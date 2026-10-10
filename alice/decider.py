@@ -314,7 +314,7 @@ class Decider:
                 continue
             try:
                 return e.decide(state, questions)
-            except (DeciderError, AllProvidersFailed, httpx.HTTPError) as err:
+            except Exception as err:  # noqa: BLE001 - beklenmeyen cevap (JSON değil, eksik anahtar) da sıradaki motora geçsin
                 errors.append(f"{e.name}: {err}")
                 self.on_event(f"decider {e.name} başarısız, sıradakine geçiliyor")
                 self._broken[e.name] = time.monotonic() + getattr(err, "cooldown", 60.0)

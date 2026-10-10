@@ -89,25 +89,32 @@ class MCPServer:
 
     def _reader(self) -> None:
         assert self.proc and self.proc.stdout
-        for raw in self.proc.stdout:
-            try:
-                msg = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            if "method" in msg and "id" in msg:  # sunucudan istek
-                if msg["method"] == "ping":
-                    self._write({"jsonrpc": "2.0", "id": msg["id"], "result": {}})
-                else:
-                    self._write({"jsonrpc": "2.0", "id": msg["id"],
-                                 "error": {"code": -32601, "message": "desteklenmiyor"}})
-                continue
-            pending = self._pending.get(msg.get("id"))
-            if pending:
-                pending[1].update(msg)
-                pending[0].set()
-        for ev, box in list(self._pending.values()):  # süreç öldü
-            box.setdefault("error", {"message": "sunucu kapandı"})
-            ev.set()
+        try:
+            for raw in self.proc.stdout:
+                try:
+                    msg = json.loads(raw.decode("utf-8", "replace"))
+                except ValueError:  # JSON olmayan günlük satırı (cp1254 dahil): okumayı bırakma
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                try:
+                    if "method" in msg and "id" in msg:  # sunucudan istek
+                        if msg["method"] == "ping":
+                            self._write({"jsonrpc": "2.0", "id": msg["id"], "result": {}})
+                        else:
+                            self._write({"jsonrpc": "2.0", "id": msg["id"],
+                                         "error": {"code": -32601, "message": "desteklenmiyor"}})
+                        continue
+                    pending = self._pending.get(msg.get("id"))
+                    if pending:
+                        pending[1].update(msg)
+                        pending[0].set()
+                except Exception:  # noqa: BLE001 - tek bozuk mesaj okuyucuyu öldürmesin
+                    continue
+        finally:
+            for ev, box in list(self._pending.values()):  # süreç öldü
+                box.setdefault("error", {"message": "sunucu kapandı"})
+                ev.set()
 
     def request(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         with self._lock:

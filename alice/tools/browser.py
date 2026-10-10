@@ -206,6 +206,26 @@ class BrowserSession:
         except ImportError as e:
             raise ToolError("playwright kurulu değil: pip install 'alice-harness[browser]' && playwright install chromium") from e
         self._pw = sync_playwright().start()
+        try:
+            self._start(endpoint, headless, executable)
+        except BaseException:
+            # Bağlantı/başlatma başarısız: Playwright sürücüsü açık kalırsa sonraki deneme de patlıyor.
+            try:
+                self._pw.stop()
+            except Exception:  # noqa: BLE001
+                pass
+            raise
+
+    def alive(self) -> bool:
+        """Tarayıcı bağlantısı hâlâ çalışıyor mu (Opera yeniden başladı, köprü kapandı...)."""
+        try:
+            if self._browser is not None:
+                return bool(self._browser.is_connected())
+            return True  # ALICE'in kendi penceresi: kapanırsa Playwright hatası zaten anlaşılır
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _start(self, endpoint, headless: bool, executable: str | None) -> None:
         self.attached = False
         self._browser = None
         self._cdp = None
@@ -335,6 +355,13 @@ class BrowserSession:
 
 def get_browser(ctx: ToolContext, separate: bool = False) -> BrowserSession:
     b = ctx.state.get("browser")
+    if b is not None and not b.alive():  # bağlantı ölmüş: her araç çağrısı "browser has been closed" demesin
+        ctx.state.pop("browser", None)
+        try:
+            b.close()
+        except Exception:  # noqa: BLE001
+            pass
+        b = None
     if b is None:
         a = ctx.config.agent
         allow = separate or bool(a.get("browser_headless", False)) or bool(a.get("browser_allow_separate", False))

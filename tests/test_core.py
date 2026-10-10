@@ -151,6 +151,7 @@ def test_rule_agent_action(store, tmp_path):
     prompts = []
     rule = Rule("pc.cpu.percent", ">", 90, "CPU", action="agent", prompt="neden yüksek, bak")
     eng, sent = engine(store, tmp_path, [rule], run_agent=lambda p: prompts.append(p) or "Chrome yüzünden")
+    eng.sync_agent = True
     store.add("pc.cpu.percent", 99, ts=1000)
     eng.evaluate(1001)
     assert "neden yüksek" in prompts[0] and sent[0].body == "Chrome yüzünden"
@@ -335,6 +336,46 @@ def test_desktop_toasts_skip_flight_and_repeats(monkeypatch, tmp_path):
     n.send(Notification("PC", "GPU sıcak", "warn", "pc"))
     n.send(Notification("PC", "GPU sıcak", "warn", "pc"))
     assert shown == ["GPU sıcak"]
+
+
+def test_rule_agent_action_does_not_block_tick(store, tmp_path):
+    import threading
+
+    gate = threading.Event()
+    rule = Rule("pc.cpu.percent", ">", 90, "CPU", action="agent", prompt="bak")
+    eng, sent = engine(store, tmp_path, [rule], run_agent=lambda p: gate.wait(5) and "bitti")
+    store.add("pc.cpu.percent", 99, ts=1000)
+    assert eng.evaluate(1001)  # ajan bitmeden döner
+    gate.set()
+
+
+def test_impossible_cron_rejected_and_skipped(tmp_path):
+    import json as _json
+
+    from alice.core.schedule import ScheduledTask, TaskStore
+
+    with pytest.raises(ValueError):
+        ScheduledTask("0 9 30 2 *", "x")
+    path = tmp_path / "tasks.json"
+    good = ScheduledTask("* * * * *", "iyi", created=0)
+    from dataclasses import asdict
+
+    bad = asdict(good) | {"cron": "0 9 30 2 *", "id": "bad"}
+    path.write_text(_json.dumps([bad, asdict(good)]), encoding="utf-8")
+    ts = TaskStore(path)
+    assert [t.id for t in ts.tasks] == [good.id]
+    assert [t.id for t, _ in ts.due(now=10_000)] == [good.id]
+
+
+def test_corrupt_task_file_keeps_memory(tmp_path):
+    from alice.core.schedule import ScheduledTask, TaskStore
+
+    ts = TaskStore(tmp_path / "tasks.json")
+    ts.add(ScheduledTask("0 9 * * *", "sabah"))
+    (tmp_path / "tasks.json").write_text('[{"cron": "0 9', encoding="utf-8")
+    ts.load()
+    assert len(ts.tasks) == 1
+    assert TaskStore(tmp_path / "tasks.json").tasks == []
 
 
 def test_core_prime_writes_mode_before_first_tick_and_hooks_get_policy(tmp_path):

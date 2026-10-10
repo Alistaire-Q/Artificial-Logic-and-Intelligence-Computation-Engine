@@ -268,6 +268,11 @@ class Agent:
             self._repair_after_interrupt()
             self.ui.info(str(e))
             return final
+        except Exception:
+            # Beklenmeyen hata: cevapsız tool_calls geçmişte kalırsa sonraki her tur sağlayıcıdan 400 alır.
+            sink.dead = True
+            self._repair_after_interrupt()
+            raise
         finally:
             self.busy = False
 
@@ -418,7 +423,10 @@ class Agent:
 
     def _parallel_ok(self, prep: tuple[Tool, dict[str, Any], str]) -> bool:
         tool, args, _ = prep
-        return bool(getattr(tool, "parallel_safe", False)) and self.permissions.decide(tool, args, self.ctx) == "allow"
+        try:
+            return bool(getattr(tool, "parallel_safe", False)) and self.permissions.decide(tool, args, self.ctx) == "allow"
+        except Exception:  # noqa: BLE001 - bozuk argüman: sıralı yolda hata olarak modele dönecek
+            return False
 
     def _prepare(self, call: dict[str, Any], quiet: bool = False) -> ToolResult | tuple[Tool, dict[str, Any], str]:
         """Aracı bul, argümanları çöz, izni al. Hata ya da ret varsa ToolResult döner.
@@ -431,10 +439,17 @@ class Agent:
             args = parse_args(call["function"].get("arguments"))
         except json.JSONDecodeError as e:
             return ToolResult(f"argümanlar geçerli JSON değil ({e}). Tekrar dene.", is_error=True)
-        summary = tool.summary(args)
-        if quiet:
-            return tool, args, summary
-        verdict = self.permissions.decide(tool, args, self.ctx)
+        if not isinstance(args, dict):
+            return ToolResult("argümanlar bir JSON nesnesi olmalı ({\"ad\": değer}). Tekrar dene.", is_error=True)
+        try:
+            summary = tool.summary(args)
+            if quiet:
+                return tool, args, summary
+            verdict = self.permissions.decide(tool, args, self.ctx)
+            risk = tool.risk_for(args) if verdict == "ask" else ""
+        except Exception as e:  # noqa: BLE001 - zayıf modelin yanlış tipli argümanı (liste, null) turu ve geçmişi bozmasın
+            return ToolResult(f"geçersiz argüman: {type(e).__name__}: {e}. Parametre tiplerini düzeltip tekrar dene.",
+                              is_error=True)
         if verdict == "deny":
             res = ToolResult("Plan modundasın: bu araç değişiklik yapıyor ve şu an kapalı. Önce planını yaz; kullanıcı "
                              "onaylayıp modu değiştirince uygularsın.", is_error=True)
@@ -442,7 +457,7 @@ class Agent:
             self.ui.tool_end(call["id"], name, res)
             return res
         if verdict == "ask":
-            ans = self.ui.ask_permission(name, summary, tool.risk_for(args))
+            ans = self.ui.ask_permission(name, summary, risk)
             if ans == "a":
                 self.permissions.always_allow.add(name)
             elif ans != "y":
