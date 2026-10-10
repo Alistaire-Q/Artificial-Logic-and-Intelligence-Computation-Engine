@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import dataclasses
 import json
-from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -46,21 +45,19 @@ def test_todo_write_empty_and_summary(ctx):
 def test_memory_read_empty_then_add_and_read(ctx):
     m = meta.Memory()
     assert m.risk_for({"action": "add"}) == READ  # hafıza yazımı onaysız
+    assert m.risk_for({"action": "forget"}) == WRITE
     assert m.run(ctx, action="read").text == "(hafıza boş)"
-    assert m.run(ctx, action="add", note="  kullanıcı Türkçe konuşur \n").text == "kaydedildi"
-    m.run(ctx, action="add", note="ikinci")
-    path = alice_home() / "memory.md"
-    assert path.is_file()
-    today = f"{datetime.now():%Y-%m-%d}"
-    lines = m.run(ctx, action="read").text.splitlines()
-    assert lines == [f"* kullanıcı Türkçe konuşur  _({today})_", f"* ikinci  _({today})_"]
+    assert m.run(ctx, action="add", note="  kullanıcı Türkçe konuşur \n").text.startswith("kaydedildi #")
+    m.run(ctx, action="add", note="en sevdiği uçak F-16")
+    text = m.run(ctx, action="read").text
+    assert text.startswith("# Bilgiler") and "kullanıcı Türkçe konuşur" in text and "F-16" in text
 
 
 @pytest.mark.parametrize("note", [None, ""])
 def test_memory_add_requires_note(ctx, note):
     with pytest.raises(ToolError, match="note"):
         meta.Memory().run(ctx, action="add", note=note)
-    assert not (alice_home() / "memory.md").exists()
+    assert meta.Memory().run(ctx, action="read").text == "(hafıza boş)"
 
 
 # ================================================================== meta: Task (alt ajan)

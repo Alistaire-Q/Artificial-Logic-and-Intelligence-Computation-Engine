@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
-from alice.config import alice_home
 from alice.tools.base import COMPUTER, READ, WRITE, Tool, ToolContext, ToolError, ToolResult, obj
 
 
@@ -31,24 +29,61 @@ class TodoWrite(Tool):
 
 class Memory(Tool):
     name = "memory"
-    description = ("Oturumlar arası kalıcı hafıza (~/.alice/memory.md). Kullanıcı hakkında öğrendiğin kalıcı "
-                   "bilgileri, tercihleri ve tekrar lazım olacak yolları kaydet. action: read | add.")
-    parameters = obj({"action": {"type": "string", "enum": ["read", "add"]}, "note": {"type": "string"}}, ["action"])
+    description = ("Uzun süreli, yerel hafıza (oturumlar arası). Kullanıcının kalıcı tercihlerini, kişisel bilgilerini, "
+                   "çevresindeki kişileri, alışkanlıklarını ve ALICE'ten nasıl davranmasını istediğini kaydet (action=add, "
+                   "kind: preference|fact|person|routine|note; tek kısa Türkçe cümle). Bilgi değişince eskisini güncelle "
+                   "(action=update id text) ya da sil (action=forget, id ya da query). Geçmiş konuşmaları ve bilgileri "
+                   "aramak için action=search query (\"geçen hafta ne konuşmuştuk\", \"en sevdiğim dizi\"). "
+                   "action=read hepsini listeler. Profil zaten sistem isteminde: sadece okumak için çağırma.")
+    parameters = obj({"action": {"type": "string", "enum": ["read", "add", "update", "forget", "search"]},
+                      "note": {"type": "string", "description": "add/update için bilgi cümlesi"},
+                      "kind": {"type": "string", "enum": ["preference", "fact", "person", "routine", "note"]},
+                      "id": {"type": "integer"}, "query": {"type": "string"}}, ["action"])
     risk = WRITE
 
     def risk_for(self, args: dict[str, Any]) -> str:
-        return READ
+        return WRITE if args.get("action") == "forget" else READ
 
-    def run(self, ctx: ToolContext, action: str, note: str | None = None) -> ToolResult:
-        path = alice_home() / "memory.md"
+    def summary(self, args: dict[str, Any]) -> str:
+        return f"{args.get('action')} {args.get('note') or args.get('query') or args.get('id') or ''}".strip()
+
+    def run(self, ctx: ToolContext, action: str, note: str | None = None, kind: str | None = None,
+            id: int | None = None, query: str | None = None, text: str | None = None) -> ToolResult:
+        from alice.memory import Fact, shared_memory
+
+        mem = ctx.state.get("memory") or shared_memory(ctx.config, ctx.router)
+        if mem is None:
+            raise ToolError("hafıza kapalı (config.toml [memory] enabled = false)")
+        note = note or text
         if action == "read":
-            return ToolResult(path.read_text(encoding="utf-8") if path.exists() else "(hafıza boş)")
-        if not note:
-            raise ToolError("add için note gerekli")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(f"* {note.strip()}  _({datetime.now():%Y-%m-%d})_\n")
-        return ToolResult("kaydedildi")
+            return ToolResult(mem.export_markdown())
+        if action == "search":
+            if not (query or note):
+                raise ToolError("search için query gerekli")
+            hits = mem.search(query or note or "", limit=8, min_score=0.2)
+            return ToolResult("\n".join(h.line() for h in hits) or "hafızada ilgili bir şey yok")
+        if action == "add":
+            if not note:
+                raise ToolError("add için note gerekli")
+            fid, new = mem.remember(note, kind or "fact", source="araç")
+            return ToolResult(f"kaydedildi #{fid}" if new else f"benzer bilgi güncellendi #{fid}")
+        if action == "update":
+            if id is None or not note:
+                raise ToolError("update için id ve note gerekli")
+            return ToolResult(f"güncellendi #{id}" if mem.update(id, note) else f"#{id} bulunamadı")
+        if action == "forget":
+            if id is not None:
+                gone = mem.forget(id)
+                return ToolResult(f"silindi: {gone.text}" if gone else f"#{id} bulunamadı")
+            if not (query or note):
+                raise ToolError("forget için id ya da query gerekli")
+            gone, hits = mem.forget_matching(query or note or "")
+            if gone:
+                return ToolResult(f"silindi: {gone[0].text}")
+            cands = [h.item.line() for h in hits if isinstance(h.item, Fact)]
+            return ToolResult("emin olamadım, hiçbirini silmedim. Adaylar (id ile sil):\n" + "\n".join(cands)
+                              if cands else "eşleşen bilgi yok")
+        raise ToolError(f"bilinmeyen action: {action}")
 
 
 class Task(Tool):

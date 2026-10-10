@@ -190,6 +190,9 @@ class AppState:
                                emit=lambda s: self.bus.publish({"type": "info", "text": s}))
         self.agent = Agent(cfg, self.router, all_tools(cfg, self.ctx.emit), self.ctx, Permissions(mode), self.ui, self.decider)
         self.ui.agent = self.agent
+        from alice.memory import attach_memory
+
+        attach_memory(self.agent, "uygulama")
         self.sid = sess.new_session_id()
         self.agent.on_step = lambda: sess.save(self.sid, self.agent.messages, self.ctx.cwd)
         self.token = secrets.token_urlsafe(24)
@@ -449,8 +452,8 @@ def make_handler(state: AppState):
                 return self._json([{"name": t.name, "risk": t.risk, "description": t.description.split("\n")[0][:160]}
                                    for t in state.agent.tools.values()])
             if u.path == "/api/memory":
-                mem = alice_home() / "memory.md"
-                return self._json({"text": mem.read_text(encoding="utf-8") if mem.exists() else ""})
+                mem = state.agent.memory
+                return self._json({"text": mem.export_markdown() if mem is not None else ""})
             if u.path == "/api/models":
                 return self._json({role: [{"ref": r, "status": st} for r, st in rows]
                                    for role, rows in state.router.status().items()})

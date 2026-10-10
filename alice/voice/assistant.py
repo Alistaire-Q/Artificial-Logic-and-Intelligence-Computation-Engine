@@ -27,7 +27,9 @@ You are speaking out loud through text-to-speech. The user hears you, they may n
 - Answer in Turkish, in 1-3 short spoken sentences unless asked for detail. No markdown, lists, tables or emojis.
 - Each user message ends with the current date and time in brackets. Use it for time/date questions (say the time exactly as its "söylenişi" part);
   answer simple questions (time, date, small talk, general knowledge) directly without calling tools.
-- Long-term memory is already in your system prompt: do not call the memory tool just to read it.
+- Long-term memory is already in your system prompt: do not call the memory tool just to read it. When the user tells
+  you something lasting about themselves (likes, dislikes, people, habits, how you should behave) save it with
+  memory action=add; for "forget that" use action=forget; for past conversations not in your prompt use action=search.
 - Weather: call the weather tool once (never run_command/curl for it).
 - Never read code, paths or long numbers aloud; say you put it on screen.
 - In urgent situations (flight warnings, errors) be clear and brief, no jokes.
@@ -634,6 +636,9 @@ def build_voice_agent(cfg, inner_ui=None, speaker: Speaker | None = None, cwd=No
     ui = VoiceUI(speaker, inner_ui)
     agent = Agent(cfg, router, all_tools(cfg, ctx.emit), ctx, Permissions(cfg.agent.get("permission_mode", "auto")), ui, decider)
     agent.messages[0]["content"] += "\n\n" + VOICE_PROMPT
+    from alice.memory import attach_memory
+
+    attach_memory(agent, "ses")
     if "voice" in cfg.roles:
         agent.role = "voice"
     return agent, speaker, ctx

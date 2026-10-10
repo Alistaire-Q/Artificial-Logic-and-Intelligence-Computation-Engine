@@ -37,6 +37,7 @@ from alice import __version__
 from alice.agent import Agent
 from alice.config import Config, alice_home, init_home, load_config
 from alice.decider import Decider
+from alice.memory import attach_memory, shared_memory
 from alice.permissions import MODES, Permissions
 from alice.providers.router import AllProvidersFailed, Router, parse_ref
 from alice.tools import ToolContext, all_tools, attach_mcp, cleanup
@@ -228,6 +229,7 @@ def build(cfg: Config, cwd: Path, mode: str, verbose: bool = False) -> tuple[Age
     ctx = ToolContext(cwd=cwd, config=cfg, router=router, decider=decider,
                       emit=lambda s: console.print(f"[dim]  {s}[/]"))
     agent = Agent(cfg, router, all_tools(cfg, ctx.emit), ctx, Permissions(mode), ui, decider)
+    attach_memory(agent, "yazı")
     attach_mcp(agent, ctx, emit=lambda s: console.print(f"[dim]  {s}[/]"))
     return agent, router, ctx
 
@@ -377,8 +379,8 @@ def handle_slash(text: str, agent: Agent, router: Router, ctx: ToolContext, cfg:
         for t in mcp:
             console.print(f"[bold]{t.name}[/] [dim]({t.risk})[/] {t.description[:110]}")
     elif cmd == "/memory":
-        mem = alice_home() / "memory.md"
-        console.print(mem.read_text(encoding="utf-8") if mem.exists() else "[dim](hafıza boş)[/]")
+        mem = agent.memory or shared_memory(agent.config)
+        console.print(mem.export_markdown() if mem is not None else "[dim](hafıza kapalı)[/]", markup=False)
     elif cmd == "/model":
         if len(args) >= 2:
             role, ref = args[0], args[1]

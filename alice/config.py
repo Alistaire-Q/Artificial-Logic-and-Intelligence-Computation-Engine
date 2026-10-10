@@ -73,6 +73,21 @@ programs = ["dcs.exe", "dcs_server.exe", "aces.exe"]
 [core.modes.dev]
 programs = ["unity.exe", "unity hub.exe", "code.exe", "devenv.exe", "rider64.exe"]
 
+# Uzun süreli hafıza (~/.alice/memory.db, tamamen yerel): tercihler, bilgiler ve geçmiş konuşmalar.
+# En önemli bilgiler her konuşmada sistem istemine, sözüne benzeyen eski bilgi/konuşmalar mesaja eklenir.
+[memory]
+enabled = true
+# Kullanıcı kendinden bahsedince (seviyorum, benim, her zaman...) konuşma "fast" rolündeki ücretsiz modele verilir,
+# kalıcı bilgiler çıkarılıp kaydedilir. false: sadece "bunu hatırla: ..." ve memory aracı ile kaydedilir.
+auto_extract = true
+extract_role = "fast"
+# Her mesaja eklenecek en fazla ilgili hatıra.
+recall_limit = 4
+# Sistem istemine giren bilgi profilinin en fazla uzunluğu (karakter).
+profile_chars = 2500
+# Konuşma kayıtları kaç gün saklanır (bilgiler silinmez). 0 = sonsuz.
+keep_days = 365
+
 # Eklentiler: ~/.alice/plugins/*.py ve buradaki yollar yeni araç ekler (bkz. docs/PLUGINS.md, `alice plugins`).
 [plugins]
 enabled = true

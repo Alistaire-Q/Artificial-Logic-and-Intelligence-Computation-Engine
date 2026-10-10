@@ -173,6 +173,10 @@ class Agent:
         self._error_streak = 0
         # Her araç adımından sonra çağrılır (oturumu kaydetmek için): tur takılır ya da çökerse iz kaybolmasın.
         self.on_step: Any = None
+        # Uzun süreli hafıza (alice.memory.LongMemory): oturum kuranlar bağlar; testler ve gözetimsiz görevlerde None.
+        self.memory: Any = None
+        self.memory_channel = ""
+        self._memory_version = -1
         # Geri sarma için: kullanıcı mesajının indeksi -> o turda ilk değişen dosyaların eski hali.
         self.checkpoints: dict[int, dict[str, bytes | None]] = {}
         if not is_child:
@@ -199,10 +203,51 @@ class Agent:
         return Agent(self.config, self.router, list(self.tools.values()), self.ctx, self.permissions, self.ui,
                      self.decider, system_prompt=self.messages[0]["content"], is_child=True)
 
+    def refresh_memory(self, force: bool = False) -> None:
+        """Hafızada yeni/değişen bilgi varsa sistem istemindeki profil bölümünü güncelle."""
+        mem = self.memory
+        if mem is None or self.is_child:
+            return
+        try:
+            version = mem.version
+            if force or version != self._memory_version:
+                from alice.prompts import with_memory
+
+                self.messages[0]["content"] = with_memory(self.messages[0]["content"], mem.profile())
+                self._memory_version = version
+        except Exception:  # noqa: BLE001 - hafıza hatası konuşmayı durdurmasın
+            pass
+
+    def _recall(self, user_text: str) -> str:
+        if self.memory is None or self.is_child:
+            return ""
+        try:
+            return self.memory.recall(user_text)
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _remember_turn(self, user_text: str, reply: str) -> None:
+        if self.memory is None or self.is_child:
+            return
+        try:
+            self.memory.record(user_text, reply, self.memory_channel)
+            self.memory.learn(user_text, reply)
+        except Exception:  # noqa: BLE001
+            pass
+
     def run_turn(self, user_text: str, max_steps: int | None = None, images: list[str] | None = None) -> str:
+        self.refresh_memory()
+        recall = self._recall(user_text)
+        final = self._run_turn(user_text, max_steps, images, recall)
+        self._remember_turn(user_text, final)
+        return final
+
+    def _run_turn(self, user_text: str, max_steps: int | None, images: list[str] | None, recall: str) -> str:
         from alice.mentions import expand_mentions
 
         content_text = expand_mentions(user_text, self.ctx.cwd)
+        if recall:
+            content_text += "\n\n" + recall
         if self.permissions.mode == "plan" and not self.is_child:
             content_text = PLAN_NOTE + content_text
         content: Any = content_text
