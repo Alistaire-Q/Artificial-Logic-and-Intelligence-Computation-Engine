@@ -208,9 +208,10 @@ function addUser(text, mi, images) {
   cp.addEventListener("click", () => copyText(text));
   acts.appendChild(cp);
   if (mi !== undefined && mi !== null) {
-    const ed = el("button", "act"); ed.title = "Düzenle ve buradan yeniden başlat";
+    const ed = el("button", "act"); ed.title = "Mesajı düzenle ve buradan yeniden gönder (çift tıklama da olur)";
     ed.append(svg(IC.edit), document.createTextNode("Düzenle"));
-    ed.addEventListener("click", () => rewindTo(mi, true));
+    ed.addEventListener("click", () => editInline(wrap, text, mi));
+    b.addEventListener("dblclick", () => editInline(wrap, text, mi));
     const rw = el("button", "act"); rw.title = "Bu mesajdan öncesine geri sar (dosyalar dahil)";
     rw.append(svg(IC.rewind), document.createTextNode("Geri sar"));
     rw.addEventListener("click", () => rewindTo(mi, false));
@@ -725,6 +726,7 @@ function turnSummary() {
 function applyStatus(s) {
   Object.assign(S.status, s);
   const st = S.status;
+  if ("team" in s) renderTeam(s.team);
   if (st.cwd !== undefined) { $("#cwd").textContent = st.cwd; $("#cwdBtn").title = st.cwd; }
   if (st.version) $("#ver").textContent = "ALICE " + st.version;
   if (st.user) { $("#userName").textContent = st.user; $("#avatar").textContent = st.user[0].toUpperCase(); }
@@ -873,6 +875,473 @@ async function rewindTo(mi, edit) {
   toast(r.restored && r.restored.length ? `Geri sarıldı, ${r.restored.length} dosya eski haline getirildi` : "Geri sarıldı");
   if (edit) { input.value = r.text; autosize(); input.focus(); }
 }
+
+// Mesajı yerinde düzenle: balon yazı kutusuna döner; Gönder konuşmayı o mesajın öncesine sarar ve yeni metni yollar.
+function editInline(wrap, text, mi) {
+  if (wrap.querySelector(".edit-box")) return;
+  const box = el("div", "edit-box");
+  const ta = el("textarea");
+  ta.value = text;
+  ta.rows = 1;
+  const fit = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 320) + "px"; };
+  const row = el("div", "edit-row");
+  row.appendChild(el("small", "", "Sonrası silinir, ALICE'in dosya değişiklikleri geri alınır"));
+  const cancel = el("button", "btn", "Vazgeç");
+  const send = el("button", "btn primary", "Gönder");
+  row.append(cancel, send);
+  box.append(ta, row);
+  wrap.classList.add("editing");
+  wrap.appendChild(box);
+  const close = () => { box.remove(); wrap.classList.remove("editing"); };
+  const go = async () => {
+    const t = ta.value.trim();
+    if (!t) return;
+    send.disabled = cancel.disabled = true;
+    if (!(await resendFrom(mi, t))) { send.disabled = cancel.disabled = false; return; }
+  };
+  cancel.addEventListener("click", close);
+  send.addEventListener("click", go);
+  ta.addEventListener("input", fit);
+  ta.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.preventDefault(); close(); }
+    else if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); go(); }
+  });
+  fit();
+  ta.focus();
+  ta.setSelectionRange(ta.value.length, ta.value.length);
+}
+// ALICE çalışıyorsa önce durdurur (bitmesini en fazla ~10 sn bekler), sonra geri sarıp yeni metni gönderir.
+async function resendFrom(mi, text) {
+  if (S.busy) {
+    stop();
+    for (let i = 0; i < 50 && S.busy; i++) { await new Promise((r) => setTimeout(r, 200)); await refreshStatus(); }
+    if (S.busy) { toast("ALICE henüz durmadı, biraz sonra tekrar dene"); return false; }
+  }
+  const r = await api("/api/rewind", { mi });
+  if (!r.ok) { toast(r.error || "Düzenlenemedi"); return false; }
+  renderHistory(r.history);
+  applyStatus(r);
+  refreshChanges();
+  if (r.restored && r.restored.length) toast(`${r.restored.length} dosya eski haline getirildi`);
+  await submit(text);
+  return true;
+}
+
+/* ===================================================================== takım */
+// ALICE takım kurunca (team aracı) üyeler, ne yaptıkları ve aralarındaki mesajlar burada canlı görünür.
+const TEAM_ST = { queued: "sırada", running: "çalışıyor", waiting: "bekliyor", done: "bitti", failed: "hata", stopped: "durdu" };
+function renderTeam(t) {
+  const box = $("#team");
+  S.team = t;
+  if (!t || !t.members || !t.members.length) { box.hidden = true; box.replaceChildren(); return; }
+  box.hidden = false;
+  const open = S.teamOpen ?? true;
+  const busy = t.members.filter((m) => m.status === "running" || m.status === "waiting").length;
+  const done = t.members.filter((m) => m.status === "done").length;
+  box.replaceChildren();
+  const head = el("div", "team-head");
+  const tg = el("button", "team-toggle");
+  tg.append(el("b", "", "Takım"), el("span", "team-sum",
+    t.active ? `${busy} çalışıyor · ${done}/${t.members.length} bitti` : `${done}/${t.members.length} bitti`),
+    el("span", "team-goal", t.goal || ""));
+  tg.addEventListener("click", () => { S.teamOpen = !open; renderTeam(S.team); });
+  head.appendChild(tg);
+  const op = el("button", "btn team-open", "Projede aç");
+  op.title = "Ajanları ayrı ayrı izle ve yönet";
+  op.addEventListener("click", () => openProject(t.id));
+  head.appendChild(op);
+  if (t.active) {
+    const st = el("button", "btn team-stop", "Hepsini durdur");
+    st.addEventListener("click", () => teamAction("stop", ""));
+    head.appendChild(st);
+  } else {
+    const x = el("button", "act"); x.title = "Paneli kapat"; x.appendChild(svg(IC.x));
+    x.addEventListener("click", () => { $("#team").hidden = true; });
+    head.appendChild(x);
+  }
+  box.appendChild(head);
+  if (!open) return;
+  const grid = el("div", "team-grid");
+  for (const m of t.members) {
+    const c = el("div", "tm " + m.status);
+    const top = el("div", "tm-top");
+    top.append(el("b", "", m.name), el("span", "tm-st", TEAM_ST[m.status] || m.status));
+    if (m.status === "running" || m.status === "waiting") {
+      const s = el("button", "act"); s.title = m.name + " durdur"; s.appendChild(svg(IC.x));
+      s.addEventListener("click", (e) => { e.stopPropagation(); teamAction("stop", m.name); });
+      top.appendChild(s);
+    }
+    const meta = [m.model, m.thinking !== "default" ? "düşünme " + m.thinking : "", m.isolation !== "shared" ? m.isolation : "",
+      `${m.steps} adım`, m.secs ? fmtSecs(m.secs) : ""].filter(Boolean).join(" · ");
+    c.append(top, el("div", "tm-meta", meta), el("div", "tm-task", m.task));
+    const last = m.status === "done" || m.status === "failed" ? m.result : m.last;
+    if (last) c.appendChild(el("div", "tm-last", last));
+    c.title = m.task + (m.scope && m.scope.length ? "\nKapsam: " + m.scope.join(", ") : "") + (m.branch ? "\nDal: " + m.branch : "");
+    grid.appendChild(c);
+  }
+  box.appendChild(grid);
+  if (t.log && t.log.length) {
+    const log = el("div", "team-log");
+    for (const x of t.log.slice(-8)) {
+      const row = el("div", "tl");
+      row.append(el("b", "", `${x.from} → ${x.to}`), el("span", "", x.text));
+      log.appendChild(row);
+    }
+    box.appendChild(log);
+  }
+  if (t.active) {
+    const form = el("div", "team-say");
+    const sel = el("select");
+    for (const m of t.members) { const o = el("option", "", m.name); o.value = m.name; sel.appendChild(o); }
+    const all = el("option", "", "herkes"); all.value = "all"; sel.appendChild(all);
+    const inp = el("input"); inp.placeholder = "Bir üyeye doğrudan yaz…";
+    const go = () => { const v = inp.value.trim(); if (v) { teamAction("send", sel.value, v); inp.value = ""; } };
+    inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+    form.append(sel, inp);
+    box.appendChild(form);
+  }
+}
+// Sohbetteki panel sadece ALICE'in o anki takımını gösterir; Projeler sayfası ve listesi her projeyi izler.
+function onTeamEvent(ev) {
+  if (!S.team || S.team.id === ev.id || ev.origin === "alice") renderTeam(ev);
+  if (S.proj && S.proj.id === ev.id) refreshProjectSoon();
+  clearTimeout(onTeamEvent._t);
+  onTeamEvent._t = setTimeout(loadProjects, 800);
+}
+function fmtSecs(n) { return n < 60 ? `${n} sn` : `${Math.floor(n / 60)} dk ${n % 60} sn`; }
+async function teamAction(action, name, text) {
+  if (!S.team) return;
+  const r = await api("/api/project/action", { id: S.team.id, action, name, text: text || "" });
+  if (!r.ok) return toast(r.error || "Olmadı");
+  if (r.team) renderTeam(r.team);
+}
+
+/* ================================================================== projeler */
+// Claude Code'daki Projeler gibi: her takım bir proje, her ajan ayrı bir konuşma. Canlı izlenir, yazılır, durdurulur,
+// projeye yeni ajan eklenir. Projeler diske kaydedilir; uygulama yeniden açılınca da buradan devam edilir.
+async function loadProjects() {
+  const rows = await api("/api/projects");
+  S.projects = Array.isArray(rows) ? rows : [];
+  drawProjects();
+}
+function projectState(p) {
+  if (p.active) return "active";
+  const st = (p.members || []).map((m) => m.status);
+  if (st.some((x) => x === "failed")) return "failed";
+  if (st.length && st.every((x) => x === "done")) return "done";
+  return "stopped";
+}
+function drawProjects() {
+  const nav = $("#projects");
+  nav.replaceChildren();
+  const rows = S.projects || [];
+  if (!rows.length) { nav.appendChild(el("div", "side-empty small", "Henüz proje yok")); return; }
+  for (const p of rows.slice(0, 30)) {
+    const b = el("button", "proj-row" + (S.proj && S.proj.id === p.id ? " active" : ""));
+    b.title = p.goal || p.title;
+    b.append(el("i", "dot " + projectState(p)), el("span", "pt", p.title || "(adsız)"),
+      el("small", "", `${(p.members || []).length} ajan · ${relTime(p.updated || p.created)}`));
+    b.addEventListener("click", () => openProject(p.id));
+    nav.appendChild(b);
+  }
+}
+async function openProject(id, member) {
+  S.proj = { id, sel: member || (S.proj && S.proj.id === id ? S.proj.sel : null), data: null };
+  $("#app").classList.add("in-project");
+  $("#projectView").hidden = false;
+  drawProjects();
+  closeSideOnMobile();
+  await refreshProject();
+}
+function closeProject() {
+  S.proj = null;
+  $("#app").classList.remove("in-project");
+  $("#projectView").hidden = true;
+  drawProjects();
+}
+function refreshProjectSoon() {
+  if (refreshProjectSoon._t) return;
+  refreshProjectSoon._t = setTimeout(() => { refreshProjectSoon._t = null; refreshProject(); }, 700);
+}
+async function refreshProject() {
+  if (!S.proj) return;
+  const pr = S.proj;
+  const sel = pr.sel && pr.sel !== "__log" ? pr.sel : "";
+  const q = `/api/project?id=${encodeURIComponent(pr.id)}` + (sel ? `&member=${encodeURIComponent(sel)}` : "");
+  const d = await api(q);
+  if (S.proj !== pr) return;
+  if (!d || d.ok === false || !d.id) { toast((d && d.error) || "Proje açılamadı"); closeProject(); loadProjects(); return; }
+  if (!pr.sel) pr.sel = d.members.length ? d.members[0].name : "__log";
+  if (!sel && pr.sel !== "__log") return refreshProject();  // ilk açılış: seçilen üyenin konuşmasını da getir
+  pr.data = d;
+  renderProject();
+}
+function renderProject() {
+  const pr = S.proj, d = pr.data, v = $("#projectView");
+  // Yazılmakta olan mesaj ve kaydırma yeri yenilemede kaybolmasın.
+  const draft = v.querySelector(".pd-say textarea");
+  const keep = draft ? { text: draft.value, focus: document.activeElement === draft, to: (v.querySelector(".pd-say select") || {}).value } : null;
+  const feed = v.querySelector(".pd-feed");
+  const atBottom = !feed || feed.scrollHeight - feed.scrollTop - feed.clientHeight < 40;
+  const oldTop = feed ? feed.scrollTop : 0;
+  v.replaceChildren();
+
+  const head = el("div", "pv-head");
+  const back = el("button", "icon-btn"); back.title = "Sohbete dön"; back.innerHTML = '<svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>';
+  back.addEventListener("click", closeProject);
+  const mid = el("div", "grow");
+  const running = d.members.filter((m) => m.status === "running" || m.status === "waiting").length;
+  const done = d.members.filter((m) => m.status === "done").length;
+  const sub = el("div", "pv-sub");
+  sub.append(el("span", "", d.active ? `${running} çalışıyor · ${done}/${d.members.length} bitti` : `${done}/${d.members.length} bitti`),
+    el("span", "", d.origin === "user" ? "senin kurduğun" : "ALICE kurdu"), el("span", "", d.cwd), el("span", "", relTime(d.created)));
+  const goal = el("div", "pv-goal", d.goal);
+  goal.title = "Tamamını göster";
+  goal.addEventListener("click", () => goal.classList.toggle("open"));
+  mid.append(el("h2", "pv-title", d.title), sub, goal);
+  const acts = el("div", "pv-actions");
+  const add = el("button", "btn", "Ajan ekle");
+  add.addEventListener("click", () => projectDialog(d));
+  acts.appendChild(add);
+  if (d.active) {
+    const st = el("button", "btn danger", "Hepsini durdur");
+    st.addEventListener("click", () => projectAction("stop", ""));
+    acts.appendChild(st);
+  } else {
+    const del = el("button", "btn danger", "Sil");
+    del.addEventListener("click", async () => {
+      if (!(await confirmDialog("Proje silinsin mi?", "Projenin kaydı ve ajanların konuşmaları silinir. Dosyalarda yapılan değişiklikler kalır.", "Sil"))) return;
+      if (await projectAction("delete", "")) { closeProject(); loadProjects(); }
+    });
+    acts.appendChild(del);
+  }
+  head.append(back, mid, acts);
+
+  const body = el("div", "pv-body");
+  const list = el("div", "pv-threads");
+  const logBtn = el("button", "th" + (pr.sel === "__log" ? " sel" : ""));
+  const lt = el("div", "th-top");
+  lt.append(el("i", "dot " + (d.active ? "active" : "done")), el("b", "", "Takım sohbeti"), el("small", "", `${d.log.length} mesaj`));
+  logBtn.append(lt, el("div", "th-task", "Ajanların birbirine, ALICE'e ve sana yazdıkları"));
+  logBtn.addEventListener("click", () => { pr.sel = "__log"; refreshProject(); });
+  list.appendChild(logBtn);
+  for (const m of d.members) {
+    const b = el("button", "th" + (pr.sel === m.name ? " sel" : ""));
+    const top = el("div", "th-top");
+    top.append(el("i", "dot " + m.status), el("b", "", m.name), el("small", "", TEAM_ST[m.status] || m.status));
+    b.append(top, el("div", "th-task", m.task));
+    const meta = [m.model, m.thinking !== "default" ? m.thinking : "", `${m.steps} adım`, m.secs ? fmtSecs(m.secs) : ""].filter(Boolean).join(" · ");
+    b.appendChild(el("div", "th-last", (m.status === "running" || m.status === "waiting") && m.last ? m.last : meta));
+    b.addEventListener("click", () => { pr.sel = m.name; refreshProject(); });
+    list.appendChild(b);
+  }
+  const det = el("div", "pv-detail");
+  if (pr.sel === "__log") renderTeamLog(det, d); else if (d.member) renderMemberThread(det, d.member, d);
+  else det.appendChild(el("div", "pd-empty", "Bir ajan seç"));
+  body.append(list, det);
+  v.append(head, body);
+
+  const nf = v.querySelector(".pd-feed");
+  if (nf) nf.scrollTop = atBottom || pr.lastSel !== pr.sel ? nf.scrollHeight : oldTop;
+  pr.lastSel = pr.sel;
+  const nd = v.querySelector(".pd-say textarea");
+  if (nd && keep && keep.text && pr.keptFor === pr.sel) nd.value = keep.text;
+  const ns = v.querySelector(".pd-say select");
+  if (ns && keep && keep.to) ns.value = keep.to;
+  if (nd && keep && keep.focus) nd.focus();
+  pr.keptFor = pr.sel;
+}
+function renderMemberThread(det, m, d) {
+  const h = el("div", "pd-head");
+  const r1 = el("div", "pd-row");
+  r1.append(el("i", "dot " + m.status), el("b", "", m.name), el("span", "chip", TEAM_ST[m.status] || m.status),
+    el("span", "pd-meta", [m.model, m.thinking !== "default" ? "düşünme " + m.thinking : "", m.isolation,
+      `${m.steps} adım`, m.secs ? fmtSecs(m.secs) : ""].filter(Boolean).join(" · ")));
+  const grow = el("span", "grow"); grow.style.flex = "1"; r1.appendChild(grow);
+  if (m.status === "running" || m.status === "waiting") {
+    const st = el("button", "btn danger", "Durdur");
+    st.addEventListener("click", () => projectAction("stop", m.name));
+    r1.appendChild(st);
+  }
+  h.append(r1, el("div", "pd-task", m.task));
+  const r2 = el("div", "pd-row");
+  if (m.constraints) r2.appendChild(el("span", "chip", "sınır: " + m.constraints));
+  if (m.scope && m.scope.length) r2.appendChild(el("span", "chip", "yazar: " + m.scope.join(", ")));
+  if (m.branch) r2.appendChild(el("span", "chip file", "dal " + m.branch));
+  for (const f of (m.files || []).slice(-12)) r2.appendChild(el("span", "chip file", f));
+  if (r2.childNodes.length) h.appendChild(r2);
+
+  const feed = el("div", "pd-feed");
+  for (const it of m.history || []) {
+    if (it.type === "user") {
+      const u = el("div", "pf-user");
+      const txt = it.text || "";
+      const label = txt.startsWith("[takım mesaj") ? "takım mesajı" : txt === "Görevine başla." ? "başlangıç" : "";
+      if (label) u.appendChild(el("small", "", label));
+      u.appendChild(document.createTextNode(txt.replace(/^\[takım mesaj(ı|ları)\]\n/, "")));
+      feed.appendChild(u);
+    } else if (it.type === "assistant") {
+      const a = el("div", "pf-ai");
+      const prose = el("div", "prose");
+      setMd(prose, it.text);
+      a.appendChild(prose);
+      feed.appendChild(a);
+    } else if (it.type === "tool") {
+      const t = el("div", "pf-tool" + (it.is_error ? " err" : ""));
+      t.append(el("b", "", it.name), document.createTextNode(" " + (it.summary || "")));
+      const pre = el("pre", "", (it.text || "").slice(0, 4000));
+      t.appendChild(pre);
+      t.addEventListener("click", () => t.classList.toggle("open"));
+      feed.appendChild(t);
+    }
+  }
+  if (m.status === "running") feed.appendChild(el("div", "pf-tool", (m.last ? "şu an: " + m.last : "düşünüyor…")));
+  if (!feed.childNodes.length) feed.appendChild(el("div", "pd-empty", "Henüz bir şey yok"));
+  const say = el("div", "pd-say");
+  const ta = el("textarea"); ta.rows = 1;
+  ta.placeholder = m.status === "running" || m.status === "waiting" ? `${m.name}'e yaz (bir sonraki adımında görür)…`
+    : `${m.name}'e yaz: kaldığı yerden devam eder…`;
+  const go = el("button", "btn primary", "Gönder");
+  const send = async () => {
+    const v = ta.value.trim();
+    if (!v) return;
+    ta.value = "";
+    await projectAction("send", m.name, v);
+  };
+  go.addEventListener("click", send);
+  ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
+  ta.addEventListener("input", () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 160) + "px"; });
+  say.append(ta, go);
+  det.append(h, feed, say);
+}
+function renderTeamLog(det, d) {
+  const h = el("div", "pd-head");
+  h.append(el("div", "pd-row"), el("div", "pd-task", "Ajanlar team_send ile birbirine, ALICE'e (alice) ya da herkese yazar. Buradan sen de yazabilirsin."));
+  h.firstChild.appendChild(el("b", "", "Takım sohbeti"));
+  const feed = el("div", "pd-feed");
+  for (const x of d.log) {
+    const row = el("div", "pf-log");
+    row.append(el("b", "", `${x.from} → ${x.to}`), document.createTextNode(x.text),
+      el("small", "", new Date(x.at * 1000).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })));
+    feed.appendChild(row);
+  }
+  if (!d.log.length) feed.appendChild(el("div", "pd-empty", "Henüz mesaj yok"));
+  const say = el("div", "pd-say");
+  const sel = el("select");
+  const all = el("option", "", "herkes"); all.value = "all"; sel.appendChild(all);
+  for (const m of d.members) { const o = el("option", "", m.name); o.value = m.name; sel.appendChild(o); }
+  const ta = el("textarea"); ta.rows = 1; ta.placeholder = "Takıma yaz…";
+  const go = el("button", "btn primary", "Gönder");
+  const send = async () => { const v = ta.value.trim(); if (!v) return; ta.value = ""; await projectAction("send", sel.value, v); };
+  go.addEventListener("click", send);
+  ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
+  say.append(sel, ta, go);
+  det.append(h, feed, say);
+}
+async function projectAction(action, name, text, agent) {
+  if (!S.proj) return false;
+  const r = await api("/api/project/action", { id: S.proj.id, action, name, text: text || "", agent });
+  if (!r.ok) { toast(r.error || "Olmadı"); return false; }
+  if (r.note && action !== "send") toast(r.note);
+  if (action !== "delete") refreshProject();
+  return true;
+}
+// Yeni proje (project yoksa) ya da mevcut projeye ajan ekleme penceresi.
+function agentRow(spec) {
+  spec = spec || {};
+  const box = el("div", "np-agent");
+  const r1 = el("div", "np-row");
+  const nm = el("input", "nm"); nm.type = "text"; nm.placeholder = "ad (ör. backend)"; nm.value = spec.name || "";
+  const model = el("input"); model.type = "text"; model.value = spec.model || "brain"; model.setAttribute("list", "npModels");
+  model.title = "Rol (brain güçlü, fast hızlı) ya da sağlayıcı:model";
+  const th = el("select");
+  for (const [v, l] of [["default", "düşünme: varsayılan"], ["off", "düşünme yok"], ["low", "az düşünür"], ["medium", "orta"], ["high", "çok düşünür"]]) {
+    const o = el("option", "", l); o.value = v; th.appendChild(o);
+  }
+  th.value = spec.thinking || "default";
+  const iso = el("select");
+  for (const [v, l] of [["shared", "aynı klasör"], ["worktree", "ayrı git dalı"], ["readonly", "salt okuma"]]) {
+    const o = el("option", "", l); o.value = v; iso.appendChild(o);
+  }
+  iso.value = spec.isolation || "shared";
+  const x = el("button", "act"); x.title = "Kaldır"; x.appendChild(svg(IC.x));
+  x.addEventListener("click", () => box.remove());
+  r1.append(nm, model, th, iso, x);
+  const task = el("textarea"); task.placeholder = "Görevi: ne yapacak, hangi dosyalarda, nasıl doğrulayacak, ne raporlayacak";
+  task.value = spec.task || "";
+  const r2 = el("div", "np-row");
+  const sc = el("input", "sc"); sc.type = "text"; sc.placeholder = "yazabileceği yerler, virgülle (boş: her yer)";
+  sc.value = (spec.scope || []).join(", ");
+  const cn = el("input", "cn"); cn.type = "text"; cn.placeholder = "sınırlar (dokunmayacağı yerler, kurallar)"; cn.value = spec.constraints || "";
+  r2.append(sc);
+  box.append(r1, task, r2, cn);
+  box.read = () => ({ name: nm.value.trim().toLowerCase(), model: model.value.trim() || "brain", thinking: th.value, isolation: iso.value,
+    task: task.value.trim(), constraints: cn.value.trim(),
+    scope: sc.value.split(",").map((s) => s.trim()).filter(Boolean) });
+  return box;
+}
+function projectDialog(project) {
+  showDialog((d) => {
+    d.classList.add("wide");
+    const adding = !!project;
+    d.append(el("h2", "", adding ? "Projeye ajan ekle" : "Yeni proje"),
+      el("p", "", adding ? "Yeni ajan hemen başlar; diğerlerine katıldığı haber verilir."
+        : "Paralel çalışan bir ajan takımı kur. Her ajana ayrı görev, sınır, yazma kapsamı, model ve düşünme seviyesi ver. İstersen planı ALICE'e bırak."));
+    const dl = el("datalist"); dl.id = "npModels";
+    for (const v of ["brain", "fast", "vision", ...((S.status.brain_chain || []).slice(0, 8))]) { const o = el("option"); o.value = v; dl.appendChild(o); }
+    d.appendChild(dl);
+    let goal = null;
+    if (!adding) {
+      goal = el("textarea", "np-goal");
+      goal.placeholder = "Genel hedef: ne yapılacak, bitti sayılma ölçütü, kod tabanı hakkında bilinmesi gerekenler";
+      d.appendChild(goal);
+    }
+    const hd = el("div", "np-head");
+    hd.appendChild(el("b", "", "Ajanlar"));
+    const more = el("button", "btn", "+ Ajan");
+    hd.appendChild(more);
+    const list = el("div", "np-agents");
+    list.appendChild(agentRow(adding ? {} : { name: "backend" }));
+    more.addEventListener("click", () => { if (list.children.length < 8) list.appendChild(agentRow()); });
+    if (!adding) d.appendChild(hd); else more.remove();
+    d.appendChild(list);
+    const err = el("div", "note err");
+    d.appendChild(err);
+    const row = el("div", "row");
+    if (!adding) {
+      const plan = el("button", "btn left", "ALICE planlasın");
+      plan.title = "Hedefi sohbete gönderir; ALICE kodu inceleyip takımı kendisi kurar";
+      plan.addEventListener("click", () => {
+        const g = goal.value.trim();
+        if (!g) { err.textContent = "Önce hedefi yaz"; return; }
+        closeDialog(); closeProject();
+        submit("Bu iş için takım kurup yönet (team aracı). Kodu kısaca incele, işi çakışmayan parçalara böl, her ajana uygun model ve düşünme seviyesini sen seç:\n\n" + g);
+      });
+      row.appendChild(plan);
+    }
+    const no = el("button", "btn", "Vazgeç");
+    no.addEventListener("click", closeDialog);
+    const ok = el("button", "btn accent", adding ? "Ekle ve başlat" : "Başlat");
+    ok.addEventListener("click", async () => {
+      const agents = [...list.children].map((b) => b.read()).filter((a) => a.name || a.task);
+      if (!adding && !goal.value.trim()) { err.textContent = "Hedef boş"; return; }
+      if (!agents.length) { err.textContent = "En az bir ajan ekle"; return; }
+      if (adding) {
+        if (await projectAction("add", "", "", agents[0])) closeDialog();
+        return;
+      }
+      const r = await api("/api/project/create", { goal: goal.value.trim(), agents });
+      if (!r.ok) { err.textContent = r.error || "Başlatılamadı"; return; }
+      closeDialog();
+      await loadProjects();
+      openProject(r.id);
+    });
+    row.append(no, ok);
+    d.appendChild(row);
+    setTimeout(() => (goal || list.querySelector("input")).focus(), 0);
+  });
+}
+$("#newProject").addEventListener("click", () => projectDialog(null));
 
 /* ==================================================================== menüler */
 function openMenu(anchor, build, align) {
@@ -1790,6 +2259,7 @@ list.addEventListener("click", (e) => {
 /* ==================================================================== olaylar */
 const handlers = {
   status: applyStatus,
+  team: onTeamEvent,
   user: (ev) => addUser(ev.text, ev.mi, ev.images),
   busy: (ev) => { S.status.busy = ev.value; setBusy(ev.value); if (!ev.value) loadSessions(); },
   stream_start: () => { if (!S.cur) showWorking("Düşünüyor"); },
@@ -1844,6 +2314,8 @@ function connect() {
     if (connectedOnce) {
       loadHistory().then(() => { if (S.busy) showWorking("Çalışıyor"); });
       loadSessions();
+      loadProjects();
+      if (S.proj) refreshProject();
     }
     connectedOnce = true;
   };
@@ -1866,6 +2338,7 @@ function connect() {
   await loadHistory();
   connect();
   loadSessions();
+  loadProjects();
   const cmds = await api("/api/commands");
   S.commands = Array.isArray(cmds) ? cmds : [];
   autosize();

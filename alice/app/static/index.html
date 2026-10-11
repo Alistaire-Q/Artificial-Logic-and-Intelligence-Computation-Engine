@@ -29,6 +29,13 @@
       <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.3-4.3"/></svg>
       <input id="sessSearch" type="text" placeholder="Sohbetlerde ara" spellcheck="false" autocomplete="off">
     </label>
+    <div class="side-sec">
+      <span>Projeler</span>
+      <button class="icon-btn" id="newProject" title="Yeni proje: paralel çalışan ajan takımı">
+        <svg viewBox="0 0 24 24"><path d="M12 6v12M6 12h12"/></svg>
+      </button>
+    </div>
+    <nav id="projects"></nav>
     <nav id="sessions"></nav>
     <div class="side-foot">
       <button class="user-chip" id="settingsBtn" title="Modeller ve ayarlar">
@@ -66,6 +73,8 @@
       </button>
     </header>
 
+    <section id="projectView" hidden></section>
+
     <section id="scroller">
       <div id="hero">
         <div class="hero-mark"><img src="/static/alice.png" alt="Alice"></div>
@@ -81,6 +90,7 @@
           <svg viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></svg>
         </button>
       </div>
+      <div id="team" hidden></div>
       <div id="queue"></div>
       <button id="planbar" hidden title="Planı yan panelde aç">
         <span class="pb-ring"><svg viewBox="0 0 36 36"><circle cx="18" cy="18" r="15" class="bg"/><circle cx="18" cy="18" r="15" class="fg" id="pbArc"/></svg></span>

@@ -43,6 +43,9 @@ GROUPS: dict[str, tuple[set[str], str, str]] = {
                r"dcs|war ?thunder|uçuş|uçak|kneeboard|pist|iniş|kalkış|simülasyon|sim\b"),
     "net": ({"http_request"}, "REST API çağırma, webhook, JSON gönderme, URL'den dosya indirme",
             r"\bapi\b|endpoint|webhook|\bjson\b|\brest\b|http isteği|post isteği|istek at|indir|download|curl"),
+    "team": ({"team"}, "büyük işleri paralel çalışan ajan takımına bölüp yönetme (orkestratör)",
+             r"takım|ekip|paralel|aynı anda|ajanlar|ajan çağır|orkestra|alt ajan|subagent|multi.?agent|büyük (iş|proje|"
+             r"kod)|codebase|kod tabanı|refactor|yeniden düzenle"),
     "personal": ({"notes", "report", "media"}, "notlar, sabah/PC raporu, müzik ve ses seviyesi",
                  r"\bnot\b|notlar|not al|rapor|özet|sabah|müzik|şarkı|ses seviyesi|sesi aç|sesi kıs|spotify|"
                  r"kapat .*dakika|dakika sonra"),
