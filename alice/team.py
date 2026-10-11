@@ -315,7 +315,8 @@ class Team:
         self._live_ui = publish is not None  # uygulamada: bildirimler tıklanabilir proje kartı olarak gider
         self.roles: list[str] = []
         self._saved_at = 0.0
-        self._save_lock = threading.Lock()
+        self._save_lock = threading.RLock()
+        self._pub_lock = threading.RLock()
 
     # ---------------------------------------------------------- zaman çizelgesi
     def mark(self, who: str, kind: str, text: str) -> None:
@@ -950,8 +951,10 @@ class Team:
     def finish(self, summary: str) -> None:
         self.mark(LEAD, "finish", "proje bitti")
         self.summary = summary.strip()
-        self.finished = True
         self.lead_state = "done"
+        with self._save_lock:  # "bitti" ancak kayıt yazılınca görünsün (liste ve yeniden açılış tutarlı)
+            self.finished = True
+            self.save()
         with self.cond:
             self.log.append(Message(LEAD, USER, "Proje bitti.\n" + self.summary))
             self.cond.notify_all()
@@ -1339,10 +1342,13 @@ Kurallar:
                 "active": self.active()}
 
     def _changed(self, save: bool = False) -> None:
-        try:
-            self.publish(self.snapshot())
-        except Exception:  # noqa: BLE001
-            pass
+        # Durumu alma ve yayınlama tek kilitte: iki iş parçacığı aynı anda yayınlarken eski durum yenisinin
+        # ardından ekrana düşüp (ör. bitmiş projeyi "çalışıyor" gösterip) orada kalmasın.
+        with self._pub_lock:
+            try:
+                self.publish(self.snapshot())
+            except Exception:  # noqa: BLE001
+                pass
         if save or time.monotonic() - self._saved_at > SAVE_EVERY:
             self.save()
 
@@ -1351,17 +1357,29 @@ Kurallar:
         return projects_dir() / f"{self.id}.json"
 
     def save(self) -> None:
-        self._saved_at = time.monotonic()
+        # İçerik de kilit altında hazırlanır: yoksa eski içerik ("çalışıyor") yeni içeriğin ("bitti") üstüne
+        # yazılabiliyor ve yeniden açılan proje yanlış durumda görünüyordu.
+        try:
+            with self._save_lock:  # ajanlar aynı anda kaydetmeye çalışabilir
+                self._saved_at = time.monotonic()
+                body = self._body()
+                tmp = self.path().with_suffix(".json.tmp")
+                tmp.write_text(json.dumps(body, ensure_ascii=False, indent=1), encoding="utf-8")
+                tmp.replace(self.path())
+        except (OSError, TypeError, ValueError, RuntimeError):
+            pass
+
+    def _body(self) -> dict[str, Any]:
         members = []
-        for m in self.members.values():
+        for m in list(self.members.values()):
             d = m.snapshot()
             d.update(result=m.result, max_steps=m.max_steps, cwd=str(m.cwd), started=m.started, ended=m.ended,
                      base_sha=m.base_sha, messages=_slim(m.messages()), councils=m.councils[-6:],
                      council_cycles=m.council_cycles,
-                     originals={k: v for k, v in m.originals.items() if v is None or len(v) < 200_000})
+                     originals={k: v for k, v in list(m.originals.items()) if v is None or len(v) < 200_000})
             members.append(d)
         lead_msgs = self.lead_agent.messages[1:] if self.lead_agent is not None else self.lead_saved
-        body = {"id": self.id, "title": self.title, "goal": self.goal, "origin": self.origin, "cwd": str(self.cwd),
+        return {"id": self.id, "title": self.title, "goal": self.goal, "origin": self.origin, "cwd": str(self.cwd),
                 "created": self.created, "updated": time.time(), "status": self.status(), "review": self.review,
                 "lead_model": self.lead_model, "lead_thinking": self.lead_thinking, "summary": self.summary,
                 "finished": self.finished, "lead_last": self.lead_last, "lead_messages": _slim(lead_msgs),
@@ -1369,13 +1387,6 @@ Kurallar:
                 "councils": self.councils[-10:], "final_runs": self.final_runs, "plan_rejects": self.plan_rejects,
                 "check": self.check, "lessons": self.lessons, "timeline": self.timeline[-500:],
                 "log": [{"from": x.sender, "to": x.to, "text": x.text, "at": x.at} for x in self.log[-500:]]}
-        try:
-            with self._save_lock:  # ajanlar aynı anda kaydetmeye çalışabilir
-                tmp = self.path().with_suffix(".json.tmp")
-                tmp.write_text(json.dumps(body, ensure_ascii=False, indent=1), encoding="utf-8")
-                tmp.replace(self.path())
-        except (OSError, TypeError, ValueError):
-            pass
 
     @classmethod
     def load(cls, project_id: str, parent_ctx: ToolContext, max_parallel: int = 5,

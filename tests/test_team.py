@@ -154,8 +154,9 @@ def test_autonomous_project_plans_reviews_and_finishes(workdir):
     backend_users = [str(m["content"]) for m in team.members["backend"].agent.messages if m["role"] == "user"]
     assert any("yeni ajan katıldı: tests" in c for c in backend_users) or \
         any(x.sender == "sistem" and "tests" in x.text for x in team.log)
-    snaps = [e for e in events if e["type"] == "team"]
-    assert snaps[-1]["status"] == "done" and snaps[-1]["summary"]
+    # finish önce kaydeder, sonra yayınlar: son yayını bekle
+    assert team.wait_until(lambda: [e for e in events if e["type"] == "team"][-1]["status"] == "done", 5)
+    assert [e for e in events if e["type"] == "team"][-1]["summary"]
     assert any(e["type"] == "project_note" and e["kind"] == "done" for e in events)
     assert list_projects()[0]["status"] == "done"
 
