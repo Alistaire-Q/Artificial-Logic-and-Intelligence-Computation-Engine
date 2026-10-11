@@ -734,7 +734,12 @@ function applyStatus(s) {
     $("#modeIcon").innerHTML = icon;
     $("#modeBtn").className = "c-btn pill m-" + st.mode;
   }
-  $("#modelLabel").textContent = shortModel(st.model) + (st.thinking && THINK[st.thinking] ? " · " + THINK[st.thinking][0] : "");
+  $("#modelLabel").textContent = shortModel(st.model);
+  if (st.thinking && THINK[st.thinking]) {
+    $("#thinkLabel").textContent = THINK[st.thinking][0];
+    $("#thinkIcon").innerHTML = st.thinking === "off" ? IC.bolt : IC.brain;
+    $("#thinkBtn").title = "Düşünme: " + THINK[st.thinking][1];
+  }
   $("#modelBtn").title = st.model || "";
   $("#stModel").textContent = st.model || "model yok";
   if (st.ctx_limit) {
@@ -926,14 +931,17 @@ async function setThinking(level) {
   toast("Düşünme: " + THINK[level][0]);
 }
 
-function modelMenu() {
-  openMenu($("#modelBtn"), (m) => {
+function thinkMenu() {
+  openMenu($("#thinkBtn"), (m) => {
     m.appendChild(el("div", "menu-title", "Düşünme"));
     for (const [k, [label, sub]] of Object.entries(THINK)) {
       menuItem(m, k === "off" ? IC.bolt : IC.brain, label[0].toUpperCase() + label.slice(1), sub,
         () => setThinking(k), S.status.thinking === k);
     }
-    m.appendChild(el("div", "menu-sep"));
+  }, "right");
+}
+function modelMenu() {
+  openMenu($("#modelBtn"), (m) => {
     m.appendChild(el("div", "menu-title", "Ana model"));
     menuItem(m, IC.spark, "Otomatik", "Zincirdeki ilk uygun model, limit dolunca sıradakine geçer",
       () => pinModel("reset"), !S.status.brain_pinned);
@@ -1461,7 +1469,7 @@ async function runCommand(text) {
       if (arg) pinModel(arg.includes(":") ? arg : "reset"); else modelMenu();
       return true;
     case "think":
-      if (THINK[arg]) setThinking(arg); else modelMenu();
+      if (THINK[arg]) setThinking(arg); else thinkMenu();
       return true;
     case "rewind": {
       const users = $$(".turn-user");
@@ -1680,6 +1688,7 @@ window.addEventListener("drop", (e) => {
 $("#sendBtn").addEventListener("click", () => (S.busy && !input.value.trim() ? stop() : submit()));
 $("#modeBtn").addEventListener("click", modeMenu);
 $("#modelBtn").addEventListener("click", modelMenu);
+$("#thinkBtn").addEventListener("click", thinkMenu);
 $("#settingsBtn").addEventListener("click", () => showSettings("general"));
 $("#cwdBtn").addEventListener("click", askCwd);
 $("#newChat").addEventListener("click", newChat);

@@ -427,7 +427,9 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: r
 }
 .c-btn:hover { background: var(--hover); color: var(--text); }
 .c-btn.pill { padding: 0 10px; }
-.c-btn.model { border-color: transparent; }
+.c-btn.model, .c-btn.think { border-color: transparent; }
+.c-btn.think svg:first-child { color: var(--faint); }
+@media (max-width: 760px) { #thinkLabel { display: none; } }
 .c-btn svg { width: 16px; height: 16px; }
 .c-btn .caret { width: 14px; height: 14px; }
 #modeBtn.m-plan { color: #3b7ea8; border-color: #3b7ea8; }
