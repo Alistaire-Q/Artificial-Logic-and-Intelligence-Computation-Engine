@@ -1079,3 +1079,125 @@ details.cc:not([open]) { padding-top: 8px; padding-bottom: 8px; }
 .cc-more[open] > summary::after { content: " ▾"; }
 .cc-more[open] { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--line); padding-top: 8px; }
 .pd-feed > .cc { max-width: 820px; }
+
+/* ===================================================================== Projeler: modern düzen
+   Tek yazı tipi, avatarlı ekip listesi, daraltılabilir gruplar, gizlenebilir ve genişletilebilir liste. */
+#projectView { padding: 6px 22px 18px; gap: 14px; }
+#projectView .pv-head { align-items: center; border-bottom: 0; padding: 10px 0 2px; gap: 12px; }
+#projectView .pv-title { font: 650 20px/1.3 var(--sans); letter-spacing: -.01em; }
+#projectView .pv-sub { margin-top: 7px; gap: 10px; font-size: 12.5px; }
+#projectView .pv-sub .prog { width: 140px; height: 6px; }
+#projectView .pv-goal { max-height: 1.5em; margin-top: 6px; font-size: 13px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#projectView .pv-goal.open { white-space: pre-wrap; max-height: none; color: var(--muted); }
+#projectView .pv-actions { align-items: center; gap: 8px; }
+#projectView .pv-actions .btn { border-radius: 10px; padding: 7px 14px; }
+.pv-more svg circle { fill: currentColor; stroke: none; }
+.menu-info { font-size: 12px; color: var(--muted); padding: 2px 10px; overflow-wrap: anywhere; max-width: 320px; }
+.pv-ask { border-radius: 16px; padding: 14px 16px; box-shadow: var(--shadow); }
+.pv-summary { border-radius: 16px; padding: 12px 16px; }
+
+/* gövde: liste | tutamak | konu */
+#projectView .pv-body { grid-template-columns: var(--list-w, 288px) 10px 1fr; gap: 0; }
+#projectView .pv-body.rail { grid-template-columns: 64px 10px 1fr; }
+.pv-grip { cursor: col-resize; position: relative; }
+.pv-grip::after { content: ""; position: absolute; inset: 20% 4px; border-radius: 2px; transition: background .15s; }
+.pv-grip:hover::after { background: var(--line-strong); }
+.pv-body.rail .pv-grip { cursor: default; }
+.pv-body.rail .pv-grip::after { display: none; }
+
+#projectView .pv-threads { background: var(--side); border: 1px solid var(--line); border-radius: 18px; padding: 8px; gap: 2px; }
+.th-head { display: flex; align-items: center; justify-content: space-between; padding: 2px 4px 6px 8px; font-size: 12px; font-weight: 600; color: var(--muted); }
+.th-head .icon-btn { width: 28px; height: 28px; }
+.th-head svg { width: 17px; height: 17px; }
+#projectView .th-sec { display: flex; align-items: center; gap: 6px; width: 100%; padding: 10px 8px 4px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); text-align: left; }
+#projectView .th-sec:hover { color: var(--muted); }
+#projectView .th-sec .chev { width: 12px; height: 12px; transition: transform .15s; transform: rotate(90deg); }
+#projectView .th-sec.closed .chev { transform: rotate(0deg); }
+#projectView .th-sec small { margin-left: auto; font-size: 11px; font-weight: 600; background: var(--hover); color: var(--muted); border-radius: 99px; padding: 0 7px; letter-spacing: 0; }
+#projectView .th-sec.warn small { background: var(--warn); color: var(--bg); }
+#projectView .th-sec.rev small { background: var(--accent-soft); color: var(--accent); }
+.th-group { display: flex; flex-direction: column; gap: 2px; }
+
+#projectView .th { flex-direction: row; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 12px; border: 0; transition: background .12s; }
+#projectView .th:hover { background: var(--hover); }
+#projectView .th.sel { background: var(--panel); box-shadow: var(--shadow); }
+.th-tx { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 1px; }
+#projectView .th-top { gap: 6px; }
+#projectView .th-top b { font: 600 13.5px var(--sans); }
+#projectView .th-top small { font-size: 11px; color: var(--faint); }
+#projectView .th-top small.st-running, #projectView .th-top small.st-planning { color: var(--accent); }
+#projectView .th-top small.st-asking { color: var(--warn); }
+#projectView .th-top small.st-review { color: var(--plan, var(--accent)); }
+#projectView .th-top small.st-done { color: var(--ok); }
+#projectView .th-top small.st-failed, #projectView .th-top small.st-stopped { color: var(--err); }
+#projectView .th-last { font: 12px/1.35 var(--sans); color: var(--muted); }
+#projectView .th.nav .th-last { color: var(--faint); }
+
+/* avatar: baş harf, isimden gelen renk; köşede durum noktası */
+.av { position: relative; flex: none; width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center;
+  font: 600 13px var(--sans); color: #fff; background: hsl(var(--h, 20) 42% 46%); }
+.av img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
+.av.ic { background: var(--hover); color: var(--muted); border-radius: 10px; }
+.av.ic svg { width: 16px; height: 16px; }
+.av .dot { position: absolute; right: -1px; bottom: -1px; width: 10px; height: 10px; box-shadow: 0 0 0 2px var(--side); }
+.th.sel .av .dot { box-shadow: 0 0 0 2px var(--panel); }
+.av .dot.st-idle, .av .dot.st-queued, .av .dot.st-waiting { display: none; }
+
+/* daraltılmış liste: sadece avatarlar */
+.pv-body.rail .pv-threads { padding: 8px 6px; align-items: center; }
+.pv-body.rail .th-head { padding: 2px 0 6px; }
+.pv-body.rail .th-head span, .pv-body.rail .th-tx, .pv-body.rail .th-sec span, .pv-body.rail .th-sec .chev { display: none; }
+.pv-body.rail .th-sec { padding: 6px 0 2px; justify-content: center; border-top: 1px solid var(--line); margin-top: 4px; }
+.pv-body.rail .th-sec small { display: none; }
+.pv-body.rail .th-sec { padding: 0; margin: 6px 4px; height: 1px; background: var(--line); border: 0; }
+.pv-body.rail .th-sec:first-of-type { display: none; }
+.pv-body.rail .th { padding: 5px; width: auto; justify-content: center; }
+
+/* konu paneli */
+#projectView .pv-detail { border-radius: 18px; background: var(--bg); border-color: var(--line); }
+#projectView .pd-head { padding: 12px 18px 10px; gap: 6px; }
+#projectView .pd-row { gap: 10px; flex-wrap: nowrap; }
+#projectView .pd-row .av { width: 36px; height: 36px; font-size: 14px; }
+#projectView .pd-row .av .dot { box-shadow: 0 0 0 2px var(--bg); }
+.pd-acts { margin-left: auto; display: flex; gap: 4px; flex: none; }
+.pd-name { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.pd-name b { font: 650 15px var(--sans); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pd-name small { font-size: 12px; color: var(--faint); }
+#projectView .pd-row .btn { border-radius: 9px; font-size: 12.5px; padding: 5px 10px; flex: none; }
+#projectView .pd-task { max-height: 1.5em; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--faint); cursor: pointer; padding-left: 46px; }
+#projectView .pd-task.open { white-space: pre-wrap; max-height: 12em; overflow-y: auto; color: var(--muted); }
+#projectView .pd-head > .pd-row:last-child:not(:first-child) { padding-left: 46px; flex-wrap: wrap; }
+#projectView .pd-review { margin: 10px 14px 0; border-radius: 14px; border: 0; padding: 12px 14px; }
+#projectView .pd-tabs { padding: 4px 16px 0; gap: 4px; }
+#projectView .pd-tab { border-radius: 8px 8px 0 0; }
+#projectView .pd-feed { padding: 18px 22px; gap: 12px; }
+#projectView .pf-ai, #projectView .pf-ai .prose { font: 14px/1.6 var(--sans); }
+#projectView .pf-ai .prose h1, #projectView .pf-ai .prose h2, #projectView .pf-ai .prose h3 { font-family: var(--sans); }
+#projectView .pf-note { border-radius: 99px; }
+#projectView .pf-msg { border-radius: 14px; }
+#projectView .pd-say { padding: 12px 14px; gap: 8px; border-top: 1px solid var(--line); }
+#projectView .pd-say textarea { border-radius: 12px; padding: 10px 14px; }
+#projectView .pd-say .btn { border-radius: 12px; }
+
+/* kurul kartı: başlığa tıklayınca açılır/kapanır */
+details.cc > summary.cc-head { cursor: pointer; list-style: none; }
+details.cc > summary.cc-head::-webkit-details-marker { display: none; }
+details.cc > summary.cc-head::after { content: ""; width: 7px; height: 7px; border-right: 1.5px solid var(--faint); border-bottom: 1.5px solid var(--faint);
+  transform: rotate(-45deg); margin-left: 8px; transition: transform .15s; flex: none; }
+details.cc[open] > summary.cc-head::after { transform: rotate(45deg); }
+#projectView .cc { border-radius: 16px; padding: 12px 16px; border-color: var(--line); gap: 10px; }
+#projectView .cc[open] { box-shadow: var(--shadow); }
+
+@media (max-width: 760px) {
+  #projectView { padding: 4px 10px 10px; }
+  #projectView .pv-body, #projectView .pv-body.rail { grid-template-columns: 1fr; }
+  .pv-grip { display: none; }
+  #projectView .pv-body { grid-template-rows: auto 1fr; gap: 10px; }
+  #projectView .pv-threads { flex-direction: row; overflow-x: auto; border-radius: 14px; padding: 6px; }
+  #projectView .th-sec, #projectView .th-head { display: none; }
+  #projectView .th-group { flex-direction: row; gap: 4px; }
+  #projectView .th { min-width: 170px; }
+  #projectView .pd-row { flex-wrap: wrap; }
+  #projectView .pd-acts { margin-left: 0; width: 100%; overflow-x: auto; }
+  #projectView .pd-task, #projectView .pd-head > .pd-row:last-child:not(:first-child) { padding-left: 0; }
+}
