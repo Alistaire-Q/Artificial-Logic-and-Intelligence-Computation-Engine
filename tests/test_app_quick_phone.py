@@ -216,12 +216,14 @@ def test_launch_small_screen_and_webbrowser_fallback(monkeypatch):
 
 def test_start_hotkeys_without_pynput(fake_server, monkeypatch):
     qb, _ = make_qb(fake_server)
+    monkeypatch.setattr("alice.hotkeys.IS_WIN", False)  # pynput yolu; Windows'ta gerçek kısayol kaydedilmesin
     monkeypatch.setitem(sys.modules, "pynput", None)
     assert qb.start_hotkeys() is False and qb._listener is None
 
 
 def test_start_hotkeys_registers_nonempty_and_runs_in_thread(fake_server, monkeypatch):
     qb, _ = make_qb(fake_server, {"region_hotkey": ""})
+    monkeypatch.setattr("alice.hotkeys.IS_WIN", False)
     made = []
 
     class GlobalHotKeys:
@@ -461,3 +463,28 @@ def test_watch_cmd_import(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr("alice.health.watch.import_gadgetbridge", lambda p, s: {})
     phone.watch_cmd(["import", "x.db"])
     assert "yeni veri yok" in capsys.readouterr().out
+
+
+def test_start_hotkeys_windows_uses_registerhotkey(fake_server, monkeypatch):
+    qb, _ = make_qb(fake_server, {"region_hotkey": ""})
+    made = []
+
+    class FakeWin:
+        def __init__(self, mapping):
+            self.mapping, self.ok = mapping, True
+            made.append(self)
+
+        def start(self):
+            return self.ok
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr("alice.hotkeys.IS_WIN", True)
+    monkeypatch.setattr("alice.hotkeys.WinHotkeys", FakeWin)
+    monkeypatch.setitem(sys.modules, "pynput", None)  # Windows yolu pynput'a hiç dokunmaz
+    assert qb.start_hotkeys() is True and qb._listener is made[0]
+    assert set(made[0].mapping) - {""} == {"<ctrl>+<alt>+a", "<ctrl>+<alt>+c"}  # boşları WinHotkeys atar
+    FakeWin.start = lambda self: False
+    qb._listener = None
+    assert qb.start_hotkeys() is False and qb._listener is None
