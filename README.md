@@ -174,6 +174,13 @@ alice models --write  # canlı ücretsiz katalogdan rol zincirlerini günceller 
 | Alt ajan, todo, hafıza, context özetleme, oturuma devam | var |
 | Mesaj kuyruğu, görsel yapıştırma, düşünme gösterimi | var (uygulamada) |
 | Çoklu düzenleme (MultiEdit) | `multi_edit`: bir dosyada birden fazla değişiklik tek çağrıda; biri bile tutmazsa dosyaya hiçbir şey yazılmaz |
+| Çok dosyalı yama (Codex `apply_patch`) | `apply_patch`: `*** Begin Patch` biçiminde birden çok dosyada ekleme/silme/düzenleme/taşıma, hepsi-ya-hiçbiri |
+| Dosya yönetimi | `file_ops`: taşı, kopyala, klasör aç, sil (silinenler `~/.alice/trash` altına gider, geri alınabilir) |
+| Grep modları | `grep`: `output_mode` (content, files_with_matches, count), `context` satırları, `multiline`, `offset` ile sayfalama |
+| PDF ve Jupyter okuma | `read_file` PDF'i (`pages` ile) metin, `.ipynb`'yi hücre ve çıktılarıyla okur |
+| WebFetch | `web_fetch`: asıl içerik (`<main>`/`<article>`), JSON düzenleme, PDF; `prompt` ile sayfayı küçük model özetler, `start` ile devamı |
+| WebSearch | `web_search`: DuckDuckGo, düşerse Bing; `BRAVE_SEARCH_API_KEY` varsa Brave; `allowed_domains`/`blocked_domains` |
+| HTTP istekleri | `http_request` (net grubu): REST API, webhook, dosya indirme; başlıkta `${env:AD}` ile anahtar modele görünmez |
 | Paralel araç çağrıları | Model tek cevapta birkaç okuma/arama isterse (`read_file`, `grep`, `glob`, `list_dir`, `web_search`, `web_fetch`, salt okuma MCP araçları) aynı anda çalışır; sonuçlar sırayla modele döner |
 | Araç gruplama | Art arda gelen okumalar uygulamada "2 dosya okundu, 1 arama yapıldı" diye tek açılır satır olur, terminalde her biri tek satır |
 | Hook'lar | yok |

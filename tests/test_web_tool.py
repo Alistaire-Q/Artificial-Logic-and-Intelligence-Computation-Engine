@@ -89,10 +89,10 @@ def test_web_fetch_keeps_explicit_scheme_and_raw(ctx, monkeypatch):
     assert r.text.endswith(html_body)
 
 
-def test_web_fetch_non_html_not_converted(ctx, monkeypatch):
+def test_web_fetch_json_pretty_not_html_converted(ctx, monkeypatch):
     body = '{"a": "<b>"}'
     monkeypatch.setattr(web.httpx, "get", lambda url, **kw: _resp(url, body, ctype="application/json"))
-    assert web.WebFetch().run(ctx, url="https://api").text.endswith(body)
+    assert web.WebFetch().run(ctx, url="https://api").text.endswith('{\n "a": "<b>"\n}')
 
 
 def test_web_fetch_missing_content_type(ctx, monkeypatch):
@@ -187,13 +187,16 @@ def test_web_search_formats(ctx, ddg):
                    "2. Doğrudan\nhttps://direct.example/\n")
 
 
-def test_web_search_no_results(ctx, ddg):
+def test_web_search_no_results(ctx, ddg, monkeypatch):
     ddg["html"] = ""
+    monkeypatch.setattr(web.httpx, "get", lambda url, **kw: _resp(url, "<html></html>"))
     assert web.WebSearch().run(ctx, query="q").text == "sonuç yok"
 
 
 def test_web_search_errors_become_tool_error(ctx, ddg, monkeypatch):
+    monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
     ddg["status"] = 429
+    monkeypatch.setattr(web.httpx, "get", lambda url, **kw: _resp(url, "", status=503))
     with pytest.raises(ToolError, match="arama başarısız"):
         web.WebSearch().run(ctx, query="q")
 
@@ -201,5 +204,165 @@ def test_web_search_errors_become_tool_error(ctx, ddg, monkeypatch):
         raise httpx.ReadTimeout("zaman aşımı")
 
     monkeypatch.setattr(web.httpx, "post", boom)
+    monkeypatch.setattr(web.httpx, "get", boom)
     with pytest.raises(ToolError, match="zaman aşımı"):
         web.WebSearch().run(ctx, query="q")
+
+
+# ------------------------------------------------------------------ yeni: arama yedekleri, alan filtresi
+
+BING_HTML = ('<ol><li class="b_algo"><h2><a href="https://bing.example/x?a=1&amp;b=2">Bing <b>Bir</b></a></h2>'
+             '<div class="b_caption"><p>özet <b>bir</b></p></div></li>'
+             '<li class="b_algo"><h2><a href="https://docs.python.org/3/">Python</a></h2><p>doküman</p></li></ol>')
+
+
+def test_bing_search_parses():
+    res = None
+
+    def fake_get(url, params=None, **kw):
+        return _resp(url, BING_HTML)
+
+    orig = web.httpx.get
+    web.httpx.get = fake_get
+    try:
+        res = web.bing_search("q")
+    finally:
+        web.httpx.get = orig
+    assert res[0] == {"title": "Bing Bir", "url": "https://bing.example/x?a=1&b=2", "snippet": "özet bir"}
+    assert res[1]["url"] == "https://docs.python.org/3/"
+
+
+def test_web_search_falls_back_to_bing_when_ddg_blocks(ctx, ddg, monkeypatch):
+    monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
+    ddg["status"] = 202
+    ddg["html"] = "<html>bot kontrolü</html>"
+    monkeypatch.setattr(web.httpx, "get", lambda url, **kw: _resp(url, BING_HTML))
+    out = web.WebSearch().run(ctx, query="q").text
+    assert out.startswith("1. Bing Bir")
+
+
+def test_web_search_domain_filters(ctx, ddg, monkeypatch):
+    monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
+    monkeypatch.setattr(web.httpx, "get", lambda url, **kw: _resp(url, "<html></html>"))
+    assert "sonuç yok" == web.WebSearch().run(ctx, query="q", allowed_domains=["eal.example"]).text  # parça değil
+    out = web.WebSearch().run(ctx, query="q", allowed_domains=["real.example"]).text
+    assert ddg["data"] == {"q": "q site:real.example"}
+    assert "real.example" in out and "direct.example" not in out
+    out = web.WebSearch().run(ctx, query="q", blocked_domains=["real.example"]).text
+    assert "real.example" not in out and "direct.example" in out
+
+
+def test_web_search_uses_brave_when_key_set(ctx, ddg, monkeypatch):
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "k")
+    seen = {}
+
+    def fake_get(url, params=None, headers=None, **kw):
+        seen.update(url=url, headers=headers)
+        return _resp(url, '{"web": {"results": [{"title": "B", "url": "https://b.example", "description": "<b>d</b>"}]}}',
+                     ctype="application/json")
+
+    monkeypatch.setattr(web.httpx, "get", fake_get)
+    assert web.WebSearch().run(ctx, query="q").text == "1. B\nhttps://b.example\nd"
+    assert seen["headers"]["X-Subscription-Token"] == "k"
+
+
+# ------------------------------------------------------------------ yeni: web_fetch asıl içerik, sayfalama, prompt
+
+
+def test_html_to_text_main_only_prefers_article():
+    raw = "<nav>menü</nav><div>kenar çubuğu</div><article><h1>Yazı</h1><p>" + "içerik " * 50 + "</p></article>"
+    out = web.html_to_text(raw, main_only=True)
+    assert out.startswith("# Yazı") and "kenar" not in out
+    assert "kenar çubuğu" in web.html_to_text(raw)
+    assert web.html_to_text("<main>kısa</main><p>diğer</p>", main_only=True) == "kısa\ndiğer"
+
+
+def test_web_fetch_paginates_with_start(workdir, monkeypatch):
+    ctx = ToolContext(cwd=workdir, config=make_config({"brain": ["a:m"]}, tool_output_chars=100))
+    body = "".join(f"{i:03d}" for i in range(100))  # 300 karakter
+    monkeypatch.setattr(web.httpx, "get", lambda url, **kw: _resp(url, body, ctype="text/plain"))
+    first = web.WebFetch().run(ctx, url="https://a").text
+    assert "start=100" in first and body[:100] in first
+    second = web.WebFetch().run(ctx, url="https://a", start=100).text
+    assert body[100:200] in second and "start=200" in second and "[karakter 100-200 / 300]" in second
+    assert "sonunu aşıyor" in web.WebFetch().run(ctx, url="https://a", start=999).text
+
+
+class _FakeRouter:
+    def __init__(self, answer="", fail=False):
+        self.answer, self.fail, self.calls = answer, fail, []
+
+    def chat(self, role, messages, **kw):
+        self.calls.append((role, messages))
+        if self.fail:
+            raise RuntimeError("model yok")
+        return type("R", (), {"text": self.answer})()
+
+
+def test_web_fetch_prompt_uses_fast_model(ctx, monkeypatch):
+    monkeypatch.setattr(web.httpx, "get", lambda url, **kw: _resp(url, "<p>Fiyat 42 TL</p>"))
+    ctx.router = _FakeRouter("42 TL")
+    out = web.WebFetch().run(ctx, url="https://a", prompt="fiyat ne").text
+    assert out == "HTTP 200 https://a\n\n42 TL"
+    role, msgs = ctx.router.calls[0]
+    assert role == "fast" and "fiyat ne" in msgs[1]["content"] and "Fiyat 42 TL" in msgs[1]["content"]
+
+
+def test_web_fetch_prompt_falls_back_to_text(ctx, monkeypatch):
+    monkeypatch.setattr(web.httpx, "get", lambda url, **kw: _resp(url, "<p>Fiyat 42 TL</p>"))
+    ctx.router = _FakeRouter(fail=True)
+    assert web.WebFetch().run(ctx, url="https://a", prompt="fiyat").text.endswith("Fiyat 42 TL")
+
+
+# ------------------------------------------------------------------ yeni: http_request
+
+
+def test_http_request_risk_by_method_and_save(ctx):
+    from alice.tools.base import DANGER, EXEC, WRITE
+
+    t = web.HttpRequest()
+    assert t.risk_for({"url": "x"}) == NETWORK
+    assert t.risk_for({"url": "x", "method": "post"}) == EXEC
+    assert t.risk_for({"url": "x", "save_to": "a.bin"}) == WRITE
+    sys_dir = "C:\\Windows\\x.dll" if __import__("sys").platform == "win32" else "/etc/x"
+    assert t.risk_for({"url": "x", "save_to": sys_dir}) == DANGER
+    assert t.summary({"url": "https://a", "method": "post"}) == "POST https://a"
+
+
+def test_http_request_sends_json_and_env_header(ctx, monkeypatch):
+    monkeypatch.setenv("ALICE_TEST_TOKEN", "gizli")
+    seen = {}
+
+    def fake_request(method, url, **kw):
+        seen.update(method=method, url=url, **kw)
+        return httpx.Response(201, headers={"content-type": "application/json", "x-other": "z"},
+                              text='{"ok":true}', request=httpx.Request(method, url))
+
+    monkeypatch.setattr(web.httpx, "request", fake_request)
+    r = web.HttpRequest().run(ctx, url="https://api.x/v1", method="post",
+                              headers='{"Authorization": "Bearer ${env:ALICE_TEST_TOKEN}"}',
+                              json='{"a": 1}', params={"q": "z"})
+    assert seen["method"] == "POST" and seen["json"] == {"a": 1} and seen["params"] == {"q": "z"}
+    assert seen["headers"]["Authorization"] == "Bearer gizli"
+    assert r.text.startswith("HTTP 201 https://api.x/v1\ncontent-type: application/json")
+    assert "x-other" not in r.text and r.text.endswith('{\n "ok": true\n}')
+    assert "gizli" not in r.text and not r.is_error
+
+
+def test_http_request_bad_json_and_missing_env(ctx):
+    with pytest.raises(ToolError, match="json geçerli JSON değil"):
+        web.HttpRequest().run(ctx, url="https://a", json="{bozuk")
+    with pytest.raises(ToolError, match="ortam değişkeni yok: YOK_BOYLE"):
+        web.HttpRequest().run(ctx, url="https://a", headers='{"X": "${env:YOK_BOYLE}"}')
+
+
+def test_http_request_download_to_file(ctx, monkeypatch, workdir):
+    def handler(request):
+        return httpx.Response(200, content=b"\x00\x01veri")
+
+    real_stream = httpx.stream
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(web.httpx, "stream", lambda method, url, **kw: client.stream(method, url, **kw))
+    r = web.HttpRequest().run(ctx, url="https://a/f.bin", save_to="ind/f.bin")
+    assert "6 byte" in r.text and (workdir / "ind" / "f.bin").read_bytes() == b"\x00\x01veri"
+    assert real_stream is not None
