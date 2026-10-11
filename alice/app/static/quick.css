@@ -13,7 +13,7 @@
 html, body { margin: 0; height: 100%; }
 body { background: var(--bg); color: var(--text); font: 15px/1.5 var(--sans); display: flex; flex-direction: column; }
 #bar { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--line); background: var(--panel); }
-.logo { width: 22px; height: 22px; flex: none; }
+.logo { width: 22px; height: 22px; flex: none; border-radius: 50%; object-fit: cover; }
 #q { flex: 1; resize: none; border: 0; outline: 0; background: transparent; color: var(--text); font: 17px/1.4 var(--sans); max-height: 120px; }
 #mic { flex: none; width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; display: grid; place-items: center; }
 #mic svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }

@@ -134,7 +134,7 @@ code, pre, .mono, kbd { font-family: var(--mono); }
 #app.side-hidden #sidebar { margin-left: -272px; }
 .side-top { display: flex; align-items: center; justify-content: space-between; padding: 2px 4px 10px 8px; }
 .brand { display: flex; align-items: center; gap: 9px; font: 600 17px/1 var(--serif); letter-spacing: .01em; }
-.brand img { width: 22px; height: 22px; }
+.brand img { width: 26px; height: 26px; border-radius: 50%; object-fit: cover; }
 .icon-btn { width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; color: var(--muted); }
 .icon-btn:hover { background: var(--hover); color: var(--text); }
 .new-chat {
@@ -189,7 +189,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: r
 #app.empty #scroller { flex: 0 0 auto; overflow: visible; }
 #app.empty #messages { display: none; }
 #app.empty #hero { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 18vh 24px 26px; }
-.hero-mark img { width: 40px; height: 40px; }
+.hero-mark img { width: 72px; height: 72px; border-radius: 50%; object-fit: cover; box-shadow: 0 0 0 2px var(--line); }
 #hero h1 { margin: 0; font: 400 38px/1.15 var(--serif); letter-spacing: -.01em; text-align: center; color: var(--text); }
 #suggest { display: none; }
 #app.empty #suggest { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 14px; }

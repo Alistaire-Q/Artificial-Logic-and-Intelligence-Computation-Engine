@@ -43,7 +43,7 @@ def open_window(url: str, title: str = "ALICE", prefer: str = "auto") -> str:
 
             # Windows'taki pywebview (WinForms) simgeyi System.Drawing.Icon ile açar ve .png verilince
             # yakalanamayan bir .NET hatasıyla çöker; orada .ico kullan.
-            icon = Path(__file__).parent / "static" / ("icon.ico" if sys.platform == "win32" else "icon.png")
+            icon = Path(__file__).parent / "static" / ("alice.ico" if sys.platform == "win32" else "icon.png")
             webview.create_window(title, url, width=1320, height=880, min_size=(820, 560), background_color="#16161a")
             kwargs = {"icon": str(icon)} if icon.exists() else {}
             try:
@@ -80,7 +80,7 @@ def create_shortcut() -> list[Path]:
         raise RuntimeError("kısayol oluşturma şimdilik sadece Windows'ta")
     pyw = Path(sys.executable).with_name("pythonw.exe")
     target = pyw if pyw.exists() else Path(sys.executable)
-    icon = Path(__file__).parent / "static" / "icon.ico"
+    icon = Path(__file__).parent / "static" / "alice.ico"
     ps = (
         "foreach($f in 'Desktop','Programs'){"
         "$d=[Environment]::GetFolderPath($f);if(-not $d){continue};$p=Join-Path $d 'ALICE.lnk';"
@@ -89,4 +89,9 @@ def create_shortcut() -> list[Path]:
         f"$s.IconLocation='{icon}';$s.Description='ALICE';$s.Save();Write-Output $p}}"
     )
     r = subprocess.run(["powershell", "-NoProfile", "-Command", ps], check=True, capture_output=True, text=True)
+    # Windows simgeleri önbelleğe alır; yenilemezsek Başlat menüsü eski simgeyi göstermeye devam eder.
+    try:
+        subprocess.run(["ie4uinit.exe", "-show"], capture_output=True, check=False, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        pass
     return [Path(line.strip()) for line in r.stdout.splitlines() if line.strip()]

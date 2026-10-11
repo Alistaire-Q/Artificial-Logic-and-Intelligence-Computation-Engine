@@ -53,6 +53,7 @@ def test_requires_token_and_local_host(app):
     r = httpx.get(srv.url)
     assert r.status_code == 200 and state.token in r.text and "Content-Security-Policy" in r.headers
     assert client.get("/static/app.js").status_code == 200
+    assert client.get("/static/alice.png").headers["content-type"] == "image/png"
     assert client.get("/static/../server.py").status_code == 404
 
 

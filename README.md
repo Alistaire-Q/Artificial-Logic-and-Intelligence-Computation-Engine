@@ -285,7 +285,7 @@ alice tasks                  # liste ve son sonuçlar;  alice tasks run <id>  / 
 
 ALICE cümleyi zamanlamaya çevirip gösterir, onaylarsan kurar. Bilgisayar kapalıyken kaçırılan görev açılışta bir kez telafi edilir. Görevler gözetimsiz çalıştığı için onay gerektiren adımlar (auto modda tehlikeli komutlar) reddedilir; sonuç bildirim olarak gelir.
 
-**Kişilik.** ALICE'in sana nasıl hitap edeceği, ne kadar uzun konuşacağı ve ne sıklıkla şaka yapacağı `~/.alice/personality.md` dosyasında (`alice init` oluşturur), her oturumda okunur.
+**Kişilik.** ALICE'in kim olduğu (sevgili rolü, görünüşü, karakteri), sana nasıl hitap edeceği, ne kadar uzun konuşacağı ve ne sıklıkla şaka yapacağı `~/.alice/personality.md` dosyasında (`alice init` oluşturur), her oturumda okunur ve genel asistan tanımının önüne geçer. Dosya eski varsayılan şablonla aynıysa yeni kişiliğe otomatik yükseltilir; kendin değiştirdiysen dokunulmaz.
 
 ## Ses
 
