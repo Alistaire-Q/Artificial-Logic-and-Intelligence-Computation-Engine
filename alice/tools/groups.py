@@ -13,7 +13,8 @@ from typing import Any
 from alice import plugins
 from alice.tools.base import READ, Tool, ToolContext, ToolError, ToolResult, obj
 
-CORE = {"read_file", "write_file", "edit_file", "multi_edit", "list_dir", "glob", "grep", "run_command",
+CORE = {"read_file", "write_file", "edit_file", "multi_edit", "apply_patch", "file_ops", "list_dir", "glob", "grep",
+        "run_command",
         "process_output", "process_stop", "web_fetch", "web_search", "windows", "todo_write", "memory", "task", "weather", "youtube",
         "load_tools", "run_plan", "task_control"}
 
@@ -40,6 +41,8 @@ GROUPS: dict[str, tuple[set[str], str, str]] = {
                 r"blender|3d|3b|üç boyut|modelle|sahne|render|mesh"),
     "flight": ({"flight"}, "DCS / War Thunder uçuş verisi ve kneeboard",
                r"dcs|war ?thunder|uçuş|uçak|kneeboard|pist|iniş|kalkış|simülasyon|sim\b"),
+    "net": ({"http_request"}, "REST API çağırma, webhook, JSON gönderme, URL'den dosya indirme",
+            r"\bapi\b|endpoint|webhook|\bjson\b|\brest\b|http isteği|post isteği|istek at|indir|download|curl"),
     "personal": ({"notes", "report", "media"}, "notlar, sabah/PC raporu, müzik ve ses seviyesi",
                  r"\bnot\b|notlar|not al|rapor|özet|sabah|müzik|şarkı|ses seviyesi|sesi aç|sesi kıs|spotify|"
                  r"kapat .*dakika|dakika sonra"),

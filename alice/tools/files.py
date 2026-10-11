@@ -100,10 +100,86 @@ def snapshot(ctx: ToolContext, p: Path) -> None:
             pass
 
 
+def _page_range(pages: str | None, total: int) -> list[int]:
+    if not pages:
+        return list(range(total))
+    out: list[int] = []
+    for part in str(pages).replace(" ", "").split(","):
+        a, _, b = part.partition("-")
+        try:
+            lo, hi = int(a), int(b or a)
+        except ValueError as e:
+            raise ToolError(f"pages anlaşılamadı: {pages!r} (ör. '3' ya da '1-5')") from e
+        out += [i - 1 for i in range(max(lo, 1), min(hi, total) + 1)]
+    if not out:
+        raise ToolError(f"pages={pages!r} aralık dışında; PDF {total} sayfa")
+    return out
+
+
+def read_pdf(p: Path, pages: str | None, max_chars: int) -> str:
+    """PDF'ten metin: pypdf varsa onunla, yoksa pdftotext (poppler) ile."""
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        PdfReader = None
+    if PdfReader is not None:
+        try:
+            reader = PdfReader(str(p))
+            total = len(reader.pages)
+            parts = [f"--- sayfa {i + 1}/{total} ---\n{(reader.pages[i].extract_text() or '').strip()}"
+                     for i in _page_range(pages, total)]
+        except ToolError:
+            raise
+        except Exception as e:  # noqa: BLE001 - bozuk/şifreli PDF
+            raise ToolError(f"PDF okunamadı: {type(e).__name__}: {e}") from e
+        text = "\n\n".join(parts)
+    elif shutil.which("pdftotext"):
+        cmd = ["pdftotext", "-layout"]
+        if pages:
+            a, _, b = str(pages).partition("-")
+            cmd += ["-f", a.strip(), "-l", (b or a).strip()]
+        r = subprocess.run(cmd + [str(p), "-"], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=60, creationflags=NO_WINDOW)
+        if r.returncode != 0:
+            raise ToolError(f"pdftotext hatası: {r.stderr.strip()[:300]}")
+        text = r.stdout
+    else:
+        raise ToolError("PDF okumak için pypdf gerekli: run_command ile 'pip install pypdf' çalıştır, sonra tekrar dene")
+    if not text.strip() or not re.sub(r"--- sayfa \d+/\d+ ---", "", text).strip():
+        return f"{p}: PDF'te metin yok (taranmış görüntü olabilir; sayfaları görmek için ekran/görme araçlarını kullan)"
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n... [kesildi; pages ile daha küçük aralık iste]"
+    return text
+
+
+def render_notebook(p: Path) -> str:
+    """Jupyter defterini hücre hücre okunur metne çevir (kaynak + metin çıktıları)."""
+    import json
+
+    try:
+        nb = json.loads(_read_text(p))
+    except ValueError as e:
+        raise ToolError(f"ipynb okunamadı: {e}") from e
+    out: list[str] = []
+    for i, cell in enumerate(nb.get("cells") or [], 1):
+        src = cell.get("source") or ""
+        src = "".join(src) if isinstance(src, list) else str(src)
+        out.append(f"# %% hücre {i} [{cell.get('cell_type', '?')}]")
+        out += src.splitlines()
+        for o in cell.get("outputs") or []:
+            txt = o.get("text") or (o.get("data") or {}).get("text/plain") or o.get("evalue") or ""
+            txt = "".join(txt) if isinstance(txt, list) else str(txt)
+            if txt.strip():
+                out.append("# çıktı:")
+                out += [f"# {ln}" for ln in txt.splitlines()[:30]]
+    return "\n".join(out)
+
+
 class ReadFile(Tool):
     name = "read_file"
     parallel_safe = True
-    description = ("Bir dosyanın içeriğini satır numaralarıyla okur; png/jpg görseller görüntü olarak döner.\n"
+    description = ("Bir dosyanın içeriğini satır numaralarıyla okur; png/jpg görseller görüntü olarak, PDF metin olarak, "
+                   ".ipynb hücreleri ve çıktılarıyla döner.\n"
                    "- Düzenlemeden önce dosyayı bununla oku; edit_file'a buradan birebir kopyala (satır numarası hariç).\n"
                    "- Büyük dosyada önce grep ile yeri bul, sonra offset/limit ile o bölümü oku.\n"
                    "- Klasör için list_dir, dosya aramak için glob kullan.")
@@ -111,13 +187,15 @@ class ReadFile(Tool):
         "path": {"type": "string", "description": "Dosya yolu; mutlak ya da çalışma klasörüne göre, ör. 'src/main.py'."},
         "offset": {"type": "integer", "description": "Okumaya başlanacak satır (1'den başlar). Varsayılan 1."},
         "limit": {"type": "integer", "description": "Okunacak en fazla satır. Varsayılan 2000."},
+        "pages": {"type": "string", "description": "Sadece PDF: okunacak sayfalar, ör. '3' ya da '1-5'. Varsayılan: "
+                  "hepsi (büyük PDF'te sayfa ver)."},
     }, ["path"])
 
     def summary(self, args: dict[str, Any]) -> str:
         extra = f" (satır {args['offset']}+)" if args.get("offset") else ""
         return f"{args.get('path', '')}{extra}"
 
-    def run(self, ctx: ToolContext, path: str, offset: int = 1, limit: int = 2000) -> ToolResult:
+    def run(self, ctx: ToolContext, path: str, offset: int = 1, limit: int = 2000, pages: str | None = None) -> ToolResult:
         p = ctx.resolve(path)
         if not p.exists():
             raise ToolError(f"dosya yok: {p}")
@@ -126,9 +204,12 @@ class ReadFile(Tool):
         if p.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"):
             from alice.tools.imaging import file_to_png_b64
             return ToolResult(f"görüntü: {p}", images=[file_to_png_b64(p, ctx.config.agent.get("screenshot_max_width", 1366))])
+        if p.suffix.lower() == ".pdf":
+            return ToolResult(read_pdf(p, pages, int(ctx.config.agent.get("tool_output_chars", 12000)) * 4))
         if _is_binary(p):
             raise ToolError(f"{p} binary bir dosya ({p.stat().st_size} byte)")
-        lines = _read_text(p).splitlines()
+        text = render_notebook(p) if p.suffix.lower() == ".ipynb" else _read_text(p)
+        lines = text.splitlines()
         start = max(offset, 1)
         chunk = lines[start - 1:start - 1 + limit]
         body = "\n".join(f"{i:>6}\t{line[:2000]}" for i, line in enumerate(chunk, start))
@@ -330,51 +411,98 @@ class Glob(Tool):
 class Grep(Tool):
     name = "grep"
     parallel_safe = True
-    description = ("Dosyaların içinde düzenli ifade (regex) arar; 'dosya:satır: metin' satırları döner. ripgrep varsa "
-                   "onu kullanır. Kodda/metinde bir şeyin nerede geçtiğini bulmak için run_command'da grep/findstr "
-                   "yerine bunu kullan. Dosya ADI aramak için glob kullan.")
+    description = ("Dosyaların içinde düzenli ifade (regex) arar (ripgrep varsa onu kullanır). Kodda/metinde bir şeyin "
+                   "nerede geçtiğini bulmak için run_command'da grep/findstr yerine bunu kullan; dosya ADI için glob.\n"
+                   "- output_mode: content 'dosya:satır:metin' satırları (varsayılan), files_with_matches sadece dosya "
+                   "adları (önce hangi dosyalar diye bakmak için en ucuzu), count dosya başına eşleşme sayısı.\n"
+                   "- context ile eşleşmenin etrafındaki satırları da gör; multiline ile satırlar arası desen ara.\n"
+                   "- Çok sonuç varsa offset ile sonraki sayfaya geç.")
     parameters = obj({
         "pattern": {"type": "string", "description": "Regex, ör. 'def \\w+_test' ya da 'TODO'. Özel karakterleri "
                     "(. ( [ {) birebir aramak için kaçır."},
         "path": {"type": "string", "description": "Aranacak klasör ya da dosya. Varsayılan: çalışma klasörü."},
         "glob": {"type": "string", "description": "Sadece bu desene uyan dosyalar, ör. '*.py' ya da '*.{ts,tsx}'."},
+        "output_mode": {"type": "string", "enum": ["content", "files_with_matches", "count"],
+                        "description": "content (satırlar, varsayılan), files_with_matches (dosya adları), count."},
+        "context": {"type": "integer", "description": "content modunda her eşleşmenin önünde ve arkasında gösterilecek "
+                    "satır sayısı. Varsayılan 0."},
         "ignore_case": {"type": "boolean", "description": "Büyük/küçük harf duyarsız ara. Varsayılan false."},
+        "multiline": {"type": "boolean", "description": "true: desen satır sonlarını aşabilir ('.' satır sonunu da "
+                      "kapsar). Varsayılan false."},
         "max_results": {"type": "integer", "description": "En fazla sonuç satırı. Varsayılan 200."},
+        "offset": {"type": "integer", "description": "İlk bu kadar sonuç satırını atla (sayfalama). Varsayılan 0."},
     }, ["pattern"])
-
 
     def summary(self, args: dict[str, Any]) -> str:
         where = f" ({args['glob']})" if args.get("glob") else ""
-        return f"{args.get('pattern', '')}{where}"
+        mode = f" [{args['output_mode']}]" if args.get("output_mode") not in (None, "content") else ""
+        return f"{args.get('pattern', '')}{where}{mode}"
 
     def run(self, ctx: ToolContext, pattern: str, path: str = ".", glob: str | None = None,
-            ignore_case: bool = False, max_results: int = 200) -> ToolResult:
+            output_mode: str = "content", context: int = 0, ignore_case: bool = False, multiline: bool = False,
+            max_results: int = 200, offset: int = 0) -> ToolResult:
         base = ctx.resolve(path)
+        if not base.exists():
+            raise ToolError(f"yol yok: {base}")
+        context = max(0, min(int(context or 0), 20))
+        max_results = max(1, int(max_results or 200))
+        offset = max(0, int(offset or 0))
+        multiline = multiline or "\\n" in pattern  # satır sonu arayan desen tek satırda asla eşleşmez
         rg = shutil.which("rg")
         if rg:
-            cmd = [rg, "-n", "--no-heading", "--max-columns", "300", "-m", "50"]
-            if ignore_case:
-                cmd.append("-i")
-            if glob:
-                cmd += ["-g", glob]
-            # Göreli yollar: hem okunaklı hem modele daha az token.
-            cmd += ["-e", pattern, "." if base.is_dir() else str(base)]
-            try:
-                r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
-                                   cwd=base if base.is_dir() else None, creationflags=NO_WINDOW)
-            except subprocess.TimeoutExpired:
-                return _with_note("", _limit_note("60 sn doldu"))
-            if r.returncode == 2 and not r.stdout.strip():
-                # rg hatası (desteklenmeyen regex, olmayan yol): "eşleşme yok" diye yutulursa model yanlış sonuca varıyor.
-                raise ToolError(f"rg hatası: {(r.stderr or '').strip()[:300]}")
-            lines = r.stdout.splitlines()[:max_results]
-            return ToolResult("\n".join(lines) if lines else "eşleşme yok")
+            lines, note = self._rg(rg, ctx, base, pattern, glob, output_mode, context, ignore_case, multiline)
+        else:
+            lines, note = self._py(ctx, base, pattern, glob, output_mode, context, ignore_case, multiline,
+                                   offset + max_results)
+        total = len(lines)
+        page = lines[offset:offset + max_results]
+        body = "\n".join(page) if page else ("eşleşme yok" if not offset else f"bu sayfada sonuç yok ({total} satır var)")
+        if total > offset + max_results:
+            body += f"\n... (daha fazla sonuç var; offset={offset + max_results} ile devam et ya da aramayı daralt)"
+        return _with_note(body, note)
+
+    @staticmethod
+    def _rg(rg: str, ctx: ToolContext, base: Path, pattern: str, glob: str | None, mode: str, context: int,
+            ignore_case: bool, multiline: bool) -> tuple[list[str], str]:
+        cmd = [rg, "--no-heading", "--color", "never", "--max-columns", "300"]
+        if mode == "files_with_matches":
+            cmd.append("-l")
+        elif mode == "count":
+            cmd.append("-c")
+        else:
+            cmd += ["-n", "-m", "100"]
+            if context:
+                cmd += ["-C", str(context)]
+        if ignore_case:
+            cmd.append("-i")
+        if multiline:
+            cmd += ["-U", "--multiline-dotall"]
+            # rg dosyayı ham okur: CRLF dosyada '\n' deseni '\r' yüzünden tutmasın diye '\r?\n' yap.
+            pattern = re.sub(r"(?<!\\)\\n", r"\\r?\\n", pattern)
+        if glob:
+            cmd += ["-g", glob]
+        # Göreli yollar: hem okunaklı hem modele daha az token.
+        cmd += ["-e", pattern, "." if base.is_dir() else str(base)]
         try:
-            rx = re.compile(pattern, re.I if ignore_case else 0)
-        except re.error as e:
-            raise ToolError(f"geçersiz regex: {e}") from e
+            r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+                               cwd=base if base.is_dir() else None, creationflags=NO_WINDOW)
+        except subprocess.TimeoutExpired:
+            return [], _limit_note("60 sn doldu")
+        if r.returncode == 2 and not r.stdout.strip():
+            # rg hatası (desteklenmeyen regex, olmayan yol): "eşleşme yok" diye yutulursa model yanlış sonuca varıyor.
+            raise ToolError(f"rg hatası: {(r.stderr or '').strip()[:300]}")
+        lines = [ln[2:] if ln.startswith("./") or ln.startswith(".\\") else ln for ln in r.stdout.splitlines()]
+        return lines, ""
+
+    def _py(self, ctx: ToolContext, base: Path, pattern: str, glob: str | None, mode: str, context: int,
+            ignore_case: bool, multiline: bool, enough: int) -> tuple[list[str], str]:
         import time
 
+        flags = (re.I if ignore_case else 0) | ((re.S | re.M) if multiline else 0)
+        try:
+            rx = re.compile(pattern, flags)
+        except re.error as e:
+            raise ToolError(f"geçersiz regex: {e}") from e
         out: list[str] = []
         note = ""
         deadline = time.monotonic() + SEARCH_SECONDS
@@ -390,25 +518,42 @@ class Grep(Tool):
             if n >= SEARCH_MAX_FILES:
                 note = _limit_note(f"{SEARCH_MAX_FILES} dosyaya bakıldı")
                 break
-            if glob and not fnmatch.fnmatch(f.name, glob):
+            if glob and not _glob_match(f.name, glob):
                 continue
             try:
-                if f.stat().st_size > SEARCH_MAX_BYTES:
+                if f.stat().st_size > SEARCH_MAX_BYTES or _is_binary(f):
                     continue
+                text = _read_text(f).replace("\r\n", "\n")  # CRLF: çok satırlı "\\n" deseni Windows dosyasında da tutsun
             except OSError:
                 continue
-            if _is_binary(f):
+            shown = str(f.relative_to(base) if base.is_dir() else f)
+            lines = text.splitlines()
+            if multiline:
+                starts = sorted({text.count("\n", 0, m.start()) for m in rx.finditer(text)})
+            else:
+                starts = [i for i, line in enumerate(lines) if rx.search(line)]
+            if not starts:
                 continue
-            try:
-                for i, line in enumerate(_read_text(f).splitlines(), 1):
-                    if rx.search(line):
-                        shown = f.relative_to(base) if base.is_dir() else f
-                        out.append(f"{shown}:{i}:{line[:300]}")
-                        if len(out) >= max_results:
-                            return ToolResult("\n".join(out))
-            except OSError:
-                continue
-        return _with_note("\n".join(out) if out else "eşleşme yok", note)
+            if mode == "files_with_matches":
+                out.append(shown)
+            elif mode == "count":
+                out.append(f"{shown}:{len(starts)}")
+            else:
+                shown_lines: set[int] = set()
+                prev = -2
+                for i in starts:
+                    for j in range(max(0, i - context), min(len(lines), i + context + 1)):
+                        if j in shown_lines:
+                            continue
+                        if context and prev >= 0 and j > prev + 1:
+                            out.append("--")
+                        sep = ":" if j == i or (multiline and j in starts) else "-"
+                        out.append(f"{shown}{sep}{j + 1}{sep}{lines[j][:300]}")
+                        shown_lines.add(j)
+                        prev = j
+            if len(out) >= enough:
+                break
+        return out, note
 
     @staticmethod
     def _walk(base: Path):
@@ -418,4 +563,115 @@ class Grep(Tool):
                 yield Path(root) / name
 
 
-TOOLS = [ReadFile(), WriteFile(), EditFile(), MultiEdit(), ListDir(), Glob(), Grep()]
+def _glob_match(name: str, pattern: str) -> bool:
+    """fnmatch + '*.{ts,tsx}' gibi süslü parantezli seçenekler (rg -g ile aynı davranış)."""
+    m = re.search(r"\{([^{}]*)\}", pattern)
+    if m:
+        return any(_glob_match(name, pattern[:m.start()] + alt + pattern[m.end():]) for alt in m.group(1).split(","))
+    return fnmatch.fnmatch(name, pattern)
+
+
+class FileOps(Tool):
+    name = "file_ops"
+    description = ("Dosya ve klasör yönetimi: taşı/yeniden adlandır (move), kopyala (copy), sil (delete), klasör aç "
+                   "(mkdir). run_command'da move/copy/del/rm yerine bunu kullan: Windows/Linux farkı yok ve silinenler "
+                   "kalıcı silinmez, ALICE çöp klasörüne taşınır (geri alınabilir).\n"
+                   "- Birden fazla dosya için paths listesi ver; destination o zaman bir klasör olmalı.\n"
+                   "- Hedef varsa üzerine yazmaz; overwrite=true ver.")
+    parameters = obj({
+        "action": {"type": "string", "enum": ["move", "copy", "delete", "mkdir"], "description": "Yapılacak işlem."},
+        "path": {"type": "string", "description": "Kaynak dosya/klasör (mkdir'de açılacak klasör)."},
+        "paths": {"type": "array", "items": {"type": "string", "description": "Kaynak yol."},
+                  "description": "Birden fazla kaynak (path yerine)."},
+        "destination": {"type": "string", "description": "move/copy hedefi: yeni yol ya da içine konacak klasör."},
+        "overwrite": {"type": "boolean", "description": "Hedef varsa üzerine yaz. Varsayılan false."},
+    }, ["action"])
+    risk = WRITE
+
+    def risk_for(self, args: dict[str, Any]) -> str:
+        from alice.permissions import is_system_path
+        from alice.tools.base import DANGER
+
+        n = len(args.get("paths") or []) + (1 if args.get("path") else 0)
+        if args.get("action") == "delete" and n > 20:
+            return DANGER
+        for key in ("destination", *(["paths"] if args.get("paths") else [])):
+            vals = args.get(key) or []
+            for v in vals if isinstance(vals, list) else [vals]:
+                try:
+                    if is_system_path(Path(str(v)).expanduser().resolve()):
+                        return DANGER
+                except (OSError, ValueError):
+                    return DANGER
+        return WRITE
+
+    def summary(self, args: dict[str, Any]) -> str:
+        src = args.get("path") or ", ".join(map(str, args.get("paths") or []))
+        dest = f" -> {args['destination']}" if args.get("destination") else ""
+        return f"{args.get('action')} {src}{dest}"[:160]
+
+    def run(self, ctx: ToolContext, action: str, path: str | None = None, paths: list[str] | None = None,
+            destination: str | None = None, overwrite: bool = False) -> ToolResult:
+        sources = [ctx.resolve(x) for x in ([path] if path else []) + list(paths or [])]
+        if not sources:
+            raise ToolError("path ya da paths gerekli")
+        if action == "mkdir":
+            for s in sources:
+                s.mkdir(parents=True, exist_ok=True)
+            return ToolResult("klasör hazır: " + ", ".join(map(str, sources)))
+        missing = [str(s) for s in sources if not s.exists()]
+        if missing:
+            raise ToolError(f"yok: {', '.join(missing)}")
+        if action == "delete":
+            return ToolResult("çöpe taşındı (geri almak için oradan taşı):\n" +
+                              "\n".join(f"{s} -> {self._trash(ctx, s)}" for s in sources))
+        if not destination:
+            raise ToolError(f"{action} için destination gerekli")
+        dest = ctx.resolve(destination)
+        into_dir = dest.is_dir() or len(sources) > 1 or destination.endswith(("/", "\\"))
+        if len(sources) > 1 and dest.exists() and not dest.is_dir():
+            raise ToolError(f"birden fazla kaynak için destination bir klasör olmalı: {dest}")
+        plan = [(s, dest / s.name if into_dir else dest) for s in sources]
+        for s, d in plan:
+            if d == s or s in d.parents:
+                raise ToolError(f"{s} kendi içine {action} edilemez")
+            if d.exists() and not overwrite:
+                raise ToolError(f"hedef zaten var: {d} (üzerine yazmak için overwrite=true)")
+        done = []
+        for s, d in plan:
+            d.parent.mkdir(parents=True, exist_ok=True)
+            if d.exists():
+                self._trash(ctx, d)
+            if action == "move":
+                if s.is_file():
+                    snapshot(ctx, s)
+                shutil.move(str(s), str(d))
+            elif action == "copy":
+                snapshot(ctx, d)
+                if s.is_dir():
+                    shutil.copytree(s, d)
+                else:
+                    shutil.copy2(s, d)
+            done.append(f"{s} -> {d}")
+        return ToolResult(f"{'taşındı' if action == 'move' else 'kopyalandı'}:\n" + "\n".join(done))
+
+    @staticmethod
+    def _trash(ctx: ToolContext, p: Path) -> Path:
+        import time
+
+        from alice.config import alice_home
+
+        if p.is_file():
+            snapshot(ctx, p)
+        box = alice_home() / "trash" / time.strftime("%Y%m%d-%H%M%S")
+        box.mkdir(parents=True, exist_ok=True)
+        target = box / p.name
+        k = 1
+        while target.exists():
+            target = box / f"{p.stem}-{k}{p.suffix}"
+            k += 1
+        shutil.move(str(p), str(target))
+        return target
+
+
+TOOLS = [ReadFile(), WriteFile(), EditFile(), MultiEdit(), ListDir(), Glob(), Grep(), FileOps()]

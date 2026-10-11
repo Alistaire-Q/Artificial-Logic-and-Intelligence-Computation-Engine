@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import html
+import json
+import os
 import re
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, unquote, urlparse
@@ -19,22 +21,32 @@ UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like 
 class _TextExtractor(HTMLParser):
     SKIP = {"script", "style", "noscript", "svg", "head", "nav", "footer", "iframe"}
     BLOCK = {"p", "div", "br", "li", "h1", "h2", "h3", "h4", "h5", "h6", "tr", "section", "article", "pre", "table"}
+    MAIN = {"main", "article"}
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
+        self.main_parts: list[str] = []  # <main>/<article> içi: menü ve kenar çubuğu olmadan asıl içerik
         self._skip = 0
+        self._main = 0
         self._href: str | None = None
 
+    def _add(self, s: str) -> None:
+        self.parts.append(s)
+        if self._main:
+            self.main_parts.append(s)
+
     def handle_starttag(self, tag, attrs):
+        if tag in self.MAIN:
+            self._main += 1
         if tag in self.SKIP:
             self._skip += 1
         elif tag in self.BLOCK:
-            self.parts.append("\n")
+            self._add("\n")
         if tag in ("h1", "h2", "h3"):
-            self.parts.append("#" * int(tag[1]) + " ")
+            self._add("#" * int(tag[1]) + " ")
         if tag == "li":
-            self.parts.append("* ")
+            self._add("* ")
         if tag == "a":
             self._href = dict(attrs).get("href")
 
@@ -42,53 +54,123 @@ class _TextExtractor(HTMLParser):
         if tag in self.SKIP and self._skip:
             self._skip -= 1
         elif tag in self.BLOCK:
-            self.parts.append("\n")
+            self._add("\n")
         if tag == "a" and self._href and self._href.startswith("http"):
-            self.parts.append(f" ({self._href})")
+            self._add(f" ({self._href})")
             self._href = None
+        if tag in self.MAIN and self._main:
+            self._main -= 1
 
     def handle_data(self, data):
         if not self._skip:
-            self.parts.append(data)
+            self._add(data)
 
 
-def html_to_text(raw: str) -> str:
-    p = _TextExtractor()
-    p.feed(raw)
-    text = "".join(p.parts)
+def _clean(text: str) -> str:
     text = re.sub(r"[ \t\r\f\v]+", " ", text)
     text = re.sub(r"\n\s*\n+", "\n\n", text)
     return text.strip()
 
 
+def html_to_text(raw: str, main_only: bool = False) -> str:
+    """HTML'i okunur metne çevir. main_only: sayfada yeterince uzun bir <main>/<article> varsa sadece onu döndür."""
+    p = _TextExtractor()
+    p.feed(raw)
+    if main_only:
+        main = _clean("".join(p.main_parts))
+        if len(main) >= 200:
+            return main
+    return _clean("".join(p.parts))
+
+
+def _paginate(body: str, start: int, limit: int) -> str:
+    start = max(0, int(start or 0))
+    if start >= len(body) > 0:
+        return f"[start={start} metnin sonunu aşıyor; metin {len(body)} karakter]"
+    chunk = body[start:start + limit]
+    rest = len(body) - start - len(chunk)
+    head = f"[karakter {start}-{start + len(chunk)} / {len(body)}]\n" if start else ""
+    tail = f"\n\n... [{rest} karakter kesildi; devamı için start={start + len(chunk)}]" if rest > 0 else ""
+    return head + chunk + tail
+
+
+def _extract(ctx: ToolContext, url: str, text: str, prompt: str) -> str | None:
+    """Claude Code'un WebFetch'i gibi: sayfayı küçük bir modele verip sadece sorulan bilgiyi çıkar. Model yoksa None."""
+    if ctx.router is None:
+        return None
+    msgs = [{"role": "system", "content": "You extract information from a web page. Answer only from the page content "
+             "below, concisely, in the language of the request. Quote exact numbers, names and code. If the page does "
+             "not contain the answer, say so."},
+            {"role": "user", "content": f"Request: {prompt}\n\nURL: {url}\n\nPage content:\n{text[:60000]}"}]
+    try:
+        return ctx.router.chat("fast", msgs, temperature=0, max_tokens=1500).text.strip() or None
+    except Exception:  # noqa: BLE001 - model yoksa/çökerse ham metne düş
+        return None
+
+
 class WebFetch(Tool):
     name = "web_fetch"
     parallel_safe = True
-    description = ("Bir URL'yi arka planda indirir; HTML ise okunabilir metne çevirip döndürür (ekranda bir şey açmaz). "
-                   "Bir sayfanın içeriğini okumak için. Kullanıcıya siteyi açmak için windows action=navigate; giriş "
-                   "gerektiren ya da JavaScript ile yüklenen sayfalar (Gmail, YouTube) için browser kullan.")
+    description = ("Bir URL'yi arka planda indirir ve okunabilir metin döndürür: HTML asıl içeriğe çevrilir, JSON "
+                   "düzenlenir, PDF metne çevrilir (ekranda bir şey açmaz).\n"
+                   "- prompt verirsen sayfayı küçük bir model okur ve sadece istediğin bilgiyi döndürür; uzun sayfalarda "
+                   "çok daha az token.\n"
+                   "- Uzun sayfa kesilirse start ile devamını oku.\n"
+                   "- Kullanıcıya siteyi açmak için windows action=navigate; giriş gerektiren ya da JavaScript ile "
+                   "yüklenen sayfalar (Gmail, YouTube) için browser. API çağrısı (POST, başlık) için http_request.")
     parameters = obj({
         "url": {"type": "string", "description": "Tam adres, ör. 'https://tr.wikipedia.org/wiki/Ankara'."},
+        "prompt": {"type": "string", "description": "Sayfadan ne öğrenmek istediğin, ör. 'kurulum adımları' ya da "
+                   "'fiyat ve stok durumu'. Verilmezse sayfanın metni döner."},
+        "start": {"type": "integer", "description": "Metnin bu karakterinden itibaren göster (kesilen sayfanın "
+                  "devamı için). Varsayılan 0."},
         "raw": {"type": "boolean", "description": "true: HTML'i metne çevirmeden döndür. Varsayılan false."},
     }, ["url"])
     risk = NETWORK
 
     def summary(self, args: dict[str, Any]) -> str:
-        return str(args.get("url", ""))
+        q = f" ({args['prompt'][:60]})" if args.get("prompt") else ""
+        return f"{args.get('url', '')}{q}"
 
-    def run(self, ctx: ToolContext, url: str, raw: bool = False) -> ToolResult:
+    def run(self, ctx: ToolContext, url: str, raw: bool = False, prompt: str | None = None,
+            start: int = 0) -> ToolResult:
         if "://" not in url:
             url = "https://" + url
         try:
             r = httpx.get(url, headers={"User-Agent": UA}, follow_redirects=True, timeout=30)
         except httpx.HTTPError as e:
             raise ToolError(f"indirilemedi: {e}") from e
-        ctype = r.headers.get("content-type", "")
-        body = r.text
-        if not raw and "html" in ctype:
-            body = html_to_text(body)
+        ctype = r.headers.get("content-type", "").lower()
+        if "pdf" in ctype or (not ctype and str(r.url).lower().endswith(".pdf")):
+            body = _pdf_text(r.content)
+        else:
+            body = r.text
+            if not raw and "html" in ctype:
+                body = html_to_text(body, main_only=True)
+            elif not raw and "json" in ctype:
+                try:
+                    body = json.dumps(json.loads(body), ensure_ascii=False, indent=1)
+                except ValueError:
+                    pass
+        head = f"HTTP {r.status_code} {r.url}\n\n"
+        if prompt and r.status_code < 400:
+            answer = _extract(ctx, str(r.url), body, prompt)
+            if answer:
+                return ToolResult(head + answer)
         limit = int(ctx.config.agent.get("tool_output_chars", 12000))
-        return ToolResult(truncate(f"HTTP {r.status_code} {r.url}\n\n{body}", limit), is_error=r.status_code >= 400)
+        return ToolResult(head + _paginate(body, start, limit), is_error=r.status_code >= 400)
+
+
+def _pdf_text(data: bytes) -> str:
+    import tempfile
+    from pathlib import Path
+
+    from alice.tools.files import read_pdf
+
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "sayfa.pdf"
+        p.write_bytes(data)
+        return read_pdf(p, None, 400_000)
 
 
 def ddg_search(query: str, max_results: int = 8) -> list[dict[str, str]]:
@@ -104,22 +186,64 @@ def ddg_search(query: str, max_results: int = 8) -> list[dict[str, str]]:
         if "duckduckgo.com/y.js" in href:
             continue  # reklam
         snip = re.search(r'class="result__snippet"[^>]*>(.*?)</a>', rest, re.S)
-        clean = lambda s: html.unescape(re.sub(r"<[^>]+>", "", s)).strip()  # noqa: E731
-        results.append({"title": clean(title), "url": href, "snippet": clean(snip.group(1)) if snip else ""})
+        results.append({"title": _strip_tags(title), "url": href, "snippet": _strip_tags(snip.group(1)) if snip else ""})
         if len(results) >= max_results:
             break
     return results
 
 
+def _strip_tags(s: str) -> str:
+    return html.unescape(re.sub(r"<[^>]+>", "", s)).strip()
+
+
+def bing_search(query: str, max_results: int = 8) -> list[dict[str, str]]:
+    """DuckDuckGo bot sayfası gösterir ya da düşerse yedek: Bing'in HTML sonuç sayfası."""
+    r = httpx.get("https://www.bing.com/search", params={"q": query, "setlang": "tr"}, headers={"User-Agent": UA},
+                  timeout=20, follow_redirects=True)
+    r.raise_for_status()
+    results = []
+    for block in re.findall(r'<li class="b_algo"(.*?)</li>', r.text, re.S):
+        a = re.search(r'<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', block, re.S)
+        if not a:
+            continue
+        snip = re.search(r"<p[^>]*>(.*?)</p>", block, re.S)
+        results.append({"title": _strip_tags(a.group(2)), "url": html.unescape(a.group(1)),
+                        "snippet": _strip_tags(snip.group(1)) if snip else ""})
+        if len(results) >= max_results:
+            break
+    return results
+
+
+def brave_search(query: str, key: str, max_results: int = 8) -> list[dict[str, str]]:
+    r = httpx.get("https://api.search.brave.com/res/v1/web/search", params={"q": query, "count": max_results},
+                  headers={"Accept": "application/json", "X-Subscription-Token": key}, timeout=20)
+    r.raise_for_status()
+    return [{"title": x.get("title", ""), "url": x.get("url", ""), "snippet": _strip_tags(x.get("description", ""))}
+            for x in (r.json().get("web") or {}).get("results", [])[:max_results]]
+
+
+def _domain_ok(url: str, allowed: list[str], blocked: list[str]) -> bool:
+    host = (urlparse(url).hostname or "").lower()
+    match = lambda d: host == d.lower().lstrip(".") or host.endswith("." + d.lower().lstrip("."))  # noqa: E731
+    if allowed and not any(match(d) for d in allowed):
+        return False
+    return not any(match(d) for d in blocked)
+
+
 class WebSearch(Tool):
     name = "web_search"
     parallel_safe = True
-    description = ("İnternette arar (DuckDuckGo) ve sonuçların başlık, URL ve özetini döndürür; ekranda bir şey açmaz. "
-                   "Güncel bilgi, haber, fiyat ya da bilmediğin bir şey sorulunca kullan; ayrıntı için sonra web_fetch. "
-                   "Kullanıcı aramayı tarayıcıda görmek isterse windows action=navigate kullan.")
+    description = ("İnternette arar ve sonuçların başlık, URL ve özetini döndürür; ekranda bir şey açmaz. "
+                   "Güncel bilgi, haber, fiyat ya da bilmediğin bir şey sorulunca kullan; ayrıntı için sonra web_fetch "
+                   "(prompt ile). Bir siteyle sınırlamak için allowed_domains. Kullanıcı aramayı tarayıcıda görmek "
+                   "isterse windows action=navigate kullan.")
     parameters = obj({
         "query": {"type": "string", "description": "Arama ifadesi, ör. 'Ankara hava durumu yarın'."},
         "max_results": {"type": "integer", "description": "En fazla sonuç. Varsayılan 8."},
+        "allowed_domains": {"type": "array", "items": {"type": "string", "description": "Alan adı."},
+                            "description": "Sadece bu sitelerden sonuç, ör. [\"docs.python.org\"]."},
+        "blocked_domains": {"type": "array", "items": {"type": "string", "description": "Alan adı."},
+                            "description": "Bu sitelerden gelen sonuçları çıkar."},
     }, ["query"])
 
     risk = NETWORK
@@ -127,14 +251,143 @@ class WebSearch(Tool):
     def summary(self, args: dict[str, Any]) -> str:
         return str(args.get("query", ""))
 
-    def run(self, ctx: ToolContext, query: str, max_results: int = 8) -> ToolResult:
-        try:
-            res = ddg_search(query, max_results)
-        except httpx.HTTPError as e:
-            raise ToolError(f"arama başarısız: {e}") from e
+    def run(self, ctx: ToolContext, query: str, max_results: int = 8, allowed_domains: list[str] | None = None,
+            blocked_domains: list[str] | None = None) -> ToolResult:
+        allowed = [d for d in (allowed_domains or []) if d]
+        blocked = [d for d in (blocked_domains or []) if d]
+        q = query + (f" site:{allowed[0]}" if len(allowed) == 1 and "site:" not in query else "")
+        want = max_results * 3 if allowed or blocked else max_results
+        key = os.environ.get("BRAVE_SEARCH_API_KEY") or ctx.config.agent.get("brave_api_key")
+        engines = ([("brave", lambda: brave_search(q, key, want))] if key else []) + [
+            ("duckduckgo", lambda: ddg_search(q, want)), ("bing", lambda: bing_search(q, want))]
+        res: list[dict[str, str]] = []
+        errors = []
+        for name, fn in engines:
+            try:
+                res = [x for x in fn() if _domain_ok(x["url"], allowed, blocked)][:max_results]
+            except (httpx.HTTPError, ValueError) as e:
+                errors.append(f"{name}: {e}")
+                continue
+            if res:
+                break
         if not res:
+            if len(errors) == len(engines):
+                raise ToolError("arama başarısız: " + "; ".join(errors))
             return ToolResult("sonuç yok")
         return ToolResult("\n\n".join(f"{i}. {r['title']}\n{r['url']}\n{r['snippet']}" for i, r in enumerate(res, 1)))
 
 
-TOOLS = [WebFetch(), WebSearch()]
+_ENV_RX = re.compile(r"\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _expand_env(s: str) -> str:
+    """'${env:GITHUB_TOKEN}' -> ortam değişkeni; anahtar modele hiç görünmeden başlığa konur."""
+    def sub(m: re.Match) -> str:
+        if m.group(1) not in os.environ:
+            raise ToolError(f"ortam değişkeni yok: {m.group(1)}")
+        return os.environ[m.group(1)]
+    return _ENV_RX.sub(sub, s)
+
+
+def _json_arg(name: str, v: Any) -> Any:
+    """Nesne parametreleri şemada JSON metni (Gemini ve bazı sağlayıcılar serbest nesne kabul etmiyor); model
+    yine de nesne gönderirse onu da kabul et."""
+    if v is None or v == "" or not isinstance(v, str):
+        return v if v != "" else None
+    try:
+        return json.loads(v)
+    except ValueError as e:
+        raise ToolError(f"{name} geçerli JSON değil: {e}") from e
+
+
+class HttpRequest(Tool):
+    name = "http_request"
+    description = ("Herhangi bir HTTP isteği yapar (GET/POST/PUT/PATCH/DELETE): REST API çağırma, webhook, JSON gönderme, "
+                   "dosya indirme. Sadece bir sayfayı okumak için web_fetch daha iyi.\n"
+                   "- Gizli anahtarları yazma; başlıkta '${env:AD}' kullan, ALICE ortam değişkeninden doldurur.\n"
+                   "- save_to verilirse yanıt gövdesi o dosyaya kaydedilir (dosya indirme).")
+    parameters = obj({
+        "url": {"type": "string", "description": "Tam adres, ör. 'https://api.github.com/repos/a/b'."},
+        "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"],
+                   "description": "HTTP yöntemi. Varsayılan GET."},
+        "headers": {"type": "string", "description": "İstek başlıkları JSON nesnesi olarak, ör. "
+                    "'{\"Authorization\": \"Bearer ${env:TOKEN}\"}'."},
+        "params": {"type": "string", "description": "URL sorgu parametreleri JSON nesnesi olarak, ör. '{\"q\": \"ankara\"}'."},
+        "json": {"type": "string", "description": "JSON gövde metni, ör. '{\"ad\": \"x\"}' (Content-Type otomatik "
+                 "application/json)."},
+        "body": {"type": "string", "description": "Ham metin gövde (json yerine)."},
+        "save_to": {"type": "string", "description": "Yanıtı bu dosyaya kaydet, ör. 'indirilenler/kurulum.exe'."},
+        "timeout": {"type": "integer", "description": "Saniye cinsinden zaman aşımı. Varsayılan 30."},
+    }, ["url"])
+    risk = NETWORK
+
+    def risk_for(self, args: dict[str, Any]) -> str:
+        from alice.tools.base import DANGER, EXEC, WRITE
+
+        if args.get("save_to"):
+            from pathlib import Path
+
+            from alice.permissions import is_system_path
+
+            try:
+                if is_system_path(Path(str(args["save_to"])).expanduser().resolve()):
+                    return DANGER
+            except (OSError, ValueError):
+                return DANGER
+            return WRITE
+        # Veri gönderen istekler dışarıda iz bırakır: ask modunda sorulur, plan modunda kapalı.
+        return NETWORK if str(args.get("method") or "GET").upper() in ("GET", "HEAD") else EXEC
+
+    def summary(self, args: dict[str, Any]) -> str:
+        to = f" -> {args['save_to']}" if args.get("save_to") else ""
+        return f"{str(args.get('method') or 'GET').upper()} {args.get('url', '')}{to}"[:160]
+
+    def run(self, ctx: ToolContext, url: str, method: str = "GET", headers: Any = None, params: Any = None,
+            json: Any = None, body: str | None = None, save_to: str | None = None, timeout: int = 30) -> ToolResult:
+        import json as jsonlib
+
+        headers, params, json = (_json_arg(n, v) for n, v in (("headers", headers), ("params", params), ("json", json)))
+        if "://" not in url:
+            url = "https://" + url
+        hdrs = {"User-Agent": "ALICE/1.0"}
+        hdrs.update({str(k): _expand_env(str(v)) for k, v in (headers or {}).items()})
+        kw: dict[str, Any] = {"headers": hdrs, "params": params or None, "timeout": max(1, min(int(timeout or 30), 600)),
+                              "follow_redirects": True}
+        if json is not None:
+            kw["json"] = json
+        elif body is not None:
+            kw["content"] = body.encode("utf-8")
+        method = method.upper()
+        try:
+            if save_to:
+                dest = ctx.resolve(save_to)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                size = 0
+                with httpx.stream(method, _expand_env(url), **kw) as r:
+                    if r.status_code >= 400:
+                        r.read()
+                        return ToolResult(f"HTTP {r.status_code} {r.url}\n\n{truncate(r.text, 2000)}", is_error=True)
+                    with open(dest, "wb") as f:
+                        for part in r.iter_bytes():
+                            if ctx.cancelled():
+                                raise ToolError("kullanıcı durdurdu; dosya yarım kaldı")
+                            f.write(part)
+                            size += len(part)
+                return ToolResult(f"HTTP {r.status_code}: {size} byte kaydedildi -> {dest}")
+            r = httpx.request(method, _expand_env(url), **kw)
+        except httpx.HTTPError as e:
+            raise ToolError(f"istek başarısız: {type(e).__name__}: {e}") from e
+        keep = ("content-type", "location", "retry-after", "x-ratelimit-remaining", "link", "etag")
+        shown = "\n".join(f"{k}: {v}" for k, v in r.headers.items() if k.lower() in keep)
+        text = r.text
+        if "json" in r.headers.get("content-type", ""):
+            try:
+                text = jsonlib.dumps(r.json(), ensure_ascii=False, indent=1)
+            except ValueError:
+                pass
+        limit = int(ctx.config.agent.get("tool_output_chars", 12000))
+        return ToolResult(truncate(f"HTTP {r.status_code} {r.url}\n{shown}\n\n{text}", limit),
+                          is_error=r.status_code >= 400)
+
+
+TOOLS = [WebFetch(), WebSearch(), HttpRequest()]
