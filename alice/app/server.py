@@ -395,6 +395,9 @@ class AppState:
         team = self.get_team(pid)
         out = team.snapshot()
         out["log"] = [{"from": x.sender, "to": x.to, "text": x.text, "at": x.at} for x in team.log[-300:]]
+        if member == "__council":  # proje düzeyi kurullar: plan, final, kurula sor
+            out["council_list"] = team.councils
+            return out
         if member:
             from alice.team import LEAD, LeadAssign, LeadDiff, LeadReview, TeamSend, TeamWait
 
@@ -424,7 +427,7 @@ class AppState:
         lead_model = str(d.get("lead_model") or "brain").strip()
         lead_thinking = str(d.get("lead_thinking") or "default")
         team = Team(self.ctx, goal, int(self.cfg.agent.get("team_max_parallel", 5)), self.bus.publish, origin="user",
-                    review=d.get("review") is not False, lead_model=lead_model,
+                    review=d.get("review") is not False, council=d.get("council") is not False, lead_model=lead_model,
                     lead_thinking=lead_thinking if lead_thinking in THINKING else "default", cwd=cwd)
         team._check_model(lead_model, "yönetici")
         for spec in specs:
@@ -454,6 +457,12 @@ class AppState:
             return "cevap iletildi"
         if action in ("approve", "revise"):
             return team.review_member(name, action == "approve", text, by=USER)
+        if action == "vote":
+            dec = team.user_vote(name, text, str((agent or {}).get("note") or ""))
+            return f"oyun sayıldı; kurul kararı: {dec}"
+        if action == "council":
+            team.ask_council(name)
+            return "kurul toplanıyor"
         if action == "restart":
             team.restart(name)
             return f"{name} baştan başladı"
@@ -487,10 +496,12 @@ class AppState:
             return False, "ALICE şu an çalışıyor"
         prompt = text
         if text.startswith("/"):
-            from alice.commands import INIT_PROMPT, expand_custom
+            from alice.commands import INIT_PROMPT, council_prompt, expand_custom
 
             if text.split()[0] == "/init":
                 prompt = INIT_PROMPT
+            elif text.split()[0] == "/kurul":
+                prompt = council_prompt(text[len("/kurul"):])
             else:
                 prompt = expand_custom(text, self.ctx.cwd)
                 if prompt is None:

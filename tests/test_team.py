@@ -8,12 +8,21 @@ import pytest
 from alice.agent import Agent, NullUI
 from alice.permissions import Permissions
 from alice.providers.router import Router
-from alice.team import Team, in_scope, list_projects, patch_paths, write_targets
+from alice.team import Team as _Team
+from alice.team import in_scope, list_projects, patch_paths, write_targets
 from alice.tools import all_tools
 from alice.tools.base import ToolContext, ToolError
 from tests.conftest import FakeProvider, make_config, tool_call
 
 NAMES = ("backend", "tests", "docs")
+
+
+class Team(_Team):
+    """Bu dosya yöneticinin kendi inceleme akışını sınar; kurul ayrı (test_council.py)."""
+
+    def __init__(self, *a, **k):
+        k.setdefault("council", False)
+        super().__init__(*a, **k)
 
 
 def who(messages) -> str:

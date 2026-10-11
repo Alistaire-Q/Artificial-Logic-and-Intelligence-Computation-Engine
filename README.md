@@ -191,6 +191,36 @@ Yönetici bir olaya cevap vermeden turunu bitirirse iki kez hatırlatılır; yin
 
 **Ajanlar arası iletişim:** ajanlar `team_send` ile birbirine, yöneticiye (`alice`) ya da herkese (`all`) yazar, `team_wait` ile cevap bekler. Gelen mesajlar her araç adımından sonra konuşmalarına eklenir. Sonradan katılan ajan diğerlerine duyurulur.
 
+### İnceleme kurulu
+
+İşleri tek bir göz değil, farklı bakış açıları olan bir **kurul** değerlendirir. Projelerde varsayılan olarak açık (yeni proje Ayarlar'ında kapatılabilir); sohbette `/kurul <konu>` ile bir fikri, dosyayı, kararı ya da PR'ı da sorabilirsin.
+
+**Roller:**
+* **Eleştirmen:** acımasız ama kanıtlı. Hataları, eksikleri, riskleri ve kötü tasarımı arar; her bulguya kanıt (dosya:satır, alıntı, tekrar adımı) yazmak zorunda.
+* **Savunucu:** işin güçlü yanlarını ortaya koyar, abartılı eleştirileri kanıtla çürütür; gerçek hataları inkâr etmez.
+* **Kontrolcü:** tarafsız. İddiaları kendisi dener (dosyayı okur, testleri/kodu çalıştırır) ve her bulguyu **doğrulandı / çürütüldü / belirsiz** diye işaretler.
+* **Uzmanlar** (sadece ilgiliyse çağrılır): **güvenlik**, **performans**, **kullanıcı gözü**.
+
+**Akış:** roller önce birbirini görmeden bağımsız inceler → kontrolcü bulguları doğrular → gerekirse tartışma turları (herkes diğerlerinin oylarını ve kontrolcünün sonuçlarını görür, bulgulara katılır ya da kanıtla itiraz eder, ikna olursa oyunu değiştirir; tartışmada yeni bulgu eklenmez, kimse fikir değiştirmezse tartışma erken biter) → oylama.
+
+**Oylama:**
+* Oylar: **onay**, **şartlı onay** ("şunlar düzelirse olur") ya da **ret**; her oy gerekçeli.
+* Dayandığı bulguların hepsi çürütülen ya da hiç bulguya dayanmayan ret oyu **sayılmaz**.
+* İlgili uzmanın oyu **2 kat** sayılır (ör. güvenlikle ilgili değişiklikte güvenlik uzmanı). Senin oyun **3 kat**.
+* Doğrulanmış **kritik** bulgu oylama ne derse desin reddettirir (**veto**).
+* Ağırlıklı onay %60 ve üstü: onay (şartlar varsa ajana küçük düzeltme olarak gider). %40 altı: ret, doğrulanmış bulgular düzeltme listesi olarak ajana gider. Arası **çekişmeli**: karar yöneticiye (Alice) kalır, kritikse sana sorar.
+* Tartışmadan sonra ilk ve son oy yan yana görünür: kimin kimi ikna ettiğini görürsün.
+
+**Ne zaman toplanır:**
+* **Plan kurulu:** kod yazılmadan önce yöneticinin planı tartışılır. Reddedilirse Alice eleştirilere göre düzeltip tekrar sunar; ikinci retten sonra sana sorar.
+* **İş kurulu:** her ajan işini bitirince. Karar kendiliğinden uygulanır. Düzeltmeden sonra sadece itiraz eden rollerle kısa bir **kontrol turu** yapılır (en çok 2 düzeltme turu; sonra karar yöneticiye geçer).
+* **Final kurulu:** bütün işler bitince projenin tamamına bakar (en çok 2 kez).
+* **Kurula sor:** proje başlığındaki ya da ajan sayfasındaki düğmeyle istediğin an.
+
+**Derinlik ve modeller işe göre seçilir:** küçük işte eleştirmen + kontrolcü ve tek tur; normal işte üçlü + ilgili uzmanlar ve iki tur; kritik iş (güvenlik, veri, ödeme, ana mimari) ve final kurulunda bütün kurul, üç tura kadar tartışma ve herkes en güçlü modelle. Eleştirmen ve kontrolcü güçlü modeli, savunucu ve uzmanlar hızlı modeli kullanır. Sonsuz döngü yok: tur, kontrol ve final sayıları sınırlı.
+
+**Arayüzde:** ajan sayfasında **Kurul** sekmesi: karar, onay oranı, veto, oy tablosu (rol, model, ilk → son oy, ağırlık, sayılmadıysa nedeni), bulgu kartları (önem, kim buldu, kontrolcünün sonucu, tartışmadaki itirazlar), şartlar, **senin oyun** (onay / şartlı onay / ret ve gerekçe; karar değişirse hemen uygulanır) ve tartışma dökümü. Plan ve final kurulları yönetici grubundaki **Kurul** konusunda. İstediğin an **Onayla / Düzeltme iste** ile kararı tamamen sen de verebilirsin.
+
 **Güvenlik ve sınırlar:**
 * Ajanlar sadece kod işi araçlarını kullanır (dosya, kabuk, web, `http_request`, `git`). Ekran, tarayıcı ve masaüstü araçları tek ekranı paylaştığı için onlara kapalı.
 * Yazma kapsamı dışına dosya araçlarıyla yazma reddedilir; "salt okuma" ajan hiç yazamaz. İzin soruları proje ve ajan adıyla (`[proje / backend] ...`) gelir, sırayla açılır; "hep izin ver" sadece ana oturuma uygulanır.
@@ -222,6 +252,7 @@ Yönetici bir olaya cevap vermeden turunu bitirirse iki kez hatırlatılır; yin
 | Paralel araç çağrıları | Model tek cevapta birkaç okuma/arama isterse (`read_file`, `grep`, `glob`, `list_dir`, `web_search`, `web_fetch`, salt okuma MCP araçları) aynı anda çalışır; sonuçlar sırayla modele döner |
 | Araç gruplama | Art arda gelen okumalar uygulamada "2 dosya okundu, 1 arama yapıldı" diye tek açılır satır olur, terminalde her biri tek satır |
 | Hook'lar | yok |
+| İnceleme kurulu | `/kurul <konu>` ve projelerde: eleştirmen, savunucu, kontrolcü ve uzmanlar tartışıp gerekçeli ağırlıklı oylamayla karar verir |
 | git ve GitHub | `git` (status, diff, log, dal, commit, pull, push) ve `github` (depolar, klonlama, PR aç/incele/birleştir, yorum, issue, CI durumu) araçları; ayrıntı aşağıda |
 
 **Özel komut örneği**, `~/.alice/commands/incele.md`:

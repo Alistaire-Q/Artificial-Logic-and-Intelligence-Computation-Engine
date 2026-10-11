@@ -461,7 +461,7 @@ class Router:
                     msg = f"{role}: {', '.join(failed[-3:])} hata verdi, {ref} modeline geçildi"
                     self.on_event(msg)
                     self._log(msg)
-                if self.last_ref.get(role) != ref and not role.startswith("team:"):  # takım paneli modeli zaten gösterir
+                if self.last_ref.get(role) != ref and not role.startswith(("team:", "council:")):  # panel gösterir
                     self.on_event(f"{role} -> {ref}")
                 self.last_ref[role] = ref
                 return res

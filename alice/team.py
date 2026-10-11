@@ -10,6 +10,11 @@ Yönetici sohbetten bağımsız çalışır ve olay geldikçe uyanır:
   `review` ile onaylar (worktree dalı birleştirilir) ya da geri bildirimle geri gönderir.
 - Bitiş: herkes onaylanınca bütünü doğrular ve `finish` ile kullanıcıya özet yazar.
 
+İnceleme kurulu (alice/council.py) açıksa: plan `plan` aracıyla kurula sunulur (reddedilirse yönetici düzeltip
+tekrar sunar, ikinci retten sonra kullanıcıya sorulur); biten her iş kurulda tartışılıp oylanır ve karar uygulanır
+(onay ya da doğrulanmış bulgularla düzeltme; düzeltmeden sonra kısa kontrol turu, en çok 2 kez); proje sonunda final
+kurulu toplanır (en çok 2 kez). Çekişmeli kararlar yöneticiye, kullanıcı da oy verebilir ya da kararı bozabilir.
+
 Üyeler `team_send` ile birbirine, yöneticiye ("alice") ya da herkese yazar, `team_wait` ile cevap bekler; gelen mesajlar
 her araç adımından sonra konuşmalarına eklenir. `after` ile bir üye başkalarının işi onaylanınca başlar.
 
@@ -39,6 +44,7 @@ LEAD = "alice"  # projenin yöneticisi
 ORCHESTRATOR = LEAD  # eski ad
 USER = "kullanıcı"  # Projeler sayfasından yazan kullanıcı
 SYSTEM = "sistem"
+COUNCIL = "kurul"
 # Ajanların kullanabildiği araçlar: kod işi. Ekran, tarayıcı, masaüstü araçları kullanıcının tek ekranını paylaşır.
 MEMBER_TOOLS = {"read_file", "write_file", "edit_file", "multi_edit", "apply_patch", "file_ops", "list_dir", "glob",
                 "grep", "run_command", "process_output", "process_stop", "web_fetch", "web_search", "http_request",
@@ -94,6 +100,9 @@ class Member:
     thread: threading.Thread | None = None
     saved_messages: list[dict[str, Any]] = field(default_factory=list)  # diskten yüklenmiş konuşma (sistem hariç)
     resume_wanted: bool = False  # bitmişken iş geldi ama paralel sınırı dolu: yer açılınca devam edecek
+    councils: list[dict[str, Any]] = field(default_factory=list)  # bu işin kurul sonuçları (eskiden yeniye)
+    council_cycles: int = 0  # kurulun düzeltmeye gönderdiği tur sayısı
+    council_running: bool = False
 
     def snapshot(self) -> dict[str, Any]:
         now = self.ended or time.time()
@@ -101,14 +110,21 @@ class Member:
                 "isolation": self.isolation, "status": self.status, "steps": self.steps, "last": self.last,
                 "branch": self.branch, "scope": self.scope, "result": self.result[:1500], "files": self.files[-50:],
                 "constraints": self.constraints, "after": self.after, "question": self.question,
-                "reviews": self.reviews, "limit_hit": self.limit_hit,
-                "secs": int(now - self.started) if self.started else 0}
+                "reviews": self.reviews, "limit_hit": self.limit_hit, "council_running": self.council_running,
+                "council": _council_brief(self.councils[-1]) if self.councils else None,
+                "councils_n": len(self.councils), "secs": int(now - self.started) if self.started else 0}
 
     def messages(self) -> list[dict[str, Any]]:
         """Sistem istemi hariç konuşma: canlı ajandan ya da diskten."""
         if self.agent is not None:
             return self.agent.messages[1:]
         return self.saved_messages
+
+
+def _council_brief(c: dict[str, Any]) -> dict[str, Any]:
+    res = c.get("result") or {}
+    return {"id": c.get("id"), "kind": c.get("kind"), "state": c.get("state"), "decision": res.get("decision"),
+            "score": res.get("score"), "round": c.get("round"), "rounds": c.get("rounds")}
 
 
 def _rel(path: Path, base: Path) -> str:
@@ -202,7 +218,7 @@ class Team:
     def __init__(self, parent_ctx: ToolContext, goal: str, max_parallel: int = 5,
                  publish: Callable[[dict[str, Any]], None] | None = None, origin: str = "alice",
                  project_id: str = "", title: str = "", review: bool = True, lead_model: str = "brain",
-                 lead_thinking: str = "default", cwd: Path | None = None):
+                 lead_thinking: str = "default", cwd: Path | None = None, council: bool = True):
         self.parent_ctx = parent_ctx
         self.goal = goal
         self.id = project_id or time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
@@ -212,6 +228,12 @@ class Team:
         self.created = time.time()
         self.max_parallel = max(1, max_parallel)
         self.review = review  # biten işi yönetici incelesin mi
+        self.council = council and review  # inceleme kurulu: plan, her iş ve final
+        self.councils: list[dict[str, Any]] = []  # proje düzeyi kurullar: plan, final, kurula sor
+        self.council_busy = 0
+        self.final_runs = 0
+        self.plan_rejects = 0
+        self._final_pending = False
         self.lead_model = lead_model
         self.lead_thinking = lead_thinking if lead_thinking in THINKING else "default"
         self.members: dict[str, Member] = {}
@@ -271,7 +293,7 @@ class Team:
         if unknown:
             raise ToolError(f"projede böyle biri yok: {', '.join(unknown)}. Ajanlar: {', '.join(self.members) or '-'}, "
                             f"yönetici: {LEAD}")
-        boss = sender in (LEAD, USER)
+        boss = sender in (LEAD, USER, COUNCIL)  # yönetici, kullanıcı ve kurul incelemedeki ajanı yeniden çalıştırır
         if sender == USER:
             self.stopped = False
             if LEAD in targets:
@@ -357,7 +379,7 @@ class Team:
     # --------------------------------------------------------------- üyeler
     def add(self, spec: dict[str, Any]) -> Member:
         name = str(spec.get("name") or "").strip().lower()
-        if not NAME_RX.match(name) or name in (LEAD, "all", USER, SYSTEM):
+        if not NAME_RX.match(name) or name in (LEAD, "all", USER, SYSTEM, COUNCIL):
             raise ToolError(f"geçersiz ajan adı '{name}': küçük harf/rakam/-/_, en çok 24 karakter; 'alice' ve 'all' "
                             "ayrılmış")
         if name in self.members:
@@ -433,8 +455,9 @@ class Team:
         for m in self.members.values():
             self._launch(m)
         if plan or not self.members:
-            self.event("Proje başladı ve henüz ajan yok. Kodu kısaca incele, işi çakışmayan parçalara böl ve assign "
-                       "ile ajanları kur. İş küçükse tek ajan yeter.")
+            self.event("Proje başladı ve henüz ajan yok. Kodu kısaca incele, işi çakışmayan parçalara böl ve planı "
+                       "plan aracıyla sun" + (" (inceleme kurulu planı tartışıp oylayacak)" if self.council else "") +
+                       ". İş küçükse tek ajan yeter.")
         else:
             self.event("Proje başladı; ajanlar çalışıyor. Şimdilik yapacak bir şey yoksa turunu bitir; soru ya da "
                        "inceleme gelince uyandırılırsın.")
@@ -504,7 +527,9 @@ class Team:
                 m.status, m.ended, m.question = final, time.time(), ""
                 self.save()
                 self.cond.notify_all()
-        if final == "review":
+        if final == "review" and self.council:
+            self._spawn(self._member_council, m)
+        elif final == "review":
             self.event(self._review_note(m))
         elif final == "done":
             self.event(f"{m.name} bitirdi (inceleme yok). Raporu:\n{m.result[:3000]}")
@@ -525,9 +550,181 @@ class Team:
 
     def _after_done(self, m: Member) -> None:
         self._next()  # bu ajanı bekleyenler başlasın
-        if self.all_done() and not self.finished:
-            self.event("Bütün ajanlar bitti. Bütünü doğrula (testler, derleme), gerekirse küçük entegrasyon "
-                       "düzeltmesini yap, sonra finish ile kullanıcıya özet yaz.")
+        if not self.all_done() or self.finished:
+            return
+        if self.council and self.final_runs < 2:
+            self._final_pending = True
+            self._maybe_final()
+            return
+        self.event("Bütün ajanlar bitti. Bütünü doğrula (testler, derleme), gerekirse küçük entegrasyon "
+                   "düzeltmesini yap, sonra finish ile kullanıcıya özet yaz.")
+
+    # ----------------------------------------------------------------- kurul
+    def _maybe_final(self) -> None:
+        """Final kurulu, sürmekte olan kurullar (ör. son ajanın iş kurulu) bitince toplanır."""
+        with self.cond:
+            if not self._final_pending or self.council_busy or not self.all_done() or self.finished:
+                return
+            self._final_pending = False
+            self.final_runs += 1
+        self._spawn(self._final_council)
+
+    def _spawn(self, fn: Callable[..., Any], *args: Any) -> None:
+        with self.cond:
+            self.council_busy += 1
+
+        def run() -> None:
+            try:
+                fn(*args)
+            except Exception as e:  # noqa: BLE001 - kurul hatası projeyi durdurmasın
+                self.event(f"Kurul çalışamadı ({type(e).__name__}: {e}); incelemeyi kendin yap.")
+            finally:
+                with self.cond:
+                    self.council_busy -= 1
+                    self.cond.notify_all()
+                self._maybe_final()
+                self._changed(save=True)
+
+        threading.Thread(target=run, daemon=True, name=f"council-{self.id}").start()
+
+    def _council(self, kind: str, subject: str, context: str, store: list[dict[str, Any]], cwd: Path | None = None,
+                 previous: dict[str, Any] | None = None, critical: bool = False) -> dict[str, Any]:
+        from alice.council import Council
+
+        slot = len(store)
+        store.append({"kind": kind, "state": "running", "title": subject[:80], "result": {}, "votes": [],
+                      "findings": [], "round": 0, "rounds": 0})
+        c = Council(self.parent_ctx, kind, subject, context, cwd=cwd or self.cwd, previous=previous,
+                    critical=critical or self._critical(subject + context))
+
+        def live() -> None:
+            store[slot] = c.snapshot()
+            self._changed()
+
+        c.on_change = live
+        snap = c.run()
+        store[slot] = snap
+        self._changed(save=True)
+        return snap
+
+    @staticmethod
+    def _critical(text: str) -> bool:
+        return bool(re.search(r"güvenlik|security|şifre|password|secret|token|veri kaybı|migration|göç|silme|delete|"
+                              r"auth|ödeme|payment|para", text[:6000], re.I))
+
+    def _member_material(self, m: Member) -> tuple[str, str]:
+        subject = f"'{m.name}' ajanının işi. Görevi: {m.task}" + (f"\nSınırlar: {m.constraints}" if m.constraints else "")
+        context = (f"Proje hedefi: {self.goal}\n\n# Ajanın raporu\n{m.result[:4000]}\n\n# Değişen dosyalar\n"
+                   f"{', '.join(m.files) or '(yok)'}\n\n# Fark\n{self.diff(m.name, limit=20_000) or '(fark yok)'}")
+        return subject, context
+
+    def _member_council(self, m: Member, adhoc: bool = False) -> None:
+        from alice.council import fix_list, report
+
+        m.council_running = True
+        self._changed()
+        try:
+            subject, context = self._member_material(m)
+            prev = m.councils[-1] if m.councils and m.council_cycles and not adhoc else None
+            kind = "adhoc" if adhoc else ("recheck" if prev else "work")
+            snap = self._council(kind, subject, context, m.councils, cwd=m.cwd, previous=prev)
+        finally:
+            m.council_running = False
+        with self.cond:
+            self.log.append(Message(COUNCIL, m.name, report(snap).splitlines()[0]))
+        self._apply_council(m, snap, report(snap), fix_list(snap))
+
+    def _apply_council(self, m: Member, snap: dict[str, Any], rep_text: str, fixes: str) -> None:
+        if m.status != "review":
+            return  # bu arada kullanıcı/yönetici karar verdi
+        decision = (snap.get("result") or {}).get("decision")
+        if decision == "approve":
+            self.review_member(m.name, True, by=COUNCIL)
+        elif decision in ("approve_conditions", "revise") and m.council_cycles < 2:
+            m.council_cycles += 1
+            self.review_member(m.name, False, "Kurul kararı: " + ("şartlı onay" if decision == "approve_conditions"
+                                                                  else "düzeltme gerekli") + ". Şunları düzelt:\n"
+                               + fixes, by=COUNCIL)
+        elif decision in ("approve_conditions", "revise"):
+            self.event(f"Kurul {m.name} işini iki düzeltme turundan sonra hâlâ kabul etmiyor. Kararı sen ver "
+                       f"(review approve ya da revise; gerekirse ask_user).\n{rep_text}")
+        else:
+            self.event(f"Kurul {m.name} işinde ikiye bölündü. Raporu oku, gerekirse diff'e bak ve review ile karar ver "
+                       f"(çok kritikse ask_user ile kullanıcıya sor).\n{rep_text}")
+
+    def _final_council(self) -> None:
+        from alice.council import report
+
+        parts = []
+        for m in self.members.values():
+            parts.append(f"## {m.name} ({m.status})\nGörev: {m.task}\nRapor: {m.result[:1500]}\n"
+                         f"Dosyalar: {', '.join(m.files) or '-'}\nFark:\n{self.diff(m.name, limit=6000) or '-'}")
+        snap = self._council("final", f"Projenin tamamı: {self.goal}", "\n\n".join(parts)[:40_000], self.councils,
+                             critical=True)
+        decision = (snap.get("result") or {}).get("decision")
+        last = self.final_runs >= 2
+        if decision in ("approve", "approve_conditions"):
+            note = "Final kurulu projeyi onayladı. Bütünü son kez doğrula ve finish ile özet yaz" + \
+                (" (şartları özette açık kalan olarak belirt)." if decision == "approve_conditions" else ".")
+        elif last:
+            note = ("Final kurulu ikinci kez de onaylamadı. Kalan sorunları finish özetinde 'açık kalanlar' olarak yaz "
+                    "ya da kritikse ask_user ile kullanıcıya sor.")
+        else:
+            note = ("Final kurulu onaylamadı. Bulguları ilgili ajanlara message ile görev olarak ver (ya da assign ile "
+                    "yeni ajan kur); işler bitince final kurulu bir kez daha toplanır.")
+        self.event(f"{report(snap)}\n\n{note}")
+
+    def ask_council(self, name: str = "") -> None:
+        """Kullanıcının 'Kurula sor' düğmesi: bir ajanın işini ya da (ad yoksa) projenin tamamını kurula sorar."""
+        if self.council_busy and not name:
+            raise ToolError("kurul zaten toplanıyor")
+        if name:
+            m = self.members.get(name)
+            if m is None:
+                raise ToolError(f"projede '{name}' yok")
+            if m.status in ACTIVE or m.council_running:
+                raise ToolError(f"{name} çalışıyor ya da kurulu sürüyor; bitince sor")
+            self._spawn(self._member_council, m, True)
+        else:
+            def run() -> None:
+                from alice.council import report
+
+                parts = [f"## {m.name}: {m.task}\n{m.result[:1500]}\n{self.diff(m.name, limit=5000)}"
+                         for m in self.members.values()]
+                snap = self._council("adhoc", f"Projenin şu anki hali: {self.goal}", "\n\n".join(parts)[:40_000],
+                                     self.councils)
+                self.event(f"Kullanıcı kurula sordu, sonuç:\n{report(snap)}\nGerekiyorsa ajanlara yön ver.")
+
+            self._spawn(run)
+
+    def user_vote(self, name: str, vote: str, note: str = "") -> str:
+        """Kullanıcının oyu (3 kat ağırlık): son kurul yeniden sayılır, karar değişirse uygulanır."""
+        from alice.council import VOTES, fix_list, report, retally
+
+        if vote not in VOTES:
+            raise ToolError("oy approve, conditional ya da reject olmalı")
+        store = self.members[name].councils if name in self.members else self.councils
+        done = [i for i, c in enumerate(store) if c.get("state") in ("done", "failed")]
+        if not done:
+            raise ToolError("oylanacak kurul sonucu yok")
+        i = done[-1]
+        store[i] = retally(store[i], {"vote": vote, "note": note.strip()})
+        snap = store[i]
+        with self.cond:
+            self.log.append(Message(USER, COUNCIL, f"oyum: {vote}" + (f" — {note.strip()}" if note.strip() else "")))
+        if name in self.members:
+            m = self.members[name]
+            if m.status == "review":
+                fixes = fix_list(snap) + (f"\n- kullanıcı: {note.strip()}" if note.strip() else "")
+                dec = (snap.get("result") or {}).get("decision")
+                if dec == "approve":
+                    self.review_member(name, True, by=USER)
+                elif dec in ("revise", "approve_conditions"):
+                    self.review_member(name, False, "Kurul (senin oyunla) düzeltme istedi:\n" + fixes, by=USER)
+        else:
+            self.event(f"Kullanıcı kurulda oy verdi; yeni sonuç:\n{report(snap)}")
+        self._changed(save=True)
+        return (snap.get("result") or {}).get("decision") or "?"
 
     # -------------------------------------------------------------- inceleme
     def review_member(self, name: str, approve: bool, feedback: str = "", by: str = LEAD) -> str:
@@ -542,7 +739,7 @@ class Team:
             with self.cond:
                 self.log.append(Message(by, name, "onaylandı" + (f": {feedback.strip()}" if feedback.strip() else "")))
                 self.cond.notify_all()
-            if by != LEAD:
+            if by == USER:
                 self.event(f"Kullanıcı {name} ajanının işini onayladı.")
             self._after_done(m)
             self._changed(save=True)
@@ -772,7 +969,7 @@ Kurallar:
         ctx = ToolContext(cwd=self.cwd, config=self.parent_ctx.config, router=self.parent_ctx.router,
                           decider=self.parent_ctx.decider, emit=lambda s: None)
         tools = [t for n, t in parent.tools.items() if n in MEMBER_TOOLS] + [
-            LeadAssign(self), TeamSend(self, LEAD), LeadReview(self), LeadDiff(self), LeadAskUser(self),
+            LeadPlan(self), LeadAssign(self), TeamSend(self, LEAD), LeadReview(self), LeadDiff(self), LeadAskUser(self),
             LeadFinish(self), LeadStatus(self)]
         perms = Permissions(parent.permissions.mode)
         perms.always_allow = set(parent.permissions.always_allow)
@@ -820,7 +1017,8 @@ Kurallar:
     def _lead_exit(self) -> bool:
         """Yöneticinin bekleyeceği bir şey kalmadıysa döngüden çık (yeni olay gelince _ensure_lead yeniden başlatır).
         Gelen kutusu kilit altında son kez kontrol edilir: çıkarken gelen olay kaybolmasın."""
-        idle = all(m.status in FINAL + ("review",) and not m.resume_wanted for m in self.members.values())
+        idle = all(m.status in FINAL + ("review",) and not m.resume_wanted for m in self.members.values()) and \
+            not self.council_busy
         if not (self.stopped or self.finished or (self.members and idle and self._nudges >= 2)):
             return False
         with self.cond:
@@ -833,7 +1031,8 @@ Kurallar:
         """Yönetici turunu bitirdi ama iş ortada kaldıysa hatırlat; iki kez olmazsa projeyi kendisi kapat."""
         if self.finished or self.stopped or not self.members:
             return ""
-        if any(not q.get("answer") for q in self.questions) or self._nudges >= 3:
+        if any(not q.get("answer") for q in self.questions) or self._nudges >= 3 or self.council_busy or \
+                any(m.council_running for m in self.members.values()):
             return ""
         pending = [m.name for m in self.members.values() if m.status == "review"]
         if pending and all(m.status in FINAL + ("review",) for m in self.members.values()):
@@ -853,6 +1052,12 @@ Kurallar:
     def lead_brief(self) -> str:
         review = ("Biten her ajan 'review' durumuna geçer ve sana inceleme olayı gelir." if self.review else
                   "İnceleme kapalı: biten ajanlar doğrudan 'done' olur; yine de raporlarını oku.")
+        council_plan = ""
+        if self.council:
+            review = ("Biten her işi inceleme kurulu (eleştirmen, savunucu, kontrolcü, gerekince uzmanlar) tartışıp "
+                      "oylar ve kararı uygular; sana sadece çekişmeli ya da iki düzeltmeye rağmen kabul edilmeyen "
+                      "işler gelir, onlarda kurul raporunu okuyup sen karar ver.")
+            council_plan = "; kurul planı tartışıp oylar, reddederse eleştirilere göre düzeltip tekrar sun"
         return f"""# Proje yöneticisi
 Sen ALICE'sin ve "{self.title}" projesinin yöneticisisin (orkestratör, ajanlar sana "{LEAD}" diye yazar).
 Proje arka planda, kullanıcının sohbetinden bağımsız yürüyor. Kullanıcıyla sadece ask_user ve finish ile konuşursun.
@@ -861,8 +1066,8 @@ Hedef: {self.goal}
 Çalışma klasörü: {self.cwd}
 
 Görevlerin:
-1. Plan: ajan yoksa kodu kısaca incele (glob, grep, read_file) ve işi çakışmayan parçalara bölüp assign ile ajanları
-   kur (en çok {MAX_MEMBERS}). Her ajana konuşmayı görmeyen birinin anlayacağı netlikte görev, doğrulama yolu ve yazma
+1. Plan: ajan yoksa kodu kısaca incele (glob, grep, read_file) ve işi çakışmayan parçalara bölüp plan aracıyla
+   bütün ajanları birden sun (en çok {MAX_MEMBERS}){council_plan}. Sonradan ek ajan için assign. Her ajana konuşmayı görmeyen birinin anlayacağı netlikte görev, doğrulama yolu ve yazma
    kapsamı (scope) ver; kapsamlar çakışmasın. Zor tasarım/hata ayıklama: model=brain thinking=high; mekanik iş:
    model=fast thinking=low. Birbirine bağlı işlerde after kullan (ör. testler backend'den sonra). Aynı dosyalara
    dokunabilecek büyük değişikliklerde isolation=worktree. Sadece inceleme/araştırma için isolation=readonly.
@@ -870,8 +1075,9 @@ Görevlerin:
    bağlı, senin karar veremeyeceğin şeyleri ask_user ile sor (gereksiz soru sorma).
 3. İncele: {review} Raporu oku, diff ile farka bak, gerekirse testleri çalıştır (run_command). Doğruysa
    review decision=approve; eksik ya da hatalıysa decision=revise ve somut geri bildirim (ne yanlış, ne bekliyorsun).
-4. Bitir: herkes onaylanınca bütünü doğrula (testler, derleme), gerekirse küçük bir entegrasyon düzeltmesini kendin
-   yap, sonra finish ile kullanıcıya özet yaz: ne yapıldı, hangi dosyalar, nasıl doğrulandı, açık kalanlar.
+4. Bitir: herkes onaylanınca{" final kurulu toplanır;" if self.council else ""} bütünü doğrula (testler, derleme),
+   gerekirse küçük bir entegrasyon düzeltmesini kendin yap, sonra finish ile kullanıcıya özet yaz: ne yapıldı, hangi
+   dosyalar, nasıl doğrulandı, açık kalanlar.
 
 Kurallar:
 - Ajanların işini kendin yapma; sen planla, yönlendir, incele.
@@ -901,7 +1107,8 @@ Kurallar:
                 "cwd": str(self.cwd), "created": self.created, "status": self.status(), "review": self.review,
                 "summary": self.summary, "lead": {"state": self.lead_state, "model": self.lead_model,
                                                   "thinking": self.lead_thinking, "last": self.lead_last[:600]},
-                "questions": self.questions[-20:], "progress": [done, len(self.members)],
+                "questions": self.questions[-20:], "progress": [done, len(self.members)], "council": self.council,
+                "council_busy": self.council_busy, "councils": [_council_brief(c) for c in self.councils],
                 "members": [m.snapshot() for m in self.members.values()],
                 "log": [{"from": x.sender, "to": x.to, "text": x.text[:400], "at": x.at} for x in self.log[-40:]],
                 "active": self.active()}
@@ -924,7 +1131,8 @@ Kurallar:
         for m in self.members.values():
             d = m.snapshot()
             d.update(result=m.result, max_steps=m.max_steps, cwd=str(m.cwd), started=m.started, ended=m.ended,
-                     base_sha=m.base_sha, messages=_slim(m.messages()),
+                     base_sha=m.base_sha, messages=_slim(m.messages()), councils=m.councils[-6:],
+                     council_cycles=m.council_cycles,
                      originals={k: v for k, v in m.originals.items() if v is None or len(v) < 200_000})
             members.append(d)
         lead_msgs = self.lead_agent.messages[1:] if self.lead_agent is not None else self.lead_saved
@@ -932,7 +1140,8 @@ Kurallar:
                 "created": self.created, "updated": time.time(), "status": self.status(), "review": self.review,
                 "lead_model": self.lead_model, "lead_thinking": self.lead_thinking, "summary": self.summary,
                 "finished": self.finished, "lead_last": self.lead_last, "lead_messages": _slim(lead_msgs),
-                "questions": self.questions, "members": members,
+                "questions": self.questions, "members": members, "council": self.council,
+                "councils": self.councils[-10:], "final_runs": self.final_runs, "plan_rejects": self.plan_rejects,
                 "log": [{"from": x.sender, "to": x.to, "text": x.text, "at": x.at} for x in self.log[-500:]]}
         try:
             with self._save_lock:  # ajanlar aynı anda kaydetmeye çalışabilir
@@ -951,7 +1160,10 @@ Kurallar:
                    project_id=data.get("id") or f.stem, title=data.get("title", ""),
                    review=bool(data.get("review", True)), lead_model=data.get("lead_model", "brain"),
                    lead_thinking=data.get("lead_thinking", "default"),
-                   cwd=Path(data["cwd"]) if data.get("cwd") else None)
+                   cwd=Path(data["cwd"]) if data.get("cwd") else None, council=bool(data.get("council", False)))
+        team.councils = [c for c in data.get("councils") or [] if c.get("state") != "running"]
+        team.final_runs = int(data.get("final_runs") or 0)
+        team.plan_rejects = int(data.get("plan_rejects") or 0)
         team.created = float(data.get("created") or time.time())
         team.summary = data.get("summary", "")
         team.finished = bool(data.get("finished"))
@@ -968,7 +1180,9 @@ Kurallar:
                        result=d.get("result", ""), steps=int(d.get("steps") or 0), reviews=int(d.get("reviews") or 0),
                        last=d.get("last", ""), started=float(d.get("started") or 0), ended=float(d.get("ended") or 0),
                        files=list(d.get("files") or []), originals=dict(d.get("originals") or {}),
-                       saved_messages=list(d.get("messages") or []))
+                       saved_messages=list(d.get("messages") or []),
+                       councils=[c for c in d.get("councils") or [] if c.get("state") != "running"],
+                       council_cycles=int(d.get("council_cycles") or 0))
             # Kapanırken yarıda kalanlar durmuş sayılır; bitmiş, incelemedeki ve hatalılar olduğu gibi kalır.
             m.status = d.get("status") if d.get("status") in ("done", "failed", "review") else "stopped"
             m.ended = m.ended or team.created
@@ -987,11 +1201,11 @@ Kurallar:
                     "task": "Projenin yöneticisi: planlar, soruları cevaplar, biten işleri inceler, sonucu özetler.",
                     "isolation": "shared", "steps": 0, "secs": 0, "files": [], "scope": [], "messages": msgs,
                     "result": self.summary or self.lead_last, "after": [], "constraints": "", "branch": "",
-                    "question": "", "reviews": 0, "limit_hit": False, "last": ""}
+                    "question": "", "reviews": 0, "limit_hit": False, "last": "", "councils": self.councils}
         m = self.members.get(name)
         if m is None:
             raise ToolError(f"projede '{name}' yok")
-        return {**m.snapshot(), "messages": m.messages()}
+        return {**m.snapshot(), "messages": m.messages(), "councils": m.councils}
 
     member_view = thread_view
 
@@ -1146,6 +1360,69 @@ class TeamWait(Tool):
         return ToolResult("\n".join(x.line() for x in msgs))
 
 
+class LeadPlan(Tool):
+    name = "plan"
+    description = ("Planı ve ajanları birden sunar. Kurul açıksa plan önce inceleme kurulunda tartışılıp oylanır: "
+                   "onaylanırsa ajanlar hemen başlar; reddedilirse eleştiriler döner, planı düzeltip tekrar sun. "
+                   "Kurul kapalıysa ajanlar doğrudan başlar.")
+    parameters = obj({
+        "summary": {"type": "string", "description": "Yaklaşım: işi nasıl böldün, neden, riskler, doğrulama yolu."},
+        "agents": {"type": "array", "description": "Ajanlar (en çok 8); assign ile aynı alanlar.",
+                   "items": {"type": "object"}},
+        "skip_council": {"type": "boolean", "description": "Sadece kullanıcı planı açıkça onayladıysa true."},
+    }, ["summary", "agents"])
+    risk = READ
+
+    def __init__(self, team: Team):
+        self.team = team
+
+    def summary(self, args: dict[str, Any]) -> str:
+        names = ", ".join(str(a.get("name")) for a in args.get("agents") or [] if isinstance(a, dict))
+        return f"plan: {names}"
+
+    def run(self, ctx: ToolContext, summary: str, agents: list[dict[str, Any]], skip_council: bool = False) -> ToolResult:
+        from alice.council import report
+
+        t = self.team
+        specs = [a for a in agents or [] if isinstance(a, dict)]
+        if not specs:
+            raise ToolError("en az bir ajan gerekli")
+        if len(specs) + len(t.members) > MAX_MEMBERS:
+            raise ToolError(f"bir projede en çok {MAX_MEMBERS} ajan olur")
+        names = [str(a.get("name") or "").strip().lower() for a in specs]
+        bad = [n for n in names if not NAME_RX.match(n) or n in (LEAD, "all", USER, SYSTEM) or n in t.members]
+        if bad or len(set(names)) != len(names):
+            raise ToolError(f"geçersiz ya da tekrarlanan ajan adı: {', '.join(bad) or 'tekrar var'}")
+        cond_note = ""
+        if t.council and not skip_council:
+            lines = [f"- {a.get('name')}: {a.get('task')} | model={a.get('model', 'brain')} "
+                     f"düşünme={a.get('thinking', 'default')} yer={a.get('isolation', 'shared')} "
+                     f"kapsam={a.get('scope') or 'her yer'} sonra={a.get('after') or '-'} sınır={a.get('constraints') or '-'}"
+                     for a in specs]
+            t.council_busy += 1
+            try:
+                snap = t._council("plan", f"Proje planı: {t.goal}", f"# Yaklaşım\n{summary}\n\n# Ajanlar\n" +
+                                  "\n".join(lines), t.councils)
+            finally:
+                with t.cond:
+                    t.council_busy -= 1
+            dec = (snap.get("result") or {}).get("decision")
+            if dec not in ("approve", "approve_conditions"):
+                t.plan_rejects += 1
+                if t.plan_rejects >= 2:
+                    t.ask_user("Plan kurulda iki kez onaylanmadı. Bu planla başlayayım mı, yoksa nasıl değiştireyim?\n\n"
+                               f"Plan: {summary[:1200]}\n\nKurul: {report(snap)[:1500]}")
+                    return ToolResult("Plan yine onaylanmadı; kullanıcıya soruldu. Cevabı gelince ona göre planı sun "
+                                      "(kullanıcı bu planı onaylarsa skip_council=true ile).\n\n" + report(snap))
+                return ToolResult("Kurul planı onaylamadı. Eleştirileri dikkate alıp planı düzelt ve plan ile tekrar "
+                                  "sun.\n\n" + report(snap), is_error=True)
+            cond_note = "\n\n" + report(snap)
+        added = []
+        for spec in specs:
+            added.append(t.add_member(spec, announce=False).name)
+        return ToolResult(f"Plan onaylandı, ajanlar başladı: {', '.join(added)}{cond_note}")
+
+
 class LeadAssign(Tool):
     name = "assign"
     description = ("Projeye yeni ajan ekler ve hemen başlatır (after verilmişse onlar onaylanınca başlar). Görevi, "
@@ -1246,6 +1523,8 @@ class LeadFinish(Tool):
         self.team = team
 
     def run(self, ctx: ToolContext, summary: str) -> ToolResult:
+        if self.team.council_busy:
+            return ToolResult("kurul hâlâ toplanıyor; sonucu sana olay olarak gelecek, sonra bitir.", is_error=True)
         open_ = [m.name for m in self.team.members.values() if m.status in ACTIVE + ("review", "queued")]
         if open_:
             return ToolResult(f"henüz bitmemiş ya da incelenmemiş ajanlar var: {', '.join(open_)}. Önce onları "

@@ -1050,10 +1050,10 @@ async function refreshProject() {
     if (!d0 || d0.ok === false || !d0.id) { toast((d0 && d0.error) || "Proje açılamadı"); closeProject(); loadProjects(); return; }
     pr.sel = pickThread(d0);
   }
-  const sel = pr.sel !== "__log" ? pr.sel : "";
+  const sel = pr.sel !== "__log" ? pr.sel : "";  // "__council": proje kurulları
   const q = `/api/project?id=${encodeURIComponent(pr.id)}` + (sel ? `&member=${encodeURIComponent(sel)}` : "");
   const [d, df] = await Promise.all([api(q),
-    pr.tab === "diff" && sel && sel !== "alice" ? api(`/api/project/diff?id=${encodeURIComponent(pr.id)}&member=${encodeURIComponent(sel)}`) : null]);
+    pr.tab === "diff" && sel && !["alice", "__council"].includes(sel) ? api(`/api/project/diff?id=${encodeURIComponent(pr.id)}&member=${encodeURIComponent(sel)}`) : null]);
   if (S.proj !== pr) return;
   if (!d || d.ok === false || !d.id) { toast((d && d.error) || "Proje açılamadı"); closeProject(); loadProjects(); return; }
   pr.data = d;
@@ -1082,7 +1082,7 @@ function renderProject() {
   const t2 = el("div", "pv-sub");
   t2.append(progressBar(done, total), el("span", "", total ? `${done}/${total} onaylandı` : "ajan yok"),
     el("span", "", `yönetici ${d.lead.model}${d.lead.thinking !== "default" ? " · " + d.lead.thinking : ""}`),
-    el("span", "", d.review ? "inceleme açık" : "inceleme kapalı"), el("span", "mono", d.cwd), el("span", "", relTime(d.created)));
+    el("span", "", d.council ? "kurul açık" : d.review ? "inceleme açık" : "inceleme kapalı"), el("span", "mono", d.cwd), el("span", "", relTime(d.created)));
   const goal = el("div", "pv-goal", d.goal);
   goal.title = "Tamamını göster";
   goal.addEventListener("click", () => goal.classList.toggle("open"));
@@ -1091,6 +1091,13 @@ function renderProject() {
   const add = el("button", "btn", "Ajan ekle");
   add.addEventListener("click", () => projectDialog(d));
   acts.appendChild(add);
+  if (d.council && d.members.length) {
+    const ask = el("button", "btn", d.council_busy ? "Kurul toplanıyor…" : "Kurula sor");
+    ask.title = "Projenin şu anki halini inceleme kuruluna sor";
+    ask.disabled = !!d.council_busy;
+    ask.addEventListener("click", () => projectAction("council", ""));
+    acts.appendChild(ask);
+  }
   if (d.active) {
     const st = el("button", "btn danger", "Durdur");
     st.title = "Bütün ajanları ve yöneticiyi durdur";
@@ -1148,7 +1155,7 @@ function renderProject() {
     list.appendChild(el("div", "th-sec" + (cls ? " " + cls : ""), `${title} · ${items.length}`));
     for (const it of items) list.appendChild(it);
   };
-  section("Yönetici", [threadItem(lead, true), logItem(d)]);
+  section("Yönetici", [threadItem(lead, true), logItem(d), ...((d.councils || []).length || d.council_busy ? [councilItem(d)] : [])]);
   const by = (sts) => d.members.filter((m) => sts.includes(m.status)).map((m) => threadItem(m));
   section("Soru soruyor", by(["asking"]), "warn");
   section("İnceleme bekliyor", by(["review"]), "rev");
@@ -1158,6 +1165,7 @@ function renderProject() {
   section("Durdu / hata", by(["stopped", "failed"]), "err");
   const det = el("div", "pv-detail");
   if (pr.sel === "__log") renderTeamLog(det, d);
+  else if (pr.sel === "__council") renderProjectCouncils(det, d);
   else if (d.member) renderThread(det, d.member, d);
   else det.appendChild(el("div", "pd-empty", "Bir konu seç"));
   body.append(list, det);
@@ -1182,6 +1190,8 @@ function threadItem(m, isLead) {
   if (isLead) last = m.last;
   else if (m.status === "queued" && m.after && m.after.length) last = `${m.after.join(", ")} bitince başlar`;
   else if (m.status === "asking" && m.question) last = "soru: " + m.question;
+  else if (m.council_running) last = m.council && m.council.rounds ? `kurul toplanıyor · tur ${m.council.round || 1}/${m.council.rounds}` : "kurul toplanıyor…";
+  else if (m.status === "review" && m.council && m.council.decision) last = "kurul: " + (DEC_TR[m.council.decision] || m.council.decision);
   else if (["running", "waiting"].includes(m.status) && m.last) last = m.last;
   else last = [m.model, m.thinking !== "default" ? m.thinking : "", `${m.steps} adım`, m.secs ? fmtSecs(m.secs) : "",
     m.files && m.files.length ? `${m.files.length} dosya` : "", m.reviews ? `${m.reviews} düzeltme` : ""].filter(Boolean).join(" · ");
@@ -1222,6 +1232,12 @@ function renderThread(det, m, d) {
         });
         r1.appendChild(b);
       }
+      if (d.council && !m.council_running) {
+        const k = el("button", "btn", "Kurula sor");
+        k.title = "Bu işi inceleme kuruluna sor (eleştirmen, savunucu, kontrolcü, uzmanlar)";
+        k.addEventListener("click", () => { pr.tab = "council"; projectAction("council", m.name); });
+        r1.appendChild(k);
+      }
       const b = el("button", "btn", "Baştan başlat");
       b.title = "Temiz bir konuşmayla görevi yeniden yapsın";
       b.addEventListener("click", () => projectAction("restart", m.name));
@@ -1240,7 +1256,10 @@ function renderThread(det, m, d) {
 
   if (m.status === "review") {
     const bar = el("div", "pd-review");
-    bar.appendChild(el("div", "pd-rv-t", d.review ? "İnceleme bekliyor. Alice inceliyor; istersen kararı sen ver." : "Bitti, onay bekliyor."));
+    const rvText = m.council_running ? "Kurul toplandı, tartışıyor. İstersen beklemeden kararı sen ver."
+      : m.council && m.council.decision === "contested" ? "Kurul ikiye bölündü; Alice karar verecek. Kurul sekmesinden oy verebilir ya da kararı sen verebilirsin."
+      : d.review ? "İnceleme bekliyor. Alice inceliyor; istersen kararı sen ver." : "Bitti, onay bekliyor.";
+    bar.appendChild(el("div", "pd-rv-t", rvText));
     const row = el("div", "pd-ask-row");
     const fb = el("input"); fb.type = "text"; fb.placeholder = "Düzeltme için geri bildirim (ne eksik, ne bekliyorsun)…"; fb.dataset.k = "fb" + m.name;
     const no = el("button", "btn", "Düzeltme iste");
@@ -1258,7 +1277,9 @@ function renderThread(det, m, d) {
 
   if (!isLead) {
     const tabs = el("div", "pd-tabs");
-    for (const [k, label] of [["chat", "Konuşma"], ["diff", `Değişiklikler${m.files && m.files.length ? " · " + m.files.length : ""}`]]) {
+    const tabsList = [["chat", "Konuşma"], ["diff", `Değişiklikler${m.files && m.files.length ? " · " + m.files.length : ""}`]];
+    if ((m.councils || []).length) tabsList.push(["council", `Kurul · ${m.councils.length}${m.council_running ? " …" : ""}`]);
+    for (const [k, label] of tabsList) {
       const b = el("button", "pd-tab" + ((pr.tab || "chat") === k ? " on" : ""), label);
       b.addEventListener("click", () => { pr.tab = k; refreshProject(); });
       tabs.appendChild(b);
@@ -1266,7 +1287,11 @@ function renderThread(det, m, d) {
     det.appendChild(tabs);
   }
   const feed = el("div", "pd-feed");
-  if (!isLead && pr.tab === "diff") {
+  if (!isLead && pr.tab === "council") {
+    const list = (m.councils || []).slice().reverse();
+    list.forEach((c, i) => feed.appendChild(councilCard(c, m.name, i === 0)));
+    if (!list.length) feed.appendChild(el("div", "pd-empty", "Henüz kurul toplanmadı"));
+  } else if (!isLead && pr.tab === "diff") {
     const text = pr.diff || "";
     if (!text.trim()) feed.appendChild(el("div", "pd-empty", "Bu ajan dosya değiştirmedi"));
     for (const part of text.split(/\n(?=--- )/)) {
@@ -1291,6 +1316,123 @@ function renderThread(det, m, d) {
   ta.addEventListener("input", () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 160) + "px"; });
   say.append(ta, go);
   det.appendChild(say);
+}
+// ---- inceleme kurulu
+const ROLE_TR = { critic: "eleştirmen", advocate: "savunucu", verifier: "kontrolcü", security: "güvenlik",
+  performance: "performans", ux: "kullanıcı gözü" };
+const VOTE_TR2 = { approve: "onay", conditional: "şartlı onay", reject: "ret" };
+const DEC_TR = { approve: "onay", approve_conditions: "şartlı onay", revise: "düzeltme gerekli", contested: "çekişmeli" };
+const KIND_TR = { plan: "Plan kurulu", work: "İş kurulu", recheck: "Kontrol turu", final: "Final kurulu", adhoc: "Kurula sor" };
+const SEV_TR = { critical: "kritik", major: "önemli", minor: "küçük" };
+const FST_TR = { confirmed: "doğrulandı", refuted: "çürütüldü", unclear: "belirsiz", pending: "bekliyor" };
+function councilItem(d) {
+  const pr = S.proj;
+  const b = el("button", "th" + (pr.sel === "__council" ? " sel" : ""));
+  const top = el("div", "th-top");
+  const last = (d.councils || [])[d.councils.length - 1];
+  top.append(el("i", "dot st-" + (d.council_busy ? "running" : "review")), el("b", "", "Kurul"),
+    el("small", "", d.council_busy ? "toplanıyor" : `${(d.councils || []).length} toplantı`));
+  b.append(top, el("div", "th-last", last ? `${KIND_TR[last.kind] || last.kind}: ${DEC_TR[last.decision] || "sürüyor"}` : "plan ve final kurulları"));
+  b.addEventListener("click", () => { pr.sel = "__council"; refreshProject(); });
+  return b;
+}
+function renderProjectCouncils(det, d) {
+  const h = el("div", "pd-head");
+  const r = el("div", "pd-row"); r.appendChild(el("b", "", "Kurul"));
+  h.append(r, el("div", "pd-task", "Plan kurulu, final kurulu ve projeye 'Kurula sor' toplantıları. Eleştirmen, savunucu, kontrolcü ve gerekince uzmanlar bağımsız inceler, tartışır ve ağırlıklı oylamayla karar verir."));
+  const feed = el("div", "pd-feed");
+  const list = (d.council_list || []).slice().reverse();
+  list.forEach((c, i) => feed.appendChild(councilCard(c, "", i === 0)));
+  if (!list.length) feed.appendChild(el("div", "pd-empty", d.council_busy ? "Kurul toplanıyor…" : "Henüz kurul toplanmadı"));
+  det.append(h, feed);
+}
+function councilCard(c, target, latest) {
+  const res = c.result || {};
+  const card = el("div", "cc" + (c.state === "running" ? " live" : ""));
+  const head = el("div", "cc-head");
+  head.append(el("b", "", KIND_TR[c.kind] || "Kurul"));
+  if (c.state === "running") head.appendChild(el("span", "pill running", `toplanıyor · tur ${c.round || 1}/${c.rounds || "?"}`));
+  else head.appendChild(el("span", "pill dec-" + (res.decision || "contested"), DEC_TR[res.decision] || "tamamlanamadı"));
+  if (res.score !== undefined && c.state !== "running") {
+    head.append(progressBar(Math.round(res.score * 100), 100), el("span", "cc-score", `%${Math.round((res.score || 0) * 100)} onay`));
+  }
+  if ((res.veto || []).length) head.appendChild(el("span", "chip warn", "veto: " + res.veto.join(", ")));
+  if (c.critical) head.appendChild(el("span", "chip", "kritik"));
+  card.appendChild(head);
+  if (c.title) card.appendChild(el("div", "cc-title", c.title));
+  if (res.error) card.appendChild(el("div", "cc-err", "Kurul tamamlanamadı: " + res.error));
+
+  // oylar
+  const votes = el("div", "cc-votes");
+  for (const v of c.votes || []) {
+    const row = el("div", "cv" + (v.counted === false ? " off" : ""));
+    const changed = v.first && v.last && v.first !== v.last;
+    row.append(el("b", "", ROLE_TR[v.role] || v.role), el("small", "", v.model || ""),
+      el("span", "vote v-" + (v.last || "none"), (changed ? `${VOTE_TR2[v.first]} → ` : "") + (VOTE_TR2[v.last] || "oy yok")));
+    if (v.weight > 1) row.appendChild(el("span", "chip", `×${v.weight}`));
+    if (v.counted === false) row.appendChild(el("span", "chip warn", "sayılmadı: " + v.note));
+    if (v.reason) row.appendChild(el("div", "cv-r", v.reason));
+    votes.appendChild(row);
+  }
+  if (c.user_vote) {
+    const row = el("div", "cv");
+    row.append(el("b", "", "sen"), el("span", "vote v-" + c.user_vote.vote, VOTE_TR2[c.user_vote.vote]), el("span", "chip", "×3"));
+    if (c.user_vote.note) row.appendChild(el("div", "cv-r", c.user_vote.note));
+    votes.appendChild(row);
+  }
+  if (votes.childNodes.length) card.appendChild(votes);
+
+  // bulgular: doğrulananlar önce
+  const order = { confirmed: 0, unclear: 1, pending: 2, refuted: 3 };
+  const fs = (c.findings || []).slice().sort((a, b) => (order[a.status] - order[b.status]) || a.id.localeCompare(b.id));
+  if (fs.length) {
+    const box = el("div", "cc-findings");
+    for (const f of fs) {
+      const fc = el("div", "cf st-" + f.status);
+      const t = el("div", "cf-top");
+      t.append(el("b", "", f.id), el("span", "chip sev-" + f.severity, SEV_TR[f.severity] || f.severity),
+        el("span", "chip fst-" + f.status, FST_TR[f.status] || f.status), el("small", "", ROLE_TR[f.by] || f.by));
+      fc.append(t, el("div", "cf-title", f.title));
+      if (f.evidence) fc.appendChild(el("div", "cf-ev", f.evidence));
+      if (f.fix) fc.appendChild(el("div", "cf-fix", "Öneri: " + f.fix));
+      if (f.check) fc.appendChild(el("div", "cf-chk", "Kontrolcü: " + f.check));
+      for (const n of f.notes || []) fc.appendChild(el("div", "cf-note", `${ROLE_TR[n.by] || n.by} ${n.stance === "agree" ? "katılıyor" : "itiraz ediyor"}: ${n.note}`));
+      box.appendChild(fc);
+    }
+    card.appendChild(box);
+  } else if (c.state !== "running") card.appendChild(el("div", "cc-title", "Bulgu yok."));
+  if ((res.conditions || []).length) {
+    const ul = el("ul", "cc-conds");
+    for (const x of res.conditions) ul.appendChild(el("li", "", x));
+    card.append(el("div", "cc-sub", "Şartlar"), ul);
+  }
+  // senin oyun
+  if (latest && c.state !== "running") {
+    const row = el("div", "cc-uv");
+    const note = el("input"); note.type = "text"; note.placeholder = "Oyunun gerekçesi (isteğe bağlı)"; note.dataset.k = "uv" + (c.id || target);
+    row.appendChild(el("span", "cc-sub", c.user_vote ? "Oyunu değiştir (×3):" : "Senin oyun (×3):"));
+    for (const [v, l, cls] of [["approve", "Onay", "accent"], ["conditional", "Şartlı onay", ""], ["reject", "Ret", "danger"]]) {
+      const b = el("button", "btn " + cls, l);
+      b.addEventListener("click", () => projectAction("vote", target, v, { note: note.value.trim() }));
+      row.appendChild(b);
+    }
+    row.appendChild(note);
+    card.appendChild(row);
+  }
+  if ((c.transcript || []).length) {
+    const dt = el("details", "cc-tr");
+    dt.appendChild(el("summary", "", `Tartışma dökümü (${c.transcript.length})`));
+    for (const t of c.transcript) {
+      const it = el("div", "cc-tr-it");
+      it.appendChild(el("b", "", `${ROLE_TR[t.role] || t.role} · tur ${t.round}`));
+      const pz = el("div", "prose");
+      setMd(pz, (t.text || "").replace(/```json[\s\S]*?```/g, "").trim() || "(sadece oy verdi)");
+      it.appendChild(pz);
+      dt.appendChild(it);
+    }
+    card.appendChild(dt);
+  }
+  return card;
 }
 function feedItem(it) {
   if (it.type === "user") {
@@ -1472,8 +1614,11 @@ function projectDialog(project) {
     const lt = sel(THINK_OPTS, "default");
     const rv = el("input"); rv.type = "checkbox"; rv.checked = true;
     const rvl = el("label", "chk"); rvl.append(rv, document.createTextNode(" Biten işleri Alice incelesin (onaylasın ya da düzeltmeye göndersin)"));
+    const kc = el("input"); kc.type = "checkbox"; kc.checked = true;
+    const kcl = el("label", "chk"); kcl.append(kc, document.createTextNode(" İnceleme kurulu: plan, her iş ve final; eleştirmen, savunucu, kontrolcü ve uzmanlar tartışıp oylar"));
+    rv.addEventListener("change", () => { kc.disabled = !rv.checked; if (!rv.checked) kc.checked = false; });
     g.append(field("Klasör", cwd), field("Yönetici modeli", lm), field("Yönetici düşünmesi", lt));
-    opts.append(g, rvl);
+    opts.append(g, rvl, kcl);
     d.append(opts, err);
     const row = el("div", "row");
     const no = el("button", "btn", "Vazgeç"); no.addEventListener("click", closeDialog);
@@ -1485,7 +1630,7 @@ function projectDialog(project) {
       if (!manual.hidden && !agents.length) { err.textContent = "En az bir ajan ekle ya da planı Alice'e bırak"; return; }
       ok.disabled = true;
       const r = await api("/api/project/create", { goal: g2, agents, cwd: cwd.value.trim(), lead_model: lm.value.trim() || "brain",
-        lead_thinking: lt.value, review: rv.checked });
+        lead_thinking: lt.value, review: rv.checked, council: kc.checked });
       ok.disabled = false;
       if (!r.ok) { err.textContent = r.error || "Başlatılamadı"; return; }
       closeDialog();

@@ -119,6 +119,8 @@ class TeamTool(Tool):
         "agents": {"type": "array", "description": "start (isteğe bağlı): ajanlar (en çok 8). Boş: yönetici planlar.",
                    "items": AGENT_SPEC},
         "review": {"type": "boolean", "description": "start: biten işleri yönetici incelesin mi. Varsayılan true."},
+        "council": {"type": "boolean", "description": "start: inceleme kurulu (plan, her iş ve final tartışılıp "
+                    "oylanır). Varsayılan true; küçük ya da acil işte false."},
         "project": {"type": "string", "description": "Proje kimliği. Boş: bu sohbette en son başlatılan."},
         "to": {"type": "string", "description": "send: 'alice' (yönetici), ajan adı ya da 'all'."},
         "text": {"type": "string", "description": "send: mesaj."},
@@ -138,7 +140,7 @@ class TeamTool(Tool):
 
     def run(self, ctx: ToolContext, action: str, goal: str = "", agents: list[dict[str, Any]] | None = None,
             review: bool = True, project: str = "", to: str = "", text: str = "", name: str = "",
-            timeout: int = 600) -> ToolResult:
+            timeout: int = 600, council: bool = True) -> ToolResult:
         from alice.team import LEAD, Team
 
         teams = ctx.state.setdefault("teams", {})
@@ -150,7 +152,7 @@ class TeamTool(Tool):
                 raise ToolError("en çok 8 ajan")
             a = ctx.config.agent
             team = Team(ctx, goal.strip(), max_parallel=int(a.get("team_max_parallel", 5)),
-                        publish=ctx.state.get("publish"), review=review is not False)
+                        publish=ctx.state.get("publish"), review=review is not False, council=council is not False)
             for spec in specs:
                 team.add(spec)
             ctx.state["team"] = team
@@ -193,4 +195,47 @@ class TeamTool(Tool):
         raise ToolError(f"bilinmeyen action: {action}")
 
 
-TOOLS = [RunPlan(), TaskControl(), TeamTool()]
+class CouncilTool(Tool):
+    name = "council"
+    description = (
+        "Bir konuyu inceleme kuruluna sorar: eleştirmen (acımasız ama kanıtlı), savunucu, kontrolcü (iddiaları "
+        "kendisi doğrular) ve gerekince güvenlik/performans/kullanıcı uzmanları bağımsız inceler, tartışır ve "
+        "ağırlıklı oylamayla karar verir. Fikir, tasarım kararı, dosya/kod, değişiklik ya da plan için.\n"
+        "- Kullan: kullanıcı '/kurul', 'kurula sor', 'eleştirsinler', 'tartışsınlar' derse ya da önemli bir kararın "
+        "artısını eksisini sağlam görmek gerekiyorsa. Dakikalar sürebilir.\n"
+        "- Sonucu kullanıcıya özetle: karar, doğrulanmış bulgular, kim neyi neden savundu."
+    )
+    parameters = obj({
+        "subject": {"type": "string", "description": "İncelenecek şey ve beklenti; konuşmayı görmeyen biri anlayacak "
+                    "kadar net. Kod/dosya ise yollarını da yaz."},
+        "paths": {"type": "array", "items": {"type": "string"}, "description": "Odaklanılacak dosyalar (isteğe bağlı)."},
+        "critical": {"type": "boolean", "description": "Kritik konu (güvenlik, veri, ana mimari): tam kurul, en güçlü "
+                     "modeller, derin tartışma."},
+        "depth": {"type": "string", "enum": ["auto", "1", "2", "3"], "description": "Tartışma turu. auto: işe göre."},
+    }, ["subject"])
+    risk = READ
+
+    def summary(self, args: dict[str, Any]) -> str:
+        return str(args.get("subject", ""))[:150]
+
+    def run(self, ctx: ToolContext, subject: str, paths: list[str] | None = None, critical: bool = False,
+            depth: str = "auto") -> ToolResult:
+        if not (subject or "").strip():
+            raise ToolError("subject boş")
+        context = ""
+        for p in (paths or [])[:8]:
+            f = ctx.resolve(p)
+            try:
+                context += f"\n## {p}\n```\n{f.read_text(encoding='utf-8', errors='replace')[:8000]}\n```\n"
+            except OSError:
+                context += f"\n## {p}: okunamadı\n"
+        from alice.council import Council, report
+
+        ctx.emit("kurul toplanıyor…")
+        c = Council(ctx, "adhoc", subject, context, critical=bool(critical), depth=depth if depth != "auto" else "auto")
+        snap = c.run()
+        ctx.emit("kurul kararını verdi")
+        return ToolResult(report(snap))
+
+
+TOOLS = [RunPlan(), TaskControl(), TeamTool(), CouncilTool()]

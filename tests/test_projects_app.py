@@ -46,6 +46,7 @@ def act(client, pid, **kw):
 def test_project_lifecycle_over_api(app):
     state, client, workdir = app
     r = client.post("/api/project/create", json={"goal": "Deneme projesi", "review": True, "lead_thinking": "high",
+                                                 "council": False,
                                                  "agents": [{"name": "backend", "task": "a.py yaz", "model": "fast",
                                                              "thinking": "high", "scope": ["src"]}]}).json()
     assert r["ok"]
@@ -106,3 +107,24 @@ def test_create_validation(app):
     assert client.post("/api/project/create", json={"goal": "g", "lead_model": "yok"}).status_code == 400
     assert client.post("/api/project/create", json={"goal": "g", "cwd": "/yok/klasor"}).status_code == 400
     assert client.get("/api/project?id=yok").status_code == 404
+
+
+def test_council_actions_over_api(app):
+    state, client, _ = app
+    pid = client.post("/api/project/create", json={"goal": "Kurullu proje", "agents": [
+        {"name": "backend", "task": "a.py yaz"}]}).json()["id"]
+    team = state.ctx.state["teams"][pid]
+    assert team.council
+    # sahte modeller JSON vermez: kurul oy toplayamaz, karar çekişmeli kalır ve iş incelemede bekler
+    wait_for(client, pid, lambda d: d["members"][0]["status"] == "review" and d["members"][0]["council"]
+             and d["members"][0]["council"]["state"] == "done" and not d["members"][0]["council_running"], timeout=20)
+    det = client.get(f"/api/project?id={pid}&member=backend").json()["member"]
+    assert det["councils"][0]["kind"] == "work" and det["councils"][0]["result"]["decision"] == "contested"
+    r = act(client, pid, action="vote", name="backend", text="approve", agent={"note": "bence iyi"}).json()
+    assert r["ok"] and "approve" in r["note"]
+    wait_for(client, pid, lambda d: d["members"][0]["status"] == "done")
+    assert act(client, pid, action="council", name="backend").json()["ok"]  # "Kurula sor"
+    wait_for(client, pid, lambda d: d["members"][0]["councils_n"] == 2 and not d["members"][0]["council_running"],
+             timeout=20)
+    assert act(client, pid, action="vote", name="backend", text="belki").status_code == 400
+    act(client, pid, action="stop")
