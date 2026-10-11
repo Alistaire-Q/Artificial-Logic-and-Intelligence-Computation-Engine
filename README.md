@@ -12,7 +12,7 @@ Neler yapabiliyor:
 * Uygulama açma, pencere yönetimi, süreç listeleme/öldürme, sistem bilgisi, pano
 * Web arama (anahtarsız) ve sayfa okuma
 * **Reflex modu:** net bir arayüz hedefini System One kararlarıyla adım başına ~100-500 ms'de yürütme
-* **Takım modu:** büyük işleri paralel çalışan, birbirine mesaj atabilen ajanlara bölüp yönetme (ALICE orkestratör)
+* **Projeler:** büyük işleri kendi yöneticisi olan, paralel çalışan, birbirine mesaj atan, biten işi inceleyip onaylayan otonom ajan takımlarıyla yürütme
 * Alt ajan, todo planı, oturumlar arası hafıza, oturum kaydetme/devam ettirme, otomatik context özetleme
 * **İki arayüz:** masaüstü uygulaması (Claude Code / Codex masaüstü gibi) ve terminal. İkisinde de akışlı cevap, renkli diff, durum çubuğu ve çok satırlı yazma var
 
@@ -162,38 +162,41 @@ alice models --write  # canlı ücretsiz katalogdan rol zincirlerini günceller 
 
 ![Ayarlar](docs/app-ayarlar.png)
 
-## Takım modu (orkestratör)
+## Projeler: otonom ajan takımları
 
-Büyük bir iş (büyük bir kod tabanında birden çok modül, backend + frontend + test, geniş bir araştırma) geldiğinde ALICE işi parçalara bölüp **aynı anda çalışan bir ajan takımı** kurabiliyor. "Bunu takım kurup yap" demen yeter; iş büyükse kendisi de önerir. Takım kurarken her üyeye şunları veriyor:
+Büyük bir iş (büyük bir kod tabanında birden çok modül, backend + frontend + test, geniş bir inceleme) **proje** olarak yürütülür. Her projenin bir **yöneticisi** (Alice) ve paralel çalışan **ajanları** var. Yönetici sohbetten bağımsız, arka planda çalışır ve olay geldikçe uyanır:
 
-* **Görev:** ne yapacağı, hangi dosyalarda, nasıl doğrulayacağı, ne raporlayacağı.
-* **Sınırlar:** dokunmayacağı yerler, uyacağı kurallar.
-* **Yazma kapsamı (`scope`):** yazabileceği klasör/dosyalar. Kapsam dışına dosya araçlarıyla yazmaya kalkarsa reddedilir ve sahibine ya da ALICE'e yazması söylenir.
-* **Model ve düşünme seviyesi:** zor işe `brain` + `high`, mekanik işe `fast` + `off` gibi. `sağlayıcı:model` da yazılabilir.
-* **Çalışma yeri:** `shared` (aynı klasör), `worktree` (kendi git dalında ayrı kopya; `.alice-team/<ad>` altında, dal `alice-team/<ad>-...`; sonra ALICE birleştirir) ya da `readonly` (sadece inceler).
+1. **Planlar:** ajan verilmediyse kodu inceler, işi çakışmayan parçalara böler ve ajanları kurar. Her ajana görev, sınırlar, yazma kapsamı, model ve düşünme seviyesi verir; zor işe `brain` + `high`, mekanik işe `fast` + `low`.
+2. **İzler:** ajanların sorularını cevaplar. Senin tercihine bağlı kararları sana sorar; soru Projeler sayfasında ve sohbette kart olarak çıkar, cevap verince proje devam eder.
+3. **İnceler:** biten her ajan **İnceleme bekliyor** durumuna geçer. Yönetici raporu ve değişiklik farkını okur, gerekirse testleri çalıştırır, sonra **onaylar** ya da somut geri bildirimle **düzeltmeye gönderir** (ajan kaldığı yerden devam eder). Ayrı git dalında çalışan ajanın dalı onaylanınca ana klasöre birleştirilir.
+4. **Bitirir:** herkes onaylanınca bütünü doğrular ve sana **özet** yazar.
 
-Üyeler `team_send` ile birbirine, `alice`'e ya da herkese (`all`) mesaj atar; `team_wait` ile cevap bekler. Gelen mesajlar her araç adımından sonra konuşmalarına eklenir. ALICE bu sırada `team wait` ile bekler, soruları cevaplar, bitenlerin raporlarını okur, gerekirse bitmiş bir üyeye yeni iş verir (mesaj onu kaldığı yerden devam ettirir). Hepsi bitince sonucu birleştirip doğrular ve sana özetler.
+Yönetici bir olaya cevap vermeden turunu bitirirse iki kez hatırlatılır; yine kapatmazsa proje kendiliğinden kapanır. Yani proje yarıda asılı kalmaz.
 
-Uygulamada yazma kutusunun üstünde **Takım paneli** açılır: her üyenin durumu, modeli, adım sayısı, o an ne yaptığı, bitince raporu ve aralarındaki son mesajlar canlı görünür. Panelden tek bir üyeyi ya da herkesi durdurabilir, bir üyeye doğrudan yazabilirsin. **Projede aç** ile Projeler sayfasına geçersin.
+**Başlatmak:** sohbette "bunu proje olarak yap" demen yeter; ALICE `team` aracıyla projeyi başlatır ve sonucu istersen sohbette bekler. Ya da yan menüde Projeler'in yanındaki `+`:
+* **Hedef**i yaz. Şablonlar (Özellik ekle, Hata düzelt, Kod incelemesi, Yeniden düzenle, Test yaz) altına "bitti sayılma" ölçütünü ekler.
+* **Alice planlasın** (önerilen) ya da **Ajanları ben belirleyeyim**: ad, model, düşünme, çalışma yeri, görev; "Kapsam, sınırlar, sıra" altında yazabileceği yerler, sınırlar ve hangi ajanlar bitince başlayacağı.
+* **Ayarlar:** çalışma klasörü, yöneticinin modeli ve düşünme seviyesi, inceleme açık/kapalı.
 
-### Projeler
+**Proje sayfası** (Claude Code'daki Projeler gibi):
+* Üstte durum (planlanıyor, çalışıyor, incelemede, sana soruyor, bitti, durdu), onay ilerleme çubuğu, yönetici modeli, klasör. Proje bitince **Proje özeti** kartı.
+* Solda konular duruma göre gruplanır: **Yönetici** (Alice'in kendi konuşması) ve **Takım sohbeti**, sonra **Soru soruyor**, **İnceleme bekliyor**, **Çalışıyor**, **Sırada** ("backend bitince başlar"), **Bitti**, **Durdu / hata**.
+* Bir ajanı seçince **Konuşma** sekmesinde her şey canlı akar: aldığı görev ve mesajlar, cevapları, araç çağrıları (tıklayınca çıktısı). **Değişiklikler** sekmesinde dosya dosya renkli fark.
+* İnceleme bekleyen ajanda **Onayla** / **Düzeltme iste** (geri bildirimle). Yönetici de inceler; kararı istersen sen verirsin.
+* Ajana yaz (çalışıyorsa bir sonraki adımında görür, bitmişse devam eder), **Durdur**, **Baştan başlat** (temiz konuşmayla), **Değişiklikleri geri al** (dosya araçlarıyla yaptıklarını eski haline döndürür).
+* **Ajan ekle** (çalışan ya da bitmiş projeye; diğerlerine haber verilir), **Durdur** / **Sürdür**, **Sil**. Yöneticiye yazarak bitmiş projeye yeni iş verebilirsin.
+* Sohbette çalışan projenin küçük kartı (ilerleme, o an ne yapıldığı) durur; soru ve bitiş bildirimleri tıklanınca projeyi açan kartlar olarak gelir.
 
-Her takım bir **proje** olarak kaydedilir (`~/.alice/projects/<id>.json`) ve yan menüdeki **Projeler** listesinde durur (Claude Code'daki Projeler gibi). Proje sayfasında:
+**Kalıcılık:** projeler `~/.alice/projects/<id>.json`'a kaydedilir (konuşmalar, mesajlar, sorular, farklar için dosyaların ilk hali). Uygulama kapanıp açılınca yüklenir; yarıda kalan proje **durdu** görünür, **Sürdür** ya da bir mesajla kaldığı yerden devam eder.
 
-* Solda ajanlar ayrı konuşmalar olarak listelenir: durum noktası, görev, o an ne yaptığı ya da model/adım/süre. En üstte **Takım sohbeti** (ajanların birbirine, ALICE'e ve sana yazdıkları).
-* Bir ajana tıklayınca konuşmasının tamamı canlı akar: aldığı görev ve mesajlar, yazdıkları, araç çağrıları (tıklayınca çıktısı açılır). Üstte modeli, düşünme seviyesi, çalışma yeri, yazma kapsamı, dalı ve **değiştirdiği dosyalar** görünür.
-* Ajana alttaki kutudan yazabilirsin: çalışıyorsa bir sonraki adımında görür, bitmişse ya da durdurulmuşsa **kaldığı yerden devam eder**. Takım sohbetinden tek bir ajana ya da herkese yazabilirsin.
-* **Ajan ekle** ile çalışan ya da bitmiş projeye yeni ajan katarsın; diğerlerine katıldığı haber verilir. **Durdur** tek ajanı, **Hepsini durdur** projeyi durdurur, bitmiş proje **Sil** ile kaldırılır (dosya değişiklikleri kalır).
-* Uygulama kapanıp açılsa da projeler yüklenir; o sırada çalışan ajanlar "durdu" görünür, yazınca devam ederler.
+**Ajanlar arası iletişim:** ajanlar `team_send` ile birbirine, yöneticiye (`alice`) ya da herkese (`all`) yazar, `team_wait` ile cevap bekler. Gelen mesajlar her araç adımından sonra konuşmalarına eklenir. Sonradan katılan ajan diğerlerine duyurulur.
 
-**Yeni proje** (Projeler'in yanındaki `+`): hedefi yaz, ajanları ekle (ad, model, düşünme seviyesi, çalışma yeri, görev, yazma kapsamı, sınırlar) ve **Başlat**. Planı ALICE'e bırakmak istersen **ALICE planlasın**: hedef sohbete gider, ALICE kodu inceleyip takımı kendisi kurar. Senin kurduğun projelerde ajanların `alice`'e yazdıkları sana gelir, Takım sohbetinden cevaplarsın.
-
-Güvenlik ve sınırlar:
-* Üyeler sadece kod işi araçlarını kullanır (dosya, kabuk, web, `http_request`, `git`). Ekran, tarayıcı ve masaüstü araçları tek ekranı paylaştığı için onlara kapalı. Alt ajan ya da yeni takım açamazlar.
-* İzin soruları üyenin adıyla (`[backend] ...`) sana gelir, sırayla açılır. "Hep izin ver" sadece ana oturuma uygulanır.
-* Aynı anda en çok 5 üye çalışır (`[agent] team_max_parallel`), fazlası sıraya girer. Bir takımda en çok 8 üye olur.
-* Kapsam kontrolü dosya araçları içindir; `run_command` ile yapılan değişiklikler izlenemez. Üyelerin değişiklikleri Geri sar ile geri alınmaz (worktree kullanırsan dal olarak ayrı kalır).
-* Ücretsiz modellerde paralel istekler kotayı daha çabuk doldurur; router sıradaki modele geçer ama çok üyeli takımlarda `fast` rolünü kullanmak iyi olur.
+**Güvenlik ve sınırlar:**
+* Ajanlar sadece kod işi araçlarını kullanır (dosya, kabuk, web, `http_request`, `git`). Ekran, tarayıcı ve masaüstü araçları tek ekranı paylaştığı için onlara kapalı.
+* Yazma kapsamı dışına dosya araçlarıyla yazma reddedilir; "salt okuma" ajan hiç yazamaz. İzin soruları proje ve ajan adıyla (`[proje / backend] ...`) gelir, sırayla açılır; "hep izin ver" sadece ana oturuma uygulanır.
+* Aynı anda en çok 5 ajan çalışır (`[agent] team_max_parallel`), fazlası sıraya girer; bir projede en çok 8 ajan olur. Yöneticinin bir turdaki adım sınırı `team_lead_steps` (varsayılan 40).
+* Kapsam kontrolü, fark ve geri alma dosya araçları içindir; `run_command` ile yapılan değişiklikler izlenemez. Proje değişiklikleri sohbetteki Geri sar ile geri alınmaz (ajanın kendi "Değişiklikleri geri al" düğmesi var).
+* Ücretsiz modellerde paralel istekler kotayı daha çabuk doldurur; router sıradaki modele geçer ama kalabalık projelerde mekanik işlere `fast` vermek iyi olur.
 
 ## Claude Code'daki özellikler
 

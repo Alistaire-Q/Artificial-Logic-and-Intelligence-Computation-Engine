@@ -40,6 +40,8 @@ compact_at_tokens = "auto"
 tool_output_chars = 12000
 # Takım modunda (team aracı) aynı anda çalışabilecek en fazla ajan; fazlası sıraya girer.
 team_max_parallel = 5
+# Proje yöneticisinin bir olaya cevap verirken en fazla araç adımı.
+team_lead_steps = 40
 # Geçmişte tutulacak en fazla ekran görüntüsü (eski görüntüler metne çevrilir).
 keep_images = 2
 # Ekran görüntüsünün modele gönderilirken küçültüleceği en fazla genişlik.
