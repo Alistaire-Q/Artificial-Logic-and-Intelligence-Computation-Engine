@@ -1201,3 +1201,9 @@ details.cc[open] > summary.cc-head::after { transform: rotate(45deg); }
   #projectView .pd-acts { margin-left: 0; width: 100%; overflow-x: auto; }
   #projectView .pd-task, #projectView .pd-head > .pd-row:last-child:not(:first-child) { padding-left: 0; }
 }
+
+/* geniş ekranda konuşma okunur genişlikte ortalanır */
+#projectView .pd-feed { padding-left: max(22px, calc((100% - 920px) / 2)); padding-right: max(22px, calc((100% - 920px) / 2)); }
+#projectView .pd-say { padding-left: max(14px, calc((100% - 940px) / 2)); padding-right: max(14px, calc((100% - 940px) / 2)); }
+.pf-tooling { margin-top: 4px; }
+.pf-tooling[hidden] { display: none; }

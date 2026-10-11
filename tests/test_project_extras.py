@@ -275,3 +275,18 @@ def test_member_output_streams_live(workdir):
     assert any(e["think"] == "önce dosyaya bakayım" for e in live)
     assert live[-1]["text"] == "" and live[-1]["think"] == ""  # bitince canlı kutu kapandı
     team.stop()
+
+
+def test_member_tool_progress_counts_as_activity(tmp_path):
+    from alice.team import Member, MemberUI
+
+    events = []
+    team = type("T", (), {"id": "p1", "publish": lambda self, ev: events.append(ev)})()
+    m = Member(name="web", task="site")
+    m.last_at, m.stall_warned = 1.0, True
+    ui = MemberUI(team, m)
+    ui.tool_delta("write_file", 12500)
+    assert m.last_at > 1.0 and m.stall_warned is False
+    assert events[-1]["tool"] == "write_file hazırlıyor · 12 KB"
+    ui.stream_end("", "x")
+    assert events[-1]["tool"] == ""

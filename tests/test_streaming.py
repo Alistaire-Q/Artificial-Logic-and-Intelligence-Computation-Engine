@@ -178,3 +178,29 @@ def test_think_tags_are_hidden_from_text_and_speech():
     assert f.feed("Merhaba <think> bu metin </think>")[0] == "Merhaba <think> bu metin </think>"
     assert normalize_message({"content": "<think>plan</think>Cevap"})["content"] == "Cevap"
     assert normalize_message({"content": "plan</think>Cevap"})["content"] == "Cevap"
+
+
+def test_stream_reports_tool_progress():
+    body = sse(
+        {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "t1", "function": {"name": "write_file", "arguments": "{\"pa"}}]}}]},
+        {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "th\": \"a.txt\"}"}}]}}]},
+    )
+    seen = []
+    provider(lambda r: httpx.Response(200, content=body)).chat_stream("m", [], lambda t: None,
+                                                                      on_tool=lambda n, k: seen.append((n, k)))
+    assert seen == [("write_file", 4), ("write_file", 17)]
+
+
+def test_stream_aborts_when_only_keepalives_arrive():
+    class Trickle(httpx.SyncByteStream):  # sağlayıcı "işliyorum" der ama hiç cevap vermez
+        def __iter__(self):
+            for _ in range(200):
+                time.sleep(0.01)
+                yield b": OPENROUTER PROCESSING\n\n"
+
+    p = provider(lambda r: httpx.Response(200, stream=Trickle()))
+    p.STREAM_IDLE = 0.2
+    t0 = time.monotonic()
+    with pytest.raises(ProviderError) as ei:
+        p.chat_stream("m", [], lambda t: None)
+    assert ei.value.kind == "network" and "veri göndermiyor" in str(ei.value) and time.monotonic() - t0 < 1.5

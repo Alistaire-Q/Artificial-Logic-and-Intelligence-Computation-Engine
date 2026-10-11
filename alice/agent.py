@@ -96,6 +96,11 @@ class _Sink:
         if fn is not None and not self.dead:
             fn(text)
 
+    def on_tool(self, name: str, size: int) -> None:
+        fn = getattr(self.ui, "tool_delta", None)
+        if fn is not None and not self.dead:
+            fn(name, size)
+
     def cancelled(self) -> bool:
         return self.dead or self.cancel.is_set()
 

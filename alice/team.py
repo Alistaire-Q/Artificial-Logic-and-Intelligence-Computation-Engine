@@ -1574,7 +1574,7 @@ class MemberUI:
 
     def __init__(self, team: Team, member: Member):
         self.team, self.member = team, member
-        self.text, self.think = "", ""
+        self.text, self.think, self.tool = "", "", ""
         self._last = 0.0
 
     def __getattr__(self, name: str):
@@ -1587,11 +1587,18 @@ class MemberUI:
         self._last = now
         try:
             self.team.publish({"type": "team_live", "id": self.team.id, "name": self.member.name,
-                               "text": self.text[-8000:], "think": self.think[-4000:]})
+                               "text": self.text[-8000:], "think": self.think[-4000:], "tool": self.tool})
         except Exception:  # noqa: BLE001
             pass
 
+    def tool_delta(self, name: str, size: int) -> None:
+        """Model bir aracı (ör. büyük bir dosya) yazarken: ilerleme sayılır, ekranda ne yazdığı görünür."""
+        self.member.last_at, self.member.stall_warned = time.time(), False
+        self.tool = f"{name} hazırlıyor · {size // 1000} KB" if size >= 1000 else f"{name} hazırlıyor"
+        self._live()
+
     def stream_start(self) -> None:
+        self.tool = ""
         self.text, self.think = "", ""
         self._live(force=True)
         self._last = 0.0  # ilk parça beklemeden görünsün
@@ -1609,7 +1616,7 @@ class MemberUI:
         self._live(force=True)
 
     def stream_end(self, text: str, source: str) -> None:
-        self.text, self.think = "", ""  # cevap artık konuşmada; canlı kutu kapanır
+        self.text, self.think, self.tool = "", "", ""  # cevap artık konuşmada; canlı kutu kapanır
         self._live(force=True)
 
     def info(self, msg: str) -> None:

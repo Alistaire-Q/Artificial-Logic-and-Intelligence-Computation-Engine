@@ -976,7 +976,7 @@ function onTeamEvent(ev) {
 function onTeamLive(ev) {
   S.live = S.live || {};
   const key = ev.id + "/" + ev.name;
-  if (!ev.text && !ev.think) delete S.live[key]; else S.live[key] = ev;
+  if (!ev.text && !ev.think && !ev.tool) delete S.live[key]; else S.live[key] = ev;
   const pr = S.proj;
   if (pr && pr.id === ev.id && pr.sel === ev.name && (pr.tab || "chat") === "chat") drawLive();
 }
@@ -993,7 +993,7 @@ function drawLive() {
     const th = el("details", "pf-think");
     th.appendChild(el("summary", "", "düşünüyor…"));
     th.appendChild(el("div", "pf-think-t"));
-    box.append(th, el("div", "prose"));
+    box.append(th, el("div", "prose"), el("div", "pf-live pf-tooling"));
     const live = feed.querySelector(".pf-live");
     if (live) live.remove();
     feed.appendChild(box);
@@ -1003,6 +1003,15 @@ function drawLive() {
   th.querySelector(".pf-think-t").textContent = ev.think || "";
   th.querySelector("summary").textContent = ev.text ? "düşündü" : "düşünüyor…";
   setMd(box.querySelector(".prose"), ev.text || "");
+  box.querySelector(".prose").hidden = !ev.text && !!ev.tool;
+  // Model bir aracı yazarken (ör. büyük dosya) ne hazırladığı ve ne kadar yazdığı
+  const tl = box.querySelector(".pf-tooling");
+  tl.hidden = !ev.tool;
+  if (ev.tool) {
+    const [name, ...rest] = ev.tool.split(" hazırlıyor");
+    const size = rest.join("").replace(/^ · /, "");
+    tl.replaceChildren(el("i", "dot st-running"), el("span", "", (TOOL_ING[name] || "araç hazırlıyor") + "…" + (size ? " " + size : "")));
+  }
   if (stick) feed.scrollTop = feed.scrollHeight;
 }
 // Projeden sohbete bildirim (soru, bitiş): tıklanınca projeyi açan kart.
@@ -1667,6 +1676,9 @@ function councilCard(c, target, latest) {
 // ---- konuşmayı insanca göster: iç olaylar küçük notlara, araç çağrıları tek açılır satıra dönüşür.
 function rawView() { try { return localStorage.getItem("alice.rawThreads") === "1"; } catch { return false; } }
 const HIDDEN_TOOLS = new Set(["ask_user", "finish", "project_status"]);  // içerikleri soru kartında ve özette zaten var
+const TOOL_ING = { write_file: "dosya yazıyor", edit_file: "düzenliyor", multi_edit: "düzenliyor", apply_patch: "yama hazırlıyor",
+  run_command: "komut hazırlıyor", team_send: "mesaj yazıyor", message: "mesaj yazıyor", assign: "ajan kuruyor", plan: "plan hazırlıyor",
+  finish: "özet yazıyor", todo_write: "plan yazıyor" };
 const TOOL_TR = {
   read_file: ["okudu", "dosya okudu"], list_dir: ["klasöre baktı", "klasöre baktı"], glob: ["dosya aradı", "dosya aradı"],
   grep: ["kodda aradı", "kodda aradı"], write_file: ["dosya yazdı", "dosya yazdı"], edit_file: ["düzenledi", "düzenleme yaptı"],
