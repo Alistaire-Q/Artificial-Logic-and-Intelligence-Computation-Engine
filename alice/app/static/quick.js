@@ -2,6 +2,8 @@
 /* ALICE hızlı bar: soru yaz ya da söyle, cevap altta akar. */
 
 const TOKEN = document.querySelector('meta[name="alice-token"]').content;
+// Telefondan Projeler'e geçiş: tam uygulama aynı sunucuda.
+document.getElementById("projLink").href = "/?t=" + encodeURIComponent(TOKEN) + "#projects";
 const $ = (s) => document.querySelector(s);
 const q = $("#q"), out = $("#out"), statusEl = $("#status"), mic = $("#mic");
 let image = null;   // base64 PNG

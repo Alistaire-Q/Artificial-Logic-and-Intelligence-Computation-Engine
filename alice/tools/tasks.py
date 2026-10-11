@@ -232,7 +232,13 @@ class CouncilTool(Tool):
         from alice.council import Council, report
 
         ctx.emit("kurul toplanıyor…")
-        c = Council(ctx, "adhoc", subject, context, critical=bool(critical), depth=depth if depth != "auto" else "auto")
+        rules = ""
+        for f in (ctx.cwd / "REVIEW.md", ctx.cwd / ".alice" / "REVIEW.md"):
+            if f.is_file():
+                rules = f.read_text(encoding="utf-8", errors="replace")[:4000]
+                break
+        c = Council(ctx, "adhoc", subject, context, critical=bool(critical), depth=depth if depth != "auto" else "auto",
+                    rules=rules)
         snap = c.run()
         ctx.emit("kurul kararını verdi")
         return ToolResult(report(snap))

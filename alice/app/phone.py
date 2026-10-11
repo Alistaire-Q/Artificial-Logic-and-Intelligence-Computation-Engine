@@ -63,6 +63,10 @@ class PhoneServer:
         return f"http://{self.ip}:{self.server.httpd.server_address[1]}/quick?t={self.state.token}"
 
     @property
+    def projects_url(self) -> str:
+        return f"http://{self.ip}:{self.server.httpd.server_address[1]}/?t={self.state.token}#projects"
+
+    @property
     def watch_url(self) -> str:
         return f"http://{self.ip}:{self.server.httpd.server_address[1]}/api/watch"
 
@@ -93,6 +97,7 @@ def phone_cmd(argv: list[str]) -> int:
     ps = PhoneServer(cfg, new_token="--new-token" in argv)
     console.print(f"[bold magenta]ALICE telefon köprüsü[/] açık.\n"
                   f"Telefonda aç (aynı Wi-Fi): [bold]{ps.url}[/]\n"
+                  f"Projeler (izle, cevapla, onayla): {ps.projects_url}\n"
                   f"Canlı saat verisi: POST {ps.watch_url}  başlık X-Alice-Token: {ps.state.token}  "
                   'gövde {"hr": 88}')
     print_qr(console, ps.url)

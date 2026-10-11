@@ -103,6 +103,10 @@ class Member:
     councils: list[dict[str, Any]] = field(default_factory=list)  # bu işin kurul sonuçları (eskiden yeniye)
     council_cycles: int = 0  # kurulun düzeltmeye gönderdiği tur sayısı
     council_running: bool = False
+    last_at: float = 0.0  # son araç adımı (takılma tespiti)
+    stall_warned: bool = False
+    merge_attempts: int = 0
+    provider_failed: str = ""  # bütün modeller düştüyse nedeni
 
     def snapshot(self) -> dict[str, Any]:
         now = self.ended or time.time()
@@ -212,13 +216,63 @@ def list_projects() -> list[dict[str, Any]]:
     return sorted(out, key=lambda x: -float(x.get("updated") or x.get("created") or 0))
 
 
+def guess_check(cwd: Path) -> str:
+    """Projenin test komutunu tahmin et (yeni proje penceresinde öneri olarak)."""
+    try:
+        if (cwd / "package.json").is_file():
+            data = json.loads((cwd / "package.json").read_text(encoding="utf-8"))
+            if (data.get("scripts") or {}).get("test"):
+                return "npm test"
+        if any((cwd / f).is_file() for f in ("pytest.ini", "tox.ini")) or (cwd / "tests").is_dir() or \
+                "pytest" in ((cwd / "pyproject.toml").read_text(encoding="utf-8")
+                             if (cwd / "pyproject.toml").is_file() else ""):
+            return "python -m pytest -q"
+        if (cwd / "Cargo.toml").is_file():
+            return "cargo test"
+        if (cwd / "go.mod").is_file():
+            return "go test ./..."
+    except (OSError, ValueError):
+        pass
+    return ""
+
+
+def templates_dir() -> Path:
+    from alice.config import alice_home
+
+    d = alice_home() / "project_templates"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _tpl_file(name: str) -> Path:
+    slug = re.sub(r"[^a-z0-9_-]+", "-", name.strip().lower().replace("ı", "i").replace("ş", "s").replace("ğ", "g")
+                  .replace("ü", "u").replace("ö", "o").replace("ç", "c")).strip("-")[:40]
+    if not slug:
+        raise ToolError("şablon adı boş")
+    return templates_dir() / f"{slug}.json"
+
+
+def list_templates() -> list[dict[str, Any]]:
+    out = []
+    for f in sorted(templates_dir().glob("*.json")):
+        try:
+            out.append(json.loads(f.read_text(encoding="utf-8")))
+        except (OSError, json.JSONDecodeError):
+            continue
+    return out
+
+
+def delete_template(name: str) -> None:
+    _tpl_file(name).unlink(missing_ok=True)
+
+
 class Team:
     """Bir proje: hedef, yönetici ve ajanlar."""
 
     def __init__(self, parent_ctx: ToolContext, goal: str, max_parallel: int = 5,
                  publish: Callable[[dict[str, Any]], None] | None = None, origin: str = "alice",
                  project_id: str = "", title: str = "", review: bool = True, lead_model: str = "brain",
-                 lead_thinking: str = "default", cwd: Path | None = None, council: bool = True):
+                 lead_thinking: str = "default", cwd: Path | None = None, council: bool = True, check: str = ""):
         self.parent_ctx = parent_ctx
         self.goal = goal
         self.id = project_id or time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
@@ -234,6 +288,12 @@ class Team:
         self.final_runs = 0
         self.plan_rejects = 0
         self._final_pending = False
+        self.check = (check or "").strip()  # kontrol komutu (testler): kurul öncesi otomatik çalışır
+        self.lessons: list[str] = []  # kurulların bu projede yakaladığı sorunlar (sonraki işlere ders)
+        self.timeline: list[dict[str, Any]] = []  # zaman çizelgesi: {at, who, kind, text}
+        self._lead_turns = 0
+        self._plan_nudges = 0
+        self._dirty0: set[str] | None = None  # proje başında zaten değişmiş dosyalar (komut takibi bunlara dokunmaz)
         self.lead_model = lead_model
         self.lead_thinking = lead_thinking if lead_thinking in THINKING else "default"
         self.members: dict[str, Member] = {}
@@ -256,6 +316,13 @@ class Team:
         self.roles: list[str] = []
         self._saved_at = 0.0
         self._save_lock = threading.Lock()
+
+    # ---------------------------------------------------------- zaman çizelgesi
+    def mark(self, who: str, kind: str, text: str) -> None:
+        with self.cond:
+            self.timeline.append({"at": time.time(), "who": who, "kind": kind, "text": text[:300]})
+            if len(self.timeline) > 600:
+                del self.timeline[:100]
 
     # --------------------------------------------------------------- durum
     def status(self) -> str:
@@ -374,6 +441,7 @@ class Team:
         if not (text or "").strip():
             raise ToolError("cevap boş")
         q["answer"] = text.strip()
+        self.mark(USER, "answer", text.strip())
         self.send(USER, LEAD, f"Sorduğun soruya cevap ({q['text'][:200]}): {text.strip()}")
 
     # --------------------------------------------------------------- üyeler
@@ -452,6 +520,8 @@ class Team:
 
     def start(self, plan: bool = False) -> None:
         """Projeyi başlat: ajanlar başlar, yönetici izlemeye (ya da ajan yoksa planlamaya) başlar."""
+        self.mark(USER if self.origin == "user" else LEAD, "start", f"proje başladı: {self.title}")
+        self._dirty0 = self._git_dirty()
         for m in self.members.values():
             self._launch(m)
         if plan or not self.members:
@@ -488,6 +558,8 @@ class Team:
             m.resume_wanted = False
             m.started = m.started or time.time()
             m.ended = 0.0
+        m.last_at, m.stall_warned = time.time(), False
+        self.mark(m.name, "run", "devam ediyor" if resume else "başladı")
         m.thread = threading.Thread(target=self._run_member, args=(m, resume), daemon=True, name=f"team-{m.name}")
         m.thread.start()
         self._changed()
@@ -512,10 +584,13 @@ class Team:
                     "\n\nBunlara göre işine devam et; bitince yine kısa rapor yaz."
             else:
                 prompt = "Görevine başla."
-            m.limit_hit = False
+            m.limit_hit, m.provider_failed = False, ""
             text = m.agent.run_turn(prompt, max_steps=m.max_steps) or ""
             if self.stopped or m.agent.cancel.is_set():
                 final = "stopped"
+            elif m.provider_failed and not text.strip():
+                final = "failed"  # hiçbir model cevap vermedi (kota/erişim): incelemeye değil hataya düşsün
+                text = "Modellere ulaşılamadı: " + m.provider_failed
             else:
                 final = "review" if self.review and m.isolation != "readonly" else "done"
             m.result = text.strip() or m.result or "(rapor yazmadı)"
@@ -527,6 +602,10 @@ class Team:
                 m.status, m.ended, m.question = final, time.time(), ""
                 self.save()
                 self.cond.notify_all()
+        self.mark(m.name, final, {"review": "bitirdi, incelemede", "done": "bitirdi", "failed": "hata verdi",
+                                  "stopped": "durdu"}.get(final, final) + (f": {m.result[:160]}" if final != "stopped" else ""))
+        if final == "failed":
+            self._emit(f"{self.title} / {m.name} hata verdi: {m.result[:200]}", kind="failed")
         if final == "review" and self.council:
             self._spawn(self._member_council, m)
         elif final == "review":
@@ -594,8 +673,14 @@ class Team:
         slot = len(store)
         store.append({"kind": kind, "state": "running", "title": subject[:80], "result": {}, "votes": [],
                       "findings": [], "round": 0, "rounds": 0})
+        if kind in ("work", "recheck", "final") and self.check:
+            chk = self.run_check(cwd)
+            if chk:
+                context += (f"\n\n# Kontrol komutu: `{chk['cmd']}` → çıkış {chk['code']} "
+                            f"({'GEÇTİ' if chk['code'] == 0 else 'BAŞARISIZ'})\n```\n{chk['out'][-3000:]}\n```")
         c = Council(self.parent_ctx, kind, subject, context, cwd=cwd or self.cwd, previous=previous,
-                    critical=critical or self._critical(subject + context))
+                    critical=critical or self._critical(subject + context), rules=self.review_rules(),
+                    lessons=self.lessons[-10:], check=self.check)
 
         def live() -> None:
             store[slot] = c.snapshot()
@@ -604,6 +689,9 @@ class Team:
         c.on_change = live
         snap = c.run()
         store[slot] = snap
+        self.learn(snap)
+        res = snap.get("result") or {}
+        self.mark(COUNCIL, "council", f"{subject[:60]}: {res.get('decision', '?')} (%{round(100 * (res.get('score') or 0))})")
         self._changed(save=True)
         return snap
 
@@ -734,8 +822,17 @@ class Team:
         if approve:
             if m.status not in ("review", "done", "failed", "stopped"):
                 raise ToolError(f"{name} şu an {m.status}; bitince onaylanabilir")
-            note = self._merge(m) if m.branch else ""
+            if m.branch:
+                try:
+                    note = self._merge(m)
+                except ToolError as e:
+                    if m.merge_attempts < 2 and "birleştirilemedi" in str(e):
+                        return self._conflict(m, str(e), by)
+                    raise
+            else:
+                note = ""
             m.status = "done"
+            self.mark(by, "approve", f"{name} onaylandı" + (f" ({note})" if note else ""))
             with self.cond:
                 self.log.append(Message(by, name, "onaylandı" + (f": {feedback.strip()}" if feedback.strip() else "")))
                 self.cond.notify_all()
@@ -747,8 +844,22 @@ class Team:
         if not feedback.strip():
             raise ToolError("düzeltme için feedback yaz: neyin yanlış olduğunu ve ne beklediğini söyle")
         m.reviews += 1
-        self.send(by, name, "İnceleme sonucu düzeltme gerekli:\n" + feedback.strip())
+        self.mark(by, "revise", f"{name} düzeltmeye gönderildi: {feedback.strip()[:200]}")
+        lessons = ("\n\nBu projede kurulun daha önce yakaladığı sorunlar (tekrarlama):\n" +
+                   "\n".join(f"- {x}" for x in self.lessons[-8:])) if self.lessons else ""
+        self.send(by, name, "İnceleme sonucu düzeltme gerekli:\n" + feedback.strip() + lessons)
         return f"{name} düzeltmeye gönderildi"
+
+    def _conflict(self, m: Member, error: str, by: str) -> str:
+        """Worktree dalı birleşmedi: ajan ana dalı kendi dalına alıp çakışmayı çözsün, sonra yeniden incelensin."""
+        m.merge_attempts += 1
+        base = _git(self._repo_top(), "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() or "HEAD"
+        self.mark(SYSTEM, "conflict", f"{m.name} dalı birleşmedi, ajan çakışmayı çözüyor")
+        self.send(by if by in (LEAD, USER, COUNCIL) else LEAD, m.name,
+                  f"İşin onaylandı ama dalın ana dala birleşmedi (çakışma). Kendi worktree'nde `git merge {base}` yap, "
+                  f"çakışmaları çöz (iki tarafın amacını da koru), testleri çalıştır, commit et ve kısa rapor yaz; "
+                  f"sonra yeniden incelenip birleştirilecek.\nHata: {error[:600]}")
+        return f"{m.name} dalı birleşmedi; ajan çakışmayı çözüyor (deneme {m.merge_attempts}/2)"
 
     def _merge(self, m: Member) -> str:
         """Worktree ajanının dalını ana çalışma klasörüne birleştir (önce kalan değişiklikleri commit eder)."""
@@ -763,6 +874,8 @@ class Team:
         if _git(top, "merge-base", "--is-ancestor", m.branch, "HEAD").returncode == 0:
             return "dalda birleştirilecek yeni bir şey yok"
         r = _git(top, *ident, "merge", "--no-ff", "--no-edit", m.branch)
+        if r.returncode == 0:
+            m.merge_attempts = 0
         if r.returncode != 0:
             _git(top, "merge", "--abort")
             raise ToolError(f"{m.branch} birleştirilemedi (çakışma ya da kirli çalışma klasörü): "
@@ -835,6 +948,7 @@ class Team:
         self._changed(save=True)
 
     def finish(self, summary: str) -> None:
+        self.mark(LEAD, "finish", "proje bitti")
         self.summary = summary.strip()
         self.finished = True
         self.lead_state = "done"
@@ -891,9 +1005,12 @@ class Team:
             for p in targets:  # fark ve geri alma için ilk hali sakla
                 m.originals.setdefault(str(p), _read_original(p))
             m.steps += 1
+            m.last_at, m.stall_warned = time.time(), False
             m.last = f"{tool.name} {tool.summary(args)[:90]}"
             self._changed()
             res = base_run(tool, args)
+            if tool.name == "run_command":
+                self._track_command(m)
             if targets and not res.is_error:
                 for p in targets:
                     rel = _rel(p, self.cwd)
@@ -915,6 +1032,79 @@ class Team:
             m.saved_messages = []
         return agent
 
+    def _git_dirty(self, cwd: Path | None = None) -> set[str] | None:
+        """git deposundaysa değişmiş/yeni dosyalar (mutlak yol); değilse None."""
+        cwd = cwd or self.cwd
+        try:
+            top = _git(cwd, "rev-parse", "--show-toplevel", timeout=10)
+            if top.returncode != 0:
+                return None
+            r = _git(cwd, "status", "--porcelain", "-uall", timeout=20)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        root = Path(top.stdout.strip())
+        out = set()
+        for line in r.stdout.splitlines():
+            path = line[3:].split(" -> ")[-1].strip().strip('"')
+            if path and not path.startswith(".alice-team/"):
+                out.add(str((root / path).resolve()))
+        return out
+
+    def _track_command(self, m: Member) -> None:
+        """run_command ile değişen dosyaları da ajanın değişikliklerine say (git deposunda): ilk hali HEAD'den alınır,
+        proje başında zaten değişmiş ya da başka ajanın dokunduğu dosyalar atlanır."""
+        base0 = self._dirty0 if m.isolation != "worktree" else set()
+        if base0 is None:
+            return
+        now = self._git_dirty(m.cwd)
+        if not now:
+            return
+        others = {k for o in self.members.values() if o is not m for k in o.originals}
+        top = _git(m.cwd, "rev-parse", "--show-toplevel", timeout=10).stdout.strip()
+        for path in sorted(now - set(base0) - set(m.originals) - others)[:50]:
+            rel = Path(path).resolve().relative_to(Path(top).resolve()).as_posix() if top else path
+            r = _git(m.cwd, "show", f"HEAD:{rel}", timeout=10)
+            m.originals[path] = r.stdout if r.returncode == 0 else None
+            relp = _rel(Path(path), self.cwd)
+            if relp not in m.files:
+                m.files.append(relp)
+
+    def run_check(self, cwd: Path | None = None) -> dict[str, Any] | None:
+        """Projenin kontrol komutu (testler/lint): kurul öncesi çalışır, çıktısı kurula kanıt olarak gider."""
+        if not self.check:
+            return None
+        t0 = time.time()
+        try:
+            r = subprocess.run(self.check, shell=True, cwd=str(cwd or self.cwd), capture_output=True, text=True,
+                               timeout=int(self.parent_ctx.config.agent.get("team_check_timeout", 600)),
+                               encoding="utf-8", errors="replace")
+            out, code = (r.stdout + r.stderr), r.returncode
+        except subprocess.TimeoutExpired:
+            out, code = "zaman aşımı", -1
+        except OSError as e:
+            out, code = str(e), -1
+        res = {"cmd": self.check, "code": code, "out": out[-4000:], "secs": int(time.time() - t0)}
+        self.mark(SYSTEM, "check", f"kontrol komutu {'geçti' if code == 0 else 'başarısız (çıkış ' + str(code) + ')'}")
+        return res
+
+    def review_rules(self) -> str:
+        for f in (self.cwd / "REVIEW.md", self.cwd / ".alice" / "REVIEW.md"):
+            try:
+                if f.is_file():
+                    return f.read_text(encoding="utf-8", errors="replace")[:4000]
+            except OSError:
+                pass
+        return ""
+
+    def learn(self, snap: dict[str, Any]) -> None:
+        """Kurulun doğruladığı ciddi bulgular projenin derslerine eklenir (sonraki ajanlara ve kurullara gider)."""
+        for f in snap.get("findings", []):
+            if f.get("status") == "confirmed" and f.get("severity") in ("critical", "major"):
+                lesson = f"{f['title']}" + (f" → {f['fix']}" if f.get("fix") else "")
+                if lesson not in self.lessons:
+                    self.lessons.append(lesson[:240])
+        del self.lessons[:-15]
+
     def brief(self, m: Member) -> str:
         roster = "\n".join(f"- {o.name}: {o.task[:160]}" + (f" (yazar: {', '.join(o.scope)})" if o.scope else "")
                            for o in self.members.values() if o.name != m.name) or "- (tek başınasın)"
@@ -922,6 +1112,8 @@ class Team:
                  "worktree": f"Kendi git worktree'ndesin (dal {m.branch}); değişikliklerin bu dalda kalır, yönetici "
                              "onaylayınca birleştirilir.",
                  "readonly": "Salt okuma: dosya değiştiremez, değiştiren komut çalıştıramazsın; incele ve raporla."}
+        lessons = ("Bu projede kurulun daha önce yakaladığı sorunlar (sen tekrarlama):\n" +
+                   "\n".join(f"- {x}" for x in self.lessons[-8:]) + "\n") if self.lessons else ""
         after = f"Bu iş şunlar bittikten sonra başladı: {', '.join(m.after)}. Onların değişiklikleri hazır.\n" \
             if m.after else ""
         return f"""# Proje görevi
@@ -934,7 +1126,7 @@ Senin görevin: {m.task}
 Sınırlar: {m.constraints or "özel bir sınır yok; yine de sadece kendi görevini yap."}
 Yazma kapsamın: {", ".join(m.scope) if m.scope else "tüm çalışma klasörü (ama başkalarının alanına girme)"}
 Çalışma klasörü: {m.cwd}. {where[m.isolation]}
-{after}
+{after}{lessons}
 Takım arkadaşların:
 {roster}
 
@@ -993,6 +1185,7 @@ Kurallar:
             while True:
                 msgs = self.wait_messages(LEAD, 1.0, lambda: self.finished)
                 if not msgs:
+                    self._watch_stalls()
                     nudge = "" if self.finished or self.stopped else self._nudge()
                     if not nudge:
                         if self._lead_exit():
@@ -1005,6 +1198,7 @@ Kurallar:
                     (x.text if x.sender == SYSTEM else x.line()) for x in msgs) + "\n\n[durum]\n" + self.status_text()
                 text = self.lead_agent.run_turn(prompt, max_steps=int(self.parent_ctx.config.agent.get(
                     "team_lead_steps", 40))) or ""
+                self._lead_turns += 1
                 self.lead_last = text.strip() or self.lead_last
                 self.lead_state = "done" if self.finished else "idle"
                 self._changed(save=True)
@@ -1027,10 +1221,24 @@ Kurallar:
             self.lead_thread = None
             return True
 
+    def _watch_stalls(self) -> None:
+        """Uzun süredir araç adımı atmayan (takılmış olabilecek) ajanı yöneticiye ve kullanıcıya bildir."""
+        limit = float(self.parent_ctx.config.agent.get("team_stall_minutes", 10)) * 60
+        now = time.time()
+        for m in self.members.values():
+            if m.status == "running" and m.last_at and not m.stall_warned and now - m.last_at > limit:
+                m.stall_warned = True
+                mins = int((now - m.last_at) // 60)
+                self.event(f"{m.name} {mins} dakikadır ilerlemiyor (son adım: {m.last or '-'}). message ile durumunu "
+                           "sor, gerekiyorsa görevi küçült ya da kullanıcıya haber ver.")
+                self._emit(f"{self.title} / {m.name} {mins} dakikadır ilerlemiyor", kind="stall")
+
     def _nudge(self) -> str:
         """Yönetici turunu bitirdi ama iş ortada kaldıysa hatırlat; iki kez olmazsa projeyi kendisi kapat."""
-        if self.finished or self.stopped or not self.members:
+        if self.finished or self.stopped:
             return ""
+        if not self.members:
+            return self._plan_nudge()
         if any(not q.get("answer") for q in self.questions) or self._nudges >= 3 or self.council_busy or \
                 any(m.council_running for m in self.members.values()):
             return ""
@@ -1047,6 +1255,22 @@ Kurallar:
             return ("Bütün ajanlar bitti ama proje kapanmadı. Bütünü doğrula ve finish ile özet yaz "
                     "(yapacak iş kaldıysa assign ya da message ile devam et).")
         self.finish(self.lead_last or "Ajanlar işini bitirdi; yönetici özet yazmadı. Ajan raporlarına bak.")
+        return ""
+
+    def _plan_nudge(self) -> str:
+        """Yönetici planlamadan turunu bitirdiyse hatırlat; iki kez olmazsa işi tek ajana ver (proje asılı kalmasın)."""
+        if self._lead_turns == 0 or self.council_busy or self.lead_state == "running" or \
+                any(not q.get("answer") for q in self.questions):
+            return ""
+        self._plan_nudges += 1
+        if self._plan_nudges <= 2:
+            return ("Henüz ajan kurmadın. Planı şimdi plan aracıyla sun (iş küçükse tek ajan yeter); açıklama yazıp "
+                    "turu bitirme.")
+        if self._plan_nudges == 3:
+            self.mark(SYSTEM, "plan", "yönetici plan sunmadı; iş tek ajana verildi")
+            self.add_member({"name": "worker", "task": f"Projenin hedefini baştan sona yap: {self.goal}\n"
+                             "Önce kodu incele, sonra değişiklikleri yap, testlerle doğrula ve rapor yaz."},
+                            announce=False)
         return ""
 
     def lead_brief(self) -> str:
@@ -1109,6 +1333,7 @@ Kurallar:
                                                   "thinking": self.lead_thinking, "last": self.lead_last[:600]},
                 "questions": self.questions[-20:], "progress": [done, len(self.members)], "council": self.council,
                 "council_busy": self.council_busy, "councils": [_council_brief(c) for c in self.councils],
+                "check": self.check, "lessons": self.lessons[-15:], "timeline_n": len(self.timeline),
                 "members": [m.snapshot() for m in self.members.values()],
                 "log": [{"from": x.sender, "to": x.to, "text": x.text[:400], "at": x.at} for x in self.log[-40:]],
                 "active": self.active()}
@@ -1142,6 +1367,7 @@ Kurallar:
                 "finished": self.finished, "lead_last": self.lead_last, "lead_messages": _slim(lead_msgs),
                 "questions": self.questions, "members": members, "council": self.council,
                 "councils": self.councils[-10:], "final_runs": self.final_runs, "plan_rejects": self.plan_rejects,
+                "check": self.check, "lessons": self.lessons, "timeline": self.timeline[-500:],
                 "log": [{"from": x.sender, "to": x.to, "text": x.text, "at": x.at} for x in self.log[-500:]]}
         try:
             with self._save_lock:  # ajanlar aynı anda kaydetmeye çalışabilir
@@ -1162,6 +1388,9 @@ Kurallar:
                    lead_thinking=data.get("lead_thinking", "default"),
                    cwd=Path(data["cwd"]) if data.get("cwd") else None, council=bool(data.get("council", False)))
         team.councils = [c for c in data.get("councils") or [] if c.get("state") != "running"]
+        team.check = str(data.get("check") or "")
+        team.lessons = list(data.get("lessons") or [])
+        team.timeline = list(data.get("timeline") or [])
         team.final_runs = int(data.get("final_runs") or 0)
         team.plan_rejects = int(data.get("plan_rejects") or 0)
         team.created = float(data.get("created") or time.time())
@@ -1227,6 +1456,9 @@ Kurallar:
         return m
 
     def _emit(self, text: str, kind: str = "info") -> None:
+        if kind in ("ask", "done", "stall", "failed"):
+            self.mark(LEAD if kind != "failed" else SYSTEM, kind, text)
+            self._notify(text, kind)
         try:
             if self._live_ui:
                 self.publish({"type": "project_note", "id": self.id, "title": self.title, "text": text, "kind": kind})
@@ -1235,8 +1467,40 @@ Kurallar:
         except Exception:  # noqa: BLE001
             pass
 
+    def _notify(self, text: str, kind: str) -> None:
+        """Masaüstü bildirimi ve (ayarlıysa) telefona ntfy bildirimi; arka planda, hata projeyi etkilemez."""
+        cfg = self.parent_ctx.config
+        a = cfg.agent
+        if not a.get("team_notify", True):
+            return
+        title = {"ask": "ALICE soruyor", "done": "Proje bitti", "stall": "Ajan takıldı",
+                 "failed": "Ajan hata verdi"}.get(kind, "ALICE")
+
+        def run() -> None:
+            try:
+                from alice.core.notify import Notification, desktop_notify
+
+                desktop_notify(Notification(title, text[:300], "warn" if kind in ("ask", "stall", "failed") else "info",
+                                            "project", kind="task"))
+            except Exception:  # noqa: BLE001
+                pass
+            topic = str((cfg.data.get("notify") or {}).get("ntfy") or a.get("team_ntfy") or "").strip()
+            if topic:
+                url = topic if topic.startswith("http") else f"https://ntfy.sh/{topic}"
+                try:
+                    import httpx
+
+                    # Başlık sorgu parametresiyle: HTTP başlıkları Türkçe karakter taşıyamaz.
+                    httpx.post(url, content=text[:1000].encode("utf-8"), timeout=10,
+                               params={"title": title, "tags": "robot"})
+                except Exception:  # noqa: BLE001
+                    pass
+
+        threading.Thread(target=run, daemon=True, name="project-notify").start()
+
     def stop(self, name: str | None = None) -> None:
         targets = [self.members[name]] if name else list(self.members.values())
+        self.mark(USER, "stop", f"{name} durduruldu" if name else "proje durduruldu")
         if not name:
             self.stopped = True
             if self.lead_agent is not None:
@@ -1253,6 +1517,7 @@ Kurallar:
 
     def resume(self) -> None:
         """Durdurulmuş projeyi sürdür: durmuş ajanlar kaldığı yerden devam eder, yönetici uyanır."""
+        self.mark(USER, "resume", "proje sürdürüldü")
         self.stopped = False
         self._nudges = 0
         for m in self.members.values():
@@ -1264,6 +1529,22 @@ Kurallar:
                     self._launch(m, resume=True)
         self.event("Kullanıcı projeyi sürdürdü. Durumu gözden geçir, gerekiyorsa ajanlara yön ver.")
         self._changed(save=True)
+
+    def save_template(self, name: str) -> dict[str, Any]:
+        """Projeyi şablon olarak kaydet: hedef, ayarlar ve ajan tanımları (konuşmalar değil)."""
+        tpl = {"name": name.strip()[:60], "goal": self.goal, "review": self.review, "council": self.council,
+               "lead_model": self.lead_model, "lead_thinking": self.lead_thinking, "check": self.check,
+               "agents": [{"name": m.name, "task": m.task, "constraints": m.constraints, "scope": m.scope,
+                           "model": m.model, "thinking": m.thinking, "isolation": m.isolation, "after": m.after,
+                           "max_steps": m.max_steps} for m in self.members.values()]}
+        _tpl_file(name).write_text(json.dumps(tpl, ensure_ascii=False, indent=1), encoding="utf-8")
+        return tpl
+
+    def timeline_view(self) -> list[dict[str, Any]]:
+        """Zaman çizelgesi: olaylar ve mesajlar tek akışta, eskiden yeniye."""
+        items = list(self.timeline) + [{"at": x.at, "who": x.sender, "kind": "msg", "text": f"→ {x.to}: {x.text[:300]}"}
+                                       for x in self.log]
+        return sorted(items, key=lambda x: x.get("at") or 0)[-400:]
 
     def cleanup(self) -> None:
         router = self.parent_ctx.router
@@ -1285,6 +1566,9 @@ class MemberUI:
     def info(self, msg: str) -> None:
         if "adım limiti" in msg:
             self.member.limit_hit = True
+        elif "hiçbir model cevap veremedi" in msg:
+            reasons = [x.strip() for x in msg.splitlines()[1:4] if x.strip()]  # ilk satır iç rol adını taşır
+            self.member.provider_failed = ("; ".join(reasons) or "hiçbir model cevap veremedi")[:300]
 
     def tool_end(self, call_id: str, name: str, result: ToolResult) -> None:
         if result.is_error:

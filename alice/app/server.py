@@ -398,6 +398,9 @@ class AppState:
         if member == "__council":  # proje düzeyi kurullar: plan, final, kurula sor
             out["council_list"] = team.councils
             return out
+        if member == "__timeline":
+            out["timeline"] = team.timeline_view()
+            return out
         if member:
             from alice.team import LEAD, LeadAssign, LeadDiff, LeadReview, TeamSend, TeamWait
 
@@ -428,6 +431,7 @@ class AppState:
         lead_thinking = str(d.get("lead_thinking") or "default")
         team = Team(self.ctx, goal, int(self.cfg.agent.get("team_max_parallel", 5)), self.bus.publish, origin="user",
                     review=d.get("review") is not False, council=d.get("council") is not False, lead_model=lead_model,
+                    check=str(d.get("check") or ""),
                     lead_thinking=lead_thinking if lead_thinking in THINKING else "default", cwd=cwd)
         team._check_model(lead_model, "yönetici")
         for spec in specs:
@@ -457,6 +461,9 @@ class AppState:
             return "cevap iletildi"
         if action in ("approve", "revise"):
             return team.review_member(name, action == "approve", text, by=USER)
+        if action == "save_template":
+            tpl = team.save_template(text or team.title)
+            return f"şablon kaydedildi: {tpl['name']}"
         if action == "vote":
             dec = team.user_vote(name, text, str((agent or {}).get("note") or ""))
             return f"oyun sayıldı; kurul kararı: {dec}"
@@ -706,6 +713,16 @@ def make_handler(state: AppState):
                 return self._json(session_changes(state.agent.checkpoints, state.ctx.cwd))
             if u.path == "/api/projects":
                 return self._json(state.projects())
+            if u.path == "/api/project/templates":
+                from alice.team import list_templates
+
+                return self._json(list_templates())
+            if u.path == "/api/project/check_guess":
+                from alice.team import guess_check
+
+                raw = (q.get("cwd") or [""])[0]
+                path = state.ctx.resolve(raw) if raw else state.ctx.cwd
+                return self._json({"check": guess_check(path) if path.is_dir() else ""})
             if u.path == "/api/project/diff":
                 from alice.tools.base import ToolError
 
@@ -816,6 +833,15 @@ def make_handler(state: AppState):
                         webbrowser.open(url)
                         return self._json({"ok": True})
                     return self._json({"ok": False}, 400)
+                if p == "/api/project/template/delete":
+                    from alice.team import delete_template
+                    from alice.tools.base import ToolError
+
+                    try:
+                        delete_template(str(d.get("name", "")))
+                    except ToolError as e:
+                        return self._json({"ok": False, "error": str(e)}, 400)
+                    return self._json({"ok": True})
                 if p in ("/api/project/create", "/api/project/action"):
                     from alice.tools.base import ToolError
 

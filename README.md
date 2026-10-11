@@ -171,12 +171,18 @@ Büyük bir iş (büyük bir kod tabanında birden çok modül, backend + fronte
 3. **İnceler:** biten her ajan **İnceleme bekliyor** durumuna geçer. Yönetici raporu ve değişiklik farkını okur, gerekirse testleri çalıştırır, sonra **onaylar** ya da somut geri bildirimle **düzeltmeye gönderir** (ajan kaldığı yerden devam eder). Ayrı git dalında çalışan ajanın dalı onaylanınca ana klasöre birleştirilir.
 4. **Bitirir:** herkes onaylanınca bütünü doğrular ve sana **özet** yazar.
 
-Yönetici bir olaya cevap vermeden turunu bitirirse iki kez hatırlatılır; yine kapatmazsa proje kendiliğinden kapanır. Yani proje yarıda asılı kalmaz.
+**Asılı kalmaz:**
+* Yönetici bir olaya cevap vermeden turunu bitirirse iki kez hatırlatılır; yine kapatmazsa proje kendiliğinden kapanır.
+* Plan sunmadan turunu bitirirse iki kez hatırlatılır; yine sunmazsa iş tek bir ajana ("worker") verilir.
+* Bir ajan uzun süre (varsayılan 10 dk, `[agent] team_stall_minutes`) hiç adım atmazsa yöneticiye ve sana "ilerlemiyor" bildirimi gider.
+* Hiçbir model cevap veremezse (kota, anahtar) ajan boş raporla incelemeye düşmez, **hata** olur; neden ekranda yazar, yöneticiye bildirilir.
+* Ayrı git dalındaki ajanın dalı onayda çakışırsa ajana geri gider: ana dalı kendi dalına alıp çakışmayı çözer, sonra yeniden incelenir ve birleştirilir (en çok 2 deneme).
 
 **Başlatmak:** sohbette "bunu proje olarak yap" demen yeter; ALICE `team` aracıyla projeyi başlatır ve sonucu istersen sohbette bekler. Ya da yan menüde Projeler'in yanındaki `+`:
 * **Hedef**i yaz. Şablonlar (Özellik ekle, Hata düzelt, Kod incelemesi, Yeniden düzenle, Test yaz) altına "bitti sayılma" ölçütünü ekler.
 * **Alice planlasın** (önerilen) ya da **Ajanları ben belirleyeyim**: ad, model, düşünme, çalışma yeri, görev; "Kapsam, sınırlar, sıra" altında yazabileceği yerler, sınırlar ve hangi ajanlar bitince başlayacağı.
-* **Ayarlar:** çalışma klasörü, yöneticinin modeli ve düşünme seviyesi, inceleme açık/kapalı.
+* **Ayarlar:** çalışma klasörü, yöneticinin modeli ve düşünme seviyesi, **kontrol komutu** (testler/lint; projeye bakıp öneri getirir, ör. `python -m pytest -q`, `npm test`), inceleme ve kurul açık/kapalı.
+* **Şablonlarım:** bir projeyi "Şablon" düğmesiyle kaydedersen (hedef, ayarlar, ajan tanımları) burada çıkar; tek tıkla hepsi dolar. `~/.alice/project_templates/`.
 
 **Proje sayfası** (Claude Code'daki Projeler gibi):
 * Üstte durum (planlanıyor, çalışıyor, incelemede, sana soruyor, bitti, durdu), onay ilerleme çubuğu, yönetici modeli, klasör. Proje bitince **Proje özeti** kartı.
@@ -185,7 +191,15 @@ Yönetici bir olaya cevap vermeden turunu bitirirse iki kez hatırlatılır; yin
 * İnceleme bekleyen ajanda **Onayla** / **Düzeltme iste** (geri bildirimle). Yönetici de inceler; kararı istersen sen verirsin.
 * Ajana yaz (çalışıyorsa bir sonraki adımında görür, bitmişse devam eder), **Durdur**, **Baştan başlat** (temiz konuşmayla), **Değişiklikleri geri al** (dosya araçlarıyla yaptıklarını eski haline döndürür).
 * **Ajan ekle** (çalışan ya da bitmiş projeye; diğerlerine haber verilir), **Durdur** / **Sürdür**, **Sil**. Yöneticiye yazarak bitmiş projeye yeni iş verebilirsin.
+* **Akış:** projede olan her şey zaman sırasıyla: başlayan/biten işler, kontrol komutu sonuçları, kurul kararları, onaylar, sorular, mesajlar.
 * Sohbette çalışan projenin küçük kartı (ilerleme, o an ne yapıldığı) durur; soru ve bitiş bildirimleri tıklanınca projeyi açan kartlar olarak gelir.
+
+**Bildirimler ve telefon:**
+* "Sana soruyor", "bitti", "ilerlemiyor" ve "hata verdi" olaylarında **masaüstü bildirimi** çıkar (`[agent] team_notify = false` ile kapanır).
+* Telefona anlık bildirim istersen [ntfy](https://ntfy.sh) uygulamasını kur, bir konu adı seç ve `config.toml`'a `[notify] ntfy = "konu-adin"` yaz (kendi sunucun varsa tam adres). Kapalıyken hiçbir yere bir şey gönderilmez. Konu adını tahmin edilmesi zor seç; ntfy.sh'ta konuyu bilen herkes okuyabilir.
+* `alice phone` artık Projeler adresini de yazar (`…/?t=…#projects`); hızlı barın altında da **Projeler** bağlantısı var. Telefonda projeyi izleyebilir, soruları cevaplayabilir, işleri onaylayabilirsin.
+
+**Değişiklik takibi:** dosya araçlarıyla yapılanlar her zaman; git deposunda `run_command` ile değişen dosyalar da (ilk halleri `HEAD`'den alınır) ajanın **Değişiklikler** sekmesine ve **geri al** düğmesine dahil. Proje başında zaten değişmiş olan ya da başka bir ajanın dokunduğu dosyalar ona sayılmaz.
 
 **Kalıcılık:** projeler `~/.alice/projects/<id>.json`'a kaydedilir (konuşmalar, mesajlar, sorular, farklar için dosyaların ilk hali). Uygulama kapanıp açılınca yüklenir; yarıda kalan proje **durdu** görünür, **Sürdür** ya da bir mesajla kaldığı yerden devam eder.
 
@@ -217,6 +231,12 @@ Yönetici bir olaya cevap vermeden turunu bitirirse iki kez hatırlatılır; yin
 * **Final kurulu:** bütün işler bitince projenin tamamına bakar (en çok 2 kez).
 * **Kurula sor:** proje başlığındaki ya da ajan sayfasındaki düğmeyle istediğin an.
 
+**Kanıtı güçlendiren şeyler:**
+* **Kontrol komutu** projede ayarlıysa her iş/kontrol/final kurulundan önce otomatik çalışır; çıktısı ve çıkış kodu kurula kanıt olarak gider (`[agent] team_check_timeout`, varsayılan 600 sn).
+* Projede `REVIEW.md` (ya da `.alice/REVIEW.md`) varsa kurul onu **inceleme kuralları** olarak okur ("her public fonksiyonun testi olmalı" gibi). `/kurul` da okur.
+* **Dersler:** kurulun doğruladığı ciddi bulgular projenin derslerine eklenir; sonraki ajanların görevine, düzeltme isteklerine ve sonraki kurullara "bu projede şu hatalar çıktı, tekrarlama" diye gider. Kurul konusunda görünür.
+* Zayıf bir model istenen JSON'u unutursa bir kez sadece biçimi yeniden sorulur; yine olmazsa o oy boş sayılır.
+
 **Derinlik ve modeller işe göre seçilir:** küçük işte eleştirmen + kontrolcü ve tek tur; normal işte üçlü + ilgili uzmanlar ve iki tur; kritik iş (güvenlik, veri, ödeme, ana mimari) ve final kurulunda bütün kurul, üç tura kadar tartışma ve herkes en güçlü modelle. Eleştirmen ve kontrolcü güçlü modeli, savunucu ve uzmanlar hızlı modeli kullanır. Sonsuz döngü yok: tur, kontrol ve final sayıları sınırlı.
 
 **Arayüzde:** ajan sayfasında **Kurul** sekmesi: karar, onay oranı, veto, oy tablosu (rol, model, ilk → son oy, ağırlık, sayılmadıysa nedeni), bulgu kartları (önem, kim buldu, kontrolcünün sonucu, tartışmadaki itirazlar), şartlar, **senin oyun** (onay / şartlı onay / ret ve gerekçe; karar değişirse hemen uygulanır) ve tartışma dökümü. Plan ve final kurulları yönetici grubundaki **Kurul** konusunda. İstediğin an **Onayla / Düzeltme iste** ile kararı tamamen sen de verebilirsin.
@@ -225,7 +245,7 @@ Yönetici bir olaya cevap vermeden turunu bitirirse iki kez hatırlatılır; yin
 * Ajanlar sadece kod işi araçlarını kullanır (dosya, kabuk, web, `http_request`, `git`). Ekran, tarayıcı ve masaüstü araçları tek ekranı paylaştığı için onlara kapalı.
 * Yazma kapsamı dışına dosya araçlarıyla yazma reddedilir; "salt okuma" ajan hiç yazamaz. İzin soruları proje ve ajan adıyla (`[proje / backend] ...`) gelir, sırayla açılır; "hep izin ver" sadece ana oturuma uygulanır.
 * Aynı anda en çok 5 ajan çalışır (`[agent] team_max_parallel`), fazlası sıraya girer; bir projede en çok 8 ajan olur. Yöneticinin bir turdaki adım sınırı `team_lead_steps` (varsayılan 40).
-* Kapsam kontrolü, fark ve geri alma dosya araçları içindir; `run_command` ile yapılan değişiklikler izlenemez. Proje değişiklikleri sohbetteki Geri sar ile geri alınmaz (ajanın kendi "Değişiklikleri geri al" düğmesi var).
+* Kapsam kontrolü dosya araçları içindir; `run_command` ile kapsam dışına yazılmasını engelleyemez (git deposunda değişiklik olarak görünür). Proje değişiklikleri sohbetteki Geri sar ile geri alınmaz (ajanın kendi "Değişiklikleri geri al" düğmesi var).
 * Ücretsiz modellerde paralel istekler kotayı daha çabuk doldurur; router sıradaki modele geçer ama kalabalık projelerde mekanik işlere `fast` vermek iyi olur.
 
 ## Claude Code'daki özellikler

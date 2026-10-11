@@ -42,6 +42,12 @@ tool_output_chars = 12000
 team_max_parallel = 5
 # Proje yöneticisinin bir olaya cevap verirken en fazla araç adımı.
 team_lead_steps = 40
+# Bu kadar dakika hiç adım atmayan ajan "ilerlemiyor" diye bildirilir.
+team_stall_minutes = 10
+# Proje kontrol komutunun (testler) en uzun süresi, saniye.
+team_check_timeout = 600
+# Projede soru/bitti/takılma/hata olunca masaüstü bildirimi.
+team_notify = true
 # Geçmişte tutulacak en fazla ekran görüntüsü (eski görüntüler metne çevrilir).
 keep_images = 2
 # Ekran görüntüsünün modele gönderilirken küçültüleceği en fazla genişlik.

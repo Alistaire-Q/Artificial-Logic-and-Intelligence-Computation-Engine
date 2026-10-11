@@ -894,7 +894,21 @@ kbd {
   .pv-threads { flex-direction: row; overflow-x: auto; }
   .th-sec { display: none; }
   .th { min-width: 190px; }
+  #projectView { padding: 2px 10px 10px; }
   .pv-head { flex-wrap: wrap; }
+  .pv-head .grow { flex: 1 1 calc(100% - 44px); }
+  .pv-actions { order: 3; width: 100%; flex-wrap: wrap; }
+  .pv-actions .btn { padding: 4px 9px; font-size: 12.5px; }
+  .pv-trow { flex-wrap: wrap; gap: 6px; }
+  .pv-title { white-space: normal; font-size: 18px; }
+  .pv-sub { gap: 8px; }
+  .pv-sub .mono { display: none; }
+  .pv-goal { max-height: 2.8em; }
+  .pd-row .btn { padding: 3px 8px; }
+  .pd-feed { padding: 10px; }
+  .cv-r { padding-left: 0; }
+  .tl-row { grid-template-columns: 52px 14px 1fr; }
+  .tl-row b { display: none; }
 }
 
 /* yeni proje penceresi */
@@ -980,3 +994,25 @@ kbd {
 .cc-tr-it { margin-top: 8px; font-size: 13px; }
 .cc-tr-it > b { font-size: 12px; color: var(--muted); }
 .th-sec + .th .th-last:empty { display: none; }
+
+/* zaman çizelgesi, şablonlar, dersler */
+.pd-feed.tl { gap: 2px; }
+.tl-day { font-size: 11.5px; color: var(--faint); padding: 8px 0 4px; font-weight: 500; }
+.tl-row { display: grid; grid-template-columns: 62px 18px minmax(70px, auto) 1fr; gap: 8px; align-items: baseline; font-size: 13px; padding: 3px 0; }
+.tl-row small { color: var(--faint); font: 11px var(--mono); }
+.tl-row i { font-style: normal; text-align: center; color: var(--muted); }
+.tl-row b { font: 500 12px var(--mono); color: var(--muted); }
+.tl-row span { white-space: pre-wrap; overflow-wrap: anywhere; }
+.tl-row.k-msg span { color: var(--muted); }
+.tl-row.k-failed i, .tl-row.k-stall i, .tl-row.k-conflict i { color: var(--err); }
+.tl-row.k-approve i, .tl-row.k-done i, .tl-row.k-finish i { color: var(--ok); }
+.tl-row.k-council i, .tl-row.k-ask i { color: var(--warn); }
+.np-chips.mine:empty { display: none; }
+.np-chips.mine { margin-top: -6px; }
+.np-mine-l { font-size: 12px; color: var(--faint); align-self: center; }
+.chip-btn.tpl { display: inline-flex; align-items: center; padding: 0; overflow: hidden; }
+.chip-btn.tpl button { padding: 4px 4px 4px 11px; font-size: 12.5px; color: var(--text); }
+.chip-btn.tpl .x { padding: 4px 9px 4px 4px; color: var(--faint); }
+.chip-btn.tpl .x:hover { color: var(--err); }
+.np-grid .fld.wide { grid-column: 1 / -1; }
+.cc.lessons { border-color: var(--warn); }

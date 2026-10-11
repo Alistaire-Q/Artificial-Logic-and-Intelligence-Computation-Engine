@@ -219,7 +219,7 @@ class Council:
     def __init__(self, ctx: ToolContext, kind: str, subject: str, context: str, cwd: Path | None = None,
                  critical: bool = False, depth: int | str = "auto", roles: list[str] | None = None,
                  previous: dict[str, Any] | None = None, on_change: Callable[[], None] | None = None,
-                 title: str = ""):
+                 title: str = "", rules: str = "", lessons: list[str] | None = None, check: str = ""):
         self.ctx = ctx
         self.kind = kind
         self.subject = subject.strip()
@@ -227,6 +227,9 @@ class Council:
         self.cwd = Path(cwd) if cwd else ctx.cwd
         self.critical = critical
         self.previous = previous  # kontrol turu: önceki kurulun sonucu
+        self.rules = rules.strip()  # projenin inceleme kuralları (REVIEW.md)
+        self.lessons = lessons or []  # bu projede daha önce yakalanan sorunlar
+        self.check = check  # projenin kontrol komutu (kontrolcü bilir)
         self.title = title or self.subject.splitlines()[0][:80]
         self.id = secrets.token_hex(4)
         size = context.count("\n")
@@ -297,7 +300,12 @@ Kuruldaki diğer roller: {others}. Karar gerekçeli ağırlıklı oylamayla veri
 İnceleme türü: {KIND_TR.get(self.kind, self.kind)}. Çalışma klasörü: {self.cwd}
 
 Kısa ve somut yaz. Araçlarla kodu ve dosyaları kendin incele; tahmin yürütme. Dosya değiştirme.
-Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy."""
+Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy.""" + (
+            f"\n\n# Projenin inceleme kuralları (REVIEW.md)\n{self.rules}" if self.rules else "") + (
+            "\n\n# Bu projede daha önce yakalanan sorunlar (tekrarlanmış mı bak)\n" +
+            "\n".join(f"- {x}" for x in self.lessons) if self.lessons else "") + (
+            f"\n\nProjenin kontrol komutu: `{self.check}` (çıktısı incelenen malzemede; gerekirse yeniden çalıştır)."
+            if self.check and role == "verifier" else "")
 
     # --------------------------------------------------------------- akış
     def run(self) -> dict[str, Any]:
@@ -323,6 +331,12 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
     def _ask(self, role: str, prompt: str) -> str:
         agent = self._agent(role)
         text = agent.run_turn(prompt, max_steps=REVIEWER_STEPS) or ""
+        if not parse_block(text) and text.strip():
+            # Zayıf modeller JSON'u unutabiliyor: bir kez, sadece biçimi iste.
+            again = agent.run_turn("Cevabının sonunda istenen JSON bloğu yoktu. Kararını değiştirmeden şimdi sadece o "
+                                   "JSON bloğunu ```json ... ``` içinde ver.", max_steps=1) or ""
+            if parse_block(again):
+                text = text.rstrip() + "\n\n" + again
         self.transcript.append({"round": self.round, "role": role, "text": text})
         return text
 
