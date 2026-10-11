@@ -1099,12 +1099,15 @@ function renderProject() {
   // Yazılmakta olan mesaj ve kaydırma yeri yenilemede kaybolmasın.
   const keep = {};
   for (const t of v.querySelectorAll("textarea[data-k], input[data-k]")) keep[t.dataset.k] = { v: t.value, f: document.activeElement === t };
+  // Açılıp kapanan bölümler (kurul kartları, adımlar, ayrıntılar) yenilemede kullanıcının bıraktığı gibi kalsın.
+  pr.openState = pr.openState || {};
+  for (const x of v.querySelectorAll("details[data-k]")) pr.openState[x.dataset.k] = x.open;
   const feed = v.querySelector(".pd-feed");
   const atBottom = !feed || feed.scrollHeight - feed.scrollTop - feed.clientHeight < 40;
   const oldTop = feed ? feed.scrollTop : 0;
   v.replaceChildren();
 
-  // ---- başlık
+  // ---- başlık: başlık, durum ve ilerleme; ikincil işler "⋯" menüsünde
   const head = el("div", "pv-head");
   const back = el("button", "icon-btn"); back.title = "Sohbete dön";
   back.innerHTML = '<svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>';
@@ -1114,50 +1117,51 @@ function renderProject() {
   t1.append(el("h2", "pv-title", d.title), el("span", "pill " + d.status, PROJ_ST[d.status] || d.status));
   const [done, total] = d.progress || [0, 0];
   const t2 = el("div", "pv-sub");
-  t2.append(progressBar(done, total), el("span", "", total ? `${done}/${total} onaylandı` : "ajan yok"),
-    el("span", "", `yönetici ${d.lead.model}${d.lead.thinking !== "default" ? " · " + d.lead.thinking : ""}`),
-    el("span", "", d.council ? "kurul açık" : d.review ? "inceleme açık" : "inceleme kapalı"), el("span", "mono", d.cwd), el("span", "", relTime(d.created)));
-  if (d.check) t2.appendChild(el("span", "mono", "kontrol: " + d.check));
-  const goal = el("div", "pv-goal", d.goal);
-  goal.title = "Tamamını göster";
-  goal.addEventListener("click", () => goal.classList.toggle("open"));
-  mid.append(t1, t2, goal);
+  t2.append(progressBar(done, total), el("span", "", total ? `${done}/${total} iş onaylandı` : "henüz ajan yok"), el("span", "", relTime(d.created)));
+  mid.append(t1, t2);
+  const g = (d.goal || "").trim();
+  if (g && g !== d.title.trim()) {
+    const goal = el("div", "pv-goal", g);
+    goal.title = "Tamamını göster";
+    goal.addEventListener("click", () => goal.classList.toggle("open"));
+    mid.appendChild(goal);
+  }
   const acts = el("div", "pv-actions");
   const add = el("button", "btn", "Ajan ekle");
   add.addEventListener("click", () => projectDialog(d));
   acts.appendChild(add);
-  if (d.council && d.members.length) {
-    const ask = el("button", "btn", d.council_busy ? "Kurul toplanıyor…" : "Kurula sor");
-    ask.title = "Projenin şu anki halini inceleme kuruluna sor";
-    ask.disabled = !!d.council_busy;
-    ask.addEventListener("click", () => projectAction("council", ""));
-    acts.appendChild(ask);
-  }
-  if (d.members.length) {
-    const tp = el("button", "btn", "Şablon");
-    tp.title = "Bu projeyi şablon olarak kaydet: hedef, ayarlar ve ajanlar yeni projede tek tıkla gelir";
-    tp.addEventListener("click", () => saveTemplateDialog(d));
-    acts.appendChild(tp);
-  }
   if (d.active) {
     const st = el("button", "btn danger", "Durdur");
     st.title = "Bütün ajanları ve yöneticiyi durdur";
     st.addEventListener("click", () => projectAction("stop", ""));
     acts.appendChild(st);
-  } else {
-    if (d.status === "stopped") {
-      const rs = el("button", "btn accent", "Sürdür");
-      rs.title = "Durmuş ajanlar kaldığı yerden devam eder";
-      rs.addEventListener("click", () => projectAction("resume", ""));
-      acts.appendChild(rs);
-    }
-    const del = el("button", "btn danger", "Sil");
-    del.addEventListener("click", async () => {
-      if (!(await confirmDialog("Proje silinsin mi?", "Projenin kaydı ve ajanların konuşmaları silinir. Dosyalarda yapılan değişiklikler kalır.", "Sil"))) return;
-      if (await projectAction("delete", "")) { closeProject(); loadProjects(); }
-    });
-    acts.appendChild(del);
+  } else if (d.status === "stopped") {
+    const rs = el("button", "btn accent", "Sürdür");
+    rs.title = "Durmuş ajanlar kaldığı yerden devam eder";
+    rs.addEventListener("click", () => projectAction("resume", ""));
+    acts.appendChild(rs);
   }
+  const more = el("button", "icon-btn pv-more"); more.title = "Diğer";
+  more.innerHTML = '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/></svg>';
+  more.addEventListener("click", () => openMenu(more, (m) => {
+    if (d.council && d.members.length)
+      menuItem(m, IC.shield, d.council_busy ? "Kurul toplanıyor…" : "Kurula sor", "Projenin şu anki hâlini kurul incelesin",
+        () => { if (!d.council_busy) projectAction("council", ""); });
+    if (d.members.length) menuItem(m, IC.copy, "Şablon olarak kaydet", "Hedef, ayarlar ve ajanlar", () => saveTemplateDialog(d));
+    m.appendChild(el("div", "menu-sep"));
+    m.appendChild(el("div", "menu-title", "Proje"));
+    for (const x of [`Yönetici: ${d.lead.model}${d.lead.thinking !== "default" ? " · " + d.lead.thinking : ""}`,
+      d.council ? "Kurul açık" : d.review ? "İnceleme açık" : "İnceleme kapalı", d.cwd, d.check ? "Kontrol: " + d.check : ""].filter(Boolean))
+      m.appendChild(el("div", "menu-info", x));
+    if (!d.active) {
+      m.appendChild(el("div", "menu-sep"));
+      menuItem(m, IC.trash, "Projeyi sil", "Kayıt ve konuşmalar silinir, dosyalar kalır", async () => {
+        if (!(await confirmDialog("Proje silinsin mi?", "Projenin kaydı ve ajanların konuşmaları silinir. Dosyalarda yapılan değişiklikler kalır.", "Sil"))) return;
+        if (await projectAction("delete", "")) { closeProject(); loadProjects(); }
+      });
+    }
+  }, "right"));
+  acts.appendChild(more);
   head.append(back, mid, acts);
   v.appendChild(head);
 
@@ -1177,6 +1181,7 @@ function renderProject() {
   }
   if (d.summary) {
     const c = el("details", "pv-summary");
+    c.dataset.k = "summary";
     c.open = !pr.summaryClosed;
     c.addEventListener("toggle", () => { pr.summaryClosed = !c.open; });
     const sm = el("summary", "", "Proje özeti");
@@ -1186,82 +1191,136 @@ function renderProject() {
     v.appendChild(c);
   }
 
-  // ---- konular
-  const body = el("div", "pv-body");
+  // ---- konular: daraltılabilir gruplar; liste gizlenebilir (sadece avatarlar) ve genişliği sürüklenir
+  const ui = projUI();
+  const body = el("div", "pv-body" + (ui.rail ? " rail" : ""));
+  body.style.setProperty("--list-w", ui.w + "px");
   const list = el("div", "pv-threads");
-  const lead = { name: "alice", status: d.lead.state, task: d.status === "planning" ? "İşi planlıyor ve ajanları kuruyor" : "Planlar, soruları cevaplar, biten işleri inceler",
+  const lh = el("div", "th-head");
+  lh.appendChild(el("span", "", "Ekip"));
+  const railBtn = el("button", "icon-btn"); railBtn.title = ui.rail ? "Listeyi aç" : "Listeyi daralt";
+  railBtn.innerHTML = '<svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9.5 4.5v15"/></svg>';
+  railBtn.addEventListener("click", () => { projUI({ rail: !ui.rail }); renderProject(); });
+  lh.appendChild(railBtn);
+  list.appendChild(lh);
+  const lead = { name: "alice", status: d.lead.state, task: d.status === "planning" ? "İşi planlıyor ve ajanları kuruyor" : "Planlıyor, yönetiyor, inceliyor",
     model: d.lead.model, last: d.lead.last };
-  const section = (title, items, cls) => {
+  const section = (key, title, items, cls) => {
     if (!items.length) return;
-    list.appendChild(el("div", "th-sec" + (cls ? " " + cls : ""), `${title} · ${items.length}`));
-    for (const it of items) list.appendChild(it);
+    const closed = !!ui.closed[key];
+    const sh = el("button", "th-sec" + (cls ? " " + cls : "") + (closed ? " closed" : ""));
+    sh.append(svg(IC.chev, "chev"), el("span", "", title), el("small", "", String(items.length)));
+    sh.addEventListener("click", () => { ui.closed[key] = !closed; projUI({ closed: ui.closed }); renderProject(); });
+    list.appendChild(sh);
+    if (closed && !ui.rail) return;
+    const box = el("div", "th-group");
+    for (const it of items) box.appendChild(it);
+    list.appendChild(box);
   };
-  section("Yönetici", [threadItem(lead, true), logItem(d), timelineItem(d),
+  section("general", "Genel", [threadItem(lead, true), logItem(d), timelineItem(d),
     ...((d.councils || []).length || d.council_busy ? [councilItem(d)] : [])]);
   const by = (sts) => d.members.filter((m) => sts.includes(m.status)).map((m) => threadItem(m));
-  section("Soru soruyor", by(["asking"]), "warn");
-  section("İnceleme bekliyor", by(["review"]), "rev");
-  section("Çalışıyor", by(["running", "waiting"]));
-  section("Sırada", by(["queued"]));
-  section("Bitti", by(["done"]), "ok");
-  section("Durdu / hata", by(["stopped", "failed"]), "err");
+  section("asking", "Soru soruyor", by(["asking"]), "warn");
+  section("review", "İnceleme bekliyor", by(["review"]), "rev");
+  section("running", "Çalışıyor", by(["running", "waiting"]));
+  section("queued", "Sırada", by(["queued"]));
+  section("done", "Bitti", by(["done"]), "ok");
+  section("failed", "Durdu / hata", by(["stopped", "failed"]), "err");
+  const grip = el("div", "pv-grip"); grip.title = "Sürükle: liste genişliği";
+  grip.addEventListener("pointerdown", (e) => {
+    if (ui.rail) return;
+    e.preventDefault(); grip.setPointerCapture(e.pointerId);
+    const x0 = e.clientX, w0 = ui.w;
+    const mv = (ev) => { ui.w = Math.max(220, Math.min(480, w0 + ev.clientX - x0)); body.style.setProperty("--list-w", ui.w + "px"); };
+    const up = () => { grip.removeEventListener("pointermove", mv); projUI({ w: ui.w }); };
+    grip.addEventListener("pointermove", mv);
+    grip.addEventListener("pointerup", up, { once: true });
+  });
   const det = el("div", "pv-detail");
   if (pr.sel === "__log") renderTeamLog(det, d);
   else if (pr.sel === "__council") renderProjectCouncils(det, d);
   else if (pr.sel === "__timeline") renderTimeline(det, d);
   else if (d.member) renderThread(det, d.member, d);
   else det.appendChild(el("div", "pd-empty", "Bir konu seç"));
-  body.append(list, det);
+  body.append(list, grip, det);
   v.appendChild(body);
 
   drawLive();
   const nf = v.querySelector(".pd-feed");
   if (nf) nf.scrollTop = atBottom || pr.lastSel !== pr.sel ? nf.scrollHeight : oldTop;
   pr.lastSel = pr.sel;
+  for (const x of v.querySelectorAll("details[data-k]")) if (x.dataset.k in pr.openState) x.open = pr.openState[x.dataset.k];
   for (const t of v.querySelectorAll("textarea[data-k], input[data-k]")) {
     const k = keep[t.dataset.k];
     if (k) { t.value = k.v; if (k.f) t.focus(); }
   }
 }
+// Proje ekranı tercihleri (liste genişliği, daraltılmış gruplar) bu tarayıcıda hatırlanır.
+function projUI(patch) {
+  let ui = { w: 288, rail: false, closed: { done: false } };
+  try { ui = { ...ui, ...JSON.parse(localStorage.getItem("alice.projUI") || "{}") }; } catch {}
+  if (patch) { ui = { ...ui, ...patch }; try { localStorage.setItem("alice.projUI", JSON.stringify(ui)); } catch {} }
+  return ui;
+}
+function hueOf(s) { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) % 360; return h; }
+function avatar(name, st, icon) {
+  const a = el("span", "av" + (icon ? " ic" : ""));
+  if (name === "alice") { const img = el("img"); img.src = "/static/alice.png"; img.alt = ""; a.appendChild(img); }
+  else if (icon) a.appendChild(svg(icon));
+  else { a.style.setProperty("--h", hueOf(name)); a.appendChild(document.createTextNode(name.slice(0, 1).toUpperCase())); }
+  if (st) a.appendChild(el("i", "dot st-" + st));
+  return a;
+}
+function navItem(key, title, sub, icon, count) {
+  const pr = S.proj;
+  const b = el("button", "th nav" + (pr.sel === key ? " sel" : ""));
+  b.title = title;
+  const tx = el("div", "th-tx");
+  const top = el("div", "th-top");
+  top.appendChild(el("b", "", title));
+  if (count) top.appendChild(el("small", "", count));
+  tx.appendChild(top);
+  if (sub) tx.appendChild(el("div", "th-last", sub));
+  b.append(avatar("", "", icon), tx);
+  b.addEventListener("click", () => { pr.sel = key; refreshProject(); });
+  return b;
+}
 function threadItem(m, isLead) {
   const pr = S.proj;
   const b = el("button", "th" + (pr.sel === m.name ? " sel" : "") + (isLead ? " lead" : ""));
-  const top = el("div", "th-top");
   const st = isLead ? (m.status === "running" ? "running" : m.status === "done" ? "done" : "idle") : m.status;
-  top.append(el("i", "dot st-" + st), el("b", "", isLead ? "alice · yönetici" : m.name), el("small", "", TEAM_ST[st] || st));
-  b.append(top, el("div", "th-task", m.task));
-  let last;
-  if (isLead) last = m.last;
-  else if (m.status === "queued" && m.after && m.after.length) last = `${m.after.join(", ")} bitince başlar`;
-  else if (m.status === "asking" && m.question) last = "soru: " + m.question;
-  else if (m.council_running) last = m.council && m.council.rounds ? `kurul toplanıyor · tur ${m.council.round || 1}/${m.council.rounds}` : "kurul toplanıyor…";
-  else if (m.status === "review" && m.council && m.council.decision) last = "kurul: " + (DEC_TR[m.council.decision] || m.council.decision);
-  else if (["running", "waiting"].includes(m.status) && m.last) last = friendlyLast(m.last);
-  else last = [m.model, m.thinking !== "default" ? m.thinking : "", `${m.steps} adım`, m.secs ? fmtSecs(m.secs) : "",
-    m.files && m.files.length ? `${m.files.length} dosya` : "", m.reviews ? `${m.reviews} düzeltme` : ""].filter(Boolean).join(" · ");
-  if (last) b.appendChild(el("div", "th-last", last));
+  b.title = isLead ? "Alice · yönetici" : m.name;
+  const tx = el("div", "th-tx");
+  const top = el("div", "th-top");
+  top.append(el("b", "", isLead ? "Alice" : m.name), el("small", "st-" + st, TEAM_ST[st] || st));
+  tx.appendChild(top);
+  // Tek satır: çalışırken ne yaptığı, beklerken neyi beklediği; yoksa görevi.
+  let line;
+  if (m.status === "queued" && m.after && m.after.length) line = `${m.after.join(", ")} bitince başlar`;
+  else if (m.status === "asking" && m.question) line = m.question;
+  else if (m.council_running) line = m.council && m.council.rounds ? `Kurul tartışıyor · tur ${m.council.round || 1}/${m.council.rounds}` : "Kurul toplanıyor";
+  else if (m.status === "review" && m.council && m.council.decision) line = "Kurul: " + (DEC_TR[m.council.decision] || m.council.decision);
+  else if (st === "running" && m.last) line = friendlyLast(m.last);
+  else line = m.task;
+  tx.appendChild(el("div", "th-last", line));
+  b.append(avatar(isLead ? "alice" : m.name, st), tx);
   b.addEventListener("click", () => { pr.sel = m.name; pr.tab = "chat"; refreshProject(); });
   return b;
 }
 function logItem(d) {
-  const pr = S.proj;
-  const b = el("button", "th" + (pr.sel === "__log" ? " sel" : ""));
-  const top = el("div", "th-top");
-  top.append(el("i", "dot st-chat"), el("b", "", "Takım sohbeti"), el("small", "", `${d.log.length} mesaj`));
   const last = d.log[d.log.length - 1];
-  b.append(top, el("div", "th-last", last ? `${last.from} → ${last.to}: ${last.text}` : "Henüz mesaj yok"));
-  b.addEventListener("click", () => { pr.sel = "__log"; refreshProject(); });
-  return b;
+  return navItem("__log", "Takım sohbeti", last ? `${last.from}: ${last.text}` : "Henüz mesaj yok", IC.chat, d.log.length ? String(d.log.length) : "");
 }
 function renderThread(det, m, d) {
   const pr = S.proj, isLead = m.name === "alice";
   const h = el("div", "pd-head");
   const r1 = el("div", "pd-row");
   const st = isLead ? (m.status === "running" ? "running" : m.status === "done" ? "done" : "idle") : m.status;
-  r1.append(el("i", "dot st-" + st), el("b", "", isLead ? "alice · yönetici" : m.name), el("span", "chip", TEAM_ST[st] || st),
-    el("span", "pd-meta", [m.model, m.thinking !== "default" ? "düşünme " + m.thinking : "", isLead ? "" : m.isolation,
-      m.steps ? `${m.steps} adım` : "", m.secs ? fmtSecs(m.secs) : ""].filter(Boolean).join(" · ")));
-  const grow = el("span"); grow.style.flex = "1"; r1.appendChild(grow);
+  const nm = el("div", "pd-name");
+  nm.append(el("b", "", isLead ? "Alice" : m.name), el("small", "", isLead ? "yönetici" : TEAM_ST[st] || st));
+  nm.title = [m.model, m.thinking !== "default" ? "düşünme " + m.thinking : "", isLead ? "" : m.isolation,
+    m.steps ? `${m.steps} adım` : "", m.secs ? fmtSecs(m.secs) : ""].filter(Boolean).join(" · ");
+  r1.append(avatar(isLead ? "alice" : m.name, st), nm);
   if (!isLead) {
     if (["running", "waiting", "asking"].includes(m.status)) {
       const b = el("button", "btn danger", "Durdur");
@@ -1269,7 +1328,8 @@ function renderThread(det, m, d) {
       r1.appendChild(b);
     } else {
       if (m.files && m.files.length) {
-        const b = el("button", "btn", "Değişiklikleri geri al");
+        const b = el("button", "btn ghost", "Geri al");
+        b.title = "Bu ajanın dosya değişikliklerini geri al";
         b.addEventListener("click", async () => {
           if (await confirmDialog("Değişiklikler geri alınsın mı?", `${m.name} ajanının dosya araçlarıyla yaptığı değişiklikler eski haline döner (${m.files.length} dosya).`, "Geri al"))
             projectAction("revert", m.name);
@@ -1277,22 +1337,29 @@ function renderThread(det, m, d) {
         r1.appendChild(b);
       }
       if (d.council && !m.council_running) {
-        const k = el("button", "btn", "Kurula sor");
+        const k = el("button", "btn ghost", "Kurula sor");
         k.title = "Bu işi inceleme kuruluna sor (eleştirmen, savunucu, kontrolcü, uzmanlar)";
         k.addEventListener("click", () => { pr.tab = "council"; projectAction("council", m.name); });
         r1.appendChild(k);
       }
-      const b = el("button", "btn", "Baştan başlat");
+      const b = el("button", "btn ghost", "Baştan başlat");
       b.title = "Temiz bir konuşmayla görevi yeniden yapsın";
       b.addEventListener("click", () => projectAction("restart", m.name));
       r1.appendChild(b);
     }
   }
-  const rawBtn = el("button", "btn ghost" + (rawView() ? " on" : ""), rawView() ? "Ayrıntıları gizle" : "Ayrıntılar");
+  const rawBtn = el("button", "btn ghost" + (rawView() ? " on" : ""), rawView() ? "Sade görünüm" : "Ham görünüm");
   rawBtn.title = "Araç çağrılarını ve iç olayları ham haliyle göster";
   rawBtn.addEventListener("click", () => { try { localStorage.setItem("alice.rawThreads", rawView() ? "" : "1"); } catch {} renderProject(); });
   r1.appendChild(rawBtn);
-  h.append(r1, el("div", "pd-task", m.task));
+  const pacts = el("div", "pd-acts");
+  for (const b of [...r1.querySelectorAll(":scope > .btn")]) pacts.appendChild(b);
+  r1.appendChild(pacts);
+  const task = el("div", "pd-task", m.task);
+  task.title = "Tamamını göster";
+  task.addEventListener("click", () => task.classList.toggle("open"));
+  h.appendChild(r1);
+  if (!isLead) h.appendChild(task);
   const r2 = el("div", "pd-row");
   if (m.constraints) r2.appendChild(el("span", "chip", "sınır: " + m.constraints));
   if (m.scope && m.scope.length) r2.appendChild(el("span", "chip", "yazar: " + m.scope.join(", ")));
@@ -1378,20 +1445,13 @@ const KIND_TR = { plan: "Plan kurulu", work: "İş kurulu", recheck: "Kontrol tu
 const SEV_TR = { critical: "kritik", major: "önemli", minor: "küçük" };
 const FST_TR = { confirmed: "doğrulandı", refuted: "çürütüldü", unclear: "belirsiz", pending: "bekliyor" };
 function councilItem(d) {
-  const pr = S.proj;
-  const b = el("button", "th" + (pr.sel === "__council" ? " sel" : ""));
-  const top = el("div", "th-top");
   const last = (d.councils || [])[d.councils.length - 1];
-  top.append(el("i", "dot st-" + (d.council_busy ? "running" : "review")), el("b", "", "Kurul"),
-    el("small", "", d.council_busy ? "toplanıyor" : `${(d.councils || []).length} toplantı`));
-  b.append(top, el("div", "th-last", last ? `${KIND_TR[last.kind] || last.kind}: ${DEC_TR[last.decision] || "sürüyor"}` : "plan ve final kurulları"));
-  b.addEventListener("click", () => { pr.sel = "__council"; refreshProject(); });
-  return b;
+  return navItem("__council", "Kurul", d.council_busy ? "Toplanıyor…" : last ? `${KIND_TR[last.kind] || last.kind}: ${DEC_TR[last.decision] || "sürüyor"}` : "", IC.shield, "");
 }
 function renderProjectCouncils(det, d) {
   const h = el("div", "pd-head");
   const r = el("div", "pd-row"); r.appendChild(el("b", "", "Kurul"));
-  h.append(r, el("div", "pd-task", "Plan kurulu, final kurulu ve projeye 'Kurula sor' toplantıları. Eleştirmen, savunucu, kontrolcü ve gerekince uzmanlar bağımsız inceler, tartışır ve ağırlıklı oylamayla karar verir."));
+  h.appendChild(r);
   const feed = el("div", "pd-feed");
   if ((d.lessons || []).length) {
     const box = el("div", "cc lessons");
@@ -1411,13 +1471,7 @@ function renderProjectCouncils(det, d) {
 const TL_ICON = { start: "▶", run: "▷", review: "◎", done: "✓", approve: "✓", revise: "↺", failed: "✗", stopped: "■",
   stop: "■", resume: "▶", council: "⚖", ask: "?", answer: "↩", finish: "★", check: "✔", conflict: "⚠", stall: "⏳", plan: "✎", msg: "✉" };
 function timelineItem(d) {
-  const pr = S.proj;
-  const b = el("button", "th" + (pr.sel === "__timeline" ? " sel" : ""));
-  const top = el("div", "th-top");
-  top.append(el("i", "dot st-chat"), el("b", "", "Akış"), el("small", "", `${(d.timeline_n || 0) + d.log.length} olay`));
-  b.append(top, el("div", "th-last", "Kim ne zaman ne yaptı"));
-  b.addEventListener("click", () => { pr.sel = "__timeline"; refreshProject(); });
-  return b;
+  return navItem("__timeline", "Akış", "Kim ne zaman ne yaptı", IC.list, "");
 }
 function renderTimeline(det, d) {
   const h = el("div", "pd-head");
@@ -1451,93 +1505,164 @@ function saveTemplateDialog(d) {
     setTimeout(() => inp.focus(), 0);
   });
 }
+// Eski kayıtlarda döküm ham JSON içerebilir; okunur kısmı al.
+function councilProse(t) {
+  t = (t || "").replace(/```(?:json)?\s*\{[\s\S]*?\}\s*```/g, "");
+  const m = t.search(/\{\s*"(?:vote|checks|stances|findings|reason|conditions)"/);
+  if (m >= 0) t = t.slice(0, m);
+  t = t.replace(/```(?:json)?\s*$/, "").trim();
+  if (/"(?:stance|status|id)"\s*:/.test(t)) return "";  // baştan kırpılmış JSON parçası
+  return t;
+}
+function findingRow(f) {
+  const fc = el("div", "cf st-" + f.status);
+  const t = el("div", "cf-top");
+  const agree = (f.notes || []).filter((n) => n.stance === "agree").length;
+  const against = (f.notes || []).length - agree;
+  t.append(el("b", "", f.id), el("span", "chip sev-" + f.severity, SEV_TR[f.severity] || f.severity),
+    el("span", "cf-title", f.title));
+  const meta = el("small", "", [ROLE_TR[f.by] || f.by, FST_TR[f.status] || f.status,
+    agree ? `${agree} katılıyor` : "", against ? `${against} itiraz` : ""].filter(Boolean).join(" · "));
+  t.appendChild(meta);
+  fc.appendChild(t);
+  const more = el("div", "cf-more");
+  if (f.evidence) more.appendChild(el("div", "cf-ev", f.evidence));
+  if (f.fix) more.appendChild(el("div", "cf-fix", "Öneri: " + f.fix));
+  if (f.check) more.appendChild(el("div", "cf-chk", "Kontrolcü: " + f.check));
+  for (const n of f.notes || []) more.appendChild(el("div", "cf-note", `${ROLE_TR[n.by] || n.by} ${n.stance === "agree" ? "katılıyor" : "itiraz ediyor"}: ${n.note}`));
+  if (more.childNodes.length) {
+    fc.appendChild(more);
+    t.addEventListener("click", () => fc.classList.toggle("open"));
+    fc.classList.add("has-more");
+  }
+  return fc;
+}
 function councilCard(c, target, latest) {
   const res = c.result || {};
-  const card = el("div", "cc" + (c.state === "running" ? " live" : ""));
-  const head = el("div", "cc-head");
+  const running = c.state === "running";
+  // Eski toplantılar tek satır başlık olarak kapalı durur; en son ve süren açık.
+  const card = el("details", "cc" + (running ? " live" : ""));
+  card.open = !!(latest || running);
+  card.dataset.k = "cc" + (c.id || c.started || "") + target;
+  const head = el("summary", "cc-head");
   head.append(el("b", "", KIND_TR[c.kind] || "Kurul"));
-  if (c.state === "running") head.appendChild(el("span", "pill running", `toplanıyor · tur ${c.round || 1}/${c.rounds || "?"}`));
+  if (running) head.appendChild(el("span", "pill running", `toplanıyor · tur ${c.round || 1}/${c.rounds || "?"}`));
   else head.appendChild(el("span", "pill dec-" + (res.decision || "contested"), DEC_TR[res.decision] || "tamamlanamadı"));
-  if (res.score !== undefined && c.state !== "running") {
-    head.append(progressBar(Math.round(res.score * 100), 100), el("span", "cc-score", `%${Math.round((res.score || 0) * 100)} onay`));
-  }
-  if ((res.veto || []).length) head.appendChild(el("span", "chip warn", "veto: " + res.veto.join(", ")));
-  if (c.critical) head.appendChild(el("span", "chip", "kritik"));
+  if (c.started) head.appendChild(el("small", "cc-when", new Date(c.started * 1000).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })));
   card.appendChild(head);
-  if (c.title) card.appendChild(el("div", "cc-title", c.title));
-  if (res.error) card.appendChild(el("div", "cc-err", "Kurul tamamlanamadı: " + res.error));
+  if (res.error) card.appendChild(el("div", "cc-err", "Kurul tamamlanamadı."));
 
-  // oylar
-  const votes = el("div", "cc-votes");
-  for (const v of c.votes || []) {
-    const row = el("div", "cv" + (v.counted === false ? " off" : ""));
-    const changed = v.first && v.last && v.first !== v.last;
-    row.append(el("b", "", ROLE_TR[v.role] || v.role), el("small", "", v.model || ""),
-      el("span", "vote v-" + (v.last || "none"), (changed ? `${VOTE_TR2[v.first]} → ` : "") + (VOTE_TR2[v.last] || "oy yok")));
-    if (v.weight > 1) row.appendChild(el("span", "chip", `×${v.weight}`));
-    if (v.counted === false) row.appendChild(el("span", "chip warn", "sayılmadı: " + v.note));
-    if (v.reason) row.appendChild(el("div", "cv-r", v.reason));
-    votes.appendChild(row);
+  // İlk bakışta sadece özet: oyların tek cümlesi ve düzeltilecek birkaç madde. Gerisi "Ayrıntılar"da.
+  const vs = (c.votes || []).filter((v) => v.last);
+  if (running) card.appendChild(el("div", "cc-sum", "Üyeler inceliyor, sonuç birazdan burada."));
+  else if (vs.length) {
+    const cnt = {};
+    for (const v of vs) cnt[v.last] = (cnt[v.last] || 0) + 1;
+    const parts = ["reject", "conditional", "approve"].filter((k) => cnt[k]).map((k) => `${cnt[k]} ${VOTE_TR2[k]}`);
+    card.appendChild(el("div", "cc-sum", `${vs.length} üye oy verdi: ${parts.join(", ")}.`));
   }
-  if (c.user_vote) {
-    const row = el("div", "cv");
-    row.append(el("b", "", "sen"), el("span", "vote v-" + c.user_vote.vote, VOTE_TR2[c.user_vote.vote]), el("span", "chip", "×3"));
-    if (c.user_vote.note) row.appendChild(el("div", "cv-r", c.user_vote.note));
-    votes.appendChild(row);
+  if (!running) {
+    const sevRank = { critical: 0, major: 1, minor: 2 };
+    const todo = [...new Set([...(res.conditions || []),
+      ...(c.findings || []).filter((f) => f.status === "confirmed" && f.severity !== "minor")
+        .sort((a, b) => sevRank[a.severity] - sevRank[b.severity]).map((f) => f.title)])];
+    if (todo.length && res.decision !== "approve") {
+      const ul = el("ul", "cc-todo");
+      for (const x of todo.slice(0, 4)) ul.appendChild(el("li", "", x));
+      if (todo.length > 4) ul.appendChild(el("li", "more", `ve ${todo.length - 4} madde daha`));
+      card.appendChild(ul);
+    } else if (res.decision === "approve") card.appendChild(el("div", "cc-sum ok", "Engelleyen bir sorun yok."));
   }
-  if (votes.childNodes.length) card.appendChild(votes);
-
-  // bulgular: doğrulananlar önce
-  const order = { confirmed: 0, unclear: 1, pending: 2, refuted: 3 };
-  const fs = (c.findings || []).slice().sort((a, b) => (order[a.status] - order[b.status]) || a.id.localeCompare(b.id));
-  if (fs.length) {
-    const box = el("div", "cc-findings");
-    for (const f of fs) {
-      const fc = el("div", "cf st-" + f.status);
-      const t = el("div", "cf-top");
-      t.append(el("b", "", f.id), el("span", "chip sev-" + f.severity, SEV_TR[f.severity] || f.severity),
-        el("span", "chip fst-" + f.status, FST_TR[f.status] || f.status), el("small", "", ROLE_TR[f.by] || f.by));
-      fc.append(t, el("div", "cf-title", f.title));
-      if (f.evidence) fc.appendChild(el("div", "cf-ev", f.evidence));
-      if (f.fix) fc.appendChild(el("div", "cf-fix", "Öneri: " + f.fix));
-      if (f.check) fc.appendChild(el("div", "cf-chk", "Kontrolcü: " + f.check));
-      for (const n of f.notes || []) fc.appendChild(el("div", "cf-note", `${ROLE_TR[n.by] || n.by} ${n.stance === "agree" ? "katılıyor" : "itiraz ediyor"}: ${n.note}`));
-      box.appendChild(fc);
-    }
-    card.appendChild(box);
-  } else if (c.state !== "running") card.appendChild(el("div", "cc-title", "Bulgu yok."));
-  if ((res.conditions || []).length) {
-    const ul = el("ul", "cc-conds");
-    for (const x of res.conditions) ul.appendChild(el("li", "", x));
-    card.append(el("div", "cc-sub", "Şartlar"), ul);
-  }
-  // senin oyun
-  if (latest && c.state !== "running") {
+  if (latest && !running) {
     const row = el("div", "cc-uv");
-    const note = el("input"); note.type = "text"; note.placeholder = "Oyunun gerekçesi (isteğe bağlı)"; note.dataset.k = "uv" + (c.id || target);
-    row.appendChild(el("span", "cc-sub", c.user_vote ? "Oyunu değiştir (×3):" : "Senin oyun (×3):"));
-    for (const [v, l, cls] of [["approve", "Onay", "accent"], ["conditional", "Şartlı onay", ""], ["reject", "Ret", "danger"]]) {
-      const b = el("button", "btn " + cls, l);
-      b.addEventListener("click", () => projectAction("vote", target, v, { note: note.value.trim() }));
+    row.appendChild(el("span", "", c.user_vote ? `Oyun: ${VOTE_TR2[c.user_vote.vote]}. Değiştir:` : "Senin oyun:"));
+    for (const [v, l] of [["approve", "Onay"], ["conditional", "Şartlı"], ["reject", "Ret"]]) {
+      const b = el("button", "btn ghost" + (c.user_vote && c.user_vote.vote === v ? " on" : ""), l);
+      b.addEventListener("click", () => projectAction("vote", target, v, {}));
       row.appendChild(b);
     }
-    row.appendChild(note);
     card.appendChild(row);
   }
-  if ((c.transcript || []).length) {
+  const more = el("details", "cc-more");
+  more.dataset.k = "ccm" + (c.id || c.started || "") + target;
+  more.appendChild(el("summary", "", "Ayrıntılar"));
+  card.appendChild(more);
+  const card0 = card;
+  {
+  const card = more;
+  if (c.title) card.appendChild(el("div", "cc-title", c.title));
+  if (res.score !== undefined && !running) card.appendChild(el("div", "cc-title", `Ağırlıklı onay oranı %${Math.round((res.score || 0) * 100)}` +
+    ((res.veto || []).length ? ` · veto eden bulgular: ${res.veto.join(", ")}` : "") + (c.critical ? " · kritik iş, en güçlü modeller" : "")));
+  if (res.error) card.appendChild(el("div", "cc-err", res.error));
+
+  // oylar: rol başına küçük kutu; gerekçe iki satır, tıklayınca tamamı
+  const votes = el("div", "cc-votes");
+  const voteBox = (name, model, v, weight, reason, off) => {
+    const box = el("div", "cv v-" + (v || "none") + (off ? " off" : ""));
+    const top = el("div", "cv-top");
+    top.append(el("b", "", name), el("span", "vote v-" + (v || "none"), v ? VOTE_TR2[v] : "oy yok"));
+    if (weight > 1) top.appendChild(el("span", "cv-w", `×${weight}`));
+    box.appendChild(top);
+    if (model) box.title = model;
+    if (off) box.appendChild(el("div", "cv-off", "sayılmadı: " + off));
+    if (reason) {
+      const r = el("div", "cv-r", reason);
+      r.title = "Tamamını göster";
+      r.addEventListener("click", () => r.classList.toggle("open"));
+      box.appendChild(r);
+    }
+    return box;
+  };
+  for (const v of c.votes || []) {
+    const changed = v.first && v.last && v.first !== v.last;
+    const box = voteBox(ROLE_TR[v.role] || v.role, v.model || "", v.last, v.weight, v.reason, v.counted === false ? v.note : "");
+    if (changed) box.querySelector(".vote").textContent = `${VOTE_TR2[v.first]} → ${VOTE_TR2[v.last]}`;
+    votes.appendChild(box);
+  }
+  if (c.user_vote) votes.appendChild(voteBox("sen", "", c.user_vote.vote, 3, c.user_vote.note, ""));
+  if (votes.childNodes.length) card.appendChild(votes);
+
+  // bulgular: doğrulanan ve belirsizler görünür, çürütülenler kapalı; ayrıntı tıklayınca
+  const order = { confirmed: 0, unclear: 1, pending: 2, refuted: 3 };
+  const sev = { critical: 0, major: 1, minor: 2 };
+  const fs = (c.findings || []).slice().sort((a, b) => (order[a.status] - order[b.status]) || (sev[a.severity] - sev[b.severity]) || a.id.localeCompare(b.id, undefined, { numeric: true }));
+  const live = fs.filter((f) => f.status !== "refuted"), dead = fs.filter((f) => f.status === "refuted");
+  if (fs.length) {
+    const n = (st) => fs.filter((f) => f.status === st).length;
+    card.appendChild(el("div", "cc-sub", ["Bulgular", n("confirmed") ? `${n("confirmed")} doğrulandı` : "", n("unclear") ? `${n("unclear")} belirsiz` : "",
+      dead.length ? `${dead.length} çürütüldü` : ""].filter(Boolean).join(" · ")));
+    const box = el("div", "cc-findings");
+    for (const f of live) box.appendChild(findingRow(f));
+    if (dead.length) {
+      const d = el("details", "cc-dead");
+      d.dataset.k = "ccd" + (c.id || c.started || "");
+      d.appendChild(el("summary", "", `Çürütülen bulgular (${dead.length})`));
+      for (const f of dead) d.appendChild(findingRow(f));
+      box.appendChild(d);
+    }
+    card.appendChild(box);
+  } else if (!running) card.appendChild(el("div", "cc-title", "Bulgu yok."));
+  // tartışma dökümü: tur tur, her rol kapalı; JSON kararlar zaten yukarıda
+  const tr = (c.transcript || []).map((t) => ({ ...t, text: councilProse(t.text) })).filter((t) => t.text);
+  if (tr.length) {
     const dt = el("details", "cc-tr");
-    dt.appendChild(el("summary", "", `Tartışma dökümü (${c.transcript.length})`));
-    for (const t of c.transcript) {
-      const it = el("div", "cc-tr-it");
-      it.appendChild(el("b", "", `${ROLE_TR[t.role] || t.role} · tur ${t.round}`));
+    dt.dataset.k = "cct" + (c.id || c.started || "") + target;
+    dt.appendChild(el("summary", "", `Tartışma dökümü (${tr.length} konuşma)`));
+    let round = null;
+    for (const t of tr) {
+      if (t.round !== round) { round = t.round; dt.appendChild(el("div", "cc-tr-round", round === 1 ? "Tur 1 · bağımsız inceleme" : `Tur ${round}`)); }
+      const it = el("details", "cc-tr-it");
+      const sm = el("summary");
+      sm.append(el("b", "", ROLE_TR[t.role] || t.role), el("span", "", t.text.replace(/[#*_`>]/g, "").split("\n").find((x) => x.trim()) || ""));
       const pz = el("div", "prose");
-      setMd(pz, (t.text || "").replace(/```json[\s\S]*?```/g, "").trim() || "(sadece oy verdi)");
-      it.appendChild(pz);
+      setMd(pz, t.text);
+      it.append(sm, pz);
       dt.appendChild(it);
     }
     card.appendChild(dt);
   }
-  return card;
+  }
+  return card0;
 }
 // ---- konuşmayı insanca göster: iç olaylar küçük notlara, araç çağrıları tek açılır satıra dönüşür.
 function rawView() { try { return localStorage.getItem("alice.rawThreads") === "1"; } catch { return false; } }
@@ -1605,6 +1730,7 @@ function eventNotes(body) {
   return out;
 }
 function msgCard(from, to, text) {
+  if (from === "sistem") return el("div", "pf-note", text.split("\n")[0].replace(/^takıma yeni ajan katıldı: ([^:]+):.*/, "$1 takıma katıldı").slice(0, 160));
   const c = el("div", "pf-msg" + (from === "kullanıcı" ? " me" : ""));
   c.append(el("b", "", from === "kullanıcı" ? "Sen" : from === "alice" ? "Alice" : from), el("span", "", to && to !== "alice" ? ` → ${to}` : ""));
   // Soruya verilen cevaplar yöneticiye "Sorduğun soruya cevap (soru): cevap" diye gider; kullanıcıya sadece cevap.
@@ -1621,6 +1747,7 @@ function buildFeed(history, isLead) {
     group = [];
     if (!visible.length) return;
     const box = el("details", "pf-steps");
+    box.dataset.k = "st" + (S.proj ? S.proj.sel : "") + out.length;
     const counts = {};
     for (const it of visible) { const k = (TOOL_TR[it.name] || [it.name, it.name])[1]; counts[k] = (counts[k] || 0) + 1; }
     const errs = visible.filter((it) => it.is_error).length;

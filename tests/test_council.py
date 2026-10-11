@@ -222,3 +222,12 @@ def test_user_vote_overrides_contested(workdir):
     assert m.status == "review" and m.councils[-1]["result"]["decision"] == "contested"
     assert team.user_vote("backend", "approve", "bence tamam") == "approve"
     assert m.status == "done"
+
+
+def test_prose_drops_json_decisions():
+    from alice.council import prose
+
+    assert prose("Gerekçem şu.\n\n```json\n{\"vote\": \"reject\"}\n```") == "Gerekçem şu."
+    assert prose('Kısa not {"vote": "approve", "findings": []}') == "Kısa not"
+    assert prose('```json\n{"checks": [') == ""
+    assert prose("a" * 2000).endswith("…") and len(prose("a" * 2000)) == 1501
