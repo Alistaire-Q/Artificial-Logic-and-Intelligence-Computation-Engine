@@ -1,0 +1,584 @@
+"""git ve GitHub: depo klonlama, dal, commit, push, PR açma/birleştirme.
+
+Anahtar: GITHUB_TOKEN / GH_TOKEN (.env), yoksa config'teki GitHub MCP sunucusunun anahtarı, yoksa
+GITHUB_MODELS_TOKEN, en son `gh auth token`. Anahtar git'e yalnızca o komutun ortamında verilir (GIT_CONFIG_*),
+hiçbir dosyaya yazılmaz.
+
+Kurallar (Claude Code / Codex'teki gibi), config.toml [github]:
+  protected_branches = ["main", "master"]  # bu dallara ve deponun varsayılan dalına push her izin modunda onay ister
+  merge_method = "squash"                  # merge | squash | rebase
+  require_checks = true                    # CI kırmızı ya da sürüyorsa birleştirme reddedilir (force=true onayla geçer)
+  clone_dir = ""                           # boş: ~/GitHub/<sahip>/<depo>
+
+- Okuma (status, diff, log, PR/issue listesi, CI durumu) hiç sormaz; plan modunda da çalışır.
+- commit, dal değiştirme, korumasız dala push, PR/issue açma, yorum: yerel ya da geri alınabilir; auto modda sormaz.
+- PR birleştirme/kapatma, korumalı dala push, force push: geri alınamaz; yolo dışında her zaman onay ister.
+- Commit'e .env ya da anahtara benzeyen bir şey giriyorsa reddedilir.
+"""
+
+from __future__ import annotations
+
+import base64
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+from alice.tools.base import DANGER, READ, WRITE, Tool, ToolContext, ToolError, ToolResult, obj, truncate
+
+API = "https://api.github.com"
+TOKEN_ENVS = ("GITHUB_TOKEN", "GH_TOKEN", "GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_PAT")
+NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
+DEFAULTS: dict[str, Any] = {"protected_branches": ["main", "master"], "merge_method": "squash",
+                            "require_checks": True, "clone_dir": ""}
+
+# Commit'e girmemesi gereken anahtar kalıpları (eklenen satırlarda aranır).
+REPO_RX = re.compile(r"[\w-][\w.-]*/[\w-][\w.-]*")  # "sahip/depo"; ".." ile klasör dışına çıkılamaz
+SECRET_RX = re.compile(
+    r"gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}|sk-[A-Za-z0-9_-]{32,}|AIza[0-9A-Za-z_-]{35}|"
+    r"gsk_[A-Za-z0-9]{40,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----")
+SECRET_FILES = re.compile(r"(^|/)(\.env(\.[^/]*)?|id_rsa|id_ed25519|.*\.pem|.*\.key)$", re.I)
+
+
+def settings(cfg: Any) -> dict[str, Any]:
+    data = getattr(cfg, "data", None) or {}
+    return {**DEFAULTS, **(data.get("github") or {})}
+
+
+def github_token(cfg: Any = None) -> str | None:
+    for k in TOKEN_ENVS:
+        if os.environ.get(k):
+            return os.environ[k]
+    # GitHub MCP sunucusu zaten bir anahtarla tanımlıysa onu kullan.
+    data = getattr(cfg, "data", None) or {}
+    for name, spec in ((data.get("mcp") or {}).get("servers") or {}).items():
+        if "github" not in name.lower():
+            continue
+        for k, v in (spec.get("env") or {}).items():
+            val = os.path.expandvars(str(v))
+            if "TOKEN" in k.upper() and val and "$" not in val:
+                return val
+        for h in (spec.get("headers") or {}).values():
+            m = re.match(r"(?i)bearer\s+(\S+)", os.path.expandvars(str(h)))
+            if m and "$" not in m.group(1):
+                return m.group(1)
+    if os.environ.get("GITHUB_MODELS_TOKEN"):
+        return os.environ["GITHUB_MODELS_TOKEN"]
+    gh = shutil.which("gh")
+    if gh:
+        try:
+            r = subprocess.run([gh, "auth", "token"], capture_output=True, text=True, timeout=10,
+                               creationflags=NO_WINDOW)
+            if r.returncode == 0 and r.stdout.strip():
+                return r.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return None
+
+
+# ---------------------------------------------------------------------------------------------- git
+def git_env(token: str | None) -> dict[str, str]:
+    """git'e anahtarı yalnızca bu sürecin ortamından ver; dosyaya, komut satırına, remote URL'ye yazılmaz."""
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    if token:
+        n = int(env.get("GIT_CONFIG_COUNT", "0") or 0)
+        basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+        env[f"GIT_CONFIG_KEY_{n}"] = "http.https://github.com/.extraheader"
+        env[f"GIT_CONFIG_VALUE_{n}"] = f"AUTHORIZATION: basic {basic}"
+        env["GIT_CONFIG_COUNT"] = str(n + 1)
+    return env
+
+
+def run_git(args: list[str], cwd: Path, token: str | None = None, timeout: int = 120,
+            check: bool = True) -> tuple[int, str]:
+    git = shutil.which("git")
+    if not git:
+        raise ToolError("git kurulu değil (https://git-scm.com/download/win)")
+    try:
+        r = subprocess.run([git, *args], cwd=cwd, capture_output=True, timeout=timeout, env=git_env(token),
+                           stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
+    except subprocess.TimeoutExpired as e:
+        raise ToolError(f"git {args[0]} {timeout} sn'de bitmedi") from e
+    out = (r.stdout + r.stderr).decode("utf-8", errors="replace").strip()
+    if token:
+        out = out.replace(token, "***")
+    if check and r.returncode != 0:
+        raise ToolError(f"git {' '.join(args[:2])} başarısız (kod {r.returncode}):\n{out}")
+    return r.returncode, out
+
+
+def parse_remote(url: str) -> str | None:
+    """'https://github.com/o/r(.git)' ya da 'git@github.com:o/r.git' -> 'o/r'."""
+    m = re.match(r"^(?:https?://(?:[^@/]+@)?github\.com/|git@github\.com:|ssh://git@github\.com/)"
+                 r"([\w.-]+)/([\w.-]+?)(?:\.git)?/?$", url.strip())
+    return f"{m.group(1)}/{m.group(2)}" if m else None
+
+
+def repo_root(cwd: Path) -> Path:
+    _, out = run_git(["rev-parse", "--show-toplevel"], cwd, check=False)
+    p = Path(out.splitlines()[-1]) if out else None
+    if p is None or not p.is_dir():
+        raise ToolError(f"{cwd} bir git deposu değil. GitHub'dan açmak için github action=clone kullan.")
+    return p
+
+
+def current_branch(cwd: Path) -> str:
+    _, out = run_git(["branch", "--show-current"], cwd, check=False)
+    return out.strip()
+
+
+def origin_repo(cwd: Path) -> str | None:
+    code, out = run_git(["remote", "get-url", "origin"], cwd, check=False)
+    return parse_remote(out) if code == 0 else None
+
+
+def protected(branch: str, cfg: Any, default_branch: str = "") -> bool:
+    names = {b.lower() for b in settings(cfg)["protected_branches"]}
+    if default_branch:
+        names.add(default_branch.lower())
+    return branch.lower() in names
+
+
+def staged_secrets(cwd: Path) -> list[str]:
+    """Commit'e girecek dosyalarda anahtar ya da .env var mı?"""
+    hits = []
+    _, names = run_git(["diff", "--cached", "--name-only"], cwd, check=False)
+    hits += [n for n in names.splitlines() if SECRET_FILES.search(n.strip())]
+    _, diff = run_git(["diff", "--cached", "-U0", "--no-color"], cwd, check=False)
+    fname = ""
+    for line in diff.splitlines():
+        if line.startswith("+++ b/"):
+            fname = line[6:]
+        elif line.startswith("+") and not line.startswith("+++") and SECRET_RX.search(line):
+            hits.append(f"{fname}: anahtara benzeyen satır")
+    return list(dict.fromkeys(hits))
+
+
+def clone_root(cfg: Any) -> Path:
+    d = settings(cfg).get("clone_dir") or ""
+    return Path(d).expanduser() if d else Path.home() / "GitHub"
+
+
+def clone_or_update(cfg: Any, repo: str, branch: str = "", token: str | None = None) -> tuple[Path, str]:
+    """Depoyu ~/GitHub/<sahip>/<depo> altına klonla; zaten varsa güncelle. (klasör, ne yapıldı) döner."""
+    repo = parse_remote(repo) or repo.strip().strip("/")
+    if not REPO_RX.fullmatch(repo):
+        raise ToolError(f"depo adı 'sahip/depo' biçiminde olmalı: {repo}")
+    token = token if token is not None else github_token(cfg)
+    owner, name = repo.split("/")
+    target = clone_root(cfg) / owner / name
+    if (target / ".git").exists():
+        run_git(["fetch", "--prune", "origin"], target, token, timeout=300)
+        note = "güncellendi (fetch)"
+        if branch and branch != current_branch(target):
+            run_git(["switch", branch], target, token)
+            note += f", dal: {branch}"
+        _, dirty = run_git(["status", "--porcelain"], target, check=False)
+        if not dirty.strip():
+            code, out = run_git(["pull", "--ff-only"], target, token, timeout=300, check=False)
+            if code == 0:
+                note = "güncellendi (pull)" + (f", dal: {branch}" if branch else "")
+        else:
+            note += "; yerel değişiklikler olduğu için pull yapılmadı"
+        return target, note
+    if target.exists() and any(target.iterdir()):
+        raise ToolError(f"{target} dolu ve git deposu değil; config [github] clone_dir ile başka yer seç")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    args = ["clone", f"https://github.com/{repo}.git", str(target)]
+    if branch:
+        args[1:1] = ["--branch", branch]
+    run_git(args, target.parent, token, timeout=900)
+    return target, "klonlandı"
+
+
+# --------------------------------------------------------------------------------------------- API
+class GitHubAPI:
+    def __init__(self, token: str | None, client: Any = None):
+        if not token:
+            raise ToolError("GitHub anahtarı bulunamadı: ~/.alice/.env'e GITHUB_TOKEN=... ekle (repo yetkili bir "
+                            "token) ya da `gh auth login` yap.")
+        self.token = token
+        self._client = client
+
+    @property
+    def client(self) -> Any:
+        if self._client is None:
+            import httpx
+
+            self._client = httpx.Client(base_url=API, timeout=30, headers={
+                "Authorization": f"Bearer {self.token}", "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "alice"})
+        return self._client
+
+    def call(self, method: str, path: str, **kw: Any) -> Any:
+        try:
+            r = self.client.request(method, path, **kw)
+        except Exception as e:  # noqa: BLE001
+            raise ToolError(f"GitHub'a ulaşılamadı: {e}") from e
+        if r.status_code >= 400:
+            try:
+                body = r.json()
+                msg = body.get("message", "")
+                errs = "; ".join(str(x.get("message") or x) for x in body.get("errors") or [])
+            except ValueError:
+                msg, errs = r.text[:300], ""
+            hint = {401: " (token geçersiz ya da süresi dolmuş)",
+                    403: " (token'ın bu işe yetkisi yok: repo / pull request yazma izni gerekir)",
+                    404: " (depo yok ya da token bu depoyu göremiyor)"}.get(r.status_code, "")
+            raise ToolError(f"GitHub {r.status_code}: {msg}{hint}" + (f" [{errs}]" if errs else ""))
+        return r.json() if r.content else {}
+
+    def get(self, path: str, **params: Any) -> Any:
+        return self.call("GET", path, params=params or None)
+
+    def post(self, path: str, body: dict[str, Any]) -> Any:
+        return self.call("POST", path, json=body)
+
+    def user_repos(self, query: str = "", limit: int = 100) -> list[dict[str, Any]]:
+        rows = self.get("/user/repos", per_page=100, sort="updated",
+                        affiliation="owner,collaborator,organization_member")
+        q = query.lower().strip()
+        out = [{"full_name": r["full_name"], "private": r.get("private", False), "description": r.get("description") or "",
+                "default_branch": r.get("default_branch", "main"), "updated": r.get("pushed_at") or r.get("updated_at")}
+               for r in rows if not q or q in r["full_name"].lower() or q in (r.get("description") or "").lower()]
+        return out[:limit]
+
+    def checks(self, repo: str, ref: str) -> dict[str, Any]:
+        """CI özeti: state = success | failure | pending | none."""
+        runs = self.get(f"/repos/{repo}/commits/{ref}/check-runs", per_page=100).get("check_runs", [])
+        status = self.get(f"/repos/{repo}/commits/{ref}/status")
+        items = [(c["name"], c.get("conclusion") or c.get("status")) for c in runs]
+        items += [(s["context"], s["state"]) for s in status.get("statuses", [])]
+        bad = [n for n, s in items if s in ("failure", "error", "timed_out", "cancelled", "action_required")]
+        waiting = [n for n, s in items if s in ("queued", "in_progress", "pending", "waiting", "requested")]
+        state = "none" if not items else "failure" if bad else "pending" if waiting else "success"
+        return {"state": state, "failed": bad, "pending": waiting, "total": len(items)}
+
+
+def _api(ctx: ToolContext) -> GitHubAPI:
+    api = ctx.state.get("github_api")
+    if api is None:
+        api = GitHubAPI(github_token(ctx.config))
+        ctx.state["github_api"] = api
+    return api
+
+
+def _token(ctx: ToolContext) -> str | None:
+    api = ctx.state.get("github_api")
+    return api.token if api is not None else github_token(ctx.config)
+
+
+# --------------------------------------------------------------------------------------------- git aracı
+GIT_READ = {"status", "diff", "log", "branches"}
+
+
+class Git(Tool):
+    name = "git"
+    description = (
+        "Çalışma klasöründeki git deposunda iş yapar; GitHub anahtarını kendisi kullanır.\n"
+        "status/diff/log/branches: okuma. switch: dala geç (create=true yeni dal açar). commit: files ya da "
+        "all=true ile ekleyip commit'ler (.env ve anahtar içeren değişiklikler reddedilir). pull. push: dalı "
+        "origin'e gönderir; main/master gibi korumalı dala ya da force ile push onay ister.\n"
+        "Kural: korumalı dalda çalışma; önce switch create=true ile dal aç, commit, push, sonra github pr_create."
+    )
+    parameters = obj({
+        "action": {"type": "string", "enum": ["status", "diff", "log", "branches", "switch", "commit", "pull", "push"],
+                   "description": "Yapılacak iş."},
+        "branch": {"type": "string", "description": "switch/push için dal adı. push'ta boşsa şu anki dal."},
+        "create": {"type": "boolean", "description": "switch: dal yoksa oluştur. Varsayılan false."},
+        "message": {"type": "string", "description": "commit mesajı (ilk satır kısa özet)."},
+        "files": {"type": "array", "items": {"type": "string", "description": "Dosya yolu."},
+                  "description": "commit: eklenecek dosyalar. Boşsa ve all=false ise yalnızca zaten eklenmişler."},
+        "all": {"type": "boolean", "description": "commit: tüm değişiklikleri (yeni dosyalar dahil) ekle."},
+        "staged": {"type": "boolean", "description": "diff: yalnızca commit'e eklenmiş değişiklikler."},
+        "path": {"type": "string", "description": "diff/log: yalnızca bu dosya ya da klasör."},
+        "count": {"type": "integer", "description": "log: kaç commit. Varsayılan 15."},
+        "force": {"type": "boolean", "description": "push: --force-with-lease. Her zaman onay ister."},
+        "protected": {"type": "boolean", "description": "push: korumalı dala (main/master/ana dal) doğrudan push; "
+                      "yalnızca kullanıcı açıkça isterse. Onay ister."},
+    }, ["action"])
+    risk = WRITE
+
+    def risk_for(self, args: dict[str, Any]) -> str:
+        action = args.get("action")
+        if action in GIT_READ:
+            return READ
+        if action == "push" and (args.get("force") or args.get("protected")):
+            return DANGER
+        return WRITE
+
+    def summary(self, args: dict[str, Any]) -> str:
+        a = args.get("action", "")
+        extra = args.get("message") or args.get("branch") or args.get("path") or ""
+        return f"git {a} {extra}".strip()[:200]
+
+    def run(self, ctx: ToolContext, action: str, branch: str = "", create: bool = False, message: str = "",
+            files: list[str] | None = None, all: bool = False, staged: bool = False, path: str = "",  # noqa: A002
+            count: int = 15, force: bool = False, protected: bool = False) -> ToolResult:
+        root = repo_root(ctx.cwd)
+        limit = int(ctx.config.agent.get("tool_output_chars", 12000))
+        if action == "status":
+            _, out = run_git(["status", "--short", "--branch"], root)
+            return ToolResult(out or "temiz")
+        if action == "diff":
+            args = ["diff", "--no-color", "--stat", "--patch"] + (["--cached"] if staged else [])
+            _, out = run_git(args + (["--", path] if path else []), root)
+            return ToolResult(truncate(out, limit) if out else "değişiklik yok")
+        if action == "log":
+            n = max(1, min(int(count or 15), 100))
+            _, out = run_git(["log", f"-{n}", "--date=short", "--pretty=format:%h %ad %an  %s"]
+                             + (["--", path] if path else []), root)
+            return ToolResult(out or "commit yok")
+        if action == "branches":
+            _, out = run_git(["branch", "-vv", "--sort=-committerdate"], root)
+            return ToolResult(out)
+        if action == "switch":
+            if not branch:
+                raise ToolError("switch için branch gerekli")
+            _, out = run_git(["switch", "-c", branch] if create else ["switch", branch], root)
+            return ToolResult(out or f"dal: {branch}")
+        if action == "commit":
+            return self._commit(root, message, files or [], all)
+        if action == "pull":
+            _, out = run_git(["pull", "--ff-only"], root, _token(ctx), timeout=300)
+            return ToolResult(out)
+        if action == "push":
+            return self._push(ctx, root, branch, force, protected)
+        raise ToolError(f"bilinmeyen action: {action}")
+
+    @staticmethod
+    def _commit(root: Path, message: str, files: list[str], add_all: bool) -> ToolResult:
+        if not message.strip():
+            raise ToolError("commit için message gerekli")
+        if add_all:
+            run_git(["add", "-A"], root)
+        elif files:
+            run_git(["add", "--", *files], root)
+        secrets_ = staged_secrets(root)
+        if secrets_:
+            raise ToolError("commit iptal: anahtar ya da gizli dosya eklenmiş görünüyor: " + ", ".join(secrets_[:8])
+                            + ". Bunları `git restore --staged <dosya>` ile çıkar, .gitignore'a ekle.")
+        code, _ = run_git(["diff", "--cached", "--quiet"], root, check=False)
+        if code == 0:
+            raise ToolError("commit'lenecek değişiklik yok (files ya da all=true ver)")
+        _, out = run_git(["commit", "-m", message], root)
+        return ToolResult(out.splitlines()[0] if out else "commit'lendi")
+
+    def _push(self, ctx: ToolContext, root: Path, branch: str, force: bool, allow_protected: bool) -> ToolResult:
+        branch = branch or current_branch(root)
+        if not branch:
+            raise ToolError("ayrık HEAD: push için branch ver")
+        default = ""
+        repo = origin_repo(root)
+        if repo:
+            try:
+                default = _api(ctx).get(f"/repos/{repo}").get("default_branch", "")
+            except ToolError:
+                default = ""
+        # Korumalı dala push yalnızca protected=true ile yapılır: risk_for o zaman onay ister.
+        if protected(branch, ctx.config, default) and not (allow_protected or force):
+            raise ToolError(f"'{branch}' korumalı dal (deponun ana dalı). Doğrudan push yerine yeni dal aç "
+                            f"(git switch create=true), push et ve github pr_create kullan. Kullanıcı açıkça "
+                            f"istediyse protected=true ile tekrar çağır; onay istenecek.")
+        args = ["push", "-u", "origin", branch] + (["--force-with-lease"] if force else [])
+        _, out = run_git(args, root, _token(ctx), timeout=300)
+        return ToolResult(out or f"{branch} gönderildi")
+
+
+# --------------------------------------------------------------------------------------------- github aracı
+GH_READ = {"repos", "prs", "pr_view", "issues", "checks"}
+GH_DANGER = {"pr_merge", "pr_close"}
+
+
+class GitHub(Tool):
+    name = "github"
+    description = (
+        "GitHub: depoları listele, klonla, PR aç/incele/birleştir, issue, CI durumu. Kullanıcının kendi anahtarıyla.\n"
+        "repo boşsa çalışma klasörünün origin deposu kullanılır.\n"
+        "repos: kullanıcının depoları (query ile süz). clone: depoyu ~/GitHub altına klonlar (varsa günceller) ve "
+        "çalışma klasörünü oraya alır. prs, pr_view, checks, issues: okuma. pr_create: şu anki dalı push edip PR açar "
+        "(korumalı daldan açılmaz). pr_comment, issue_create. pr_merge/pr_close: her zaman onay ister; CI kırmızı ya "
+        "da sürüyorsa birleştirme reddedilir."
+    )
+    parameters = obj({
+        "action": {"type": "string", "enum": ["repos", "clone", "prs", "pr_view", "checks", "issues", "pr_create",
+                                              "pr_comment", "pr_merge", "pr_close", "issue_create"],
+                   "description": "Yapılacak iş."},
+        "repo": {"type": "string", "description": "'sahip/depo'. Boşsa çalışma klasörünün origin'i."},
+        "query": {"type": "string", "description": "repos: ada/açıklamaya göre süzgeç."},
+        "number": {"type": "integer", "description": "PR ya da issue numarası."},
+        "title": {"type": "string", "description": "pr_create/issue_create başlığı."},
+        "body": {"type": "string", "description": "PR/issue açıklaması ya da yorum metni."},
+        "base": {"type": "string", "description": "pr_create: hedef dal. Varsayılan deponun ana dalı."},
+        "head": {"type": "string", "description": "pr_create: kaynak dal. Varsayılan şu anki dal."},
+        "branch": {"type": "string", "description": "clone: geçilecek dal. checks: bakılacak dal/commit."},
+        "draft": {"type": "boolean", "description": "pr_create: taslak PR."},
+        "state": {"type": "string", "enum": ["open", "closed", "all"], "description": "prs/issues süzgeci. Varsayılan open."},
+        "method": {"type": "string", "enum": ["merge", "squash", "rebase"],
+                   "description": "pr_merge yöntemi. Varsayılan config [github] merge_method."},
+        "force": {"type": "boolean", "description": "pr_merge: CI kırmızı/sürüyor olsa da birleştir (kullanıcı açıkça "
+                  "isterse)."},
+    }, ["action"])
+    risk = WRITE
+
+    def risk_for(self, args: dict[str, Any]) -> str:
+        a = args.get("action")
+        if a in GH_READ:
+            return READ
+        if a in GH_DANGER:
+            return DANGER
+        return WRITE
+
+    def summary(self, args: dict[str, Any]) -> str:
+        bits = [args.get("action", ""), args.get("repo") or ""]
+        if args.get("number"):
+            bits.append(f"#{args['number']}")
+        bits.append(args.get("title") or args.get("query") or "")
+        return " ".join(b for b in bits if b)[:200]
+
+    def _repo(self, ctx: ToolContext, repo: str) -> str:
+        if repo:
+            r = parse_remote(repo) or repo.strip().strip("/")
+            if not REPO_RX.fullmatch(r):
+                raise ToolError(f"repo 'sahip/depo' biçiminde olmalı: {repo}")
+            return r
+        r = origin_repo(ctx.cwd)
+        if not r:
+            raise ToolError("çalışma klasörü bir GitHub deposu değil: repo='sahip/depo' ver ya da action=clone kullan")
+        return r
+
+    def run(self, ctx: ToolContext, action: str, repo: str = "", query: str = "", number: int = 0, title: str = "",
+            body: str = "", base: str = "", head: str = "", branch: str = "", draft: bool = False,
+            state: str = "open", method: str = "", force: bool = False) -> ToolResult:
+        api = _api(ctx)
+        if action == "repos":
+            rows = api.user_repos(query)
+            if not rows:
+                return ToolResult("depo bulunamadı")
+            return ToolResult("\n".join(f"{r['full_name']}{' (gizli)' if r['private'] else ''}  {r['description'][:80]}"
+                                        for r in rows))
+        if action == "clone":
+            if not repo:
+                raise ToolError("clone için repo='sahip/depo' gerekli")
+            path, note = clone_or_update(ctx.config, repo, branch, api.token)
+            switch = ctx.state.get("set_cwd")
+            if callable(switch):
+                switch(path)
+            else:
+                ctx.cwd = path
+            return ToolResult(f"{repo} {note}: {path}\nÇalışma klasörü artık bu.")
+        repo = self._repo(ctx, repo)
+        if action == "prs":
+            rows = api.get(f"/repos/{repo}/pulls", state=state or "open", per_page=30)
+            if not rows:
+                return ToolResult("PR yok")
+            return ToolResult("\n".join(f"#{p['number']} {p['title']}  ({p['head']['ref']} -> {p['base']['ref']}"
+                                        f"{', taslak' if p.get('draft') else ''}, {p['user']['login']})" for p in rows))
+        if action == "issues":
+            rows = [i for i in api.get(f"/repos/{repo}/issues", state=state or "open", per_page=30)
+                    if "pull_request" not in i]
+            return ToolResult("\n".join(f"#{i['number']} {i['title']}" for i in rows) or "issue yok")
+        if action == "checks":
+            ref = branch or (current_branch(ctx.cwd) if not number else "")
+            if number:
+                ref = api.get(f"/repos/{repo}/pulls/{number}")["head"]["sha"]
+            if not ref:
+                raise ToolError("checks için branch ya da number ver")
+            return ToolResult(_fmt_checks(api.checks(repo, ref)))
+        if action == "pr_view":
+            return ToolResult(self._view(api, repo, self._need(number)))
+        if action == "pr_create":
+            return self._create(ctx, api, repo, title, body, base, head, draft)
+        if action == "pr_comment":
+            if not body:
+                raise ToolError("yorum için body gerekli")
+            c = api.post(f"/repos/{repo}/issues/{self._need(number)}/comments", {"body": body})
+            return ToolResult(f"yorum eklendi: {c.get('html_url', '')}")
+        if action == "issue_create":
+            if not title:
+                raise ToolError("issue için title gerekli")
+            i = api.post(f"/repos/{repo}/issues", {"title": title, "body": body})
+            return ToolResult(f"issue #{i['number']} açıldı: {i['html_url']}")
+        if action == "pr_merge":
+            return self._merge(ctx, api, repo, self._need(number), method, force)
+        if action == "pr_close":
+            p = api.call("PATCH", f"/repos/{repo}/pulls/{self._need(number)}", json={"state": "closed"})
+            return ToolResult(f"#{p['number']} kapatıldı")
+        raise ToolError(f"bilinmeyen action: {action}")
+
+    @staticmethod
+    def _need(number: int) -> int:
+        if not number:
+            raise ToolError("PR/issue numarası (number) gerekli")
+        return int(number)
+
+    @staticmethod
+    def _view(api: GitHubAPI, repo: str, number: int) -> str:
+        p = api.get(f"/repos/{repo}/pulls/{number}")
+        ch = api.checks(repo, p["head"]["sha"])
+        merge = {True: "çakışma yok", False: "ÇAKIŞMA VAR", None: "hesaplanıyor"}.get(p.get("mergeable"), "?")
+        lines = [f"#{number} {p['title']}  [{p['state']}{', taslak' if p.get('draft') else ''}"
+                 f"{', birleşti' if p.get('merged') else ''}]",
+                 f"{p['head']['ref']} -> {p['base']['ref']}, {p.get('commits', '?')} commit, "
+                 f"+{p.get('additions', 0)} -{p.get('deletions', 0)}, {p.get('changed_files', 0)} dosya, {merge}",
+                 _fmt_checks(ch), p["html_url"]]
+        if p.get("body"):
+            lines.append("\n" + p["body"][:1500])
+        return "\n".join(lines)
+
+    def _create(self, ctx: ToolContext, api: GitHubAPI, repo: str, title: str, body: str, base: str, head: str,
+                draft: bool) -> ToolResult:
+        if not title:
+            raise ToolError("pr_create için title gerekli")
+        info = api.get(f"/repos/{repo}")
+        base = base or info.get("default_branch", "main")
+        root = repo_root(ctx.cwd)
+        head = head or current_branch(root)
+        if not head or head == base or protected(head, ctx.config, info.get("default_branch", "")):
+            raise ToolError(f"PR korumalı daldan ({head or 'ayrık HEAD'}) açılmaz: önce git switch create=true ile "
+                            f"yeni dal aç, commit'le, sonra tekrar dene.")
+        _, dirty = run_git(["status", "--porcelain"], root, check=False)
+        note = "\nUyarı: commit'lenmemiş değişiklikler var, PR'a girmedi." if dirty.strip() else ""
+        if origin_repo(root) == repo:
+            run_git(["push", "-u", "origin", head], root, api.token, timeout=300)
+        p = api.post(f"/repos/{repo}/pulls", {"title": title, "body": body, "base": base, "head": head, "draft": draft})
+        return ToolResult(f"PR #{p['number']} açıldı ({head} -> {base}): {p['html_url']}{note}")
+
+    def _merge(self, ctx: ToolContext, api: GitHubAPI, repo: str, number: int, method: str, force: bool) -> ToolResult:
+        cfg = settings(ctx.config)
+        p = api.get(f"/repos/{repo}/pulls/{number}")
+        if p.get("merged"):
+            return ToolResult(f"#{number} zaten birleşmiş")
+        if p["state"] != "open":
+            raise ToolError(f"#{number} kapalı")
+        if p.get("draft"):
+            raise ToolError(f"#{number} taslak; önce hazır olarak işaretlenmeli")
+        if p.get("mergeable") is False:
+            raise ToolError(f"#{number} hedef dalla çakışıyor; önce çakışmayı çöz (git pull origin {p['base']['ref']})")
+        ch = api.checks(repo, p["head"]["sha"])
+        if cfg.get("require_checks", True) and ch["state"] in ("failure", "pending") and not force:
+            raise ToolError(f"birleştirilmedi, CI {('kırmızı: ' + ', '.join(ch['failed'])) if ch['failed'] else 'sürüyor'}"
+                            ". Bekle ya da düzelt; kullanıcı açıkça isterse force=true.")
+        m = method or cfg.get("merge_method", "squash")
+        res = api.call("PUT", f"/repos/{repo}/pulls/{number}/merge",
+                       json={"merge_method": m, "sha": p["head"]["sha"]})
+        return ToolResult(f"#{number} birleştirildi ({m}): {res.get('sha', '')[:7]}")
+
+
+def _fmt_checks(ch: dict[str, Any]) -> str:
+    if ch["state"] == "none":
+        return "CI: kontrol yok"
+    label = {"success": "yeşil", "failure": "kırmızı", "pending": "sürüyor"}[ch["state"]]
+    out = f"CI: {label} ({ch['total']} kontrol)"
+    if ch["failed"]:
+        out += " başarısız: " + ", ".join(ch["failed"][:10])
+    if ch["pending"]:
+        out += " süren: " + ", ".join(ch["pending"][:10])
+    return out
+
+
+TOOLS: list[Tool] = [Git(), GitHub()]

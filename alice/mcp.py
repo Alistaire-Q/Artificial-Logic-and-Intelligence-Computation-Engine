@@ -25,9 +25,11 @@ from typing import Any, Callable
 
 from alice import __version__
 from alice.config import Config, alice_home
-from alice.tools.base import EXEC, READ, Tool, ToolContext, ToolError, ToolResult
+from alice.tools.base import DANGER, EXEC, READ, Tool, ToolContext, ToolError, ToolResult
 
 PROTOCOL_VERSION = "2025-06-18"
+# Geri alınamaz işler (PR birleştirme, dosya/dal/depo silme, kapatma): auto modda da onay ister.
+_DANGER_NAME = re.compile(r"(^|_)(merge|delete|remove|drop|destroy|close|archive|transfer|force)", re.I)
 
 
 class MCPError(Exception):
@@ -166,7 +168,7 @@ class MCPTool(Tool):
         schema.setdefault("properties", {})
         self.parameters = schema
         ann = spec.get("annotations") or {}
-        self.risk = READ if ann.get("readOnlyHint") else EXEC
+        self.risk = READ if ann.get("readOnlyHint") else DANGER if _DANGER_NAME.search(spec["name"]) else EXEC
         self.parallel_safe = self.risk == READ  # istemci thread-safe, salt okuma araçları paralel çalışabilir
 
     def run(self, ctx: ToolContext, **args: Any) -> ToolResult:

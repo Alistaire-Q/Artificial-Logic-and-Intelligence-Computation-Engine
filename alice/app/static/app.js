@@ -1021,9 +1021,49 @@ function askCwd() {
     ok.addEventListener("click", submit);
     inp.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
     row.append(no, ok);
-    d.append(inp, err, row);
+    d.append(inp, err, row, githubPicker(err));
     setTimeout(() => { inp.focus(); inp.select(); }, 0);
   });
+}
+// GitHub'daki depolar: tıklanınca ~/GitHub altına klonlanır (varsa güncellenir) ve çalışma klasörü olur.
+function githubPicker(err) {
+  const box = el("div", "gh-pick");
+  const q = el("input"); q.type = "text"; q.placeholder = "GitHub deposu ara…";
+  const list = el("div", "gh-list");
+  const note = el("div", "note", "Depolar yükleniyor…");
+  box.append(el("h3", "", "GitHub'dan aç"), q, note, list);
+  let repos = [];
+  const draw = () => {
+    const f = q.value.trim().toLocaleLowerCase("tr");
+    const rows = repos.filter((r) => !f || (r.full_name + " " + r.description).toLocaleLowerCase("tr").includes(f));
+    list.replaceChildren(...rows.slice(0, 50).map((r) => {
+      const b = el("button", "list-row gh-row");
+      const l = el("span", "l", r.full_name);
+      if (r.description) l.title = r.description;
+      b.append(l, el("span", "r" + (r.local ? " ok" : ""), r.local ? "bilgisayarda" : r.private ? "gizli" : ""));
+      b.addEventListener("click", async () => {
+        list.querySelectorAll("button").forEach((x) => (x.disabled = true));
+        note.textContent = r.local ? `${r.full_name} güncelleniyor…` : `${r.full_name} klonlanıyor…`;
+        const res = await api("/api/github/open", { repo: r.full_name });
+        if (!res.ok) {
+          err.textContent = res.error; note.textContent = "";
+          list.querySelectorAll("button").forEach((x) => (x.disabled = false));
+          return;
+        }
+        applyStatus(res); closeDialog(); toast(`${r.full_name} ${res.note}`);
+      });
+      return b;
+    }));
+    note.textContent = rows.length ? "" : (repos.length ? "Eşleşen depo yok" : note.textContent);
+  };
+  q.addEventListener("input", draw);
+  api("/api/github/repos").then((r) => {
+    if (!r.ok) { note.textContent = r.error; note.classList.add("warn"); return; }
+    repos = r.repos || [];
+    note.textContent = repos.length ? "" : "Depo yok";
+    draw();
+  });
+  return box;
 }
 const showModels = () => showSettings("models");
 const showTools = () => showSettings("tools");

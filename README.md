@@ -184,6 +184,7 @@ alice models --write  # canlı ücretsiz katalogdan rol zincirlerini günceller 
 | Paralel araç çağrıları | Model tek cevapta birkaç okuma/arama isterse (`read_file`, `grep`, `glob`, `list_dir`, `web_search`, `web_fetch`, salt okuma MCP araçları) aynı anda çalışır; sonuçlar sırayla modele döner |
 | Araç gruplama | Art arda gelen okumalar uygulamada "2 dosya okundu, 1 arama yapıldı" diye tek açılır satır olur, terminalde her biri tek satır |
 | Hook'lar | yok |
+| git ve GitHub | `git` (status, diff, log, dal, commit, pull, push) ve `github` (depolar, klonlama, PR aç/incele/birleştir, yorum, issue, CI durumu) araçları; ayrıntı aşağıda |
 
 **Özel komut örneği**, `~/.alice/commands/incele.md`:
 
@@ -210,6 +211,21 @@ env = { GITHUB_PERSONAL_ACCESS_TOKEN = "..." }
 ```
 
 Sunucu başlamazsa hata uygulamada not olarak görünüyor, ayrıntısı `~/.alice/mcp-<isim>.log` dosyasında.
+
+### GitHub
+
+Çalışma klasörü düğmesindeki pencerenin altında **GitHub'dan aç** listesi var: depoya tıklayınca `~/GitHub/<sahip>/<depo>` altına klonlanıyor (zaten varsa güncelleniyor) ve çalışma klasörü o oluyor. Sohbette "alice deposunu aç" demek de aynı işi yapar.
+
+Anahtar sırayla şuradan alınır: `.env`'deki `GITHUB_TOKEN` (ya da `GH_TOKEN`), yoksa `[mcp.servers.github]`'ın anahtarı, yoksa `GITHUB_MODELS_TOKEN`, yoksa `gh auth token`. Anahtar git'e yalnızca o komutun ortamında verilir; remote URL'ye ya da bir dosyaya yazılmaz. Klonlama, push ve PR için token'da depo (Contents) ve Pull requests yazma izni olmalı.
+
+Kurallar (`config.toml` `[github]`):
+
+* Okuma (status, diff, log, PR/issue listesi, CI durumu) hiç sormaz, plan modunda da çalışır.
+* Commit, dal açma, korumasız dala push, PR/issue açma ve yorum auto modda sormaz; plan modunda reddedilir.
+* `protected_branches` (varsayılan `main`, `master`) ve deponun ana dalına doğrudan push reddedilir, ALICE yeni dal açıp PR açar. Sen açıkça istersen yapar ama onay sorar. Force push da onay sorar.
+* PR birleştirme ve kapatma her zaman onay sorar ("hep izin ver" bunları kapsamaz). CI kırmızıysa ya da sürüyorsa, PR taslaksa ya da çakışma varsa birleştirmez (`require_checks = false` ile kapatılır). Yöntem `merge_method` (varsayılan `squash`).
+* `.env`, özel anahtar dosyası ya da anahtara benzeyen satır içeren commit reddedilir.
+* MCP sunucularının birleştirme/silme/kapatma araçları da (`merge_*`, `delete_*`...) auto modda onay sorar.
 
 ## Terminal
 
