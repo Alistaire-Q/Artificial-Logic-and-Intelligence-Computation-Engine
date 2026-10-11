@@ -168,7 +168,7 @@ def test_worktree_isolation(workdir):
     agent, _, ctx = make(lambda *a, **k: "x", workdir)
     team = Team(ctx, "hedef")
     m = team.add({"name": "backend", "task": "a", "isolation": "worktree"})
-    assert m.cwd == workdir / ".alice-team" / "backend" and m.cwd.is_dir()
+    assert m.cwd.resolve() == (workdir / ".alice-team" / "backend").resolve() and m.cwd.is_dir()
     assert m.branch.startswith("alice-team/backend-")
     assert ".alice-team/" in (workdir / ".git/info/exclude").read_text()
 
