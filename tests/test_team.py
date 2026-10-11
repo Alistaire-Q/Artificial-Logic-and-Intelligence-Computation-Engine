@@ -180,3 +180,63 @@ def test_scope_helpers(tmp_path):
     patch = "*** Begin Patch\n*** Update File: a.py\n@@\n-x\n+y\n*** Add File: b/c.py\n+z\n*** End Patch"
     assert patch_paths(patch) == ["a.py", "b/c.py"]
     assert write_targets("file_ops", {"path": "a", "paths": ["b"], "destination": "c"}) == ["a", "c", "b"]
+
+
+def test_project_is_saved_loaded_and_resumed(workdir):
+    from alice.team import list_projects
+
+    def script(model, messages, tools, **kw):
+        n = steps(messages)
+        if who(messages) == "backend":
+            if n == 0:
+                return tool_call("write_file", {"path": "src/a.py", "content": "x = 1\n"})
+            return f"rapor {n}"
+        return "x"
+
+    agent, _, ctx = make(script, workdir)
+    team = Team(ctx, "Kaydedilen hedef\nikinci satır")
+    team.add({"name": "backend", "task": "a.py yaz", "scope": ["src"]})
+    team.start()
+    team.wait_orchestrator(10, lambda: False)
+    assert team.members["backend"].files == ["src/a.py"]
+    rows = list_projects()
+    assert rows[0]["id"] == team.id and rows[0]["title"] == "Kaydedilen hedef"
+    assert rows[0]["members"] == [{"name": "backend", "status": "done"}]
+
+    # uygulama yeniden açıldı: proje diskten yüklenir, konuşma korunur, mesajla devam eder
+    loaded = Team.load(team.id, ctx)
+    m = loaded.members["backend"]
+    assert m.status == "done" and m.files == ["src/a.py"] and m.agent is None
+    assert any(x.get("role") == "tool" for x in m.messages())
+    loaded.send("kullanıcı", "backend", "devam et")
+    loaded.wait_orchestrator(10, lambda: False)
+    assert m.status == "done" and m.result.startswith("rapor")
+    contents = [str(x.get("content")) for x in m.agent.messages]
+    assert "Görevine başla." in contents and any("devam et" in c for c in contents)
+
+
+def test_stopped_member_resumes_only_for_user(workdir):
+    agent, _, ctx = make(lambda *a, **k: "bitti", workdir)
+    team = Team(ctx, "hedef")
+    team.add({"name": "backend", "task": "a"})
+    team.members["backend"].status = "stopped"
+    team.send("alice", "backend", "devam")
+    assert team.members["backend"].status == "stopped"
+    team.send("kullanıcı", "backend", "devam")
+    team.wait_orchestrator(10, lambda: False)
+    assert team.members["backend"].status == "done"
+
+
+def test_add_member_announces_to_others(workdir):
+    agent, _, ctx = make(lambda *a, **k: "bitti", workdir)
+    team = Team(ctx, "hedef")
+    team.add({"name": "backend", "task": "a"})
+    team.start()
+    team.wait_orchestrator(10, lambda: False)
+    team.add_member({"name": "tests", "task": "test yaz", "scope": ["tests"]})
+    for _ in range(3):
+        team.wait_orchestrator(10, lambda: False)
+    assert team.members["tests"].status == "done"
+    assert team.members["backend"].status == "done"  # haber verildi ama uyandırılmadı
+    assert any(x.sender == "sistem" and "tests" in x.text for x in team.log)
+    assert "tests" in team.inbox["backend"][0].text

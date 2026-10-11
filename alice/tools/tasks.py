@@ -156,8 +156,9 @@ class TeamTool(Tool):
             for spec in specs:
                 team.add(spec)
             ctx.state["team"] = team
+            ctx.state.setdefault("teams", {})[team.id] = team  # Projeler sayfası buradan görür
             team.start()
-            return ToolResult("takım başladı:\n" + team.status_text() +
+            return ToolResult(f"takım başladı (proje {team.id}, uygulamada Projeler sayfasında):\n" + team.status_text() +
                               "\n\nŞimdi action=wait ile bekle; sorulara action=send ile cevap ver.")
         if team is None:
             return ToolResult("kurulmuş bir takım yok; önce action=start", is_error=True)

@@ -348,22 +348,103 @@ class AppState:
 
     def team_snapshot(self) -> dict[str, Any] | None:
         team = self.ctx.state.get("team")
-        return team.snapshot() if team is not None else None
+        return team.snapshot() if team is not None else None  # sohbetteki takım paneli: ALICE'in son takımı
 
-    def team_action(self, action: str, name: str = "", text: str = "") -> str:
-        """Kullanıcı takım panelinden bir üyeyi durdurur ya da ona doğrudan mesaj yazar."""
+    # -------------------------------------------------------------- projeler
+    def _teams(self) -> dict[str, Any]:
+        return self.ctx.state.setdefault("teams", {})
+
+    def get_team(self, pid: str):
+        """Canlı projeyi ya da diskteki projeyi (yükleyip) döndür."""
+        from alice.team import Team
         from alice.tools.base import ToolError
 
-        team = self.ctx.state.get("team")
-        if team is None:
-            raise ToolError("çalışan takım yok")
+        teams = self._teams()
+        if pid in teams:
+            return teams[pid]
+        try:
+            team = Team.load(pid, self.ctx, int(self.cfg.agent.get("team_max_parallel", 5)), self.bus.publish)
+        except (OSError, ValueError, KeyError) as e:
+            raise ToolError(f"proje bulunamadı: {pid}") from e
+        teams[team.id] = team
+        return team
+
+    def projects(self) -> list[dict[str, Any]]:
+        from alice.team import list_projects
+
+        live = {t.id: t for t in self._teams().values()}
+        rows = []
+        for row in list_projects():
+            t = live.pop(row["id"], None)
+            rows.append(self._project_row(t) if t is not None else {**row, "active": False})
+        rows = [self._project_row(t) for t in live.values()] + rows
+        return rows
+
+    @staticmethod
+    def _project_row(t) -> dict[str, Any]:
+        return {"id": t.id, "title": t.title, "goal": t.goal, "created": t.created, "updated": time.time(),
+                "origin": t.origin, "cwd": str(t.cwd), "active": t.active(),
+                "members": [{"name": m.name, "status": m.status} for m in t.members.values()]}
+
+    def project_detail(self, pid: str, member: str = "") -> dict[str, Any]:
+        team = self.get_team(pid)
+        out = team.snapshot()
+        out["log"] = [{"from": x.sender, "to": x.to, "text": x.text, "at": x.at} for x in team.log[-300:]]
+        if member:
+            from alice.team import TeamSend, TeamWait
+
+            view = team.member_view(member)
+            m = team.members[member]
+            tools = {**self.agent.tools, **(m.agent.tools if m.agent is not None else
+                                             {"team_send": TeamSend(team, member), "team_wait": TeamWait(team, member)})}
+            out["member"] = {**{k: v for k, v in view.items() if k != "messages"},
+                             "history": display_history(view["messages"], tools)}
+        return out
+
+    def create_project(self, goal: str, agents: list[dict[str, Any]]) -> str:
+        from alice.team import Team
+        from alice.tools.base import ToolError
+
+        goal = (goal or "").strip()
+        specs = [a for a in agents or [] if isinstance(a, dict)]
+        if not goal:
+            raise ToolError("hedef boş")
+        if not specs or len(specs) > 8:
+            raise ToolError("1-8 ajan gerekli")
+        team = Team(self.ctx, goal, int(self.cfg.agent.get("team_max_parallel", 5)), self.bus.publish, origin="user")
+        for spec in specs:
+            team.add(spec)
+        self._teams()[team.id] = team
+        team.start()
+        team.save()
+        return team.id
+
+    def project_action(self, pid: str, action: str, name: str = "", text: str = "",
+                       agent: dict[str, Any] | None = None) -> str:
+        from alice.team import USER
+        from alice.tools.base import ToolError
+
+        team = self.get_team(pid)
         if action == "stop":
             if name and name not in team.members:
                 raise ToolError(f"takımda '{name}' yok")
             team.stop(name or None)
             return "durduruldu"
         if action == "send":
-            return team.send("kullanıcı", name, text)
+            team.stopped = False  # kullanıcı yazdıysa durdurulmuş proje yeniden canlanabilir
+            return team.send(USER, name or "all", text)
+        if action == "add":
+            m = team.add_member(agent or {})
+            return f"{m.name} eklendi"
+        if action == "delete":
+            if team.active():
+                raise ToolError("önce projeyi durdur")
+            team.cleanup()
+            self._teams().pop(team.id, None)
+            if self.ctx.state.get("team") is team:
+                self.ctx.state.pop("team", None)
+            team.path().unlink(missing_ok=True)
+            return "silindi"
         raise ToolError(f"bilinmeyen işlem: {action}")
 
     def _ctx_window(self) -> int:
@@ -465,10 +546,7 @@ class AppState:
         return {"text": text, "restored": restored}
 
     def new_session(self) -> None:
-        team = self.ctx.state.pop("team", None)
-        if team is not None:
-            team.stop()
-            team.cleanup()
+        self.ctx.state.pop("team", None)  # takım proje olarak çalışmaya devam eder (Projeler sayfası)
         self.agent.reset()
         self.sid = sess.new_session_id()
 
@@ -588,6 +666,15 @@ def make_handler(state: AppState):
                 return self._json(rows)
             if u.path == "/api/changes":
                 return self._json(session_changes(state.agent.checkpoints, state.ctx.cwd))
+            if u.path == "/api/projects":
+                return self._json(state.projects())
+            if u.path == "/api/project":
+                from alice.tools.base import ToolError
+
+                try:
+                    return self._json(state.project_detail((q.get("id") or [""])[0], (q.get("member") or [""])[0]))
+                except ToolError as e:
+                    return self._json({"ok": False, "error": str(e)}, 404)
             if u.path == "/api/files":
                 from alice.mentions import complete_paths
 
@@ -683,15 +770,21 @@ def make_handler(state: AppState):
                         webbrowser.open(url)
                         return self._json({"ok": True})
                     return self._json({"ok": False}, 400)
-                if p == "/api/team":
+                if p in ("/api/project/create", "/api/project/action"):
                     from alice.tools.base import ToolError
 
                     try:
-                        note = state.team_action(str(d.get("action", "")), str(d.get("name", "")).lower(),
-                                                 str(d.get("text", "")))
+                        if p == "/api/project/create":
+                            pid = state.create_project(str(d.get("goal", "")), d.get("agents") or [])
+                            return self._json({"ok": True, "id": pid})
+                        pid = str(d.get("id", ""))
+                        agent = d.get("agent") if isinstance(d.get("agent"), dict) else None
+                        note = state.project_action(pid, str(d.get("action", "")), str(d.get("name", "")).lower(),
+                                                    str(d.get("text", "")), agent)
                     except ToolError as e:
                         return self._json({"ok": False, "error": str(e)}, 400)
-                    return self._json({"ok": True, "note": note, "team": state.team_snapshot()})
+                    team = state._teams().get(pid)
+                    return self._json({"ok": True, "note": note, "team": team.snapshot() if team else None})
                 if p == "/api/mode":
                     mode = d.get("mode")
                     if mode not in MODES:

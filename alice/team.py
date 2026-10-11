@@ -4,6 +4,9 @@ Her üye kendi thread'inde, kendi bağlamı ve çalışma klasörüyle çalışa
 görev, sınırlar, yazma kapsamı, model ve düşünme seviyesi verir. Üyeler birbirine ve ALICE'e mesaj atabilir
 (team_send), cevap bekleyebilir (team_wait); gelen mesajlar her araç adımından sonra konuşmalarına eklenir.
 
+Her takım bir "proje"dir: ~/.alice/projects/<id>.json'a kaydedilir, uygulamanın Projeler sayfasında üyeler ayrı
+konuşmalar gibi görünür; uygulama kapanıp açılsa da proje yüklenir ve biten üyeye yazınca kaldığı yerden devam eder.
+
 Güvenlik: üyeler sadece kod işi araçlarını kullanır (dosya, kabuk, web, git); ekran/tarayıcı araçları tek
 kullanıcı ekranını paylaştığı için kapalı. Yazma kapsamı verilen üye kapsam dışına dosya araçlarıyla yazamaz;
 "readonly" üye hiç yazamaz. İzin soruları üyenin adıyla kullanıcıya gider.
@@ -11,7 +14,9 @@ kullanıcı ekranını paylaştığı için kapalı. Yazma kapsamı verilen üye
 
 from __future__ import annotations
 
+import json
 import re
+import secrets
 import subprocess
 import threading
 import time
@@ -22,6 +27,7 @@ from typing import Any, Callable
 from alice.tools.base import READ, Tool, ToolContext, ToolError, ToolResult, obj
 
 ORCHESTRATOR = "alice"
+USER = "kullanıcı"  # Projeler sayfasından yazan kullanıcı
 # Üyelerin kullanabildiği araçlar: kod işi. Ekran, tarayıcı, masaüstü araçları kullanıcının tek ekranını paylaşır.
 MEMBER_TOOLS = {"read_file", "write_file", "edit_file", "multi_edit", "apply_patch", "file_ops", "list_dir", "glob",
                 "grep", "run_command", "process_output", "process_stop", "web_fetch", "web_search", "http_request",
@@ -31,6 +37,7 @@ ISOLATIONS = ("shared", "worktree", "readonly")
 THINKING = ("off", "low", "medium", "high", "default")
 NAME_RX = re.compile(r"^[a-z0-9][a-z0-9_-]{0,23}$")
 DONE_STATES = ("done", "failed", "stopped")
+SAVE_EVERY = 1.5  # saniye: canlı güncellemelerde diske en sık bu aralıkla yazılır
 
 
 @dataclass
@@ -64,6 +71,8 @@ class Member:
     ended: float = 0.0
     agent: Any = None
     thread: threading.Thread | None = None
+    files: list[str] = field(default_factory=list)  # dosya araçlarıyla değiştirdiği yollar (çalışma klasörüne göre)
+    saved_messages: list[dict[str, Any]] = field(default_factory=list)  # diskten yüklenmiş konuşma (sistem istemi hariç)
     resume_wanted: bool = False  # bitmişken mesaj geldi ama paralel sınırı dolu: yer açılınca devam edecek
     reported: bool = False  # bitişi orkestratöre bildirildi mi
 
@@ -71,8 +80,21 @@ class Member:
         now = self.ended or time.time()
         return {"name": self.name, "task": self.task, "model": self.model, "thinking": self.thinking,
                 "isolation": self.isolation, "status": self.status, "steps": self.steps, "last": self.last,
-                "branch": self.branch, "scope": self.scope, "result": self.result[:600],
-                "secs": int(now - self.started) if self.started else 0}
+                "branch": self.branch, "scope": self.scope, "result": self.result[:600], "files": self.files[-50:],
+                "constraints": self.constraints, "secs": int(now - self.started) if self.started else 0}
+
+    def messages(self) -> list[dict[str, Any]]:
+        """Sistem istemi hariç konuşma: canlı ajandan ya da diskten."""
+        if self.agent is not None:
+            return self.agent.messages[1:]
+        return self.saved_messages
+
+
+def _rel(path: Path, base: Path) -> str:
+    try:
+        return path.relative_to(base.resolve()).as_posix()
+    except ValueError:
+        return str(path)
 
 
 def in_scope(path: Path, scope: list[Path]) -> bool:
@@ -99,11 +121,55 @@ def write_targets(tool: str, args: dict[str, Any]) -> list[str]:
     return out
 
 
+def projects_dir() -> Path:
+    from alice.config import alice_home
+
+    d = alice_home() / "projects"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _slim(messages: list[dict[str, Any]], limit: int = 6000) -> list[dict[str, Any]]:
+    """Diske yazılacak konuşma: görseller atılır, çok uzun araç çıktıları kısaltılır."""
+    from alice.providers.router import strip_images
+
+    out = []
+    for m in strip_images(messages):
+        m = dict(m)
+        if isinstance(m.get("content"), str) and len(m["content"]) > limit:
+            m["content"] = m["content"][:limit] + f"\n... [{len(m['content']) - limit} karakter kaydedilmedi]"
+        out.append(m)
+    return out
+
+
+def list_projects() -> list[dict[str, Any]]:
+    out = []
+    for f in projects_dir().glob("*.json"):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        members = data.get("members") or []
+        out.append({"id": data.get("id") or f.stem, "title": data.get("title") or "", "goal": data.get("goal", ""),
+                    "created": data.get("created", 0), "updated": data.get("updated", 0),
+                    "origin": data.get("origin", "alice"), "cwd": data.get("cwd", ""),
+                    "members": [{"name": m.get("name"), "status": m.get("status")} for m in members]})
+    return sorted(out, key=lambda x: -float(x.get("updated") or x.get("created") or 0))
+
+
 class Team:
     def __init__(self, parent_ctx: ToolContext, goal: str, max_parallel: int = 5,
-                 publish: Callable[[dict[str, Any]], None] | None = None):
+                 publish: Callable[[dict[str, Any]], None] | None = None, origin: str = "alice",
+                 project_id: str = "", title: str = ""):
         self.parent_ctx = parent_ctx
         self.goal = goal
+        self.id = project_id or time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
+        self.title = title or (goal.strip().splitlines()[0][:70] if goal.strip() else "Proje")
+        self.origin = origin  # alice: ALICE kurdu | user: kullanıcı Projeler sayfasından kurdu
+        self.cwd = parent_ctx.cwd
+        self.created = time.time()
+        self._saved_at = 0.0
+        self._save_lock = threading.Lock()
         self.max_parallel = max(1, max_parallel)
         self.members: dict[str, Member] = {}
         self.log: list[Message] = []
@@ -133,7 +199,8 @@ class Team:
             for t in targets:
                 self.inbox.setdefault(t, []).append(msg)
                 m = self.members.get(t)
-                if m is not None and m.status in ("done", "failed") and not self.stopped:
+                if m is not None and m.status in DONE_STATES and not self.stopped and \
+                        (m.status != "stopped" or sender == USER):  # durdurulanı sadece kullanıcı devam ettirir
                     resume.append(m)
             self.cond.notify_all()
         for m in resume:  # bitmiş üyeye iş geldi: konuşmasına kaldığı yerden devam etsin
@@ -213,7 +280,7 @@ class Team:
         return m
 
     def _workdir(self, m: Member) -> Path:
-        base = self.parent_ctx.cwd
+        base = self.cwd
         if m.isolation != "worktree":
             return base
         try:
@@ -273,6 +340,7 @@ class Team:
                 self._launch(m, resume=True)
 
     def _run_member(self, m: Member, resume: bool) -> None:
+        final = "failed"
         try:
             if m.agent is None:
                 m.agent = self._make_agent(m)
@@ -283,18 +351,17 @@ class Team:
             else:
                 prompt = "Görevine başla."
             text = m.agent.run_turn(prompt, max_steps=m.max_steps) or ""
-            if self.stopped or m.agent.cancel.is_set():
-                m.status = "stopped"
-            else:
-                m.status = "done"
+            final = "stopped" if self.stopped or m.agent.cancel.is_set() else "done"
             m.result = text.strip() or m.result or "(rapor yazmadı)"
         except Exception as e:  # noqa: BLE001 - bir üyenin çökmesi takımı durdurmasın
-            m.status, m.result = "failed", f"hata: {type(e).__name__}: {e}"
+            m.result = f"hata: {type(e).__name__}: {e}"
         finally:
-            m.ended = time.time()
+            # Bitiş, kayıt diske yazıldıktan sonra görünsün: bekleyen orkestratör ve Projeler listesi tutarlı olsun.
             with self.cond:
+                m.status, m.ended = final, time.time()
+                self.save()
                 self.cond.notify_all()
-            self._emit(f"{m.name} {'bitti' if m.status == 'done' else m.status}")
+            self._emit(f"{m.name} {'bitti' if final == 'done' else final}")
             self._next()
             self._changed()
 
@@ -338,7 +405,13 @@ class Team:
             m.steps += 1
             m.last = f"{tool.name} {tool.summary(args)[:90]}"
             self._changed()
-            return base_run(tool, args)
+            res = base_run(tool, args)
+            if tool.name in WRITE_TOOLS and not res.is_error:
+                for t in write_targets(tool.name, args):
+                    rel = _rel(ctx.resolve(t), self.cwd)
+                    if rel not in m.files:
+                        m.files.append(rel)
+            return res
 
         agent._run_tool = guarded
 
@@ -349,6 +422,9 @@ class Team:
                                        "\n".join(x.line() for x in msgs)})
 
         agent.on_step = deliver
+        if m.saved_messages:  # diskten yüklenmiş proje: konuşmaya kaldığı yerden devam
+            agent.messages = agent.messages[:1] + m.saved_messages
+            m.saved_messages = []
         return agent
 
     def brief(self, m: Member) -> str:
@@ -372,6 +448,7 @@ Yazma kapsamın: {", ".join(m.scope) if m.scope else "tüm çalışma klasörü 
 Takım arkadaşların:
 {roster}
 
+{"Bu projeyi kullanıcı kendisi kurdu ve yönetiyor: '" + ORCHESTRATOR + "'e yazdıkların ona gider." if self.origin == "user" else ""}
 Kurallar:
 - Sadece kendi görevini yap. Başkasının alanındaki bir şeyin değişmesi gerekiyorsa ona team_send ile yaz.
 - Başkalarını etkileyen bir arayüz/sözleşme (fonksiyon adı, API, veri biçimi) belirlediğinde erkenden ilgili kişiye
@@ -395,15 +472,95 @@ Kurallar:
         return "\n".join(rows)
 
     def snapshot(self) -> dict[str, Any]:
-        return {"type": "team", "goal": self.goal, "members": [m.snapshot() for m in self.members.values()],
+        return {"type": "team", "id": self.id, "title": self.title, "goal": self.goal, "origin": self.origin,
+                "cwd": str(self.cwd), "created": self.created,
+                "members": [m.snapshot() for m in self.members.values()],
                 "log": [{"from": x.sender, "to": x.to, "text": x.text[:400], "at": x.at} for x in self.log[-40:]],
-                "active": not self.all_done() and not self.stopped}
+                "active": self.active()}
 
-    def _changed(self) -> None:
+    def active(self) -> bool:
+        return not self.all_done() and not self.stopped
+
+    def _changed(self, save: bool = False) -> None:
         try:
             self.publish(self.snapshot())
         except Exception:  # noqa: BLE001
             pass
+        if save or time.monotonic() - self._saved_at > SAVE_EVERY:
+            self.save()
+
+    # ---------------------------------------------------------------- kayıt
+    def path(self) -> Path:
+        return projects_dir() / f"{self.id}.json"
+
+    def save(self) -> None:
+        self._saved_at = time.monotonic()
+        members = []
+        for m in self.members.values():
+            d = m.snapshot()
+            d.update(result=m.result, max_steps=m.max_steps, cwd=str(m.cwd), started=m.started, ended=m.ended,
+                     messages=_slim(m.messages()))
+            members.append(d)
+        body = {"id": self.id, "title": self.title, "goal": self.goal, "origin": self.origin, "cwd": str(self.cwd),
+                "created": self.created, "updated": time.time(), "members": members,
+                "log": [{"from": x.sender, "to": x.to, "text": x.text, "at": x.at} for x in self.log[-500:]]}
+        try:
+            with self._save_lock:  # üyeler aynı anda kaydetmeye çalışabilir
+                tmp = self.path().with_suffix(".json.tmp")
+                tmp.write_text(json.dumps(body, ensure_ascii=False, indent=1), encoding="utf-8")
+                tmp.replace(self.path())
+        except (OSError, TypeError, ValueError):
+            pass
+
+    @classmethod
+    def load(cls, project_id: str, parent_ctx: ToolContext, max_parallel: int = 5,
+             publish: Callable[[dict[str, Any]], None] | None = None) -> "Team":
+        f = projects_dir() / f"{Path(project_id).name}.json"
+        data = json.loads(f.read_text(encoding="utf-8"))
+        team = cls(parent_ctx, data.get("goal", ""), max_parallel, publish, origin=data.get("origin", "alice"),
+                   project_id=data.get("id") or f.stem, title=data.get("title", ""))
+        team.created = float(data.get("created") or time.time())
+        if data.get("cwd"):
+            team.cwd = Path(data["cwd"])
+        for d in data.get("members") or []:
+            m = Member(name=d["name"], task=d.get("task", ""), constraints=d.get("constraints", ""),
+                       scope=list(d.get("scope") or []), model=d.get("model", "brain"),
+                       thinking=d.get("thinking", "default"), isolation=d.get("isolation", "shared"),
+                       max_steps=int(d.get("max_steps") or 60), cwd=Path(d.get("cwd") or team.cwd),
+                       branch=d.get("branch", ""), result=d.get("result", ""), steps=int(d.get("steps") or 0),
+                       last=d.get("last", ""), started=float(d.get("started") or 0), ended=float(d.get("ended") or 0),
+                       files=list(d.get("files") or []), saved_messages=list(d.get("messages") or []))
+            # Kapanırken yarıda kalanlar durmuş sayılır; bitmiş/hatalılar olduğu gibi, hepsi bildirilmiş.
+            m.status = d.get("status") if d.get("status") in ("done", "failed") else "stopped"
+            m.ended = m.ended or team.created
+            m.reported = True
+            team.members[m.name] = m
+            team.inbox[m.name] = []
+        team.log = [Message(x.get("from", "?"), x.get("to", "?"), x.get("text", ""), float(x.get("at") or 0))
+                    for x in data.get("log") or []]
+        return team
+
+    def member_view(self, name: str) -> dict[str, Any]:
+        m = self.members.get(name)
+        if m is None:
+            raise ToolError(f"takımda '{name}' yok")
+        return {**m.snapshot(), "messages": m.messages()}
+
+    def add_member(self, spec: dict[str, Any], announce: bool = True) -> Member:
+        """Çalışan ya da bitmiş projeye yeni üye ekle ve başlat; diğerlerine haber ver."""
+        m = self.add(spec)
+        self.stopped = False
+        if announce and len(self.members) > 1:
+            others = [n for n in self.members if n != m.name]
+            note = f"takıma yeni üye katıldı: {m.name}: {m.task[:200]}" + (f" (yazar: {', '.join(m.scope)})" if m.scope else "")
+            with self.cond:
+                msg = Message("sistem", "all", note)
+                self.log.append(msg)
+                for n in others:  # bitmiş üyeleri uyandırmadan sadece haber ver
+                    self.inbox[n].append(msg)
+        self._launch(m)
+        self._changed(save=True)
+        return m
 
     def _emit(self, text: str) -> None:
         try:
@@ -423,7 +580,7 @@ Kurallar:
                 m.agent.stop()
         with self.cond:
             self.cond.notify_all()
-        self._changed()
+        self._changed(save=True)
 
     def cleanup(self) -> None:
         router = self.parent_ctx.router

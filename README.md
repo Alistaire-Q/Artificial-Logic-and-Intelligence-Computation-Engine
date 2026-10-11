@@ -174,7 +174,19 @@ Büyük bir iş (büyük bir kod tabanında birden çok modül, backend + fronte
 
 Üyeler `team_send` ile birbirine, `alice`'e ya da herkese (`all`) mesaj atar; `team_wait` ile cevap bekler. Gelen mesajlar her araç adımından sonra konuşmalarına eklenir. ALICE bu sırada `team wait` ile bekler, soruları cevaplar, bitenlerin raporlarını okur, gerekirse bitmiş bir üyeye yeni iş verir (mesaj onu kaldığı yerden devam ettirir). Hepsi bitince sonucu birleştirip doğrular ve sana özetler.
 
-Uygulamada yazma kutusunun üstünde **Takım paneli** açılır: her üyenin durumu, modeli, adım sayısı, o an ne yaptığı, bitince raporu ve aralarındaki son mesajlar canlı görünür. Panelden tek bir üyeyi ya da herkesi durdurabilir, bir üyeye doğrudan yazabilirsin.
+Uygulamada yazma kutusunun üstünde **Takım paneli** açılır: her üyenin durumu, modeli, adım sayısı, o an ne yaptığı, bitince raporu ve aralarındaki son mesajlar canlı görünür. Panelden tek bir üyeyi ya da herkesi durdurabilir, bir üyeye doğrudan yazabilirsin. **Projede aç** ile Projeler sayfasına geçersin.
+
+### Projeler
+
+Her takım bir **proje** olarak kaydedilir (`~/.alice/projects/<id>.json`) ve yan menüdeki **Projeler** listesinde durur (Claude Code'daki Projeler gibi). Proje sayfasında:
+
+* Solda ajanlar ayrı konuşmalar olarak listelenir: durum noktası, görev, o an ne yaptığı ya da model/adım/süre. En üstte **Takım sohbeti** (ajanların birbirine, ALICE'e ve sana yazdıkları).
+* Bir ajana tıklayınca konuşmasının tamamı canlı akar: aldığı görev ve mesajlar, yazdıkları, araç çağrıları (tıklayınca çıktısı açılır). Üstte modeli, düşünme seviyesi, çalışma yeri, yazma kapsamı, dalı ve **değiştirdiği dosyalar** görünür.
+* Ajana alttaki kutudan yazabilirsin: çalışıyorsa bir sonraki adımında görür, bitmişse ya da durdurulmuşsa **kaldığı yerden devam eder**. Takım sohbetinden tek bir ajana ya da herkese yazabilirsin.
+* **Ajan ekle** ile çalışan ya da bitmiş projeye yeni ajan katarsın; diğerlerine katıldığı haber verilir. **Durdur** tek ajanı, **Hepsini durdur** projeyi durdurur, bitmiş proje **Sil** ile kaldırılır (dosya değişiklikleri kalır).
+* Uygulama kapanıp açılsa da projeler yüklenir; o sırada çalışan ajanlar "durdu" görünür, yazınca devam ederler.
+
+**Yeni proje** (Projeler'in yanındaki `+`): hedefi yaz, ajanları ekle (ad, model, düşünme seviyesi, çalışma yeri, görev, yazma kapsamı, sınırlar) ve **Başlat**. Planı ALICE'e bırakmak istersen **ALICE planlasın**: hedef sohbete gider, ALICE kodu inceleyip takımı kendisi kurar. Senin kurduğun projelerde ajanların `alice`'e yazdıkları sana gelir, Takım sohbetinden cevaplarsın.
 
 Güvenlik ve sınırlar:
 * Üyeler sadece kod işi araçlarını kullanır (dosya, kabuk, web, `http_request`, `git`). Ekran, tarayıcı ve masaüstü araçları tek ekranı paylaştığı için onlara kapalı. Alt ajan ya da yeni takım açamazlar.
