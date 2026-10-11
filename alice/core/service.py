@@ -370,7 +370,7 @@ def install_autostart() -> Path:
     if sys.platform == "win32":
         pyw = exe.with_name("pythonw.exe")
         target = pyw if pyw.exists() else exe
-        icon = Path(__file__).resolve().parent.parent / "app" / "static" / "icon.ico"
+        icon = Path(__file__).resolve().parent.parent / "app" / "static" / "alice.ico"
         ps = ("$s=(New-Object -ComObject WScript.Shell).CreateShortcut('" + str(path).replace("'", "''") + "');"
               f"$s.TargetPath='{target}';$s.Arguments='-m alice core run --tray';"
               f"$s.WorkingDirectory='{Path.home()}';$s.IconLocation='{icon}';$s.Description='ALICE çekirdek';$s.Save()")
