@@ -286,6 +286,14 @@ api_key_env = ""
 vision_models = ["*vl*", "llava*", "gemma3*"]
 max_input_tokens = 32000
 
+# git / GitHub araçlarının kuralları. Anahtar: .env'deki GITHUB_TOKEN, yoksa GitHub MCP sunucusunun anahtarı,
+# yoksa GITHUB_MODELS_TOKEN, yoksa `gh auth token`.
+[github]
+protected_branches = ["main", "master"]  # bunlara (ve deponun ana dalına) push her zaman onay ister
+merge_method = "squash"                  # PR birleştirme: merge | squash | rebase
+require_checks = true                    # CI kırmızı ya da sürüyorsa PR birleştirilmez
+clone_dir = ""                           # GitHub'dan açılan depolar; boş = ~/GitHub/<sahip>/<depo>
+
 # Model bazlı ek parametreler (istek gövdesine eklenir).
 [models."groq:openai/gpt-oss-20b"]
 extra = { reasoning_effort = "low" }
@@ -315,6 +323,8 @@ MISTRAL_API_KEY=
 SAMBANOVA_API_KEY=
 # TypeSafe Jev (opsiyonel, ücretli ama çok ucuz) -> https://typesafe.ai
 TYPESAFE_API_KEY=
+# GitHub (repo izinli token: depo klonlama, commit/push, PR) -> https://github.com/settings/tokens
+GITHUB_TOKEN=
 """
 
 
