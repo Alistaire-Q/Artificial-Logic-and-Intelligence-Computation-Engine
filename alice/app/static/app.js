@@ -1391,7 +1391,7 @@ function councilItem(d) {
 function renderProjectCouncils(det, d) {
   const h = el("div", "pd-head");
   const r = el("div", "pd-row"); r.appendChild(el("b", "", "Kurul"));
-  h.append(r, el("div", "pd-task", "Plan kurulu, final kurulu ve projeye 'Kurula sor' toplantıları. Eleştirmen, savunucu, kontrolcü ve gerekince uzmanlar bağımsız inceler, tartışır ve ağırlıklı oylamayla karar verir."));
+  h.appendChild(r);
   const feed = el("div", "pd-feed");
   if ((d.lessons || []).length) {
     const box = el("div", "cc lessons");
@@ -1451,93 +1451,159 @@ function saveTemplateDialog(d) {
     setTimeout(() => inp.focus(), 0);
   });
 }
+// Eski kayıtlarda döküm ham JSON içerebilir; okunur kısmı al.
+function councilProse(t) {
+  t = (t || "").replace(/```(?:json)?\s*\{[\s\S]*?\}\s*```/g, "");
+  const m = t.search(/\{\s*"(?:vote|checks|stances|findings|reason|conditions)"/);
+  if (m >= 0) t = t.slice(0, m);
+  t = t.replace(/```(?:json)?\s*$/, "").trim();
+  if (/"(?:stance|status|id)"\s*:/.test(t)) return "";  // baştan kırpılmış JSON parçası
+  return t;
+}
+function findingRow(f) {
+  const fc = el("div", "cf st-" + f.status);
+  const t = el("div", "cf-top");
+  const agree = (f.notes || []).filter((n) => n.stance === "agree").length;
+  const against = (f.notes || []).length - agree;
+  t.append(el("b", "", f.id), el("span", "chip sev-" + f.severity, SEV_TR[f.severity] || f.severity),
+    el("span", "cf-title", f.title));
+  const meta = el("small", "", [ROLE_TR[f.by] || f.by, FST_TR[f.status] || f.status,
+    agree ? `${agree} katılıyor` : "", against ? `${against} itiraz` : ""].filter(Boolean).join(" · "));
+  t.appendChild(meta);
+  fc.appendChild(t);
+  const more = el("div", "cf-more");
+  if (f.evidence) more.appendChild(el("div", "cf-ev", f.evidence));
+  if (f.fix) more.appendChild(el("div", "cf-fix", "Öneri: " + f.fix));
+  if (f.check) more.appendChild(el("div", "cf-chk", "Kontrolcü: " + f.check));
+  for (const n of f.notes || []) more.appendChild(el("div", "cf-note", `${ROLE_TR[n.by] || n.by} ${n.stance === "agree" ? "katılıyor" : "itiraz ediyor"}: ${n.note}`));
+  if (more.childNodes.length) {
+    fc.appendChild(more);
+    t.addEventListener("click", () => fc.classList.toggle("open"));
+    fc.classList.add("has-more");
+  }
+  return fc;
+}
 function councilCard(c, target, latest) {
   const res = c.result || {};
-  const card = el("div", "cc" + (c.state === "running" ? " live" : ""));
-  const head = el("div", "cc-head");
+  const running = c.state === "running";
+  // Eski toplantılar tek satır başlık olarak kapalı durur; en son ve süren açık.
+  const card = el(latest || running ? "div" : "details", "cc" + (running ? " live" : ""));
+  const head = el(latest || running ? "div" : "summary", "cc-head");
   head.append(el("b", "", KIND_TR[c.kind] || "Kurul"));
-  if (c.state === "running") head.appendChild(el("span", "pill running", `toplanıyor · tur ${c.round || 1}/${c.rounds || "?"}`));
+  if (running) head.appendChild(el("span", "pill running", `toplanıyor · tur ${c.round || 1}/${c.rounds || "?"}`));
   else head.appendChild(el("span", "pill dec-" + (res.decision || "contested"), DEC_TR[res.decision] || "tamamlanamadı"));
-  if (res.score !== undefined && c.state !== "running") {
-    head.append(progressBar(Math.round(res.score * 100), 100), el("span", "cc-score", `%${Math.round((res.score || 0) * 100)} onay`));
-  }
-  if ((res.veto || []).length) head.appendChild(el("span", "chip warn", "veto: " + res.veto.join(", ")));
-  if (c.critical) head.appendChild(el("span", "chip", "kritik"));
+  if (c.started) head.appendChild(el("small", "cc-when", new Date(c.started * 1000).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })));
   card.appendChild(head);
-  if (c.title) card.appendChild(el("div", "cc-title", c.title));
-  if (res.error) card.appendChild(el("div", "cc-err", "Kurul tamamlanamadı: " + res.error));
+  if (res.error) card.appendChild(el("div", "cc-err", "Kurul tamamlanamadı."));
 
-  // oylar
-  const votes = el("div", "cc-votes");
-  for (const v of c.votes || []) {
-    const row = el("div", "cv" + (v.counted === false ? " off" : ""));
-    const changed = v.first && v.last && v.first !== v.last;
-    row.append(el("b", "", ROLE_TR[v.role] || v.role), el("small", "", v.model || ""),
-      el("span", "vote v-" + (v.last || "none"), (changed ? `${VOTE_TR2[v.first]} → ` : "") + (VOTE_TR2[v.last] || "oy yok")));
-    if (v.weight > 1) row.appendChild(el("span", "chip", `×${v.weight}`));
-    if (v.counted === false) row.appendChild(el("span", "chip warn", "sayılmadı: " + v.note));
-    if (v.reason) row.appendChild(el("div", "cv-r", v.reason));
-    votes.appendChild(row);
+  // İlk bakışta sadece özet: oyların tek cümlesi ve düzeltilecek birkaç madde. Gerisi "Ayrıntılar"da.
+  const vs = (c.votes || []).filter((v) => v.last);
+  if (running) card.appendChild(el("div", "cc-sum", "Üyeler inceliyor, sonuç birazdan burada."));
+  else if (vs.length) {
+    const cnt = {};
+    for (const v of vs) cnt[v.last] = (cnt[v.last] || 0) + 1;
+    const parts = ["reject", "conditional", "approve"].filter((k) => cnt[k]).map((k) => `${cnt[k]} ${VOTE_TR2[k]}`);
+    card.appendChild(el("div", "cc-sum", `${vs.length} üye oy verdi: ${parts.join(", ")}.`));
   }
-  if (c.user_vote) {
-    const row = el("div", "cv");
-    row.append(el("b", "", "sen"), el("span", "vote v-" + c.user_vote.vote, VOTE_TR2[c.user_vote.vote]), el("span", "chip", "×3"));
-    if (c.user_vote.note) row.appendChild(el("div", "cv-r", c.user_vote.note));
-    votes.appendChild(row);
+  if (!running) {
+    const sevRank = { critical: 0, major: 1, minor: 2 };
+    const todo = [...new Set([...(res.conditions || []),
+      ...(c.findings || []).filter((f) => f.status === "confirmed" && f.severity !== "minor")
+        .sort((a, b) => sevRank[a.severity] - sevRank[b.severity]).map((f) => f.title)])];
+    if (todo.length && res.decision !== "approve") {
+      const ul = el("ul", "cc-todo");
+      for (const x of todo.slice(0, 4)) ul.appendChild(el("li", "", x));
+      if (todo.length > 4) ul.appendChild(el("li", "more", `ve ${todo.length - 4} madde daha`));
+      card.appendChild(ul);
+    } else if (res.decision === "approve") card.appendChild(el("div", "cc-sum ok", "Engelleyen bir sorun yok."));
   }
-  if (votes.childNodes.length) card.appendChild(votes);
-
-  // bulgular: doğrulananlar önce
-  const order = { confirmed: 0, unclear: 1, pending: 2, refuted: 3 };
-  const fs = (c.findings || []).slice().sort((a, b) => (order[a.status] - order[b.status]) || a.id.localeCompare(b.id));
-  if (fs.length) {
-    const box = el("div", "cc-findings");
-    for (const f of fs) {
-      const fc = el("div", "cf st-" + f.status);
-      const t = el("div", "cf-top");
-      t.append(el("b", "", f.id), el("span", "chip sev-" + f.severity, SEV_TR[f.severity] || f.severity),
-        el("span", "chip fst-" + f.status, FST_TR[f.status] || f.status), el("small", "", ROLE_TR[f.by] || f.by));
-      fc.append(t, el("div", "cf-title", f.title));
-      if (f.evidence) fc.appendChild(el("div", "cf-ev", f.evidence));
-      if (f.fix) fc.appendChild(el("div", "cf-fix", "Öneri: " + f.fix));
-      if (f.check) fc.appendChild(el("div", "cf-chk", "Kontrolcü: " + f.check));
-      for (const n of f.notes || []) fc.appendChild(el("div", "cf-note", `${ROLE_TR[n.by] || n.by} ${n.stance === "agree" ? "katılıyor" : "itiraz ediyor"}: ${n.note}`));
-      box.appendChild(fc);
-    }
-    card.appendChild(box);
-  } else if (c.state !== "running") card.appendChild(el("div", "cc-title", "Bulgu yok."));
-  if ((res.conditions || []).length) {
-    const ul = el("ul", "cc-conds");
-    for (const x of res.conditions) ul.appendChild(el("li", "", x));
-    card.append(el("div", "cc-sub", "Şartlar"), ul);
-  }
-  // senin oyun
-  if (latest && c.state !== "running") {
+  if (latest && !running) {
     const row = el("div", "cc-uv");
-    const note = el("input"); note.type = "text"; note.placeholder = "Oyunun gerekçesi (isteğe bağlı)"; note.dataset.k = "uv" + (c.id || target);
-    row.appendChild(el("span", "cc-sub", c.user_vote ? "Oyunu değiştir (×3):" : "Senin oyun (×3):"));
-    for (const [v, l, cls] of [["approve", "Onay", "accent"], ["conditional", "Şartlı onay", ""], ["reject", "Ret", "danger"]]) {
-      const b = el("button", "btn " + cls, l);
-      b.addEventListener("click", () => projectAction("vote", target, v, { note: note.value.trim() }));
+    row.appendChild(el("span", "", c.user_vote ? `Oyun: ${VOTE_TR2[c.user_vote.vote]}. Değiştir:` : "Senin oyun:"));
+    for (const [v, l] of [["approve", "Onay"], ["conditional", "Şartlı"], ["reject", "Ret"]]) {
+      const b = el("button", "btn ghost" + (c.user_vote && c.user_vote.vote === v ? " on" : ""), l);
+      b.addEventListener("click", () => projectAction("vote", target, v, {}));
       row.appendChild(b);
     }
-    row.appendChild(note);
     card.appendChild(row);
   }
-  if ((c.transcript || []).length) {
+  const more = el("details", "cc-more");
+  more.appendChild(el("summary", "", "Ayrıntılar"));
+  card.appendChild(more);
+  const card0 = card;
+  {
+  const card = more;
+  if (c.title) card.appendChild(el("div", "cc-title", c.title));
+  if (res.score !== undefined && !running) card.appendChild(el("div", "cc-title", `Ağırlıklı onay oranı %${Math.round((res.score || 0) * 100)}` +
+    ((res.veto || []).length ? ` · veto eden bulgular: ${res.veto.join(", ")}` : "") + (c.critical ? " · kritik iş, en güçlü modeller" : "")));
+  if (res.error) card.appendChild(el("div", "cc-err", res.error));
+
+  // oylar: rol başına küçük kutu; gerekçe iki satır, tıklayınca tamamı
+  const votes = el("div", "cc-votes");
+  const voteBox = (name, model, v, weight, reason, off) => {
+    const box = el("div", "cv v-" + (v || "none") + (off ? " off" : ""));
+    const top = el("div", "cv-top");
+    top.append(el("b", "", name), el("span", "vote v-" + (v || "none"), v ? VOTE_TR2[v] : "oy yok"));
+    if (weight > 1) top.appendChild(el("span", "cv-w", `×${weight}`));
+    box.appendChild(top);
+    if (model) box.title = model;
+    if (off) box.appendChild(el("div", "cv-off", "sayılmadı: " + off));
+    if (reason) {
+      const r = el("div", "cv-r", reason);
+      r.title = "Tamamını göster";
+      r.addEventListener("click", () => r.classList.toggle("open"));
+      box.appendChild(r);
+    }
+    return box;
+  };
+  for (const v of c.votes || []) {
+    const changed = v.first && v.last && v.first !== v.last;
+    const box = voteBox(ROLE_TR[v.role] || v.role, v.model || "", v.last, v.weight, v.reason, v.counted === false ? v.note : "");
+    if (changed) box.querySelector(".vote").textContent = `${VOTE_TR2[v.first]} → ${VOTE_TR2[v.last]}`;
+    votes.appendChild(box);
+  }
+  if (c.user_vote) votes.appendChild(voteBox("sen", "", c.user_vote.vote, 3, c.user_vote.note, ""));
+  if (votes.childNodes.length) card.appendChild(votes);
+
+  // bulgular: doğrulanan ve belirsizler görünür, çürütülenler kapalı; ayrıntı tıklayınca
+  const order = { confirmed: 0, unclear: 1, pending: 2, refuted: 3 };
+  const sev = { critical: 0, major: 1, minor: 2 };
+  const fs = (c.findings || []).slice().sort((a, b) => (order[a.status] - order[b.status]) || (sev[a.severity] - sev[b.severity]) || a.id.localeCompare(b.id, undefined, { numeric: true }));
+  const live = fs.filter((f) => f.status !== "refuted"), dead = fs.filter((f) => f.status === "refuted");
+  if (fs.length) {
+    const n = (st) => fs.filter((f) => f.status === st).length;
+    card.appendChild(el("div", "cc-sub", ["Bulgular", n("confirmed") ? `${n("confirmed")} doğrulandı` : "", n("unclear") ? `${n("unclear")} belirsiz` : "",
+      dead.length ? `${dead.length} çürütüldü` : ""].filter(Boolean).join(" · ")));
+    const box = el("div", "cc-findings");
+    for (const f of live) box.appendChild(findingRow(f));
+    if (dead.length) {
+      const d = el("details", "cc-dead");
+      d.appendChild(el("summary", "", `Çürütülen bulgular (${dead.length})`));
+      for (const f of dead) d.appendChild(findingRow(f));
+      box.appendChild(d);
+    }
+    card.appendChild(box);
+  } else if (!running) card.appendChild(el("div", "cc-title", "Bulgu yok."));
+  // tartışma dökümü: tur tur, her rol kapalı; JSON kararlar zaten yukarıda
+  const tr = (c.transcript || []).map((t) => ({ ...t, text: councilProse(t.text) })).filter((t) => t.text);
+  if (tr.length) {
     const dt = el("details", "cc-tr");
-    dt.appendChild(el("summary", "", `Tartışma dökümü (${c.transcript.length})`));
-    for (const t of c.transcript) {
-      const it = el("div", "cc-tr-it");
-      it.appendChild(el("b", "", `${ROLE_TR[t.role] || t.role} · tur ${t.round}`));
+    dt.appendChild(el("summary", "", `Tartışma dökümü (${tr.length} konuşma)`));
+    let round = null;
+    for (const t of tr) {
+      if (t.round !== round) { round = t.round; dt.appendChild(el("div", "cc-tr-round", round === 1 ? "Tur 1 · bağımsız inceleme" : `Tur ${round}`)); }
+      const it = el("details", "cc-tr-it");
+      const sm = el("summary");
+      sm.append(el("b", "", ROLE_TR[t.role] || t.role), el("span", "", t.text.replace(/[#*_`>]/g, "").split("\n").find((x) => x.trim()) || ""));
       const pz = el("div", "prose");
-      setMd(pz, (t.text || "").replace(/```json[\s\S]*?```/g, "").trim() || "(sadece oy verdi)");
-      it.appendChild(pz);
+      setMd(pz, t.text);
+      it.append(sm, pz);
       dt.appendChild(it);
     }
     card.appendChild(dt);
   }
-  return card;
+  }
+  return card0;
 }
 // ---- konuşmayı insanca göster: iç olaylar küçük notlara, araç çağrıları tek açılır satıra dönüşür.
 function rawView() { try { return localStorage.getItem("alice.rawThreads") === "1"; } catch { return false; } }

@@ -132,6 +132,19 @@ def parse_block(text: str) -> dict[str, Any]:
     return {}
 
 
+_JSON_START = re.compile(r'\{\s*"(?:vote|checks|stances|findings|reason|conditions)"')
+
+
+def prose(text: str, limit: int = 1500) -> str:
+    """Cevabın okunur kısmı: JSON blokları (kararlar zaten oy ve bulgu olarak ayrıca gösteriliyor) atılır."""
+    t = re.sub(r"```(?:json)?\s*\{.*?\}\s*```", "", text or "", flags=re.S)
+    m = _JSON_START.search(t)
+    if m:
+        t = t[:m.start()]
+    t = re.sub(r"```(?:json)?\s*$", "", t.strip()).strip()
+    return t[:limit].rstrip() + "…" if len(t) > limit else t
+
+
 def norm_vote(v: Any) -> str:
     v = str(v or "").strip().lower()
     aliases = {"onay": "approve", "onayla": "approve", "approved": "approve", "şartlı": "conditional",
@@ -500,7 +513,7 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
                 "rounds": self.rounds, "roles": self.roles, "critical": self.critical, "relevant": self.relevant,
                 "votes": [v.as_dict() for v in self.votes.values()], "findings": [f.as_dict() for f in self.findings],
                 "result": self.result, "user_vote": self.user_vote, "started": self.started, "ended": self.ended,
-                "transcript": [{**t, "text": t["text"][-4000:]} for t in self.transcript]}
+                "transcript": [{**t, "text": prose(t["text"])} for t in self.transcript]}
 
 
 def retally(snap: dict[str, Any], user_vote: dict[str, Any] | None) -> dict[str, Any]:
