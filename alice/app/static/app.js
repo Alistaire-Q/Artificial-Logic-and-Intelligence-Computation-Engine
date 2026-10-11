@@ -956,7 +956,7 @@ function renderTeam(t) {
 }
 function activeLine(t) {
   const busy = t.members.filter((m) => ["running", "waiting", "asking"].includes(m.status));
-  const s = busy.slice(0, 2).map((m) => `${m.name}: ${m.last || TEAM_ST[m.status]}`).join(" · ");
+  const s = busy.slice(0, 2).map((m) => `${m.name}: ${m.last ? friendlyLast(m.last) : TEAM_ST[m.status]}`).join(" · ");
   return s || (t.lead && t.lead.state === "running" ? "Alice planlıyor / inceliyor…" : "");
 }
 function progressBar(done, total) {
@@ -971,6 +971,39 @@ function onTeamEvent(ev) {
   if (S.proj && S.proj.id === ev.id) refreshProjectSoon();
   clearTimeout(onTeamEvent._t);
   onTeamEvent._t = setTimeout(loadProjects, 800);
+}
+// Ajan ya da yönetici cevabını yazarken metin ve düşünme canlı gelir; açık konuşmanın altında akar.
+function onTeamLive(ev) {
+  S.live = S.live || {};
+  const key = ev.id + "/" + ev.name;
+  if (!ev.text && !ev.think) delete S.live[key]; else S.live[key] = ev;
+  const pr = S.proj;
+  if (pr && pr.id === ev.id && pr.sel === ev.name && (pr.tab || "chat") === "chat") drawLive();
+}
+function drawLive() {
+  const pr = S.proj;
+  const feed = document.querySelector("#projectView .pd-feed");
+  if (!pr || !feed) return;
+  const ev = (S.live || {})[pr.id + "/" + pr.sel];
+  let box = feed.querySelector(".pf-stream");
+  if (!ev) { if (box) box.remove(); return; }
+  const stick = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 60;
+  if (!box) {
+    box = el("div", "pf-ai pf-stream");
+    const th = el("details", "pf-think");
+    th.appendChild(el("summary", "", "düşünüyor…"));
+    th.appendChild(el("div", "pf-think-t"));
+    box.append(th, el("div", "prose"));
+    const live = feed.querySelector(".pf-live");
+    if (live) live.remove();
+    feed.appendChild(box);
+  }
+  const th = box.querySelector(".pf-think");
+  th.hidden = !ev.think;
+  th.querySelector(".pf-think-t").textContent = ev.think || "";
+  th.querySelector("summary").textContent = ev.text ? "düşündü" : "düşünüyor…";
+  setMd(box.querySelector(".prose"), ev.text || "");
+  if (stick) feed.scrollTop = feed.scrollHeight;
 }
 // Projeden sohbete bildirim (soru, bitiş): tıklanınca projeyi açan kart.
 function onProjectNote(ev) {
@@ -1181,6 +1214,7 @@ function renderProject() {
   body.append(list, det);
   v.appendChild(body);
 
+  drawLive();
   const nf = v.querySelector(".pd-feed");
   if (nf) nf.scrollTop = atBottom || pr.lastSel !== pr.sel ? nf.scrollHeight : oldTop;
   pr.lastSel = pr.sel;
@@ -1202,7 +1236,7 @@ function threadItem(m, isLead) {
   else if (m.status === "asking" && m.question) last = "soru: " + m.question;
   else if (m.council_running) last = m.council && m.council.rounds ? `kurul toplanıyor · tur ${m.council.round || 1}/${m.council.rounds}` : "kurul toplanıyor…";
   else if (m.status === "review" && m.council && m.council.decision) last = "kurul: " + (DEC_TR[m.council.decision] || m.council.decision);
-  else if (["running", "waiting"].includes(m.status) && m.last) last = m.last;
+  else if (["running", "waiting"].includes(m.status) && m.last) last = friendlyLast(m.last);
   else last = [m.model, m.thinking !== "default" ? m.thinking : "", `${m.steps} adım`, m.secs ? fmtSecs(m.secs) : "",
     m.files && m.files.length ? `${m.files.length} dosya` : "", m.reviews ? `${m.reviews} düzeltme` : ""].filter(Boolean).join(" · ");
   if (last) b.appendChild(el("div", "th-last", last));
@@ -1254,6 +1288,10 @@ function renderThread(det, m, d) {
       r1.appendChild(b);
     }
   }
+  const rawBtn = el("button", "btn ghost" + (rawView() ? " on" : ""), rawView() ? "Ayrıntıları gizle" : "Ayrıntılar");
+  rawBtn.title = "Araç çağrılarını ve iç olayları ham haliyle göster";
+  rawBtn.addEventListener("click", () => { try { localStorage.setItem("alice.rawThreads", rawView() ? "" : "1"); } catch {} renderProject(); });
+  r1.appendChild(rawBtn);
   h.append(r1, el("div", "pd-task", m.task));
   const r2 = el("div", "pd-row");
   if (m.constraints) r2.appendChild(el("span", "chip", "sınır: " + m.constraints));
@@ -1310,8 +1348,12 @@ function renderThread(det, m, d) {
       feed.appendChild(renderDiff(part).box);
     }
   } else {
-    for (const it of m.history || []) feed.appendChild(feedItem(it));
-    if (st === "running") feed.appendChild(el("div", "pf-live", (m.last ? "şu an: " + m.last : "düşünüyor…")));
+    for (const node of buildFeed(m.history || [], isLead)) feed.appendChild(node);
+    if (st === "running") {
+      const w = el("div", "pf-live");
+      w.append(el("i", "dot st-running"), el("span", "", m.last ? friendlyLast(m.last) : (isLead ? "Alice çalışıyor…" : "çalışıyor…")));
+      feed.appendChild(w);
+    }
     if (!feed.childNodes.length) feed.appendChild(el("div", "pd-empty", "Henüz bir şey yok"));
   }
   det.appendChild(feed);
@@ -1496,6 +1538,128 @@ function councilCard(c, target, latest) {
     card.appendChild(dt);
   }
   return card;
+}
+// ---- konuşmayı insanca göster: iç olaylar küçük notlara, araç çağrıları tek açılır satıra dönüşür.
+function rawView() { try { return localStorage.getItem("alice.rawThreads") === "1"; } catch { return false; } }
+const HIDDEN_TOOLS = new Set(["ask_user", "finish", "project_status"]);  // içerikleri soru kartında ve özette zaten var
+const TOOL_TR = {
+  read_file: ["okudu", "dosya okudu"], list_dir: ["klasöre baktı", "klasöre baktı"], glob: ["dosya aradı", "dosya aradı"],
+  grep: ["kodda aradı", "kodda aradı"], write_file: ["dosya yazdı", "dosya yazdı"], edit_file: ["düzenledi", "düzenleme yaptı"],
+  multi_edit: ["düzenledi", "düzenleme yaptı"], apply_patch: ["yama uyguladı", "yama uyguladı"], file_ops: ["dosya işlemi", "dosya işlemi yaptı"],
+  run_command: ["komut çalıştırdı", "komut çalıştırdı"], process_output: ["çıktıya baktı", "çıktıya baktı"],
+  web_search: ["web'de aradı", "web'de aradı"], web_fetch: ["sayfa okudu", "sayfa okudu"], http_request: ["istek gönderdi", "istek gönderdi"],
+  git: ["git", "git kullandı"], todo_write: ["planı güncelledi", "planı güncelledi"], team_send: ["mesaj attı", "mesaj attı"],
+  team_wait: ["cevap bekledi", "cevap bekledi"], message: ["mesaj attı", "mesaj attı"], assign: ["ajan kurdu", "ajan kurdu"],
+  plan: ["planı sundu", "planı sundu"], review: ["inceledi", "karar verdi"], diff: ["farka baktı", "farka baktı"],
+  council: ["kurula sordu", "kurula sordu"],
+};
+function toolLine(it) {
+  const [verb] = TOOL_TR[it.name] || [it.name];
+  const sum = it.summary || "";
+  if (it.name === "assign") return `ajan kurdu: ${sum}`;
+  if (it.name === "plan") return `planı kurdu (${sum.replace(/^plan:\s*/, "")})`;
+  if (it.name === "review") return sum.includes("approve") ? `${sum.split(":")[0]} işini onayladı` : `${sum.split(":")[0]} işini düzeltmeye gönderdi`;
+  if (it.name === "message" || it.name === "team_send") { const i = sum.indexOf(":"); return `${sum.slice(0, i)}'e yazdı: ${sum.slice(i + 1).trim()}`; }
+  if (it.name === "team_wait") return "cevap bekledi";
+  if (it.name === "run_command") return `komut çalıştırdı`;
+  return sum ? `${verb}: ${sum}` : verb;
+}
+function friendlyLast(last) {
+  const name = last.split(" ")[0];
+  if (HIDDEN_TOOLS.has(name)) return "çalışıyor…";
+  return toolLine({ name, summary: last.slice(name.length + 1) });
+}
+// Yöneticiye giden olay metinleri (talimat içerir) kısa notlara çevrilir.
+const EVENT_RULES = [
+  [/^Proje başladı ve henüz ajan yok/, () => "Proje başladı; Alice işi planlıyor."],
+  [/^Proje başladı; ajanlar çalışıyor/, () => "Proje başladı; ajanlar çalışıyor."],
+  [/^(\S+) bitirdi, inceleme bekliyor/, (m) => `${m[1]} işini bitirdi, inceleniyor.`],
+  [/^(\S+) bitirdi \(inceleme yok\)/, (m) => `${m[1]} işini bitirdi.`],
+  [/^(\S+) hata verdi/, (m) => `${m[1]} hata verdi.`],
+  [/^(\S+) (\d+) dakikadır ilerlemiyor/, (m) => `${m[1]} ${m[2]} dakikadır ilerlemiyor.`],
+  [/^Kullanıcı (\S+) ajanının işini onayladı/, (m) => `${m[1]} işini sen onayladın.`],
+  [/^Kullanıcı projeyi sürdürdü/, () => "Projeyi sürdürdün."],
+  [/^Bütün ajanlar bitti/, () => "Bütün ajanlar bitti; Alice sonucu doğruluyor."],
+  [/^Final kurulu|^Final kurulu projeyi onayladı/, () => "Final kurulu toplandı."],
+  [/Final kurulu: (\S+)/, (m) => `Final kurulu: ${m[1].toLowerCase()}.`],
+  [/^Kurul (\S+) işinde ikiye bölündü/, (m) => `Kurul ${m[1]} işinde ikiye bölündü; Alice karar veriyor.`],
+  [/^Kurul (\S+) işini iki düzeltme/, (m) => `Kurul ${m[1]} işini hâlâ kabul etmiyor; Alice karar veriyor.`],
+  [/^İnceleme bekleyen ajanlar var/, () => "Alice'e inceleme hatırlatıldı."],
+  [/^Henüz ajan kurmadın/, () => "Alice'e planı sunması hatırlatıldı."],
+  [/proje kapanmadı/, () => "Alice'e projeyi bitirmesi hatırlatıldı."],
+  [/^Kullanıcı kurula sordu/, () => "Kurula sordun; sonuç Alice'e iletildi."],
+  [/^Kullanıcı kurulda oy verdi/, () => "Kurulda oy verdin."],
+  [/^Kurul çalışamadı/, () => "Kurul toplanamadı; Alice kendisi inceliyor."],
+];
+function eventNotes(body) {
+  // "[olaylar]" gövdesi: sistem olayları ve "[kimden -> kime] mesaj" satırları, boş satırla ayrılmış
+  const out = [];
+  for (const part of body.split(/\n\n(?=\S)/)) {
+    const msg = part.match(/^\[([^\]]+?) -> ([^\]]+?)\] ([\s\S]*)$/);
+    if (msg) { out.push({ kind: "msg", from: msg[1], to: msg[2], text: msg[3] }); continue; }
+    const rule = EVENT_RULES.find(([rx]) => rx.test(part));
+    if (rule) out.push({ kind: "note", text: rule[1](part.match(rule[0])) });
+    else if (/^(Raporu|Değişen dosyalar|Dal:|İncele:|Kurula sor|İş kurulu|Kontrol turu|-|\(|Bulgular|Şartlar)/.test(part)) continue;
+    else out.push({ kind: "note", text: part.split("\n")[0].slice(0, 160) });
+  }
+  return out;
+}
+function msgCard(from, to, text) {
+  const c = el("div", "pf-msg" + (from === "kullanıcı" ? " me" : ""));
+  c.append(el("b", "", from === "kullanıcı" ? "Sen" : from === "alice" ? "Alice" : from), el("span", "", to && to !== "alice" ? ` → ${to}` : ""));
+  // Soruya verilen cevaplar yöneticiye "Sorduğun soruya cevap (soru): cevap" diye gider; kullanıcıya sadece cevap.
+  if (from === "kullanıcı") text = text.replace(/^Sorduğun soruya cevap \([\s\S]*?\): /, "");
+  const t = el("div", "pf-msg-t"); setMd(t, text); c.appendChild(t);
+  return c;
+}
+function buildFeed(history, isLead) {
+  if (rawView()) return history.map(feedItem);
+  const out = [];
+  let group = [];
+  const flush = () => {
+    const visible = group.filter((it) => !HIDDEN_TOOLS.has(it.name));
+    group = [];
+    if (!visible.length) return;
+    const box = el("details", "pf-steps");
+    const counts = {};
+    for (const it of visible) { const k = (TOOL_TR[it.name] || [it.name, it.name])[1]; counts[k] = (counts[k] || 0) + 1; }
+    const errs = visible.filter((it) => it.is_error).length;
+    const head = Object.entries(counts).map(([k, n]) => (n > 1 ? `${k} ×${n}` : k)).join(" · ");
+    box.appendChild(el("summary", "", head + (errs ? ` · ${errs} hata` : "")));
+    for (const it of visible) {
+      const row = el("div", "pf-step" + (it.is_error ? " err" : ""));
+      row.appendChild(el("span", "", toolLine(it)));
+      const pre = el("pre", "", (it.text || "").slice(0, 3000));
+      row.appendChild(pre);
+      row.addEventListener("click", () => row.classList.toggle("open"));
+      box.appendChild(row);
+    }
+    out.push(box);
+  };
+  for (const it of history) {
+    if (it.type === "tool") { group.push(it); continue; }
+    flush();
+    if (it.type === "assistant") { if ((it.text || "").trim()) out.push(feedItem(it)); continue; }
+    const txt = it.text || "";
+    if (txt === "Görevine başla.") { out.push(el("div", "pf-note", "Görev başladı")); continue; }
+    if (txt.startsWith("[olaylar]")) {
+      const body = txt.replace(/^\[olaylar\]\n/, "").replace(/\n\n\[durum\]\n[\s\S]*$/, "");
+      for (const n of eventNotes(body)) out.push(n.kind === "msg" ? msgCard(n.from, n.to, n.text) : el("div", "pf-note", n.text));
+      continue;
+    }
+    if (txt.startsWith("[takım mesaj")) {
+      const body = txt.replace(/^\[takım mesajı\]\n|^\[takım mesajları\]\n/, "").replace(/\n\nBunlara göre işine devam et[\s\S]*$/, "");
+      for (const line of body.split(/\n(?=\[)/)) {
+        const m = line.match(/^\[([^\]]+?) -> ([^\]]+?)\] ([\s\S]*)$/);
+        out.push(m ? msgCard(m[1], m[2], m[3]) : el("div", "pf-note", line.slice(0, 200)));
+      }
+      continue;
+    }
+    if (txt === "Devam et.\n\nBunlara göre işine devam et; bitince yine kısa rapor yaz.") { out.push(el("div", "pf-note", "Devam ediyor")); continue; }
+    out.push(feedItem(it));
+  }
+  flush();
+  return out;
 }
 function feedItem(it) {
   if (it.type === "user") {
@@ -2662,6 +2826,7 @@ list.addEventListener("click", (e) => {
 const handlers = {
   status: applyStatus,
   team: onTeamEvent,
+  team_live: onTeamLive,
   project_note: onProjectNote,
   user: (ev) => addUser(ev.text, ev.mi, ev.images),
   busy: (ev) => { S.status.busy = ev.value; setBusy(ev.value); if (!ev.value) loadSessions(); },

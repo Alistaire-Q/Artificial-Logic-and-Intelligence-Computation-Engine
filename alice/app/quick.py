@@ -188,17 +188,25 @@ class QuickBar:
         webbrowser.open(url)
 
     def start_hotkeys(self) -> bool:
-        """Global kısayolları dinle (pynput gerekir). Başarısızsa False."""
-        try:
-            from pynput import keyboard
-        except ImportError:
-            return False
-
+        """Global kısayolları dinle. Windows'ta RegisterHotKey (klavyeyi yavaşlatan kanca yok), diğerlerinde pynput.
+        Başarısızsa False."""
         def bg(fn):
             return lambda: threading.Thread(target=fn, daemon=True).start()
 
         mapping = {self.hotkeys["open"]: bg(self.open), self.hotkeys["region"]: bg(self.ask_region),
                    self.hotkeys["clipboard"]: bg(self.explain_clipboard)}
+        from alice.hotkeys import IS_WIN, WinHotkeys
+
+        if IS_WIN:
+            hk = WinHotkeys(mapping)
+            if hk.start():
+                self._listener = hk
+                return True
+            return False
+        try:
+            from pynput import keyboard
+        except ImportError:
+            return False
         self._listener = keyboard.GlobalHotKeys({k: v for k, v in mapping.items() if k})
         self._listener.daemon = True
         self._listener.start()
