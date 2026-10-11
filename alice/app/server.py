@@ -347,8 +347,12 @@ class AppState:
         }
 
     def team_snapshot(self) -> dict[str, Any] | None:
+        """Sohbetteki mini kart: ALICE'in son projesi; o bitmişse çalışan en yeni proje."""
         team = self.ctx.state.get("team")
-        return team.snapshot() if team is not None else None  # sohbetteki takım paneli: ALICE'in son takımı
+        if team is None or not team.active():
+            live = sorted((t for t in self._teams().values() if t.active()), key=lambda t: -t.created)
+            team = live[0] if live else team
+        return team.snapshot() if team is not None else None
 
     # -------------------------------------------------------------- projeler
     def _teams(self) -> dict[str, Any]:
@@ -383,40 +387,57 @@ class AppState:
     @staticmethod
     def _project_row(t) -> dict[str, Any]:
         return {"id": t.id, "title": t.title, "goal": t.goal, "created": t.created, "updated": time.time(),
-                "origin": t.origin, "cwd": str(t.cwd), "active": t.active(),
+                "origin": t.origin, "cwd": str(t.cwd), "active": t.active(), "status": t.status(),
+                "questions": sum(1 for q in t.questions if not q.get("answer")),
                 "members": [{"name": m.name, "status": m.status} for m in t.members.values()]}
 
     def project_detail(self, pid: str, member: str = "") -> dict[str, Any]:
         team = self.get_team(pid)
         out = team.snapshot()
         out["log"] = [{"from": x.sender, "to": x.to, "text": x.text, "at": x.at} for x in team.log[-300:]]
+        if member == "__council":  # proje düzeyi kurullar: plan, final, kurula sor
+            out["council_list"] = team.councils
+            return out
+        if member == "__timeline":
+            out["timeline"] = team.timeline_view()
+            return out
         if member:
-            from alice.team import TeamSend, TeamWait
+            from alice.team import LEAD, LeadAssign, LeadDiff, LeadReview, TeamSend, TeamWait
 
-            view = team.member_view(member)
-            m = team.members[member]
-            tools = {**self.agent.tools, **(m.agent.tools if m.agent is not None else
-                                             {"team_send": TeamSend(team, member), "team_wait": TeamWait(team, member)})}
+            view = team.thread_view(member)
+            agent = team.lead_agent if member == LEAD else team.members[member].agent
+            tools = {**self.agent.tools, **({"team_send": TeamSend(team, member), "team_wait": TeamWait(team, member),
+                                             "message": TeamSend(team, LEAD), "assign": LeadAssign(team),
+                                             "review": LeadReview(team), "diff": LeadDiff(team)}
+                                            if agent is None else agent.tools)}
             out["member"] = {**{k: v for k, v in view.items() if k != "messages"},
                              "history": display_history(view["messages"], tools)}
         return out
 
-    def create_project(self, goal: str, agents: list[dict[str, Any]]) -> str:
-        from alice.team import Team
+    def create_project(self, d: dict[str, Any]) -> str:
+        from alice.team import THINKING, Team
         from alice.tools.base import ToolError
 
-        goal = (goal or "").strip()
-        specs = [a for a in agents or [] if isinstance(a, dict)]
+        goal = str(d.get("goal") or "").strip()
+        specs = [a for a in d.get("agents") or [] if isinstance(a, dict)]
         if not goal:
             raise ToolError("hedef boş")
-        if not specs or len(specs) > 8:
-            raise ToolError("1-8 ajan gerekli")
-        team = Team(self.ctx, goal, int(self.cfg.agent.get("team_max_parallel", 5)), self.bus.publish, origin="user")
+        if len(specs) > 8:
+            raise ToolError("en çok 8 ajan")
+        cwd = self.ctx.resolve(str(d["cwd"])) if d.get("cwd") else self.ctx.cwd
+        if not cwd.is_dir():
+            raise ToolError(f"klasör yok: {cwd}")
+        lead_model = str(d.get("lead_model") or "brain").strip()
+        lead_thinking = str(d.get("lead_thinking") or "default")
+        team = Team(self.ctx, goal, int(self.cfg.agent.get("team_max_parallel", 5)), self.bus.publish, origin="user",
+                    review=d.get("review") is not False, council=d.get("council") is not False, lead_model=lead_model,
+                    check=str(d.get("check") or ""),
+                    lead_thinking=lead_thinking if lead_thinking in THINKING else "default", cwd=cwd)
+        team._check_model(lead_model, "yönetici")
         for spec in specs:
             team.add(spec)
         self._teams()[team.id] = team
-        team.start()
-        team.save()
+        team.start(plan=not specs)
         return team.id
 
     def project_action(self, pid: str, action: str, name: str = "", text: str = "",
@@ -427,12 +448,34 @@ class AppState:
         team = self.get_team(pid)
         if action == "stop":
             if name and name not in team.members:
-                raise ToolError(f"takımda '{name}' yok")
+                raise ToolError(f"projede '{name}' yok")
             team.stop(name or None)
             return "durduruldu"
+        if action == "resume":
+            team.resume()
+            return "sürdürülüyor"
         if action == "send":
-            team.stopped = False  # kullanıcı yazdıysa durdurulmuş proje yeniden canlanabilir
             return team.send(USER, name or "all", text)
+        if action == "answer":
+            team.answer(name, text)  # name: soru kimliği
+            return "cevap iletildi"
+        if action in ("approve", "revise"):
+            return team.review_member(name, action == "approve", text, by=USER)
+        if action == "save_template":
+            tpl = team.save_template(text or team.title)
+            return f"şablon kaydedildi: {tpl['name']}"
+        if action == "vote":
+            dec = team.user_vote(name, text, str((agent or {}).get("note") or ""))
+            return f"oyun sayıldı; kurul kararı: {dec}"
+        if action == "council":
+            team.ask_council(name)
+            return "kurul toplanıyor"
+        if action == "restart":
+            team.restart(name)
+            return f"{name} baştan başladı"
+        if action == "revert":
+            files = team.revert(name)
+            return f"{len(files)} dosya geri alındı"
         if action == "add":
             m = team.add_member(agent or {})
             return f"{m.name} eklendi"
@@ -460,10 +503,12 @@ class AppState:
             return False, "ALICE şu an çalışıyor"
         prompt = text
         if text.startswith("/"):
-            from alice.commands import INIT_PROMPT, expand_custom
+            from alice.commands import INIT_PROMPT, council_prompt, expand_custom
 
             if text.split()[0] == "/init":
                 prompt = INIT_PROMPT
+            elif text.split()[0] == "/kurul":
+                prompt = council_prompt(text[len("/kurul"):])
             else:
                 prompt = expand_custom(text, self.ctx.cwd)
                 if prompt is None:
@@ -668,6 +713,24 @@ def make_handler(state: AppState):
                 return self._json(session_changes(state.agent.checkpoints, state.ctx.cwd))
             if u.path == "/api/projects":
                 return self._json(state.projects())
+            if u.path == "/api/project/templates":
+                from alice.team import list_templates
+
+                return self._json(list_templates())
+            if u.path == "/api/project/check_guess":
+                from alice.team import guess_check
+
+                raw = (q.get("cwd") or [""])[0]
+                path = state.ctx.resolve(raw) if raw else state.ctx.cwd
+                return self._json({"check": guess_check(path) if path.is_dir() else ""})
+            if u.path == "/api/project/diff":
+                from alice.tools.base import ToolError
+
+                try:
+                    team = state.get_team((q.get("id") or [""])[0])
+                    return self._json({"diff": team.diff((q.get("member") or [""])[0])})
+                except ToolError as e:
+                    return self._json({"ok": False, "error": str(e)}, 404)
             if u.path == "/api/project":
                 from alice.tools.base import ToolError
 
@@ -770,16 +833,27 @@ def make_handler(state: AppState):
                         webbrowser.open(url)
                         return self._json({"ok": True})
                     return self._json({"ok": False}, 400)
+                if p == "/api/project/template/delete":
+                    from alice.team import delete_template
+                    from alice.tools.base import ToolError
+
+                    try:
+                        delete_template(str(d.get("name", "")))
+                    except ToolError as e:
+                        return self._json({"ok": False, "error": str(e)}, 400)
+                    return self._json({"ok": True})
                 if p in ("/api/project/create", "/api/project/action"):
                     from alice.tools.base import ToolError
 
                     try:
                         if p == "/api/project/create":
-                            pid = state.create_project(str(d.get("goal", "")), d.get("agents") or [])
+                            pid = state.create_project(d)
                             return self._json({"ok": True, "id": pid})
                         pid = str(d.get("id", ""))
                         agent = d.get("agent") if isinstance(d.get("agent"), dict) else None
-                        note = state.project_action(pid, str(d.get("action", "")), str(d.get("name", "")).lower(),
+                        name = str(d.get("name", ""))
+                        note = state.project_action(pid, str(d.get("action", "")),
+                                                    name if d.get("action") == "answer" else name.lower(),
                                                     str(d.get("text", "")), agent)
                     except ToolError as e:
                         return self._json({"ok": False, "error": str(e)}, 400)

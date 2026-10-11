@@ -349,7 +349,7 @@ def repl(agent: Agent, router: Router, ctx: ToolContext, cfg: Config, resume: st
 def handle_slash(text: str, agent: Agent, router: Router, ctx: ToolContext, cfg: Config):
     """None, "exit", ("run", mesaj) ya da ("prefill", metin) döndürür."""
     from alice import session as sess
-    from alice.commands import INIT_PROMPT, expand_custom
+    from alice.commands import INIT_PROMPT, council_prompt, expand_custom
 
     parts = text.split()
     cmd, args = parts[0].lower(), parts[1:]
@@ -357,6 +357,8 @@ def handle_slash(text: str, agent: Agent, router: Router, ctx: ToolContext, cfg:
         return "exit"
     if cmd == "/init":
         return ("run", INIT_PROMPT)
+    if cmd == "/kurul":
+        return ("run", council_prompt(" ".join(args)))
     custom = expand_custom(text, ctx.cwd)
     if custom is not None:
         return ("run", custom)

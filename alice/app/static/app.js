@@ -928,87 +928,61 @@ async function resendFrom(mi, text) {
 }
 
 /* ===================================================================== takım */
-// ALICE takım kurunca (team aracı) üyeler, ne yaptıkları ve aralarındaki mesajlar burada canlı görünür.
-const TEAM_ST = { queued: "sırada", running: "çalışıyor", waiting: "bekliyor", done: "bitti", failed: "hata", stopped: "durdu" };
+// Sohbetteki mini kart: ALICE'in başlattığı projenin durumu. Ayrıntı ve yönetim Projeler sayfasında.
+const TEAM_ST = { queued: "sırada", running: "çalışıyor", waiting: "bekliyor", asking: "soru soruyor",
+  review: "inceleme bekliyor", done: "bitti", failed: "hata", stopped: "durdu", idle: "beklemede" };
+const PROJ_ST = { planning: "planlanıyor", running: "çalışıyor", review: "incelemede", needs_you: "sana soruyor",
+  done: "bitti", stopped: "durdu" };
 function renderTeam(t) {
   const box = $("#team");
   S.team = t;
-  if (!t || !t.members || !t.members.length) { box.hidden = true; box.replaceChildren(); return; }
+  if (!t || box.dataset.closed === t.id) { box.hidden = true; return; }
   box.hidden = false;
-  const open = S.teamOpen ?? true;
-  const busy = t.members.filter((m) => m.status === "running" || m.status === "waiting").length;
-  const done = t.members.filter((m) => m.status === "done").length;
   box.replaceChildren();
+  const [done, total] = t.progress || [0, 0];
   const head = el("div", "team-head");
-  const tg = el("button", "team-toggle");
-  tg.append(el("b", "", "Takım"), el("span", "team-sum",
-    t.active ? `${busy} çalışıyor · ${done}/${t.members.length} bitti` : `${done}/${t.members.length} bitti`),
-    el("span", "team-goal", t.goal || ""));
-  tg.addEventListener("click", () => { S.teamOpen = !open; renderTeam(S.team); });
-  head.appendChild(tg);
-  const op = el("button", "btn team-open", "Projede aç");
-  op.title = "Ajanları ayrı ayrı izle ve yönet";
-  op.addEventListener("click", () => openProject(t.id));
-  head.appendChild(op);
-  if (t.active) {
-    const st = el("button", "btn team-stop", "Hepsini durdur");
-    st.addEventListener("click", () => teamAction("stop", ""));
-    head.appendChild(st);
-  } else {
-    const x = el("button", "act"); x.title = "Paneli kapat"; x.appendChild(svg(IC.x));
-    x.addEventListener("click", () => { $("#team").hidden = true; });
-    head.appendChild(x);
-  }
+  const open = el("button", "team-open");
+  open.title = "Projeyi aç";
+  open.append(el("i", "dot st-" + t.status), el("b", "", t.title), el("span", "pill " + t.status, PROJ_ST[t.status] || t.status),
+    progressBar(done, total), el("span", "team-sum", total ? `${done}/${total}` : ""));
+  open.addEventListener("click", () => openProject(t.id));
+  const x = el("button", "act"); x.title = "Gizle"; x.appendChild(svg(IC.x));
+  x.addEventListener("click", () => { box.dataset.closed = t.id; box.hidden = true; });
+  head.append(open, x);
   box.appendChild(head);
-  if (!open) return;
-  const grid = el("div", "team-grid");
-  for (const m of t.members) {
-    const c = el("div", "tm " + m.status);
-    const top = el("div", "tm-top");
-    top.append(el("b", "", m.name), el("span", "tm-st", TEAM_ST[m.status] || m.status));
-    if (m.status === "running" || m.status === "waiting") {
-      const s = el("button", "act"); s.title = m.name + " durdur"; s.appendChild(svg(IC.x));
-      s.addEventListener("click", (e) => { e.stopPropagation(); teamAction("stop", m.name); });
-      top.appendChild(s);
-    }
-    const meta = [m.model, m.thinking !== "default" ? "düşünme " + m.thinking : "", m.isolation !== "shared" ? m.isolation : "",
-      `${m.steps} adım`, m.secs ? fmtSecs(m.secs) : ""].filter(Boolean).join(" · ");
-    c.append(top, el("div", "tm-meta", meta), el("div", "tm-task", m.task));
-    const last = m.status === "done" || m.status === "failed" ? m.result : m.last;
-    if (last) c.appendChild(el("div", "tm-last", last));
-    c.title = m.task + (m.scope && m.scope.length ? "\nKapsam: " + m.scope.join(", ") : "") + (m.branch ? "\nDal: " + m.branch : "");
-    grid.appendChild(c);
-  }
-  box.appendChild(grid);
-  if (t.log && t.log.length) {
-    const log = el("div", "team-log");
-    for (const x of t.log.slice(-8)) {
-      const row = el("div", "tl");
-      row.append(el("b", "", `${x.from} → ${x.to}`), el("span", "", x.text));
-      log.appendChild(row);
-    }
-    box.appendChild(log);
-  }
-  if (t.active) {
-    const form = el("div", "team-say");
-    const sel = el("select");
-    for (const m of t.members) { const o = el("option", "", m.name); o.value = m.name; sel.appendChild(o); }
-    const all = el("option", "", "herkes"); all.value = "all"; sel.appendChild(all);
-    const inp = el("input"); inp.placeholder = "Bir üyeye doğrudan yaz…";
-    const go = () => { const v = inp.value.trim(); if (v) { teamAction("send", sel.value, v); inp.value = ""; } };
-    inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } });
-    form.append(sel, inp);
-    box.appendChild(form);
-  }
+  const q = (t.questions || []).find((q) => !q.answer);
+  const line = q ? "Alice soruyor: " + q.text : t.status === "done" ? (t.summary || "").split("\n")[0] : activeLine(t);
+  if (line) box.appendChild(el("div", "team-line" + (q ? " ask" : ""), line));
 }
-// Sohbetteki panel sadece ALICE'in o anki takımını gösterir; Projeler sayfası ve listesi her projeyi izler.
+function activeLine(t) {
+  const busy = t.members.filter((m) => ["running", "waiting", "asking"].includes(m.status));
+  const s = busy.slice(0, 2).map((m) => `${m.name}: ${m.last || TEAM_ST[m.status]}`).join(" · ");
+  return s || (t.lead && t.lead.state === "running" ? "Alice planlıyor / inceliyor…" : "");
+}
+function progressBar(done, total) {
+  const b = el("span", "prog"), i = el("i");
+  i.style.width = total ? `${(100 * done) / total}%` : "0";
+  b.appendChild(i);
+  return b;
+}
+// Sohbetteki kart sadece ALICE'in o anki projesini gösterir; Projeler sayfası ve listesi her projeyi izler.
 function onTeamEvent(ev) {
   if (!S.team || S.team.id === ev.id || ev.origin === "alice") renderTeam(ev);
   if (S.proj && S.proj.id === ev.id) refreshProjectSoon();
   clearTimeout(onTeamEvent._t);
   onTeamEvent._t = setTimeout(loadProjects, 800);
 }
-function fmtSecs(n) { return n < 60 ? `${n} sn` : `${Math.floor(n / 60)} dk ${n % 60} sn`; }
+// Projeden sohbete bildirim (soru, bitiş): tıklanınca projeyi açan kart.
+function onProjectNote(ev) {
+  const b = el("button", "pnote " + (ev.kind || "info"));
+  b.append(el("i", "dot st-" + (ev.kind === "ask" ? "needs_you" : ev.kind === "done" ? "done" : "running")),
+    el("span", "", ev.text), el("b", "", "Projeyi aç →"));
+  b.addEventListener("click", () => openProject(ev.id));
+  add(b);
+  if (ev.kind === "ask" || ev.kind === "done") toast(ev.kind === "ask" ? "Proje sana soruyor" : "Proje bitti");
+  loadProjects();
+}
+function fmtSecs(n) { return n < 60 ? `${n} sn` : n < 3600 ? `${Math.floor(n / 60)} dk ${n % 60} sn` : `${Math.floor(n / 3600)} sa ${Math.floor((n % 3600) / 60)} dk`; }
 async function teamAction(action, name, text) {
   if (!S.team) return;
   const r = await api("/api/project/action", { id: S.team.id, action, name, text: text || "" });
@@ -1017,19 +991,12 @@ async function teamAction(action, name, text) {
 }
 
 /* ================================================================== projeler */
-// Claude Code'daki Projeler gibi: her takım bir proje, her ajan ayrı bir konuşma. Canlı izlenir, yazılır, durdurulur,
-// projeye yeni ajan eklenir. Projeler diske kaydedilir; uygulama yeniden açılınca da buradan devam edilir.
+// Claude Code'daki Projeler gibi: her proje kendi yöneticisi (Alice) olan bir ajan takımı; her ajan ayrı bir konuşma.
+// Konular duruma göre gruplanır: soru soranlar ve inceleme bekleyenler üstte, bitenler altta.
 async function loadProjects() {
   const rows = await api("/api/projects");
   S.projects = Array.isArray(rows) ? rows : [];
   drawProjects();
-}
-function projectState(p) {
-  if (p.active) return "active";
-  const st = (p.members || []).map((m) => m.status);
-  if (st.some((x) => x === "failed")) return "failed";
-  if (st.length && st.every((x) => x === "done")) return "done";
-  return "stopped";
 }
 function drawProjects() {
   const nav = $("#projects");
@@ -1038,15 +1005,19 @@ function drawProjects() {
   if (!rows.length) { nav.appendChild(el("div", "side-empty small", "Henüz proje yok")); return; }
   for (const p of rows.slice(0, 30)) {
     const b = el("button", "proj-row" + (S.proj && S.proj.id === p.id ? " active" : ""));
-    b.title = p.goal || p.title;
-    b.append(el("i", "dot " + projectState(p)), el("span", "pt", p.title || "(adsız)"),
-      el("small", "", `${(p.members || []).length} ajan · ${relTime(p.updated || p.created)}`));
+    b.title = `${p.goal || p.title}\n${PROJ_ST[p.status] || p.status} · ${(p.members || []).length} ajan`;
+    b.append(el("i", "dot st-" + p.status), el("span", "pt", p.title || "(adsız)"));
+    const rev = (p.members || []).filter((m) => m.status === "review").length;
+    if (p.questions) b.appendChild(el("span", "badge ask", "?"));
+    else if (rev) b.appendChild(el("span", "badge rev", String(rev)));
+    b.appendChild(el("small", "", relTime(p.updated || p.created)));
     b.addEventListener("click", () => openProject(p.id));
     nav.appendChild(b);
   }
 }
-async function openProject(id, member) {
-  S.proj = { id, sel: member || (S.proj && S.proj.id === id ? S.proj.sel : null), data: null };
+async function openProject(id, sel) {
+  const same = S.proj && S.proj.id === id;
+  S.proj = { id, sel: sel || (same ? S.proj.sel : null), tab: same ? S.proj.tab : "chat", data: null };
   $("#app").classList.add("in-project");
   $("#projectView").hidden = false;
   drawProjects();
@@ -1054,6 +1025,7 @@ async function openProject(id, member) {
   await refreshProject();
 }
 function closeProject() {
+  if (location.hash) history.replaceState(null, "", location.pathname + location.search);
   S.proj = null;
   $("#app").classList.remove("in-project");
   $("#projectView").hidden = true;
@@ -1063,51 +1035,89 @@ function refreshProjectSoon() {
   if (refreshProjectSoon._t) return;
   refreshProjectSoon._t = setTimeout(() => { refreshProjectSoon._t = null; refreshProject(); }, 700);
 }
+// İlk açılışta dikkat isteyen konu seçilir: soru soran, inceleme bekleyen, çalışan; yoksa yönetici.
+function pickThread(d) {
+  for (const st of ["asking", "review", "running", "waiting"]) {
+    const m = d.members.find((x) => x.status === st);
+    if (m) return m.name;
+  }
+  return "alice";
+}
 async function refreshProject() {
   if (!S.proj) return;
   const pr = S.proj;
-  const sel = pr.sel && pr.sel !== "__log" ? pr.sel : "";
+  if (!pr.sel) {
+    const d0 = await api(`/api/project?id=${encodeURIComponent(pr.id)}`);
+    if (!d0 || d0.ok === false || !d0.id) { toast((d0 && d0.error) || "Proje açılamadı"); closeProject(); loadProjects(); return; }
+    pr.sel = pickThread(d0);
+  }
+  const sel = pr.sel !== "__log" ? pr.sel : "";  // "__council": proje kurulları
   const q = `/api/project?id=${encodeURIComponent(pr.id)}` + (sel ? `&member=${encodeURIComponent(sel)}` : "");
-  const d = await api(q);
+  const [d, df] = await Promise.all([api(q),
+    pr.tab === "diff" && sel && !["alice", "__council", "__timeline"].includes(sel) ? api(`/api/project/diff?id=${encodeURIComponent(pr.id)}&member=${encodeURIComponent(sel)}`) : null]);
   if (S.proj !== pr) return;
   if (!d || d.ok === false || !d.id) { toast((d && d.error) || "Proje açılamadı"); closeProject(); loadProjects(); return; }
-  if (!pr.sel) pr.sel = d.members.length ? d.members[0].name : "__log";
-  if (!sel && pr.sel !== "__log") return refreshProject();  // ilk açılış: seçilen üyenin konuşmasını da getir
   pr.data = d;
+  pr.diff = df ? df.diff || "" : null;
   renderProject();
 }
 function renderProject() {
   const pr = S.proj, d = pr.data, v = $("#projectView");
   // Yazılmakta olan mesaj ve kaydırma yeri yenilemede kaybolmasın.
-  const draft = v.querySelector(".pd-say textarea");
-  const keep = draft ? { text: draft.value, focus: document.activeElement === draft, to: (v.querySelector(".pd-say select") || {}).value } : null;
+  const keep = {};
+  for (const t of v.querySelectorAll("textarea[data-k], input[data-k]")) keep[t.dataset.k] = { v: t.value, f: document.activeElement === t };
   const feed = v.querySelector(".pd-feed");
   const atBottom = !feed || feed.scrollHeight - feed.scrollTop - feed.clientHeight < 40;
   const oldTop = feed ? feed.scrollTop : 0;
   v.replaceChildren();
 
+  // ---- başlık
   const head = el("div", "pv-head");
-  const back = el("button", "icon-btn"); back.title = "Sohbete dön"; back.innerHTML = '<svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>';
+  const back = el("button", "icon-btn"); back.title = "Sohbete dön";
+  back.innerHTML = '<svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>';
   back.addEventListener("click", closeProject);
   const mid = el("div", "grow");
-  const running = d.members.filter((m) => m.status === "running" || m.status === "waiting").length;
-  const done = d.members.filter((m) => m.status === "done").length;
-  const sub = el("div", "pv-sub");
-  sub.append(el("span", "", d.active ? `${running} çalışıyor · ${done}/${d.members.length} bitti` : `${done}/${d.members.length} bitti`),
-    el("span", "", d.origin === "user" ? "senin kurduğun" : "ALICE kurdu"), el("span", "", d.cwd), el("span", "", relTime(d.created)));
+  const t1 = el("div", "pv-trow");
+  t1.append(el("h2", "pv-title", d.title), el("span", "pill " + d.status, PROJ_ST[d.status] || d.status));
+  const [done, total] = d.progress || [0, 0];
+  const t2 = el("div", "pv-sub");
+  t2.append(progressBar(done, total), el("span", "", total ? `${done}/${total} onaylandı` : "ajan yok"),
+    el("span", "", `yönetici ${d.lead.model}${d.lead.thinking !== "default" ? " · " + d.lead.thinking : ""}`),
+    el("span", "", d.council ? "kurul açık" : d.review ? "inceleme açık" : "inceleme kapalı"), el("span", "mono", d.cwd), el("span", "", relTime(d.created)));
+  if (d.check) t2.appendChild(el("span", "mono", "kontrol: " + d.check));
   const goal = el("div", "pv-goal", d.goal);
   goal.title = "Tamamını göster";
   goal.addEventListener("click", () => goal.classList.toggle("open"));
-  mid.append(el("h2", "pv-title", d.title), sub, goal);
+  mid.append(t1, t2, goal);
   const acts = el("div", "pv-actions");
   const add = el("button", "btn", "Ajan ekle");
   add.addEventListener("click", () => projectDialog(d));
   acts.appendChild(add);
+  if (d.council && d.members.length) {
+    const ask = el("button", "btn", d.council_busy ? "Kurul toplanıyor…" : "Kurula sor");
+    ask.title = "Projenin şu anki halini inceleme kuruluna sor";
+    ask.disabled = !!d.council_busy;
+    ask.addEventListener("click", () => projectAction("council", ""));
+    acts.appendChild(ask);
+  }
+  if (d.members.length) {
+    const tp = el("button", "btn", "Şablon");
+    tp.title = "Bu projeyi şablon olarak kaydet: hedef, ayarlar ve ajanlar yeni projede tek tıkla gelir";
+    tp.addEventListener("click", () => saveTemplateDialog(d));
+    acts.appendChild(tp);
+  }
   if (d.active) {
-    const st = el("button", "btn danger", "Hepsini durdur");
+    const st = el("button", "btn danger", "Durdur");
+    st.title = "Bütün ajanları ve yöneticiyi durdur";
     st.addEventListener("click", () => projectAction("stop", ""));
     acts.appendChild(st);
   } else {
+    if (d.status === "stopped") {
+      const rs = el("button", "btn accent", "Sürdür");
+      rs.title = "Durmuş ajanlar kaldığı yerden devam eder";
+      rs.addEventListener("click", () => projectAction("resume", ""));
+      acts.appendChild(rs);
+    }
     const del = el("button", "btn danger", "Sil");
     del.addEventListener("click", async () => {
       if (!(await confirmDialog("Proje silinsin mi?", "Projenin kaydı ve ajanların konuşmaları silinir. Dosyalarda yapılan değişiklikler kalır.", "Sil"))) return;
@@ -1116,121 +1126,421 @@ function renderProject() {
     acts.appendChild(del);
   }
   head.append(back, mid, acts);
+  v.appendChild(head);
 
+  // ---- sorular ve özet
+  for (const q of (d.questions || []).filter((q) => !q.answer)) {
+    const c = el("div", "pv-ask");
+    c.append(el("b", "", "Alice soruyor"), el("div", "pv-ask-q", q.text));
+    const row = el("div", "pv-ask-row");
+    const inp = el("input"); inp.type = "text"; inp.placeholder = "Cevabın…"; inp.dataset.k = "q" + q.id;
+    const go = el("button", "btn accent", "Cevapla");
+    const send = async () => { const t = inp.value.trim(); if (t && await projectAction("answer", q.id, t)) inp.value = ""; };
+    go.addEventListener("click", send);
+    inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); send(); } });
+    row.append(inp, go);
+    c.appendChild(row);
+    v.appendChild(c);
+  }
+  if (d.summary) {
+    const c = el("details", "pv-summary");
+    c.open = !pr.summaryClosed;
+    c.addEventListener("toggle", () => { pr.summaryClosed = !c.open; });
+    const sm = el("summary", "", "Proje özeti");
+    const body = el("div", "prose");
+    setMd(body, d.summary);
+    c.append(sm, body);
+    v.appendChild(c);
+  }
+
+  // ---- konular
   const body = el("div", "pv-body");
   const list = el("div", "pv-threads");
-  const logBtn = el("button", "th" + (pr.sel === "__log" ? " sel" : ""));
-  const lt = el("div", "th-top");
-  lt.append(el("i", "dot " + (d.active ? "active" : "done")), el("b", "", "Takım sohbeti"), el("small", "", `${d.log.length} mesaj`));
-  logBtn.append(lt, el("div", "th-task", "Ajanların birbirine, ALICE'e ve sana yazdıkları"));
-  logBtn.addEventListener("click", () => { pr.sel = "__log"; refreshProject(); });
-  list.appendChild(logBtn);
-  for (const m of d.members) {
-    const b = el("button", "th" + (pr.sel === m.name ? " sel" : ""));
-    const top = el("div", "th-top");
-    top.append(el("i", "dot " + m.status), el("b", "", m.name), el("small", "", TEAM_ST[m.status] || m.status));
-    b.append(top, el("div", "th-task", m.task));
-    const meta = [m.model, m.thinking !== "default" ? m.thinking : "", `${m.steps} adım`, m.secs ? fmtSecs(m.secs) : ""].filter(Boolean).join(" · ");
-    b.appendChild(el("div", "th-last", (m.status === "running" || m.status === "waiting") && m.last ? m.last : meta));
-    b.addEventListener("click", () => { pr.sel = m.name; refreshProject(); });
-    list.appendChild(b);
-  }
+  const lead = { name: "alice", status: d.lead.state, task: d.status === "planning" ? "İşi planlıyor ve ajanları kuruyor" : "Planlar, soruları cevaplar, biten işleri inceler",
+    model: d.lead.model, last: d.lead.last };
+  const section = (title, items, cls) => {
+    if (!items.length) return;
+    list.appendChild(el("div", "th-sec" + (cls ? " " + cls : ""), `${title} · ${items.length}`));
+    for (const it of items) list.appendChild(it);
+  };
+  section("Yönetici", [threadItem(lead, true), logItem(d), timelineItem(d),
+    ...((d.councils || []).length || d.council_busy ? [councilItem(d)] : [])]);
+  const by = (sts) => d.members.filter((m) => sts.includes(m.status)).map((m) => threadItem(m));
+  section("Soru soruyor", by(["asking"]), "warn");
+  section("İnceleme bekliyor", by(["review"]), "rev");
+  section("Çalışıyor", by(["running", "waiting"]));
+  section("Sırada", by(["queued"]));
+  section("Bitti", by(["done"]), "ok");
+  section("Durdu / hata", by(["stopped", "failed"]), "err");
   const det = el("div", "pv-detail");
-  if (pr.sel === "__log") renderTeamLog(det, d); else if (d.member) renderMemberThread(det, d.member, d);
-  else det.appendChild(el("div", "pd-empty", "Bir ajan seç"));
+  if (pr.sel === "__log") renderTeamLog(det, d);
+  else if (pr.sel === "__council") renderProjectCouncils(det, d);
+  else if (pr.sel === "__timeline") renderTimeline(det, d);
+  else if (d.member) renderThread(det, d.member, d);
+  else det.appendChild(el("div", "pd-empty", "Bir konu seç"));
   body.append(list, det);
-  v.append(head, body);
+  v.appendChild(body);
 
   const nf = v.querySelector(".pd-feed");
   if (nf) nf.scrollTop = atBottom || pr.lastSel !== pr.sel ? nf.scrollHeight : oldTop;
   pr.lastSel = pr.sel;
-  const nd = v.querySelector(".pd-say textarea");
-  if (nd && keep && keep.text && pr.keptFor === pr.sel) nd.value = keep.text;
-  const ns = v.querySelector(".pd-say select");
-  if (ns && keep && keep.to) ns.value = keep.to;
-  if (nd && keep && keep.focus) nd.focus();
-  pr.keptFor = pr.sel;
+  for (const t of v.querySelectorAll("textarea[data-k], input[data-k]")) {
+    const k = keep[t.dataset.k];
+    if (k) { t.value = k.v; if (k.f) t.focus(); }
+  }
 }
-function renderMemberThread(det, m, d) {
+function threadItem(m, isLead) {
+  const pr = S.proj;
+  const b = el("button", "th" + (pr.sel === m.name ? " sel" : "") + (isLead ? " lead" : ""));
+  const top = el("div", "th-top");
+  const st = isLead ? (m.status === "running" ? "running" : m.status === "done" ? "done" : "idle") : m.status;
+  top.append(el("i", "dot st-" + st), el("b", "", isLead ? "alice · yönetici" : m.name), el("small", "", TEAM_ST[st] || st));
+  b.append(top, el("div", "th-task", m.task));
+  let last;
+  if (isLead) last = m.last;
+  else if (m.status === "queued" && m.after && m.after.length) last = `${m.after.join(", ")} bitince başlar`;
+  else if (m.status === "asking" && m.question) last = "soru: " + m.question;
+  else if (m.council_running) last = m.council && m.council.rounds ? `kurul toplanıyor · tur ${m.council.round || 1}/${m.council.rounds}` : "kurul toplanıyor…";
+  else if (m.status === "review" && m.council && m.council.decision) last = "kurul: " + (DEC_TR[m.council.decision] || m.council.decision);
+  else if (["running", "waiting"].includes(m.status) && m.last) last = m.last;
+  else last = [m.model, m.thinking !== "default" ? m.thinking : "", `${m.steps} adım`, m.secs ? fmtSecs(m.secs) : "",
+    m.files && m.files.length ? `${m.files.length} dosya` : "", m.reviews ? `${m.reviews} düzeltme` : ""].filter(Boolean).join(" · ");
+  if (last) b.appendChild(el("div", "th-last", last));
+  b.addEventListener("click", () => { pr.sel = m.name; pr.tab = "chat"; refreshProject(); });
+  return b;
+}
+function logItem(d) {
+  const pr = S.proj;
+  const b = el("button", "th" + (pr.sel === "__log" ? " sel" : ""));
+  const top = el("div", "th-top");
+  top.append(el("i", "dot st-chat"), el("b", "", "Takım sohbeti"), el("small", "", `${d.log.length} mesaj`));
+  const last = d.log[d.log.length - 1];
+  b.append(top, el("div", "th-last", last ? `${last.from} → ${last.to}: ${last.text}` : "Henüz mesaj yok"));
+  b.addEventListener("click", () => { pr.sel = "__log"; refreshProject(); });
+  return b;
+}
+function renderThread(det, m, d) {
+  const pr = S.proj, isLead = m.name === "alice";
   const h = el("div", "pd-head");
   const r1 = el("div", "pd-row");
-  r1.append(el("i", "dot " + m.status), el("b", "", m.name), el("span", "chip", TEAM_ST[m.status] || m.status),
-    el("span", "pd-meta", [m.model, m.thinking !== "default" ? "düşünme " + m.thinking : "", m.isolation,
-      `${m.steps} adım`, m.secs ? fmtSecs(m.secs) : ""].filter(Boolean).join(" · ")));
-  const grow = el("span", "grow"); grow.style.flex = "1"; r1.appendChild(grow);
-  if (m.status === "running" || m.status === "waiting") {
-    const st = el("button", "btn danger", "Durdur");
-    st.addEventListener("click", () => projectAction("stop", m.name));
-    r1.appendChild(st);
+  const st = isLead ? (m.status === "running" ? "running" : m.status === "done" ? "done" : "idle") : m.status;
+  r1.append(el("i", "dot st-" + st), el("b", "", isLead ? "alice · yönetici" : m.name), el("span", "chip", TEAM_ST[st] || st),
+    el("span", "pd-meta", [m.model, m.thinking !== "default" ? "düşünme " + m.thinking : "", isLead ? "" : m.isolation,
+      m.steps ? `${m.steps} adım` : "", m.secs ? fmtSecs(m.secs) : ""].filter(Boolean).join(" · ")));
+  const grow = el("span"); grow.style.flex = "1"; r1.appendChild(grow);
+  if (!isLead) {
+    if (["running", "waiting", "asking"].includes(m.status)) {
+      const b = el("button", "btn danger", "Durdur");
+      b.addEventListener("click", () => projectAction("stop", m.name));
+      r1.appendChild(b);
+    } else {
+      if (m.files && m.files.length) {
+        const b = el("button", "btn", "Değişiklikleri geri al");
+        b.addEventListener("click", async () => {
+          if (await confirmDialog("Değişiklikler geri alınsın mı?", `${m.name} ajanının dosya araçlarıyla yaptığı değişiklikler eski haline döner (${m.files.length} dosya).`, "Geri al"))
+            projectAction("revert", m.name);
+        });
+        r1.appendChild(b);
+      }
+      if (d.council && !m.council_running) {
+        const k = el("button", "btn", "Kurula sor");
+        k.title = "Bu işi inceleme kuruluna sor (eleştirmen, savunucu, kontrolcü, uzmanlar)";
+        k.addEventListener("click", () => { pr.tab = "council"; projectAction("council", m.name); });
+        r1.appendChild(k);
+      }
+      const b = el("button", "btn", "Baştan başlat");
+      b.title = "Temiz bir konuşmayla görevi yeniden yapsın";
+      b.addEventListener("click", () => projectAction("restart", m.name));
+      r1.appendChild(b);
+    }
   }
   h.append(r1, el("div", "pd-task", m.task));
   const r2 = el("div", "pd-row");
   if (m.constraints) r2.appendChild(el("span", "chip", "sınır: " + m.constraints));
   if (m.scope && m.scope.length) r2.appendChild(el("span", "chip", "yazar: " + m.scope.join(", ")));
+  if (m.after && m.after.length) r2.appendChild(el("span", "chip", "sonra: " + m.after.join(", ")));
   if (m.branch) r2.appendChild(el("span", "chip file", "dal " + m.branch));
-  for (const f of (m.files || []).slice(-12)) r2.appendChild(el("span", "chip file", f));
+  if (m.limit_hit) r2.appendChild(el("span", "chip warn", "adım limiti doldu"));
   if (r2.childNodes.length) h.appendChild(r2);
+  det.appendChild(h);
 
-  const feed = el("div", "pd-feed");
-  for (const it of m.history || []) {
-    if (it.type === "user") {
-      const u = el("div", "pf-user");
-      const txt = it.text || "";
-      const label = txt.startsWith("[takım mesaj") ? "takım mesajı" : txt === "Görevine başla." ? "başlangıç" : "";
-      if (label) u.appendChild(el("small", "", label));
-      u.appendChild(document.createTextNode(txt.replace(/^\[takım mesaj(ı|ları)\]\n/, "")));
-      feed.appendChild(u);
-    } else if (it.type === "assistant") {
-      const a = el("div", "pf-ai");
-      const prose = el("div", "prose");
-      setMd(prose, it.text);
-      a.appendChild(prose);
-      feed.appendChild(a);
-    } else if (it.type === "tool") {
-      const t = el("div", "pf-tool" + (it.is_error ? " err" : ""));
-      t.append(el("b", "", it.name), document.createTextNode(" " + (it.summary || "")));
-      const pre = el("pre", "", (it.text || "").slice(0, 4000));
-      t.appendChild(pre);
-      t.addEventListener("click", () => t.classList.toggle("open"));
-      feed.appendChild(t);
-    }
+  if (m.status === "review") {
+    const bar = el("div", "pd-review");
+    const rvText = m.council_running ? "Kurul toplandı, tartışıyor. İstersen beklemeden kararı sen ver."
+      : m.council && m.council.decision === "contested" ? "Kurul ikiye bölündü; Alice karar verecek. Kurul sekmesinden oy verebilir ya da kararı sen verebilirsin."
+      : d.review ? "İnceleme bekliyor. Alice inceliyor; istersen kararı sen ver." : "Bitti, onay bekliyor.";
+    bar.appendChild(el("div", "pd-rv-t", rvText));
+    const row = el("div", "pd-ask-row");
+    const fb = el("input"); fb.type = "text"; fb.placeholder = "Düzeltme için geri bildirim (ne eksik, ne bekliyorsun)…"; fb.dataset.k = "fb" + m.name;
+    const no = el("button", "btn", "Düzeltme iste");
+    no.addEventListener("click", async () => { const t = fb.value.trim(); if (!t) { fb.focus(); return toast("Önce geri bildirimi yaz"); } if (await projectAction("revise", m.name, t)) fb.value = ""; });
+    const ok = el("button", "btn accent", "Onayla");
+    ok.addEventListener("click", () => projectAction("approve", m.name));
+    row.append(fb, no, ok);
+    bar.appendChild(row);
+    det.appendChild(bar);
+  } else if (m.status === "asking" && m.question) {
+    const bar = el("div", "pd-review ask");
+    bar.appendChild(el("div", "pd-rv-t", "Alice'e soruyor: " + m.question));
+    det.appendChild(bar);
   }
-  if (m.status === "running") feed.appendChild(el("div", "pf-tool", (m.last ? "şu an: " + m.last : "düşünüyor…")));
-  if (!feed.childNodes.length) feed.appendChild(el("div", "pd-empty", "Henüz bir şey yok"));
+
+  if (!isLead) {
+    const tabs = el("div", "pd-tabs");
+    const tabsList = [["chat", "Konuşma"], ["diff", `Değişiklikler${m.files && m.files.length ? " · " + m.files.length : ""}`]];
+    if ((m.councils || []).length) tabsList.push(["council", `Kurul · ${m.councils.length}${m.council_running ? " …" : ""}`]);
+    for (const [k, label] of tabsList) {
+      const b = el("button", "pd-tab" + ((pr.tab || "chat") === k ? " on" : ""), label);
+      b.addEventListener("click", () => { pr.tab = k; refreshProject(); });
+      tabs.appendChild(b);
+    }
+    det.appendChild(tabs);
+  }
+  const feed = el("div", "pd-feed");
+  if (!isLead && pr.tab === "council") {
+    const list = (m.councils || []).slice().reverse();
+    list.forEach((c, i) => feed.appendChild(councilCard(c, m.name, i === 0)));
+    if (!list.length) feed.appendChild(el("div", "pd-empty", "Henüz kurul toplanmadı"));
+  } else if (!isLead && pr.tab === "diff") {
+    const text = pr.diff || "";
+    if (!text.trim()) feed.appendChild(el("div", "pd-empty", "Bu ajan dosya değiştirmedi"));
+    for (const part of text.split(/\n(?=--- )/)) {
+      if (!part.trim()) continue;
+      if (!part.includes("\n@@")) { feed.appendChild(el("div", "pf-tool", part)); continue; }
+      feed.appendChild(renderDiff(part).box);
+    }
+  } else {
+    for (const it of m.history || []) feed.appendChild(feedItem(it));
+    if (st === "running") feed.appendChild(el("div", "pf-live", (m.last ? "şu an: " + m.last : "düşünüyor…")));
+    if (!feed.childNodes.length) feed.appendChild(el("div", "pd-empty", "Henüz bir şey yok"));
+  }
+  det.appendChild(feed);
   const say = el("div", "pd-say");
-  const ta = el("textarea"); ta.rows = 1;
-  ta.placeholder = m.status === "running" || m.status === "waiting" ? `${m.name}'e yaz (bir sonraki adımında görür)…`
-    : `${m.name}'e yaz: kaldığı yerden devam eder…`;
+  const ta = el("textarea"); ta.rows = 1; ta.dataset.k = "say" + m.name;
+  ta.placeholder = isLead ? "Alice'e yaz: yeni iş, yön değişikliği, soru…" :
+    ["running", "waiting", "asking"].includes(m.status) ? `${m.name}'e yaz (bir sonraki adımında görür)…` : `${m.name}'e yaz: kaldığı yerden devam eder…`;
   const go = el("button", "btn primary", "Gönder");
-  const send = async () => {
-    const v = ta.value.trim();
-    if (!v) return;
-    ta.value = "";
-    await projectAction("send", m.name, v);
-  };
+  const send = async () => { const v = ta.value.trim(); if (!v) return; ta.value = ""; await projectAction("send", m.name, v); };
   go.addEventListener("click", send);
   ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
   ta.addEventListener("input", () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 160) + "px"; });
   say.append(ta, go);
-  det.append(h, feed, say);
+  det.appendChild(say);
+}
+// ---- inceleme kurulu
+const ROLE_TR = { critic: "eleştirmen", advocate: "savunucu", verifier: "kontrolcü", security: "güvenlik",
+  performance: "performans", ux: "kullanıcı gözü" };
+const VOTE_TR2 = { approve: "onay", conditional: "şartlı onay", reject: "ret" };
+const DEC_TR = { approve: "onay", approve_conditions: "şartlı onay", revise: "düzeltme gerekli", contested: "çekişmeli" };
+const KIND_TR = { plan: "Plan kurulu", work: "İş kurulu", recheck: "Kontrol turu", final: "Final kurulu", adhoc: "Kurula sor" };
+const SEV_TR = { critical: "kritik", major: "önemli", minor: "küçük" };
+const FST_TR = { confirmed: "doğrulandı", refuted: "çürütüldü", unclear: "belirsiz", pending: "bekliyor" };
+function councilItem(d) {
+  const pr = S.proj;
+  const b = el("button", "th" + (pr.sel === "__council" ? " sel" : ""));
+  const top = el("div", "th-top");
+  const last = (d.councils || [])[d.councils.length - 1];
+  top.append(el("i", "dot st-" + (d.council_busy ? "running" : "review")), el("b", "", "Kurul"),
+    el("small", "", d.council_busy ? "toplanıyor" : `${(d.councils || []).length} toplantı`));
+  b.append(top, el("div", "th-last", last ? `${KIND_TR[last.kind] || last.kind}: ${DEC_TR[last.decision] || "sürüyor"}` : "plan ve final kurulları"));
+  b.addEventListener("click", () => { pr.sel = "__council"; refreshProject(); });
+  return b;
+}
+function renderProjectCouncils(det, d) {
+  const h = el("div", "pd-head");
+  const r = el("div", "pd-row"); r.appendChild(el("b", "", "Kurul"));
+  h.append(r, el("div", "pd-task", "Plan kurulu, final kurulu ve projeye 'Kurula sor' toplantıları. Eleştirmen, savunucu, kontrolcü ve gerekince uzmanlar bağımsız inceler, tartışır ve ağırlıklı oylamayla karar verir."));
+  const feed = el("div", "pd-feed");
+  if ((d.lessons || []).length) {
+    const box = el("div", "cc lessons");
+    box.appendChild(el("b", "", "Bu projenin dersleri"));
+    box.appendChild(el("div", "cc-title", "Kurulun doğruladığı ciddi sorunlar; sonraki ajanlara ve kurullara hatırlatılır."));
+    const ul = el("ul", "cc-conds");
+    for (const x of d.lessons) ul.appendChild(el("li", "", x));
+    box.appendChild(ul);
+    feed.appendChild(box);
+  }
+  const list = (d.council_list || []).slice().reverse();
+  list.forEach((c, i) => feed.appendChild(councilCard(c, "", i === 0)));
+  if (!list.length) feed.appendChild(el("div", "pd-empty", d.council_busy ? "Kurul toplanıyor…" : "Henüz kurul toplanmadı"));
+  det.append(h, feed);
+}
+// ---- zaman çizelgesi
+const TL_ICON = { start: "▶", run: "▷", review: "◎", done: "✓", approve: "✓", revise: "↺", failed: "✗", stopped: "■",
+  stop: "■", resume: "▶", council: "⚖", ask: "?", answer: "↩", finish: "★", check: "✔", conflict: "⚠", stall: "⏳", plan: "✎", msg: "✉" };
+function timelineItem(d) {
+  const pr = S.proj;
+  const b = el("button", "th" + (pr.sel === "__timeline" ? " sel" : ""));
+  const top = el("div", "th-top");
+  top.append(el("i", "dot st-chat"), el("b", "", "Akış"), el("small", "", `${(d.timeline_n || 0) + d.log.length} olay`));
+  b.append(top, el("div", "th-last", "Kim ne zaman ne yaptı"));
+  b.addEventListener("click", () => { pr.sel = "__timeline"; refreshProject(); });
+  return b;
+}
+function renderTimeline(det, d) {
+  const h = el("div", "pd-head");
+  const r = el("div", "pd-row"); r.appendChild(el("b", "", "Akış"));
+  h.append(r, el("div", "pd-task", "Projede olan her şey sırayla: başlayan ve biten işler, kurul kararları, onaylar, sorular, mesajlar."));
+  const feed = el("div", "pd-feed tl");
+  let day = "";
+  for (const x of d.timeline || []) {
+    const dt = new Date(x.at * 1000);
+    const dd = dt.toLocaleDateString("tr-TR", { day: "numeric", month: "long" });
+    if (dd !== day) { day = dd; feed.appendChild(el("div", "tl-day", dd)); }
+    const row = el("div", "tl-row k-" + x.kind);
+    row.append(el("small", "", dt.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit", second: "2-digit" })),
+      el("i", "", TL_ICON[x.kind] || "•"), el("b", "", x.who), el("span", "", x.text));
+    feed.appendChild(row);
+  }
+  if (!(d.timeline || []).length) feed.appendChild(el("div", "pd-empty", "Henüz olay yok"));
+  det.append(h, feed);
+}
+function saveTemplateDialog(d) {
+  showDialog((dl) => {
+    dl.append(el("h2", "", "Şablon olarak kaydet"),
+      el("p", "", "Hedef, ayarlar ve ajan tanımları kaydedilir (konuşmalar değil). Yeni proje penceresinde 'Şablonlarım' altında çıkar."));
+    const inp = txt(d.title, "şablon adı");
+    const row = el("div", "row");
+    const no = el("button", "btn", "Vazgeç"); no.addEventListener("click", closeDialog);
+    const ok = el("button", "btn accent", "Kaydet");
+    ok.addEventListener("click", async () => { if (await projectAction("save_template", "", inp.value.trim())) closeDialog(); });
+    row.append(no, ok);
+    dl.append(inp, row);
+    setTimeout(() => inp.focus(), 0);
+  });
+}
+function councilCard(c, target, latest) {
+  const res = c.result || {};
+  const card = el("div", "cc" + (c.state === "running" ? " live" : ""));
+  const head = el("div", "cc-head");
+  head.append(el("b", "", KIND_TR[c.kind] || "Kurul"));
+  if (c.state === "running") head.appendChild(el("span", "pill running", `toplanıyor · tur ${c.round || 1}/${c.rounds || "?"}`));
+  else head.appendChild(el("span", "pill dec-" + (res.decision || "contested"), DEC_TR[res.decision] || "tamamlanamadı"));
+  if (res.score !== undefined && c.state !== "running") {
+    head.append(progressBar(Math.round(res.score * 100), 100), el("span", "cc-score", `%${Math.round((res.score || 0) * 100)} onay`));
+  }
+  if ((res.veto || []).length) head.appendChild(el("span", "chip warn", "veto: " + res.veto.join(", ")));
+  if (c.critical) head.appendChild(el("span", "chip", "kritik"));
+  card.appendChild(head);
+  if (c.title) card.appendChild(el("div", "cc-title", c.title));
+  if (res.error) card.appendChild(el("div", "cc-err", "Kurul tamamlanamadı: " + res.error));
+
+  // oylar
+  const votes = el("div", "cc-votes");
+  for (const v of c.votes || []) {
+    const row = el("div", "cv" + (v.counted === false ? " off" : ""));
+    const changed = v.first && v.last && v.first !== v.last;
+    row.append(el("b", "", ROLE_TR[v.role] || v.role), el("small", "", v.model || ""),
+      el("span", "vote v-" + (v.last || "none"), (changed ? `${VOTE_TR2[v.first]} → ` : "") + (VOTE_TR2[v.last] || "oy yok")));
+    if (v.weight > 1) row.appendChild(el("span", "chip", `×${v.weight}`));
+    if (v.counted === false) row.appendChild(el("span", "chip warn", "sayılmadı: " + v.note));
+    if (v.reason) row.appendChild(el("div", "cv-r", v.reason));
+    votes.appendChild(row);
+  }
+  if (c.user_vote) {
+    const row = el("div", "cv");
+    row.append(el("b", "", "sen"), el("span", "vote v-" + c.user_vote.vote, VOTE_TR2[c.user_vote.vote]), el("span", "chip", "×3"));
+    if (c.user_vote.note) row.appendChild(el("div", "cv-r", c.user_vote.note));
+    votes.appendChild(row);
+  }
+  if (votes.childNodes.length) card.appendChild(votes);
+
+  // bulgular: doğrulananlar önce
+  const order = { confirmed: 0, unclear: 1, pending: 2, refuted: 3 };
+  const fs = (c.findings || []).slice().sort((a, b) => (order[a.status] - order[b.status]) || a.id.localeCompare(b.id));
+  if (fs.length) {
+    const box = el("div", "cc-findings");
+    for (const f of fs) {
+      const fc = el("div", "cf st-" + f.status);
+      const t = el("div", "cf-top");
+      t.append(el("b", "", f.id), el("span", "chip sev-" + f.severity, SEV_TR[f.severity] || f.severity),
+        el("span", "chip fst-" + f.status, FST_TR[f.status] || f.status), el("small", "", ROLE_TR[f.by] || f.by));
+      fc.append(t, el("div", "cf-title", f.title));
+      if (f.evidence) fc.appendChild(el("div", "cf-ev", f.evidence));
+      if (f.fix) fc.appendChild(el("div", "cf-fix", "Öneri: " + f.fix));
+      if (f.check) fc.appendChild(el("div", "cf-chk", "Kontrolcü: " + f.check));
+      for (const n of f.notes || []) fc.appendChild(el("div", "cf-note", `${ROLE_TR[n.by] || n.by} ${n.stance === "agree" ? "katılıyor" : "itiraz ediyor"}: ${n.note}`));
+      box.appendChild(fc);
+    }
+    card.appendChild(box);
+  } else if (c.state !== "running") card.appendChild(el("div", "cc-title", "Bulgu yok."));
+  if ((res.conditions || []).length) {
+    const ul = el("ul", "cc-conds");
+    for (const x of res.conditions) ul.appendChild(el("li", "", x));
+    card.append(el("div", "cc-sub", "Şartlar"), ul);
+  }
+  // senin oyun
+  if (latest && c.state !== "running") {
+    const row = el("div", "cc-uv");
+    const note = el("input"); note.type = "text"; note.placeholder = "Oyunun gerekçesi (isteğe bağlı)"; note.dataset.k = "uv" + (c.id || target);
+    row.appendChild(el("span", "cc-sub", c.user_vote ? "Oyunu değiştir (×3):" : "Senin oyun (×3):"));
+    for (const [v, l, cls] of [["approve", "Onay", "accent"], ["conditional", "Şartlı onay", ""], ["reject", "Ret", "danger"]]) {
+      const b = el("button", "btn " + cls, l);
+      b.addEventListener("click", () => projectAction("vote", target, v, { note: note.value.trim() }));
+      row.appendChild(b);
+    }
+    row.appendChild(note);
+    card.appendChild(row);
+  }
+  if ((c.transcript || []).length) {
+    const dt = el("details", "cc-tr");
+    dt.appendChild(el("summary", "", `Tartışma dökümü (${c.transcript.length})`));
+    for (const t of c.transcript) {
+      const it = el("div", "cc-tr-it");
+      it.appendChild(el("b", "", `${ROLE_TR[t.role] || t.role} · tur ${t.round}`));
+      const pz = el("div", "prose");
+      setMd(pz, (t.text || "").replace(/```json[\s\S]*?```/g, "").trim() || "(sadece oy verdi)");
+      it.appendChild(pz);
+      dt.appendChild(it);
+    }
+    card.appendChild(dt);
+  }
+  return card;
+}
+function feedItem(it) {
+  if (it.type === "user") {
+    const u = el("div", "pf-user");
+    const txt = it.text || "";
+    const label = txt.startsWith("[olaylar]") ? "olaylar" : txt.startsWith("[takım mesaj") ? "takım mesajı" : txt === "Görevine başla." ? "başlangıç" : "";
+    if (label) u.appendChild(el("small", "", label));
+    // Yöneticiye giden olaylardaki "[durum]" tablosu zaten solda görünüyor; konuşmada gizle.
+    u.appendChild(document.createTextNode(txt.replace(/^\[(olaylar|takım mesajı|takım mesajları)\]\n/, "").replace(/\n\n\[durum\]\n[\s\S]*$/, "")));
+    return u;
+  }
+  if (it.type === "assistant") {
+    const a = el("div", "pf-ai");
+    const prose = el("div", "prose");
+    setMd(prose, it.text);
+    a.appendChild(prose);
+    return a;
+  }
+  if (it.type === "tool") {
+    const t = el("div", "pf-tool" + (it.is_error ? " err" : ""));
+    t.append(el("b", "", it.name), document.createTextNode(" " + (it.summary || "")));
+    t.appendChild(el("pre", "", (it.text || "").slice(0, 4000)));
+    t.addEventListener("click", () => t.classList.toggle("open"));
+    return t;
+  }
+  return el("div", "pf-tool", it.text || "");
 }
 function renderTeamLog(det, d) {
   const h = el("div", "pd-head");
-  h.append(el("div", "pd-row"), el("div", "pd-task", "Ajanlar team_send ile birbirine, ALICE'e (alice) ya da herkese yazar. Buradan sen de yazabilirsin."));
-  h.firstChild.appendChild(el("b", "", "Takım sohbeti"));
+  const r = el("div", "pd-row"); r.appendChild(el("b", "", "Takım sohbeti"));
+  h.append(r, el("div", "pd-task", "Ajanların birbirine, Alice'e ve sana yazdıkları. Buradan herkese ya da tek bir ajana yazabilirsin."));
   const feed = el("div", "pd-feed");
   for (const x of d.log) {
-    const row = el("div", "pf-log");
-    row.append(el("b", "", `${x.from} → ${x.to}`), document.createTextNode(x.text),
+    const row = el("div", "pf-log" + (x.from === "kullanıcı" ? " me" : x.from === "sistem" ? " sys" : ""));
+    row.append(el("b", "", `${x.from} → ${x.to}`), el("span", "", x.text),
       el("small", "", new Date(x.at * 1000).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })));
     feed.appendChild(row);
   }
   if (!d.log.length) feed.appendChild(el("div", "pd-empty", "Henüz mesaj yok"));
   const say = el("div", "pd-say");
-  const sel = el("select");
-  const all = el("option", "", "herkes"); all.value = "all"; sel.appendChild(all);
-  for (const m of d.members) { const o = el("option", "", m.name); o.value = m.name; sel.appendChild(o); }
-  const ta = el("textarea"); ta.rows = 1; ta.placeholder = "Takıma yaz…";
+  const sel = el("select"); sel.dataset.k = "logto";
+  for (const [v, l] of [["alice", "alice (yönetici)"], ["all", "herkes"], ...d.members.map((m) => [m.name, m.name])]) {
+    const o = el("option", "", l); o.value = v; sel.appendChild(o);
+  }
+  const ta = el("textarea"); ta.rows = 1; ta.placeholder = "Takıma yaz…"; ta.dataset.k = "logsay";
   const go = el("button", "btn primary", "Gönder");
   const send = async () => { const v = ta.value.trim(); if (!v) return; ta.value = ""; await projectAction("send", sel.value, v); };
   go.addEventListener("click", send);
@@ -1242,95 +1552,163 @@ async function projectAction(action, name, text, agent) {
   if (!S.proj) return false;
   const r = await api("/api/project/action", { id: S.proj.id, action, name, text: text || "", agent });
   if (!r.ok) { toast(r.error || "Olmadı"); return false; }
-  if (r.note && action !== "send") toast(r.note);
+  if (r.note && !["send", "answer"].includes(action)) toast(r.note);
   if (action !== "delete") refreshProject();
   return true;
 }
-// Yeni proje (project yoksa) ya da mevcut projeye ajan ekleme penceresi.
-function agentRow(spec) {
+
+// ---- yeni proje / ajan ekle penceresi
+const THINK_OPTS = [["default", "Varsayılan"], ["off", "Düşünmesin"], ["low", "Az"], ["medium", "Orta"], ["high", "Çok"]];
+const PLACE_OPTS = [["shared", "Aynı klasör"], ["worktree", "Ayrı git dalı"], ["readonly", "Salt okuma"]];
+// Şablon hedefin altına "bitti sayılma" ölçütünü ekler; ilk satır (proje başlığı) kullanıcının kendi cümlesi kalır.
+const TEMPLATES = [
+  ["Özellik ekle", "Eklenecek özellik: ", "Bitti sayılma: özellik çalışıyor, testleri yazılmış ve geçiyor."],
+  ["Hata düzelt", "Düzeltilecek hata: ", "Bitti sayılma: kök neden bulunmuş, düzeltilmiş, tekrarını önleyen test eklenmiş."],
+  ["Kod incelemesi", "Projeyi incele", "Hataları, güvenlik açıklarını ve riskli yerleri öncelik sırasıyla raporla. Kod değiştirme."],
+  ["Yeniden düzenle", "Yeniden düzenlenecek kısım: ", "Bitti sayılma: davranış aynı, bütün testler geçiyor."],
+  ["Test yaz", "Testi eksik kısımlara test yaz", "Bitti sayılma: önemli yollar test edilmiş, bulunan hatalar raporlanmış."],
+];
+function field(label, input, hint) {
+  const f = el("label", "fld");
+  f.appendChild(el("span", "fl", label));
+  f.appendChild(input);
+  if (hint) f.appendChild(el("span", "fh", hint));
+  return f;
+}
+function sel(opts, val) {
+  const s = el("select");
+  for (const [v, l] of opts) { const o = el("option", "", l); o.value = v; s.appendChild(o); }
+  s.value = val;
+  return s;
+}
+function txt(val, ph, list) {
+  const i = el("input"); i.type = "text"; i.value = val || ""; if (ph) i.placeholder = ph; if (list) i.setAttribute("list", list);
+  return i;
+}
+function agentCard(spec, n) {
   spec = spec || {};
   const box = el("div", "np-agent");
-  const r1 = el("div", "np-row");
-  const nm = el("input", "nm"); nm.type = "text"; nm.placeholder = "ad (ör. backend)"; nm.value = spec.name || "";
-  const model = el("input"); model.type = "text"; model.value = spec.model || "brain"; model.setAttribute("list", "npModels");
-  model.title = "Rol (brain güçlü, fast hızlı) ya da sağlayıcı:model";
-  const th = el("select");
-  for (const [v, l] of [["default", "düşünme: varsayılan"], ["off", "düşünme yok"], ["low", "az düşünür"], ["medium", "orta"], ["high", "çok düşünür"]]) {
-    const o = el("option", "", l); o.value = v; th.appendChild(o);
-  }
-  th.value = spec.thinking || "default";
-  const iso = el("select");
-  for (const [v, l] of [["shared", "aynı klasör"], ["worktree", "ayrı git dalı"], ["readonly", "salt okuma"]]) {
-    const o = el("option", "", l); o.value = v; iso.appendChild(o);
-  }
-  iso.value = spec.isolation || "shared";
+  const top = el("div", "np-row");
+  const nm = txt(spec.name || "", "ad"); nm.className = "nm";
+  const model = txt(spec.model || "brain", "", "npModels");
+  const th = sel(THINK_OPTS, spec.thinking || "default");
+  const iso = sel(PLACE_OPTS, spec.isolation || "shared");
+  top.append(el("span", "np-n", String(n || "")), field("Ad", nm), field("Model", model), field("Düşünme", th), field("Çalışma yeri", iso));
   const x = el("button", "act"); x.title = "Kaldır"; x.appendChild(svg(IC.x));
   x.addEventListener("click", () => box.remove());
-  r1.append(nm, model, th, iso, x);
-  const task = el("textarea"); task.placeholder = "Görevi: ne yapacak, hangi dosyalarda, nasıl doğrulayacak, ne raporlayacak";
-  task.value = spec.task || "";
-  const r2 = el("div", "np-row");
-  const sc = el("input", "sc"); sc.type = "text"; sc.placeholder = "yazabileceği yerler, virgülle (boş: her yer)";
-  sc.value = (spec.scope || []).join(", ");
-  const cn = el("input", "cn"); cn.type = "text"; cn.placeholder = "sınırlar (dokunmayacağı yerler, kurallar)"; cn.value = spec.constraints || "";
-  r2.append(sc);
-  box.append(r1, task, r2, cn);
+  top.appendChild(x);
+  const task = el("textarea"); task.placeholder = "Ne yapacak, hangi dosyalarda, nasıl doğrulayacak?"; task.value = spec.task || "";
+  const adv = el("details", "np-adv");
+  adv.appendChild(el("summary", "", "Kapsam, sınırlar, sıra"));
+  const sc = txt((spec.scope || []).join(", "), "ör. src/api, tests (boş: her yer)");
+  const cn = txt(spec.constraints || "", "ör. veritabanı şemasına dokunma");
+  const af = txt((spec.after || []).join(", "), "ör. backend");
+  const g = el("div", "np-grid");
+  g.append(field("Yazabileceği yerler", sc), field("Sınırlar", cn), field("Şunlar bitince başlasın", af));
+  adv.appendChild(g);
+  box.append(top, field("Görev", task), adv);
   box.read = () => ({ name: nm.value.trim().toLowerCase(), model: model.value.trim() || "brain", thinking: th.value, isolation: iso.value,
     task: task.value.trim(), constraints: cn.value.trim(),
-    scope: sc.value.split(",").map((s) => s.trim()).filter(Boolean) });
+    scope: sc.value.split(",").map((s) => s.trim()).filter(Boolean), after: af.value.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean) });
   return box;
 }
 function projectDialog(project) {
   showDialog((d) => {
-    d.classList.add("wide");
+    d.classList.add("wide", "np");
     const adding = !!project;
-    d.append(el("h2", "", adding ? "Projeye ajan ekle" : "Yeni proje"),
-      el("p", "", adding ? "Yeni ajan hemen başlar; diğerlerine katıldığı haber verilir."
-        : "Paralel çalışan bir ajan takımı kur. Her ajana ayrı görev, sınır, yazma kapsamı, model ve düşünme seviyesi ver. İstersen planı ALICE'e bırak."));
     const dl = el("datalist"); dl.id = "npModels";
-    for (const v of ["brain", "fast", "vision", ...((S.status.brain_chain || []).slice(0, 8))]) { const o = el("option"); o.value = v; dl.appendChild(o); }
+    for (const v of ["brain", "fast", ...((S.status.brain_chain || []).slice(0, 8))]) { const o = el("option"); o.value = v; dl.appendChild(o); }
     d.appendChild(dl);
-    let goal = null;
-    if (!adding) {
-      goal = el("textarea", "np-goal");
-      goal.placeholder = "Genel hedef: ne yapılacak, bitti sayılma ölçütü, kod tabanı hakkında bilinmesi gerekenler";
-      d.appendChild(goal);
-    }
-    const hd = el("div", "np-head");
-    hd.appendChild(el("b", "", "Ajanlar"));
-    const more = el("button", "btn", "+ Ajan");
-    hd.appendChild(more);
-    const list = el("div", "np-agents");
-    list.appendChild(agentRow(adding ? {} : { name: "backend" }));
-    more.addEventListener("click", () => { if (list.children.length < 8) list.appendChild(agentRow()); });
-    if (!adding) d.appendChild(hd); else more.remove();
-    d.appendChild(list);
     const err = el("div", "note err");
-    d.appendChild(err);
-    const row = el("div", "row");
-    if (!adding) {
-      const plan = el("button", "btn left", "ALICE planlasın");
-      plan.title = "Hedefi sohbete gönderir; ALICE kodu inceleyip takımı kendisi kurar";
-      plan.addEventListener("click", () => {
-        const g = goal.value.trim();
-        if (!g) { err.textContent = "Önce hedefi yaz"; return; }
-        closeDialog(); closeProject();
-        submit("Bu iş için takım kurup yönet (team aracı). Kodu kısaca incele, işi çakışmayan parçalara böl, her ajana uygun model ve düşünme seviyesini sen seç:\n\n" + g);
-      });
-      row.appendChild(plan);
+    if (adding) {
+      d.append(el("h2", "", "Ajan ekle"), el("p", "", `"${project.title}" projesine katılır ve hemen başlar; diğerlerine haber verilir.`));
+      const card = agentCard({}, 0);
+      d.append(card, err);
+      const row = el("div", "row");
+      const no = el("button", "btn", "Vazgeç"); no.addEventListener("click", closeDialog);
+      const ok = el("button", "btn accent", "Ekle ve başlat");
+      ok.addEventListener("click", async () => { if (await projectAction("add", "", "", card.read())) closeDialog(); });
+      row.append(no, ok);
+      d.appendChild(row);
+      setTimeout(() => card.querySelector("input").focus(), 0);
+      return;
     }
-    const no = el("button", "btn", "Vazgeç");
-    no.addEventListener("click", closeDialog);
-    const ok = el("button", "btn accent", adding ? "Ekle ve başlat" : "Başlat");
+    d.append(el("h2", "", "Yeni proje"),
+      el("p", "", "Alice işi ajanlara böler, sorularını cevaplar, biten her işi inceler ve sonunda sana özet yazar. Sen Projeler sayfasından izler, istediğin an müdahale edersin."));
+    const goal = el("textarea", "np-goal");
+    goal.placeholder = "Ne yapılacak? Bitti sayılma ölçütünü ve bilinmesi gerekenleri de yaz.";
+    const chips = el("div", "np-chips");
+    for (const [label, first, crit] of TEMPLATES) {
+      const c = el("button", "chip-btn", label);
+      c.addEventListener("click", () => {
+        const head = goal.value.split("\n\n")[0].trim() || first;
+        goal.value = head + "\n\n" + crit;
+        goal.focus();
+        goal.setSelectionRange(head.length, head.length);
+      });
+      chips.appendChild(c);
+    }
+    d.append(field("Hedef", goal), chips);
+    const mine = el("div", "np-chips mine");
+    d.appendChild(mine);
+
+    const seg = el("div", "seg");
+    const m1 = el("button", "on", "Alice planlasın"), m2 = el("button", "", "Ajanları ben belirleyeyim");
+    m1.title = "Alice kodu inceleyip ajanları, modellerini ve sırasını kendisi seçer (önerilen)";
+    seg.append(m1, m2);
+    d.appendChild(seg);
+    const manual = el("div", "np-manual"); manual.hidden = true;
+    const list = el("div", "np-agents");
+    const more = el("button", "btn", "+ Ajan ekle");
+    const renum = () => [...list.children].forEach((c, i) => { c.querySelector(".np-n").textContent = i + 1; });
+    more.addEventListener("click", () => { if (list.children.length < 8) { list.appendChild(agentCard({}, list.children.length + 1)); renum(); } });
+    manual.append(list, more);
+    d.appendChild(manual);
+    const setMode = (man) => {
+      m1.classList.toggle("on", !man); m2.classList.toggle("on", man); manual.hidden = !man;
+      if (man && !list.children.length) list.appendChild(agentCard({ name: "backend" }, 1));
+    };
+    m1.addEventListener("click", () => setMode(false));
+    m2.addEventListener("click", () => setMode(true));
+
+    const opts = el("details", "np-opts");
+    opts.appendChild(el("summary", "", "Ayarlar"));
+    const g = el("div", "np-grid");
+    const cwd = txt(S.status.cwd || "", "çalışma klasörü");
+    const lm = txt("brain", "", "npModels");
+    const lt = sel(THINK_OPTS, "default");
+    const ck = txt("", "ör. python -m pytest -q");
+    const guess = async () => {
+      const r = await api(`/api/project/check_guess?cwd=${encodeURIComponent(cwd.value.trim())}`);
+      ck.placeholder = r && r.check ? `öneri: ${r.check} (boş bırakırsan çalışmaz)` : "ör. python -m pytest -q";
+      ck.dataset.guess = (r && r.check) || "";
+    };
+    cwd.addEventListener("change", guess);
+    guess();
+    ck.addEventListener("focus", () => { if (!ck.value && ck.dataset.guess) ck.value = ck.dataset.guess; });
+    const rv = el("input"); rv.type = "checkbox"; rv.checked = true;
+    const rvl = el("label", "chk"); rvl.append(rv, document.createTextNode(" Biten işleri Alice incelesin (onaylasın ya da düzeltmeye göndersin)"));
+    const kc = el("input"); kc.type = "checkbox"; kc.checked = true;
+    const kcl = el("label", "chk"); kcl.append(kc, document.createTextNode(" İnceleme kurulu: plan, her iş ve final; eleştirmen, savunucu, kontrolcü ve uzmanlar tartışıp oylar"));
+    rv.addEventListener("change", () => { kc.disabled = !rv.checked; if (!rv.checked) kc.checked = false; });
+    g.append(field("Klasör", cwd), field("Yönetici modeli", lm), field("Yönetici düşünmesi", lt));
+    const ckf = field("Kontrol komutu", ck, "Testler/lint: her kurul öncesi otomatik çalışır, çıktısı kanıt olur.");
+    ckf.classList.add("wide");
+    g.appendChild(ckf);
+    opts.append(g, rvl, kcl);
+    d.append(opts, err);
+    const row = el("div", "row");
+    const no = el("button", "btn", "Vazgeç"); no.addEventListener("click", closeDialog);
+    const ok = el("button", "btn accent", "Başlat");
     ok.addEventListener("click", async () => {
-      const agents = [...list.children].map((b) => b.read()).filter((a) => a.name || a.task);
-      if (!adding && !goal.value.trim()) { err.textContent = "Hedef boş"; return; }
-      if (!agents.length) { err.textContent = "En az bir ajan ekle"; return; }
-      if (adding) {
-        if (await projectAction("add", "", "", agents[0])) closeDialog();
-        return;
-      }
-      const r = await api("/api/project/create", { goal: goal.value.trim(), agents });
+      const g2 = goal.value.trim();
+      if (!g2) { err.textContent = "Hedefi yaz"; goal.focus(); return; }
+      const agents = manual.hidden ? [] : [...list.children].map((b) => b.read()).filter((a) => a.name || a.task);
+      if (!manual.hidden && !agents.length) { err.textContent = "En az bir ajan ekle ya da planı Alice'e bırak"; return; }
+      ok.disabled = true;
+      const r = await api("/api/project/create", { goal: g2, agents, cwd: cwd.value.trim(), lead_model: lm.value.trim() || "brain",
+        lead_thinking: lt.value, review: rv.checked, council: kc.checked, check: ck.value.trim() });
+      ok.disabled = false;
       if (!r.ok) { err.textContent = r.error || "Başlatılamadı"; return; }
       closeDialog();
       await loadProjects();
@@ -1338,7 +1716,31 @@ function projectDialog(project) {
     });
     row.append(no, ok);
     d.appendChild(row);
-    setTimeout(() => (goal || list.querySelector("input")).focus(), 0);
+    setTimeout(() => goal.focus(), 0);
+    // Şablonlarım: kayıtlı projeden hedef, ayarlar ve ajanlar tek tıkla gelir
+    const fill = (t) => {
+      goal.value = t.goal || "";
+      lm.value = t.lead_model || "brain"; lt.value = t.lead_thinking || "default";
+      rv.checked = t.review !== false; kc.checked = t.council !== false; ck.value = t.check || "";
+      list.replaceChildren();
+      (t.agents || []).forEach((a, i) => list.appendChild(agentCard(a, i + 1)));
+      setMode((t.agents || []).length > 0);
+      opts.open = true;
+    };
+    api("/api/project/templates").then((rows) => {
+      if (!Array.isArray(rows) || !rows.length) return;
+      mine.appendChild(el("span", "np-mine-l", "Şablonlarım:"));
+      for (const t of rows) {
+        const c = el("span", "chip-btn tpl");
+        const b = el("button", "", t.name);
+        b.title = `${(t.agents || []).length} ajan · ${(t.goal || "").slice(0, 120)}`;
+        b.addEventListener("click", () => fill(t));
+        const x = el("button", "x", "×"); x.title = "Şablonu sil";
+        x.addEventListener("click", async () => { await api("/api/project/template/delete", { name: t.name }); c.remove(); });
+        c.append(b, x);
+        mine.appendChild(c);
+      }
+    });
   });
 }
 $("#newProject").addEventListener("click", () => projectDialog(null));
@@ -2260,6 +2662,7 @@ list.addEventListener("click", (e) => {
 const handlers = {
   status: applyStatus,
   team: onTeamEvent,
+  project_note: onProjectNote,
   user: (ev) => addUser(ev.text, ev.mi, ev.images),
   busy: (ev) => { S.status.busy = ev.value; setBusy(ev.value); if (!ev.value) loadSessions(); },
   stream_start: () => { if (!S.cur) showWorking("Düşünüyor"); },
@@ -2338,7 +2741,15 @@ function connect() {
   await loadHistory();
   connect();
   loadSessions();
-  loadProjects();
+  await loadProjects();
+  // Telefondan/bağlantıdan gelen adres: #projects (listeyi aç) ya da #p=<id> (projeyi aç)
+  const h = location.hash;
+  if (h.startsWith("#p=")) openProject(decodeURIComponent(h.slice(3)));
+  else if (h === "#projects") {
+    if (window.innerWidth <= 760) $("#app").classList.add("side-open");
+    const first = (S.projects || []).find((p) => p.status !== "done") || (S.projects || [])[0];
+    if (first) openProject(first.id);
+  }
   const cmds = await api("/api/commands");
   S.commands = Array.isArray(cmds) ? cmds : [];
   autosize();

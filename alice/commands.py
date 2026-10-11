@@ -35,6 +35,7 @@ BUILTINS: dict[str, str] = {
     "mcp": "Bağlı MCP sunucuları ve araçları",
     "init": "Bu proje için ALICE.md talimat dosyası oluştur",
     "memory": "Kalıcı hafızayı göster",
+    "kurul": "Bir konuyu inceleme kuruluna sor: eleştirmen, savunucu, kontrolcü ve uzmanlar tartışıp oylar",
 }
 
 INIT_PROMPT = (
@@ -43,6 +44,13 @@ INIT_PROMPT = (
     "her şeyi yaz: nasıl çalıştırılır, nasıl test edilir, klasör yapısı, dikkat edilecek kurallar. Varsa README'yi ve "
     "mevcut ALICE.md/CLAUDE.md/AGENTS.md dosyalarını temel al, tekrar etme."
 )
+
+
+def council_prompt(args: str) -> str:
+    """/kurul <konu>: konuyu inceleme kuruluna sorduran mesaj."""
+    topic = args.strip() or "Bu konuşmada en son konuştuğumuz konu ya da değişiklik"
+    return (f"Şunu inceleme kuruluna sor (council aracı; konu kritikse critical=true): {topic}\n\nKurulun kararını, "
+            "doğrulanmış bulguları ve kimin neyi neden savunduğunu bana kısaca özetle.")
 
 
 @dataclass

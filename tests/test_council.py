@@ -1,0 +1,224 @@
+from __future__ import annotations
+
+import json
+
+from alice.council import ROLES, Council, Finding, Vote, fix_list, parse_block, plan_council, report, retally, tally
+from alice.team import Team
+from tests.conftest import tool_call
+from tests.test_team import make, since_user, steps
+
+
+def role_of(messages) -> str:
+    sys = messages[0]["content"]
+    for key, r in ROLES.items():
+        if f"Kurul rolün: {r.title}." in sys:
+            return key
+    return ""
+
+
+def js(**kw) -> str:
+    return "Değerlendirmem:\n```json\n" + json.dumps(kw, ensure_ascii=False) + "\n```"
+
+
+def finding(sev="major", title="sıfıra bölme kontrolü yok"):
+    return {"severity": sev, "title": title, "evidence": "src/a.py:3", "fix": "kontrol ekle"}
+
+
+def test_parse_block_and_votes():
+    assert parse_block(js(vote="reject"))["vote"] == "reject"
+    assert parse_block('bla {"vote": "approve"} son') == {"vote": "approve"}
+    assert parse_block("json yok") == {}
+
+
+def test_tally_rules():
+    f1 = Finding("F1", "critic", "major", "x", status="refuted")
+    f2 = Finding("F2", "critic", "critical", "y", status="confirmed")
+    crit = Vote("critic", "m", 1, "reject", "reject", basis=["F1"])
+    adv = Vote("advocate", "m", 1, "approve", "approve")
+    ver = Vote("verifier", "m", 1, "approve", "approve")
+    r = tally([crit, adv, ver], [f1])
+    assert r["decision"] == "approve" and not crit.counted  # çürütülen bulguya dayanan ret sayılmaz
+    r = tally([Vote("critic", "m", 1, "reject", "reject", basis=["F2"]), adv, ver], [f2])
+    assert r["decision"] == "revise" and r["veto"] == ["F2"]  # doğrulanmış kritik bulgu veto
+    cond = Vote("critic", "m", 1, "conditional", "conditional", conditions=["log ekle"])
+    r = tally([cond, adv, ver], [])
+    assert r["decision"] == "approve_conditions" and r["conditions"] == ["log ekle"]
+    sec = Vote("security", "m", 1, "reject", "reject", basis=["F3"])
+    f3 = Finding("F3", "security", "major", "z", status="unclear")
+    r = tally([sec, adv], [f3], relevant=["security"])  # uzman ağırlığı 2: 1/3 onay
+    assert r["decision"] == "revise" and sec.weight == 2
+    r = tally([sec, adv], [f3], user={"vote": "approve"}, relevant=["security"])  # kullanıcı 3 kat: 4/6
+    assert r["decision"] == "approve"
+
+
+def test_plan_council_scales_with_work():
+    roles, rounds = plan_council("work", "küçük yardımcı fonksiyon düzeltmesi", 10, False)
+    assert roles == ["critic", "verifier"] and rounds == 1
+    roles, rounds = plan_council("work", "login token kontrolü", 200, False)
+    assert {"critic", "advocate", "verifier", "security"} <= set(roles) and rounds == 2
+    roles, rounds = plan_council("final", "her şey", 50, True)
+    assert set(roles) == set(ROLES) and rounds == 3
+
+
+def council_script(state):
+    def run(model, messages, tools, **kw):
+        role = role_of(messages)
+        prompt = str(messages[1]["content"])
+        state.setdefault("calls", []).append((role, "debate" if "Tartışma turu" in prompt else "first"))
+        if role == "critic":
+            if "Tartışma turu" in prompt:
+                return js(vote="reject", reason="hâlâ ret", stances=[{"id": "F1", "stance": "agree", "note": "kanıt"}])
+            return js(vote="reject", reason="hata var", findings=[finding(state.get("sev", "major"))])
+        if role == "advocate":
+            if "Tartışma turu" in prompt:
+                return js(vote="conditional", reason="ikna oldum", conditions=["sıfır kontrolü"])
+            return js(vote="approve", reason="iş iyi")
+        if role == "verifier":
+            return js(checks=[{"id": "F1", "status": state.get("check", "refuted"), "note": "denedim"}],
+                      vote="approve" if state.get("check", "refuted") == "refuted" else "reject", reason="kontrol")
+        return js(vote="approve", reason="uzman")
+    return run
+
+
+def test_refuted_finding_does_not_block(workdir):
+    state = {"check": "refuted"}
+    agent, _, ctx = make(council_script(state), workdir)
+    snap = Council(ctx, "work", "küçük iş", "a\n" * 100, depth=1).run()
+    assert snap["findings"][0]["status"] == "refuted"
+    assert snap["result"]["decision"] == "approve"
+    critic = next(v for v in snap["votes"] if v["role"] == "critic")
+    assert not critic["counted"] and "çürütüldü" in critic["note"]
+    assert "ONAY" in report(snap) and "çürütüldü" in report(snap)
+    assert not any(k.startswith("council:") for k in ctx.router.role_overrides)  # roller temizlendi
+
+
+def test_confirmed_critical_finding_vetoes_and_debate_changes_votes(workdir):
+    state = {"check": "confirmed", "sev": "critical"}
+    agent, _, ctx = make(council_script(state), workdir)
+    snap = Council(ctx, "work", "ödeme kodu", "a\n" * 200, depth=2).run()
+    assert snap["result"]["decision"] == "revise" and snap["result"]["veto"] == ["F1"]
+    adv = next(v for v in snap["votes"] if v["role"] == "advocate")
+    assert adv["first"] == "approve" and adv["last"] == "conditional"  # tartışmada ikna oldu
+    assert any(r == "advocate" and k == "debate" for r, k in state["calls"])
+    assert "F1" in fix_list(snap) and "sıfır kontrolü" in fix_list(snap)
+    again = retally(snap, {"vote": "approve"})  # kullanıcı oyu veto'yu kaldırmaz
+    assert again["result"]["decision"] == "revise"
+
+
+def test_debate_stops_early_when_nobody_moves(workdir):
+    def script(model, messages, tools, **kw):
+        role = role_of(messages)
+        if role == "critic":
+            return js(vote="conditional", reason="küçük", findings=[finding("minor")], conditions=["yorum ekle"])
+        if role == "verifier":
+            return js(checks=[{"id": "F1", "status": "unclear"}], vote="approve")
+        return js(vote="approve")
+
+    agent, prov, ctx = make(script, workdir)
+    snap = Council(ctx, "work", "iş", "a\n" * 200, depth=3).run()
+    assert snap["round"] == 2  # bir tartışma turu, kimse değişmedi, bitti
+    assert snap["result"]["decision"] == "approve_conditions"
+
+
+def test_chat_council_tool_and_slash_command(workdir):
+    from alice.commands import council_prompt
+
+    def script(model, messages, tools, **kw):
+        role = role_of(messages)
+        if role:
+            return js(vote="approve", reason=f"{role} onaylıyor")
+        n = steps(messages)
+        return [tool_call("council", {"subject": "README yapısı iyi mi?", "depth": "1"}), "Kurul onayladı."][min(n, 1)]
+
+    (workdir / "README.md").write_text("# x\n")
+    agent, _, ctx = make(script, workdir)
+    assert agent.run_turn(council_prompt("README")) == "Kurul onayladı."
+    tool_text = next(m["content"] for m in agent.messages if m["role"] == "tool")
+    assert "Kurula sor: ONAY" in tool_text and "eleştirmen" in tool_text
+    assert "council aracı" in council_prompt("x")
+
+
+def project_script(state):
+    """Planı bir kez reddedilen, işi bir kez düzeltmeye gönderilen ve sonunda finali geçen proje."""
+
+    def run(model, messages, tools, **kw):
+        role = role_of(messages)
+        prompt = str(messages[1]["content"]) if len(messages) > 1 else ""
+        if role:
+            if "Proje planı" in prompt:
+                second = "düzeltilmiş plan" in prompt
+                ok = second or role != "critic"
+                if role == "verifier":
+                    return js(checks=[] if second else [{"id": "F1", "status": "confirmed"}],
+                              vote="approve" if second else "reject")
+                return js(vote="approve" if ok else "reject",
+                          findings=[] if ok else [finding("critical", "test ajanı yok")])
+            if "Projenin tamamı" in prompt:
+                return js(vote="approve", reason="bütün iyi")
+            fixed = "kontrol eklendi" in prompt or "Önceki kurulun bulguları" in prompt
+            if role == "critic":
+                return js(vote="approve") if fixed else js(vote="reject", findings=[finding("critical")])
+            if role == "verifier":
+                return js(checks=[] if fixed else [{"id": "F1", "status": "confirmed"}],
+                          vote="approve" if fixed else "reject")
+            return js(vote="approve")
+        if "projesinin yöneticisisin" in messages[0]["content"]:
+            event, k = since_user(messages)
+            last = messages[-1]
+            if "henüz ajan yok" in event or ("Kurul planı onaylamadı" in str(last.get("content")) and k < 3):
+                if last["role"] == "tool" and "ajanlar başladı" in str(last.get("content")):
+                    return "tamam"
+                second = "Kurul planı onaylamadı" in str(last.get("content"))
+                return tool_call("plan", {"summary": "düzeltilmiş plan" if second else "tek ajan",
+                                          "agents": [{"name": "backend", "task": "a.py yaz"}]}, f"p{k}")
+            if "Final kurulu projeyi onayladı" in event and k == 0:
+                return tool_call("finish", {"summary": "bitti"})
+            return "tamam"
+        # backend ajanı
+        n = steps(messages)
+        if any("Kurul kararı" in str(m.get("content")) for m in messages if m["role"] == "user"):
+            return "rapor: kontrol eklendi"
+        return [tool_call("write_file", {"path": "a.py", "content": "def f(x):\n    return 1 / x\n"}), "rapor v1"][min(n, 1)]
+
+    return run
+
+
+def test_project_council_flow(workdir):
+    state: dict = {}
+    agent, _, ctx = make(project_script(state), workdir)
+    team = Team(ctx, "bölme fonksiyonu", council=True)
+    team.start(plan=True)
+    assert team.wait_until(lambda: team.finished, 40), team.status_text()
+    kinds = [c["kind"] for c in team.councils]
+    assert kinds.count("plan") == 2 and kinds[-1] == "final"
+    m = team.members["backend"]
+    assert [c["kind"] for c in m.councils] == ["work", "recheck"]
+    assert m.councils[0]["result"]["decision"] == "revise" and m.councils[1]["result"]["decision"] == "approve"
+    assert m.council_cycles == 1 and m.status == "done" and team.summary == "bitti"
+    assert any(x.sender == "kurul" for x in team.log)
+    snap = team.snapshot()
+    assert snap["council"] and snap["members"][0]["council"]["decision"] == "approve"
+
+
+def test_user_vote_overrides_contested(workdir):
+    def script(model, messages, tools, **kw):
+        role = role_of(messages)
+        if role == "critic":
+            return js(vote="reject", findings=[finding()])
+        if role == "verifier":
+            return js(checks=[{"id": "F1", "status": "unclear"}], vote="approve")
+        if role:
+            return js(vote="approve")
+        if "projesinin yöneticisisin" in messages[0]["content"]:
+            return "tamam"
+        return [tool_call("write_file", {"path": "a.py", "content": "x\n"}), "rapor"][min(steps(messages), 1)]
+
+    agent, _, ctx = make(script, workdir)
+    team = Team(ctx, "iş", council=True)
+    team.add({"name": "backend", "task": "a"})
+    team.start()
+    m = team.members["backend"]
+    assert team.wait_until(lambda: m.councils and m.councils[-1].get("state") == "done" and not m.council_running, 20)
+    assert m.status == "review" and m.councils[-1]["result"]["decision"] == "contested"
+    assert team.user_vote("backend", "approve", "bence tamam") == "approve"
+    assert m.status == "done"
