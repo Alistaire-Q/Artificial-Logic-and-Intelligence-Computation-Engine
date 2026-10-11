@@ -275,6 +275,7 @@ class AppState:
                                emit=lambda s: self.bus.publish({"type": "info", "text": s}))
         self.agent = Agent(cfg, self.router, all_tools(cfg, self.ctx.emit), self.ctx, Permissions(mode), self.ui, self.decider)
         self.ui.agent = self.agent
+        self.ctx.state["set_cwd"] = self.set_cwd  # github clone aracı çalışma klasörünü buradan değiştirir
         from alice.memory import attach_memory
 
         attach_memory(self.agent, "uygulama")
@@ -413,6 +414,25 @@ class AppState:
             (alice_home() / "last_cwd").write_text(str(path), encoding="utf-8")
         except OSError:
             pass
+        self.bus.publish({"type": "status", **self.status()})
+
+    def github_repos(self, query: str = "") -> list[dict[str, Any]]:
+        from alice.tools.github import GitHubAPI, clone_root, github_token
+
+        root = clone_root(self.cfg)
+        rows = GitHubAPI(github_token(self.cfg)).user_repos(query)
+        for r in rows:
+            local = root / r["full_name"]
+            r["local"] = str(local) if (local / ".git").exists() else ""
+        return rows
+
+    def open_github(self, repo: str, branch: str = "") -> str:
+        """Depoyu klonla (varsa güncelle) ve çalışma klasörü yap."""
+        from alice.tools.github import clone_or_update
+
+        path, note = clone_or_update(self.cfg, repo, branch)
+        self.set_cwd(path)
+        return note
 
     def rewind(self, mi: int) -> dict[str, Any]:
         text, restored = self.agent.rewind(mi)
@@ -550,6 +570,13 @@ def make_handler(state: AppState):
                 from alice.commands import catalog
 
                 return self._json(catalog(state.ctx.cwd))
+            if u.path == "/api/github/repos":
+                from alice.tools.base import ToolError
+
+                try:
+                    return self._json({"ok": True, "repos": state.github_repos((q.get("q") or [""])[0])})
+                except ToolError as e:
+                    return self._json({"ok": False, "error": str(e)})
             if u.path == "/api/usage":
                 return self._json(state.router.usage.today())
             if u.path == "/api/tools":
@@ -637,7 +664,8 @@ def make_handler(state: AppState):
                     state.agent.permissions.mode = mode
                     return self._json({"ok": True, **state.status()})
                 if (state.agent.busy or state._queued) and p in ("/api/new", "/api/resume", "/api/cwd", "/api/compact",
-                                                                  "/api/rewind", "/api/changes/revert"):
+                                                                  "/api/rewind", "/api/changes/revert",
+                                                                  "/api/github/open"):
                     return self._json({"ok": False, "error": "önce mevcut işi durdur"}, 409)
                 if p == "/api/new":
                     state.new_session()
@@ -651,6 +679,14 @@ def make_handler(state: AppState):
                         return self._json({"ok": False, "error": f"klasör yok: {path}"}, 400)
                     state.set_cwd(path)
                     return self._json({"ok": True, **state.status()})
+                if p == "/api/github/open":
+                    from alice.tools.base import ToolError
+
+                    try:
+                        note = state.open_github(str(d.get("repo", "")), str(d.get("branch", "")))
+                    except ToolError as e:
+                        return self._json({"ok": False, "error": str(e)}, 400)
+                    return self._json({"ok": True, "note": note, **state.status()})
                 if p == "/api/rewind":
                     out = state.rewind(int(d.get("mi", -1)))
                     return self._json({"ok": True, **out, "history": display_history(state.agent.messages, state.agent.tools),
