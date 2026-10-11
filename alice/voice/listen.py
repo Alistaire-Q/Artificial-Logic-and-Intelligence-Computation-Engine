@@ -218,13 +218,27 @@ class WakeWord:
 
 
 class PushToTalk:
-    """Global kısayol: basılıyken pressed True. pynput gerekir."""
+    """Global kısayol: basılıyken pressed True. Windows'ta kancasız tuş yoklaması, diğerlerinde pynput."""
 
     def __init__(self, key: str = "<scroll_lock>"):
-        from pynput import keyboard
-
         self.pressed = threading.Event()
         self.released = threading.Event()
+        from alice.hotkeys import IS_WIN, KeyPoller
+
+        if IS_WIN:  # kancasız: pynput'un sistem geneli klavye kancası her yerde yazmayı yavaşlatıyordu
+            def down() -> None:
+                self.released.clear()
+                self.pressed.set()
+
+            def up() -> None:
+                self.pressed.clear()
+                self.released.set()
+
+            self._listener = KeyPoller(key, down, up)
+            self._listener.start()
+            return
+        from pynput import keyboard
+
         name = key.strip("<>").lower()
         self._target = getattr(keyboard.Key, name, None) or keyboard.KeyCode.from_char(name[:1])
 

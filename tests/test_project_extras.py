@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import threading
+import time
 
 from alice.council import Council
 from alice.providers.openai_compat import ProviderError
@@ -235,3 +236,42 @@ def test_ask_and_done_notify(workdir):
     team.ask_user("Hangisi?")
     team.finish("özet")
     assert [k for k, _ in seen] == ["ask", "done"]
+
+
+def test_member_output_streams_live(workdir):
+    from alice.agent import Agent, NullUI
+    from alice.permissions import Permissions
+    from alice.providers.router import Router
+    from alice.tools import all_tools
+    from alice.tools.base import ToolContext
+    from tests.conftest import FakeProvider, make_config
+
+    class Streaming(FakeProvider):
+        def chat_stream(self, model, messages, on_delta, cancel=None, on_reasoning=None, **kw):
+            res = self.chat(model, messages, **kw)
+            if on_reasoning:
+                on_reasoning("önce dosyaya bakayım")
+            for i in range(0, len(res.text), 4):  # gerçek model gibi yavaş yavaş
+                on_delta(res.text[i:i + 4])
+                time.sleep(0.05)
+            return res
+
+    def script(model, messages, tools, **kw):
+        return "tamam" if is_lead(messages) else "Rapor: her şey yolunda, testler geçti."
+
+    cfg = make_config({"brain": ["a:m"], "fast": ["a:m"], "vision": ["a:m"]})
+    prov = Streaming("a", script)
+    router = Router(cfg, provider_factory=lambda pc: prov, sleep=lambda s: None)
+    ctx = ToolContext(cwd=workdir, config=cfg, router=router)
+    Agent(cfg, router, all_tools(), ctx, Permissions("auto"), NullUI(), system_prompt="sys")
+    events = []
+    team = Team(ctx, "iş", council=False, review=False, publish=events.append)
+    team._notify = lambda text, kind: None
+    team.add({"name": "backend", "task": "a"})
+    team.start()
+    assert team.wait_until(lambda: team.members["backend"].status == "done", 10)
+    live = [e for e in events if e["type"] == "team_live" and e["name"] == "backend"]
+    assert any(e["text"].startswith("Rapor") for e in live)  # metin yazılırken parça parça geldi
+    assert any(e["think"] == "önce dosyaya bakayım" for e in live)
+    assert live[-1]["text"] == "" and live[-1]["think"] == ""  # bitince canlı kutu kapandı
+    team.stop()

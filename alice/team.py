@@ -991,7 +991,7 @@ class Team:
         agent = Agent(parent.config, parent.router, tools, ctx, perms, MemberUI(self, m), parent.decider,
                       system_prompt=build_system_prompt(m.cwd, personality=False) + "\n\n" + self.brief(m),
                       is_child=True)
-        agent.stream = False
+        agent.stream = bool(parent.config.agent.get("stream", True))  # cevap yazılırken canlı aksın
         agent.role = self._role(m.name, m.model, m.thinking)
         agent.tool_specs = lambda _a=agent: [t.spec() for t in _a.tools.values()]  # gruplar yok: hepsi açık
         ctx.state["agent"] = agent  # uzun araçlar Durdur'u görsün
@@ -1173,7 +1173,7 @@ Kurallar:
                       parent.decider,
                       system_prompt=build_system_prompt(self.cwd, personality=False) + "\n\n" + self.lead_brief(),
                       is_child=True)
-        agent.stream = False
+        agent.stream = bool(parent.config.agent.get("stream", True))  # cevap yazılırken canlı aksın
         agent.role = self._role(LEAD, self.lead_model, self.lead_thinking)
         agent.tool_specs = lambda _a=agent: [t.spec() for t in _a.tools.values()]
         ctx.state["agent"] = agent
@@ -1567,13 +1567,50 @@ Kurallar:
 
 
 class MemberUI:
-    """Ajanın arayüzü: olayları proje durumuna yansıtır, izin sorularını ajanın adıyla kullanıcıya iletir."""
+    """Ajanın arayüzü: olayları proje durumuna yansıtır, izin sorularını ajanın adıyla kullanıcıya iletir. Model cevabı
+    yazılırken metni ve düşünmesini canlı yayınlar (en sık 0,25 sn'de bir; kayda girmez)."""
+
+    LIVE_EVERY = 0.25
 
     def __init__(self, team: Team, member: Member):
         self.team, self.member = team, member
+        self.text, self.think = "", ""
+        self._last = 0.0
 
     def __getattr__(self, name: str):
         return lambda *a, **k: None
+
+    def _live(self, force: bool = False) -> None:
+        now = time.monotonic()
+        if not force and now - self._last < self.LIVE_EVERY:
+            return
+        self._last = now
+        try:
+            self.team.publish({"type": "team_live", "id": self.team.id, "name": self.member.name,
+                               "text": self.text[-8000:], "think": self.think[-4000:]})
+        except Exception:  # noqa: BLE001
+            pass
+
+    def stream_start(self) -> None:
+        self.text, self.think = "", ""
+        self._live(force=True)
+        self._last = 0.0  # ilk parça beklemeden görünsün
+
+    def stream_delta(self, text: str) -> None:
+        self.text += text
+        self._live()
+
+    def thinking_delta(self, text: str) -> None:
+        self.think += text
+        self._live()
+
+    def stream_reset(self) -> None:
+        self.text = ""
+        self._live(force=True)
+
+    def stream_end(self, text: str, source: str) -> None:
+        self.text, self.think = "", ""  # cevap artık konuşmada; canlı kutu kapanır
+        self._live(force=True)
 
     def info(self, msg: str) -> None:
         if "adım limiti" in msg:

@@ -972,6 +972,39 @@ function onTeamEvent(ev) {
   clearTimeout(onTeamEvent._t);
   onTeamEvent._t = setTimeout(loadProjects, 800);
 }
+// Ajan ya da yönetici cevabını yazarken metin ve düşünme canlı gelir; açık konuşmanın altında akar.
+function onTeamLive(ev) {
+  S.live = S.live || {};
+  const key = ev.id + "/" + ev.name;
+  if (!ev.text && !ev.think) delete S.live[key]; else S.live[key] = ev;
+  const pr = S.proj;
+  if (pr && pr.id === ev.id && pr.sel === ev.name && (pr.tab || "chat") === "chat") drawLive();
+}
+function drawLive() {
+  const pr = S.proj;
+  const feed = document.querySelector("#projectView .pd-feed");
+  if (!pr || !feed) return;
+  const ev = (S.live || {})[pr.id + "/" + pr.sel];
+  let box = feed.querySelector(".pf-stream");
+  if (!ev) { if (box) box.remove(); return; }
+  const stick = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 60;
+  if (!box) {
+    box = el("div", "pf-ai pf-stream");
+    const th = el("details", "pf-think");
+    th.appendChild(el("summary", "", "düşünüyor…"));
+    th.appendChild(el("div", "pf-think-t"));
+    box.append(th, el("div", "prose"));
+    const live = feed.querySelector(".pf-live");
+    if (live) live.remove();
+    feed.appendChild(box);
+  }
+  const th = box.querySelector(".pf-think");
+  th.hidden = !ev.think;
+  th.querySelector(".pf-think-t").textContent = ev.think || "";
+  th.querySelector("summary").textContent = ev.text ? "düşündü" : "düşünüyor…";
+  setMd(box.querySelector(".prose"), ev.text || "");
+  if (stick) feed.scrollTop = feed.scrollHeight;
+}
 // Projeden sohbete bildirim (soru, bitiş): tıklanınca projeyi açan kart.
 function onProjectNote(ev) {
   const b = el("button", "pnote " + (ev.kind || "info"));
@@ -1181,6 +1214,7 @@ function renderProject() {
   body.append(list, det);
   v.appendChild(body);
 
+  drawLive();
   const nf = v.querySelector(".pd-feed");
   if (nf) nf.scrollTop = atBottom || pr.lastSel !== pr.sel ? nf.scrollHeight : oldTop;
   pr.lastSel = pr.sel;
@@ -2662,6 +2696,7 @@ list.addEventListener("click", (e) => {
 const handlers = {
   status: applyStatus,
   team: onTeamEvent,
+  team_live: onTeamLive,
   project_note: onProjectNote,
   user: (ev) => addUser(ev.text, ev.mi, ev.images),
   busy: (ev) => { S.status.busy = ev.value; setBusy(ev.value); if (!ev.value) loadSessions(); },
