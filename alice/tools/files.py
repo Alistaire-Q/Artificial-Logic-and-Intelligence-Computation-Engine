@@ -477,6 +477,8 @@ class Grep(Tool):
             cmd.append("-i")
         if multiline:
             cmd += ["-U", "--multiline-dotall"]
+            # rg dosyayı ham okur: CRLF dosyada '\n' deseni '\r' yüzünden tutmasın diye '\r?\n' yap.
+            pattern = re.sub(r"(?<!\\)\\n", r"\\r?\\n", pattern)
         if glob:
             cmd += ["-g", glob]
         # Göreli yollar: hem okunaklı hem modele daha az token.
@@ -521,7 +523,7 @@ class Grep(Tool):
             try:
                 if f.stat().st_size > SEARCH_MAX_BYTES or _is_binary(f):
                     continue
-                text = _read_text(f)
+                text = _read_text(f).replace("\r\n", "\n")  # CRLF: çok satırlı "\\n" deseni Windows dosyasında da tutsun
             except OSError:
                 continue
             shown = str(f.relative_to(base) if base.is_dir() else f)

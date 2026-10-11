@@ -57,6 +57,12 @@ def test_grep_multiline(grep_ctx):
     assert "a.py" in Grep().run(grep_ctx, pattern=r"foo\(\):\n\s+return", glob="*.py").text
 
 
+def test_grep_multiline_crlf(grep_ctx, workdir):
+    (workdir / "src" / "w.py").write_bytes(b"def baz():\r\n    return 3\r\n")
+    out = Grep().run(grep_ctx, pattern=r"baz\(\):\n\s+return 3", glob="*.py").text
+    assert "w.py" in out and "1:def baz():" in out.replace("\\", "/")
+
+
 def test_grep_brace_glob_and_offset(grep_ctx):
     out = Grep().run(grep_ctx, pattern="foo", glob="*.{py,ts}", output_mode="files_with_matches").text
     assert "notes.txt" not in out and "a.py" in out and "b.ts" in out
