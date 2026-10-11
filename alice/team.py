@@ -317,6 +317,7 @@ class Team:
         self._saved_at = 0.0
         self._save_lock = threading.RLock()
         self._pub_lock = threading.RLock()
+        self._dir = projects_dir()  # kayıt klasörü proje kurulurken sabitlenir
 
     # ---------------------------------------------------------- zaman çizelgesi
     def mark(self, who: str, kind: str, text: str) -> None:
@@ -1354,7 +1355,7 @@ Kurallar:
 
     # ---------------------------------------------------------------- kayıt
     def path(self) -> Path:
-        return projects_dir() / f"{self.id}.json"
+        return self._dir / f"{self.id}.json"
 
     def save(self) -> None:
         # İçerik de kilit altında hazırlanır: yoksa eski içerik ("çalışıyor") yeni içeriğin ("bitti") üstüne
