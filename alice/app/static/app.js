@@ -208,9 +208,10 @@ function addUser(text, mi, images) {
   cp.addEventListener("click", () => copyText(text));
   acts.appendChild(cp);
   if (mi !== undefined && mi !== null) {
-    const ed = el("button", "act"); ed.title = "Düzenle ve buradan yeniden başlat";
+    const ed = el("button", "act"); ed.title = "Mesajı düzenle ve buradan yeniden gönder (çift tıklama da olur)";
     ed.append(svg(IC.edit), document.createTextNode("Düzenle"));
-    ed.addEventListener("click", () => rewindTo(mi, true));
+    ed.addEventListener("click", () => editInline(wrap, text, mi));
+    b.addEventListener("dblclick", () => editInline(wrap, text, mi));
     const rw = el("button", "act"); rw.title = "Bu mesajdan öncesine geri sar (dosyalar dahil)";
     rw.append(svg(IC.rewind), document.createTextNode("Geri sar"));
     rw.addEventListener("click", () => rewindTo(mi, false));
@@ -725,6 +726,7 @@ function turnSummary() {
 function applyStatus(s) {
   Object.assign(S.status, s);
   const st = S.status;
+  if ("team" in s) renderTeam(s.team);
   if (st.cwd !== undefined) { $("#cwd").textContent = st.cwd; $("#cwdBtn").title = st.cwd; }
   if (st.version) $("#ver").textContent = "ALICE " + st.version;
   if (st.user) { $("#userName").textContent = st.user; $("#avatar").textContent = st.user[0].toUpperCase(); }
@@ -872,6 +874,134 @@ async function rewindTo(mi, edit) {
   refreshChanges();
   toast(r.restored && r.restored.length ? `Geri sarıldı, ${r.restored.length} dosya eski haline getirildi` : "Geri sarıldı");
   if (edit) { input.value = r.text; autosize(); input.focus(); }
+}
+
+// Mesajı yerinde düzenle: balon yazı kutusuna döner; Gönder konuşmayı o mesajın öncesine sarar ve yeni metni yollar.
+function editInline(wrap, text, mi) {
+  if (wrap.querySelector(".edit-box")) return;
+  const box = el("div", "edit-box");
+  const ta = el("textarea");
+  ta.value = text;
+  ta.rows = 1;
+  const fit = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 320) + "px"; };
+  const row = el("div", "edit-row");
+  row.appendChild(el("small", "", "Sonrası silinir, ALICE'in dosya değişiklikleri geri alınır"));
+  const cancel = el("button", "btn", "Vazgeç");
+  const send = el("button", "btn primary", "Gönder");
+  row.append(cancel, send);
+  box.append(ta, row);
+  wrap.classList.add("editing");
+  wrap.appendChild(box);
+  const close = () => { box.remove(); wrap.classList.remove("editing"); };
+  const go = async () => {
+    const t = ta.value.trim();
+    if (!t) return;
+    send.disabled = cancel.disabled = true;
+    if (!(await resendFrom(mi, t))) { send.disabled = cancel.disabled = false; return; }
+  };
+  cancel.addEventListener("click", close);
+  send.addEventListener("click", go);
+  ta.addEventListener("input", fit);
+  ta.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.preventDefault(); close(); }
+    else if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); go(); }
+  });
+  fit();
+  ta.focus();
+  ta.setSelectionRange(ta.value.length, ta.value.length);
+}
+// ALICE çalışıyorsa önce durdurur (bitmesini en fazla ~10 sn bekler), sonra geri sarıp yeni metni gönderir.
+async function resendFrom(mi, text) {
+  if (S.busy) {
+    stop();
+    for (let i = 0; i < 50 && S.busy; i++) { await new Promise((r) => setTimeout(r, 200)); await refreshStatus(); }
+    if (S.busy) { toast("ALICE henüz durmadı, biraz sonra tekrar dene"); return false; }
+  }
+  const r = await api("/api/rewind", { mi });
+  if (!r.ok) { toast(r.error || "Düzenlenemedi"); return false; }
+  renderHistory(r.history);
+  applyStatus(r);
+  refreshChanges();
+  if (r.restored && r.restored.length) toast(`${r.restored.length} dosya eski haline getirildi`);
+  await submit(text);
+  return true;
+}
+
+/* ===================================================================== takım */
+// ALICE takım kurunca (team aracı) üyeler, ne yaptıkları ve aralarındaki mesajlar burada canlı görünür.
+const TEAM_ST = { queued: "sırada", running: "çalışıyor", waiting: "bekliyor", done: "bitti", failed: "hata", stopped: "durdu" };
+function renderTeam(t) {
+  const box = $("#team");
+  S.team = t;
+  if (!t || !t.members || !t.members.length) { box.hidden = true; box.replaceChildren(); return; }
+  box.hidden = false;
+  const open = S.teamOpen ?? true;
+  const busy = t.members.filter((m) => m.status === "running" || m.status === "waiting").length;
+  const done = t.members.filter((m) => m.status === "done").length;
+  box.replaceChildren();
+  const head = el("div", "team-head");
+  const tg = el("button", "team-toggle");
+  tg.append(el("b", "", "Takım"), el("span", "team-sum",
+    t.active ? `${busy} çalışıyor · ${done}/${t.members.length} bitti` : `${done}/${t.members.length} bitti`),
+    el("span", "team-goal", t.goal || ""));
+  tg.addEventListener("click", () => { S.teamOpen = !open; renderTeam(S.team); });
+  head.appendChild(tg);
+  if (t.active) {
+    const st = el("button", "btn team-stop", "Hepsini durdur");
+    st.addEventListener("click", () => teamAction("stop", ""));
+    head.appendChild(st);
+  } else {
+    const x = el("button", "act"); x.title = "Paneli kapat"; x.appendChild(svg(IC.x));
+    x.addEventListener("click", () => { $("#team").hidden = true; });
+    head.appendChild(x);
+  }
+  box.appendChild(head);
+  if (!open) return;
+  const grid = el("div", "team-grid");
+  for (const m of t.members) {
+    const c = el("div", "tm " + m.status);
+    const top = el("div", "tm-top");
+    top.append(el("b", "", m.name), el("span", "tm-st", TEAM_ST[m.status] || m.status));
+    if (m.status === "running" || m.status === "waiting") {
+      const s = el("button", "act"); s.title = m.name + " durdur"; s.appendChild(svg(IC.x));
+      s.addEventListener("click", (e) => { e.stopPropagation(); teamAction("stop", m.name); });
+      top.appendChild(s);
+    }
+    const meta = [m.model, m.thinking !== "default" ? "düşünme " + m.thinking : "", m.isolation !== "shared" ? m.isolation : "",
+      `${m.steps} adım`, m.secs ? fmtSecs(m.secs) : ""].filter(Boolean).join(" · ");
+    c.append(top, el("div", "tm-meta", meta), el("div", "tm-task", m.task));
+    const last = m.status === "done" || m.status === "failed" ? m.result : m.last;
+    if (last) c.appendChild(el("div", "tm-last", last));
+    c.title = m.task + (m.scope && m.scope.length ? "\nKapsam: " + m.scope.join(", ") : "") + (m.branch ? "\nDal: " + m.branch : "");
+    grid.appendChild(c);
+  }
+  box.appendChild(grid);
+  if (t.log && t.log.length) {
+    const log = el("div", "team-log");
+    for (const x of t.log.slice(-8)) {
+      const row = el("div", "tl");
+      row.append(el("b", "", `${x.from} → ${x.to}`), el("span", "", x.text));
+      log.appendChild(row);
+    }
+    box.appendChild(log);
+  }
+  if (t.active) {
+    const form = el("div", "team-say");
+    const sel = el("select");
+    for (const m of t.members) { const o = el("option", "", m.name); o.value = m.name; sel.appendChild(o); }
+    const all = el("option", "", "herkes"); all.value = "all"; sel.appendChild(all);
+    const inp = el("input"); inp.placeholder = "Bir üyeye doğrudan yaz…";
+    const go = () => { const v = inp.value.trim(); if (v) { teamAction("send", sel.value, v); inp.value = ""; } };
+    inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+    form.append(sel, inp);
+    box.appendChild(form);
+  }
+}
+function fmtSecs(n) { return n < 60 ? `${n} sn` : `${Math.floor(n / 60)} dk ${n % 60} sn`; }
+async function teamAction(action, name, text) {
+  const r = await api("/api/team", { action, name, text: text || "" });
+  if (!r.ok) return toast(r.error || "Olmadı");
+  if (r.team) renderTeam(r.team);
 }
 
 /* ==================================================================== menüler */
@@ -1790,6 +1920,7 @@ list.addEventListener("click", (e) => {
 /* ==================================================================== olaylar */
 const handlers = {
   status: applyStatus,
+  team: renderTeam,
   user: (ev) => addUser(ev.text, ev.mi, ev.images),
   busy: (ev) => { S.status.busy = ev.value; setBusy(ev.value); if (!ev.value) loadSessions(); },
   stream_start: () => { if (!S.cur) showWorking("Düşünüyor"); },

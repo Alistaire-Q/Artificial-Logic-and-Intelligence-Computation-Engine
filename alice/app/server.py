@@ -276,6 +276,7 @@ class AppState:
         self.agent = Agent(cfg, self.router, all_tools(cfg, self.ctx.emit), self.ctx, Permissions(mode), self.ui, self.decider)
         self.ui.agent = self.agent
         self.ctx.state["set_cwd"] = self.set_cwd  # github clone aracı çalışma klasörünü buradan değiştirir
+        self.ctx.state["publish"] = self.bus.publish  # takım paneli canlı güncellensin
         from alice.memory import attach_memory
 
         attach_memory(self.agent, "uygulama")
@@ -342,7 +343,28 @@ class AppState:
             "thinking": self.router.thinking_level("brain"),
             "user": _user_name(),
             "checkpoints": sorted(self.agent.checkpoints),
+            "team": self.team_snapshot(),
         }
+
+    def team_snapshot(self) -> dict[str, Any] | None:
+        team = self.ctx.state.get("team")
+        return team.snapshot() if team is not None else None
+
+    def team_action(self, action: str, name: str = "", text: str = "") -> str:
+        """Kullanıcı takım panelinden bir üyeyi durdurur ya da ona doğrudan mesaj yazar."""
+        from alice.tools.base import ToolError
+
+        team = self.ctx.state.get("team")
+        if team is None:
+            raise ToolError("çalışan takım yok")
+        if action == "stop":
+            if name and name not in team.members:
+                raise ToolError(f"takımda '{name}' yok")
+            team.stop(name or None)
+            return "durduruldu"
+        if action == "send":
+            return team.send("kullanıcı", name, text)
+        raise ToolError(f"bilinmeyen işlem: {action}")
 
     def _ctx_window(self) -> int:
         """Şu anki ana modelin bağlam penceresi (arayüzde gösterilen sınır)."""
@@ -443,6 +465,10 @@ class AppState:
         return {"text": text, "restored": restored}
 
     def new_session(self) -> None:
+        team = self.ctx.state.pop("team", None)
+        if team is not None:
+            team.stop()
+            team.cleanup()
         self.agent.reset()
         self.sid = sess.new_session_id()
 
@@ -657,6 +683,15 @@ def make_handler(state: AppState):
                         webbrowser.open(url)
                         return self._json({"ok": True})
                     return self._json({"ok": False}, 400)
+                if p == "/api/team":
+                    from alice.tools.base import ToolError
+
+                    try:
+                        note = state.team_action(str(d.get("action", "")), str(d.get("name", "")).lower(),
+                                                 str(d.get("text", "")))
+                    except ToolError as e:
+                        return self._json({"ok": False, "error": str(e)}, 400)
+                    return self._json({"ok": True, "note": note, "team": state.team_snapshot()})
                 if p == "/api/mode":
                     mode = d.get("mode")
                     if mode not in MODES:

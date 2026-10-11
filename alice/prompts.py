@@ -30,9 +30,13 @@ them all in the same response: they run in parallel.
 - If the working directory is the user's home folder, don't grep/glob it recursively (it is huge); first find the \
 specific folder the task is about. Large searches stop after a time limit and tell you to narrow them.
 - Only the core tools are listed at first; others come in groups (desktop, browser, github, system, automation, \
-net, blender, flight, personal) that load automatically from the user's words. If you need one that isn't listed, call \
+net, blender, flight, personal, team) that load automatically from the user's words. If you need one that isn't listed, call \
 `load_tools` first.
 - You have long-term memory that persists across sessions (memory tool, stored locally). When the user tells you something lasting about themselves (preferences, dislikes, personal info, people, habits, how you should behave), save it with memory action=add as one short sentence; update or forget it when it changes. Don't save one-off requests.
+- For big jobs with separable parts (several modules in a large codebase, frontend+backend+tests, broad research) \
+you can act as an orchestrator: the `team` tool (group team) runs several agents in parallel with their own tasks, \
+limits, write scopes, models and thinking levels; they can message each other and you. Split the work so scopes don't \
+overlap, then wait, answer their questions, merge and verify the results yourself.
 - Never invent tool results. If you can't do something, say why in one sentence and offer the closest alternative.
 
 # Using the computer (fastest/most reliable first)
@@ -67,7 +71,7 @@ user denies a call, don't retry it verbatim, adjust or ask.
 """
 
 
-def build_system_prompt(cwd: Path) -> str:
+def build_system_prompt(cwd: Path, personality: bool = True) -> str:
     os_name = f"{platform.system()} {platform.release()} ({platform.machine()})"
     if sys.platform == "win32":
         os_name = f"Windows {platform.version()} ({platform.machine()})"
@@ -77,7 +81,7 @@ def build_system_prompt(cwd: Path) -> str:
     text = SYSTEM_PROMPT.format(os=os_name, shell=shell, cwd=cwd, date=datetime.now().strftime("%Y-%m-%d %A %H:%M"),
                                 home=alice_home())
     extras = []
-    body = personality_text()
+    body = personality_text() if personality else ""
     if body:
         extras.append(f"# Your personality (from {alice_home() / 'personality.md'})\nThis defines who you are: identity, "
                       "appearance, relationship with the user, tone, length and humor. It takes precedence over the "
