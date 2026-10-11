@@ -5,7 +5,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from alice.config import alice_home
+from alice.config import alice_home, personality_text
 from alice.tools.shell import shell_name
 
 SYSTEM_PROMPT = """You are ALICE (Artificial Logic and Intelligence Computation Engine), an autonomous agent running \
@@ -77,11 +77,11 @@ def build_system_prompt(cwd: Path) -> str:
     text = SYSTEM_PROMPT.format(os=os_name, shell=shell, cwd=cwd, date=datetime.now().strftime("%Y-%m-%d %A %H:%M"),
                                 home=alice_home())
     extras = []
-    pers = alice_home() / "personality.md"
-    if pers.is_file():
-        body = pers.read_text(encoding="utf-8", errors="replace").strip()
-        if body:
-            extras.append(f"# Your personality (from {pers}; follow it in tone, length and humor)\n{body[:3000]}")
+    body = personality_text()
+    if body:
+        extras.append(f"# Your personality (from {alice_home() / 'personality.md'})\nThis defines who you are: identity, "
+                      "appearance, relationship with the user, tone, length and humor. It takes precedence over the "
+                      f"generic self-description above; stay in this character.\n{body[:6000]}")
     for p in (alice_home() / "ALICE.md", cwd / "ALICE.md", cwd / "CLAUDE.md", cwd / "AGENTS.md"):
         if p.is_file():
             body = p.read_text(encoding="utf-8", errors="replace").strip()
