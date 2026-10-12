@@ -1084,7 +1084,70 @@ async function openProject(id, sel) {
   closeSideOnMobile();
   await refreshProject();
 }
+// ---- site önizlemesi: korumalı (ayrı kökenli) çerçeve. Çerçeve, sık yenilenen proje ekranının dışında durur ve
+// sadece yerine oturtulur; böylece her güncellemede site baştan yüklenmez, dosyalar değişince kendini yeniler.
+function renderPreview(det, d) {
+  const pr = S.proj, p = d.preview;
+  const h = el("div", "pd-head");
+  const r = el("div", "pd-row");
+  const nm = el("div", "pd-name");
+  nm.append(el("b", "", "Önizleme"), el("small", "", p.entry));
+  const acts = el("div", "pd-acts");
+  const mode = pr.pvMode || "desk";
+  for (const [k, label] of [["desk", "Masaüstü"], ["phone", "Telefon"]]) {
+    const b = el("button", "btn ghost" + (mode === k ? " on" : ""), label);
+    b.addEventListener("click", () => { pr.pvMode = k; renderProject(); });
+    acts.appendChild(b);
+  }
+  const rl = el("button", "btn ghost", "Yenile");
+  rl.addEventListener("click", () => reloadPreview());
+  const op = el("button", "btn ghost", "Yeni sekmede aç");
+  op.addEventListener("click", () => window.open(p.base + p.entry, "_blank", "noopener"));
+  acts.append(rl, op);
+  r.append(avatar("", "", IC.globe), nm, acts);
+  h.appendChild(r);
+  const wrap = el("div", "pv-frame-wrap" + (mode === "phone" ? " phone" : ""));
+  wrap.appendChild(el("div", "pv-frame-slot"));
+  det.append(h, wrap);
+  det.classList.add("preview");
+  const url = p.base + p.entry;
+  const host = previewHost();
+  if (host._url !== url) { host._url = url; host._frame.src = url; pr.pvChanged = p.changed; }
+  else if (p.changed && pr.pvChanged && p.changed > pr.pvChanged) { pr.pvChanged = p.changed; reloadPreview(); }
+  else if (p.changed) pr.pvChanged = p.changed;
+}
+function previewHost() {
+  if (S.pvHost) return S.pvHost;
+  const host = el("div", "pv-host");
+  host.hidden = true;
+  const f = el("iframe");
+  f.setAttribute("sandbox", "allow-scripts allow-forms allow-popups allow-modals");
+  f.setAttribute("referrerpolicy", "no-referrer");
+  f.title = "Site önizlemesi";
+  host.appendChild(f);
+  host._frame = f;
+  document.body.appendChild(host);
+  window.addEventListener("resize", placePreview);
+  S.pvHost = host;
+  return host;
+}
+function reloadPreview() {
+  const h = S.pvHost;
+  if (h && h._url) { h._frame.src = "about:blank"; setTimeout(() => { h._frame.src = h._url; }, 30); }
+}
+function placePreview() {
+  const h = S.pvHost;
+  if (!h) return;
+  const slot = S.proj && S.proj.sel === "__preview" ? document.querySelector("#projectView .pv-frame-slot") : null;
+  if (!slot || $("#projectView").hidden) { h.hidden = true; return; }
+  const r = slot.getBoundingClientRect();
+  Object.assign(h.style, { top: r.top + "px", left: r.left + "px", width: r.width + "px", height: r.height + "px",
+    borderRadius: getComputedStyle(slot).borderRadius });
+  h.hidden = false;
+  if (!slot._ro) { slot._ro = new ResizeObserver(placePreview); slot._ro.observe(slot); }
+}
 function closeProject() {
+  if (S.pvHost) { S.pvHost.hidden = true; S.pvHost._url = ""; S.pvHost._frame.src = "about:blank"; }
   if (location.hash) history.replaceState(null, "", location.pathname + location.search);
   S.proj = null;
   $("#app").classList.remove("in-project");
@@ -1111,10 +1174,10 @@ async function refreshProject() {
     if (!d0 || d0.ok === false || !d0.id) { toast((d0 && d0.error) || "Proje açılamadı"); closeProject(); loadProjects(); return; }
     pr.sel = pickThread(d0);
   }
-  const sel = pr.sel !== "__log" ? pr.sel : "";  // "__council": proje kurulları
+  const sel = pr.sel !== "__log" ? pr.sel : "";  // "__council": proje kurulları, "__preview": site önizlemesi
   const q = `/api/project?id=${encodeURIComponent(pr.id)}` + (sel ? `&member=${encodeURIComponent(sel)}` : "");
   const [d, df] = await Promise.all([api(q),
-    pr.tab === "diff" && sel && !["alice", "__council", "__timeline"].includes(sel) ? api(`/api/project/diff?id=${encodeURIComponent(pr.id)}&member=${encodeURIComponent(sel)}`) : null]);
+    pr.tab === "diff" && sel && !["alice", "__council", "__timeline", "__preview"].includes(sel) ? api(`/api/project/diff?id=${encodeURIComponent(pr.id)}&member=${encodeURIComponent(sel)}`) : null]);
   if (S.proj !== pr) return;
   if (!d || d.ok === false || !d.id) { toast((d && d.error) || "Proje açılamadı"); closeProject(); loadProjects(); return; }
   pr.data = d;
@@ -1252,7 +1315,8 @@ function renderProject() {
     list.appendChild(box);
   };
   section("general", "Genel", [threadItem(lead, true), logItem(d), timelineItem(d),
-    ...((d.councils || []).length || d.council_busy ? [councilItem(d)] : [])]);
+    ...((d.councils || []).length || d.council_busy ? [councilItem(d)] : []),
+    ...(d.preview ? [navItem("__preview", "Önizleme", d.preview.entry, IC.globe, "")] : [])]);
   const by = (sts) => d.members.filter((m) => sts.includes(m.status)).map((m) => threadItem(m));
   section("asking", "Soru soruyor", by(["asking"]), "warn");
   section("review", "İnceleme bekliyor", by(["review"]), "rev");
@@ -1274,12 +1338,14 @@ function renderProject() {
   if (pr.sel === "__log") renderTeamLog(det, d);
   else if (pr.sel === "__council") renderProjectCouncils(det, d);
   else if (pr.sel === "__timeline") renderTimeline(det, d);
+  else if (pr.sel === "__preview") renderPreview(det, d);
   else if (d.member) renderThread(det, d.member, d);
   else det.appendChild(el("div", "pd-empty", "Bir konu seç"));
   body.append(list, grip, det);
   v.appendChild(body);
 
   drawLive();
+  placePreview();
   const nf = v.querySelector(".pd-feed");
   if (nf) nf.scrollTop = atBottom || pr.lastSel !== pr.sel ? nf.scrollHeight : oldTop;
   pr.lastSel = pr.sel;
@@ -1637,6 +1703,7 @@ function councilCard(c, target, latest) {
   if (res.score !== undefined && !running) card.appendChild(el("div", "cc-title", `Ağırlıklı onay oranı %${Math.round((res.score || 0) * 100)}` +
     ((res.veto || []).length ? ` · veto eden bulgular: ${res.veto.join(", ")}` : "") + (c.critical ? " · kritik iş, en güçlü modeller" : "")));
   if (res.error) card.appendChild(el("div", "cc-err", res.error));
+  if ((c.screens || []).length) card.appendChild(el("div", "cc-title", `Kullanıcı gözü sitenin ${c.screens.join(" ve ")} ekran görüntülerine de baktı.`));
 
   // oylar: rol başına küçük kutu; gerekçe iki satır, tıklayınca tamamı
   const votes = el("div", "cc-votes");

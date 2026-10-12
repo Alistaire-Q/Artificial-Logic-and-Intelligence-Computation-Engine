@@ -36,7 +36,10 @@ STATIC_FILES = {"app.js": "text/javascript", "app.css": "text/css", "marked.min.
                 "purify.min.js": "text/javascript", "highlight.js": "text/javascript", "icon.svg": "image/svg+xml", "alice.png": "image/png", "quick.js": "text/javascript",
                 "quick.css": "text/css"}
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
-       "connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+       "connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; "
+       "frame-src 'self'")
+# Önizlenen site korumalı çerçevede (ayrı köken) çalışır: ALICE'in sayfasına ve API'sine dokunamaz.
+PREVIEW_CSP = "sandbox allow-scripts allow-forms allow-popups allow-modals"
 
 
 # ----------------------------------------------------------------------- olaylar
@@ -283,6 +286,8 @@ class AppState:
         self.sid = sess.new_session_id()
         self.agent.on_step = lambda: sess.save(self.sid, self.agent.messages, self.ctx.cwd)
         self.token = secrets.token_urlsafe(24)
+        # Önizleme adresindeki anahtar ayrı: sitenin kodu onu görse bile sadece proje dosyalarını okuyabilir.
+        self.preview_token = secrets.token_urlsafe(18)
         self.allowed_hosts = {"127.0.0.1", "localhost"}  # telefon sunucusunda LAN adresi eklenir
         self.watch_store = None  # telefon sunucusu: saat verisi buraya yazılır
         self.quick_pending: dict[str, Any] | None = None  # hızlı bar açılırken doldurulacak metin/görsel
@@ -401,6 +406,14 @@ class AppState:
         if member == "__timeline":
             out["timeline"] = team.timeline_view()
             return out
+        from alice.site import find_entry, last_change
+
+        entry = find_entry(team.cwd)
+        if entry:
+            out["preview"] = {"entry": entry, "base": f"/preview/{self.preview_token}/{team.id}/"}
+            if member == "__preview":
+                out["preview"]["changed"] = last_change(team.cwd)
+                return out
         if member:
             from alice.team import LEAD, LeadAssign, LeadDiff, LeadReview, TeamSend, TeamWait
 
@@ -666,6 +679,26 @@ def make_handler(state: AppState):
         def _deny(self) -> None:
             self._send(403, b"forbidden", "text/plain")
 
+        def _preview(self, path: str) -> None:
+            """/preview/<önizleme anahtarı>/<proje>/<yol>: proje klasöründeki siteyi korumalı olarak sun."""
+            from urllib.parse import unquote
+
+            from alice.site import content_type, safe_path
+            from alice.tools.base import ToolError
+
+            parts = path.split("/", 4)  # "", "preview", anahtar, proje, yol
+            if len(parts) < 4 or not secrets.compare_digest(parts[2], state.preview_token):
+                return self._deny()
+            try:
+                team = state.get_team(parts[3])
+            except ToolError:
+                return self._send(404, b"not found", "text/plain")
+            f = safe_path(team.cwd, unquote(parts[4] if len(parts) > 4 else ""))
+            if f is None:
+                return self._send(404, b"not found", "text/plain")
+            self._send(200, f.read_bytes(), content_type(f),
+                       {"Content-Security-Policy": PREVIEW_CSP, "Access-Control-Allow-Origin": "*"})
+
         # --------------------------------------------------------------- GET
         def do_GET(self) -> None:  # noqa: N802
             u = urlparse(self.path)
@@ -684,6 +717,8 @@ def make_handler(state: AppState):
                 return self._send(200, html.encode("utf-8"), "text/html; charset=utf-8",
                                   {"Content-Security-Policy": CSP.replace("img-src 'self' data:",
                                                                           "img-src 'self' data:; media-src 'self' blob:")})
+            if u.path.startswith("/preview/"):
+                return self._preview(u.path)
             if u.path.startswith("/static/"):
                 name = u.path[len("/static/"):]
                 if name not in STATIC_FILES:

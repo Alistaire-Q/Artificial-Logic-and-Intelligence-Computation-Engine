@@ -700,7 +700,7 @@ class Team:
                             f"({'GEÇTİ' if chk['code'] == 0 else 'BAŞARISIZ'})\n```\n{chk['out'][-3000:]}\n```")
         c = Council(self.parent_ctx, kind, subject, context, cwd=cwd or self.cwd, previous=previous,
                     critical=critical or self._critical(subject + context), rules=self.review_rules(),
-                    lessons=self.lessons[-10:], check=self.check)
+                    lessons=self.lessons[-10:], check=self.check, images=self._screens(kind, subject + context, cwd))
 
         def live() -> None:
             store[slot] = c.snapshot()
@@ -715,6 +715,20 @@ class Team:
         self.mark(COUNCIL, "council", f"{subject[:60]}: {res.get('decision', '?')} (%{round(100 * (res.get('score') or 0))})")
         self._changed(save=True)
         return snap
+
+    def _screens(self, kind: str, text: str, cwd: Path | None) -> dict[str, str]:
+        """Proje bir web sitesiyse ve iş görünüşe dokunuyorsa kurul için masaüstü ve telefon ekran görüntüleri."""
+        if kind not in ("work", "recheck", "final", "adhoc"):
+            return {}
+        if kind != "final" and not re.search(r"\.(html?|css|scss|sass|less|jsx|tsx|vue|svelte|astro)\b", text):
+            return {}
+        if not bool(self.parent_ctx.config.agent.get("team_screenshots", True)):
+            return {}
+        from alice.site import find_entry, screenshots
+
+        root = cwd or self.cwd
+        entry = find_entry(root)
+        return screenshots(root, entry) if entry else {}
 
     @staticmethod
     def _critical(text: str) -> bool:

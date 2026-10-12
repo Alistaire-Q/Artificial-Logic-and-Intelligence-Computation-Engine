@@ -1215,3 +1215,11 @@ details.cc[open] > summary.cc-head::after { transform: rotate(45deg); }
 #projectView .pd-feed.chat .working[hidden] { display: none; }
 #projectView .pd-feed.chat > .pf-note, #projectView .pd-feed.chat > .note { margin: 10px auto; }
 .pv-usage { font-variant-numeric: tabular-nums; cursor: help; }
+
+/* site önizlemesi */
+.pv-frame-wrap { flex: 1; min-height: 0; display: flex; justify-content: center; padding: 14px; background: var(--side); }
+.pv-frame-slot { flex: 1; border-radius: 12px; border: 1px solid var(--line); background: #fff; }
+.pv-frame-wrap.phone .pv-frame-slot { flex: 0 0 390px; max-width: 100%; border-radius: 26px; }
+.pv-host { position: fixed; z-index: 5; border-radius: 12px; overflow: hidden; }
+.pv-host[hidden] { display: none; }
+.pv-host iframe { width: 100%; height: 100%; border: 0; background: #fff; display: block; }

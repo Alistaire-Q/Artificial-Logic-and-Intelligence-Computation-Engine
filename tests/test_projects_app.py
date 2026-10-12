@@ -128,3 +128,26 @@ def test_council_actions_over_api(app):
              timeout=20)
     assert act(client, pid, action="vote", name="backend", text="belki").status_code == 400
     act(client, pid, action="stop")
+
+
+def test_site_preview_is_sandboxed_and_hides_secrets(app):
+    state, client, workdir = app
+    (workdir / "site").mkdir()
+    (workdir / "site" / "index.html").write_text("<h1>Varyant</h1>", encoding="utf-8")
+    (workdir / "site" / "app.js").write_text("console.log(1)", encoding="utf-8")
+    (workdir / ".env").write_text("KEY=gizli", encoding="utf-8")
+    pid = client.post("/api/project/create", json={"goal": "site", "council": False, "agents": []}).json()["id"]
+    d = client.get(f"/api/project?id={pid}&member=__preview").json()
+    assert d["preview"]["entry"] == "site/index.html" and d["preview"]["changed"] > 0
+    base = d["preview"]["base"]
+    assert state.token not in base  # sitenin kodu ana anahtarı göremez
+    anon = httpx.Client(base_url=str(client.base_url), timeout=10)  # ana anahtar olmadan
+    r = anon.get(base + "site/index.html")
+    assert r.status_code == 200 and "Varyant" in r.text
+    assert r.headers["content-security-policy"].startswith("sandbox allow-scripts")
+    assert anon.get(base + "site/app.js").headers["content-type"].startswith("text/javascript")
+    assert anon.get(base + "site/").text == r.text  # klasör -> index.html
+    for bad in (".env", "site/../.env", "%2e%2e/%2e%2e/etc/passwd"):
+        assert anon.get(base + bad).status_code == 404
+    assert anon.get(base.replace(state.preview_token, "yanlis") + "site/index.html").status_code == 403
+    assert anon.get(f"/api/state?t={state.preview_token}").status_code == 403  # önizleme anahtarı API açmaz
