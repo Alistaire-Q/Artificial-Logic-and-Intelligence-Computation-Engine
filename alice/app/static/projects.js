@@ -313,7 +313,8 @@ function renderProject() {
     if (d.members.length) menuItem(m, IC.copy, "Şablon olarak kaydet", "Hedef, ayarlar ve ajanlar", () => saveTemplateDialog(d));
     m.appendChild(el("div", "menu-sep"));
     m.appendChild(el("div", "menu-title", "Proje"));
-    for (const x of [`Yönetici: ${d.lead.model}${d.lead.thinking !== "default" ? " · " + d.lead.thinking : ""}`,
+    for (const x of [`Yönetici: ${d.lead.model}${d.lead.picked ? " (" + d.lead.picked + ")" : ""}${d.lead.thinking !== "default" ? " · " + d.lead.thinking : ""}`,
+      ...d.members.filter((m) => m.picked).map((m) => `${m.name}: ${m.picked}`),
       d.council ? "Kurul açık" : d.review ? "İnceleme açık" : "İnceleme kapalı", d.cwd, d.check ? "Kontrol: " + d.check : ""].filter(Boolean))
       m.appendChild(el("div", "menu-info", x));
     if (!d.active) {
@@ -1125,7 +1126,7 @@ function agentCard(spec, n) {
   const box = el("div", "np-agent");
   const top = el("div", "np-row");
   const nm = txt(spec.name || "", "ad"); nm.className = "nm";
-  const model = txt(spec.model || "brain", "", "npModels");
+  const model = txt(spec.model || "auto", "auto: işe göre en iyi model", "npModels");
   const th = sel(THINK_OPTS, spec.thinking || "default");
   const iso = sel(PLACE_OPTS, spec.isolation || "shared");
   top.append(el("span", "np-n", String(n || "")), field("Ad", nm), field("Model", model), field("Düşünme", th), field("Çalışma yeri", iso));
@@ -1142,7 +1143,7 @@ function agentCard(spec, n) {
   g.append(field("Yazabileceği yerler", sc), field("Sınırlar", cn), field("Şunlar bitince başlasın", af));
   adv.appendChild(g);
   box.append(top, field("Görev", task), adv);
-  box.read = () => ({ name: nm.value.trim().toLowerCase(), model: model.value.trim() || "brain", thinking: th.value, isolation: iso.value,
+  box.read = () => ({ name: nm.value.trim().toLowerCase(), model: model.value.trim() || "auto", thinking: th.value, isolation: iso.value,
     task: task.value.trim(), constraints: cn.value.trim(),
     scope: sc.value.split(",").map((s) => s.trim()).filter(Boolean), after: af.value.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean) });
   return box;
@@ -1152,7 +1153,7 @@ function projectDialog(project) {
     d.classList.add("wide", "np");
     const adding = !!project;
     const dl = el("datalist"); dl.id = "npModels";
-    for (const v of ["brain", "fast", ...((S.status.brain_chain || []).slice(0, 8))]) { const o = el("option"); o.value = v; dl.appendChild(o); }
+    for (const v of ["auto", "brain", "fast", ...((S.status.brain_chain || []).slice(0, 8))]) { const o = el("option"); o.value = v; dl.appendChild(o); }
     d.appendChild(dl);
     const err = el("div", "note err");
     if (adding) {
@@ -1210,7 +1211,7 @@ function projectDialog(project) {
     opts.appendChild(el("summary", "", "Ayarlar"));
     const g = el("div", "np-grid");
     const cwd = txt(S.status.cwd || "", "çalışma klasörü");
-    const lm = txt("brain", "", "npModels");
+    const lm = txt("auto", "auto: işe göre en iyi model", "npModels");
     const lt = sel(THINK_OPTS, "default");
     const ck = txt("", "ör. python -m pytest -q");
     const guess = async () => {
@@ -1241,7 +1242,7 @@ function projectDialog(project) {
       const agents = manual.hidden ? [] : [...list.children].map((b) => b.read()).filter((a) => a.name || a.task);
       if (!manual.hidden && !agents.length) { err.textContent = "En az bir ajan ekle ya da planı Alice'e bırak"; return; }
       ok.disabled = true;
-      const r = await api("/api/project/create", { goal: g2, agents, cwd: cwd.value.trim(), lead_model: lm.value.trim() || "brain",
+      const r = await api("/api/project/create", { goal: g2, agents, cwd: cwd.value.trim(), lead_model: lm.value.trim() || "auto",
         lead_thinking: lt.value, review: rv.checked, council: kc.checked, check: ck.value.trim() });
       ok.disabled = false;
       if (!r.ok) { err.textContent = r.error || "Başlatılamadı"; return; }
@@ -1255,7 +1256,7 @@ function projectDialog(project) {
     // Şablonlarım: kayıtlı projeden hedef, ayarlar ve ajanlar tek tıkla gelir
     const fill = (t) => {
       goal.value = t.goal || "";
-      lm.value = t.lead_model || "brain"; lt.value = t.lead_thinking || "default";
+      lm.value = t.lead_model || "auto"; lt.value = t.lead_thinking || "default";
       rv.checked = t.review !== false; kc.checked = t.council !== false; ck.value = t.check || "";
       list.replaceChildren();
       (t.agents || []).forEach((a, i) => list.appendChild(agentCard(a, i + 1)));
