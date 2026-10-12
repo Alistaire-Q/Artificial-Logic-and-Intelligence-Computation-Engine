@@ -233,3 +233,39 @@ def test_mcp_tools_grouped_by_server():
     assert len(visible_tools(tools, {"mcp:github"})) == 3
     os.environ["ALICE_TEST_TOK"] = "abc"
     assert MCPServer("x", "cmd", env={"T": "${ALICE_TEST_TOK}"}).env == {"T": "abc"}
+
+
+def test_long_tool_chain_is_compacted_to_fit_a_small_model(workdir):
+    """Ajanın tek görev mesajıyla uzun araç zinciri büyüdü ve sadece dar bağlamlı model açık: hata vermek yerine
+    konuşma o modele sığacak kadar özetlenip devam edilir."""
+    seen = {"summary_chars": 0}
+
+    def script(model, messages, tools, **kw):
+        if messages[0]["content"].startswith("Summarize"):
+            seen["summary_chars"] = len(messages[1]["content"])
+            return "ÖZET: dosyalar okundu"
+        return "bitti"
+
+    providers = {"a": {"base_url": "http://a", "api_key_env": "", "max_input_tokens": 30000},
+                 "b": {"base_url": "http://b", "api_key_env": "", "max_input_tokens": 30000}}
+    agent, _, ui = make_agent(script, workdir, providers=providers, compact_at_tokens=10**6)
+    agent.messages.append({"role": "user", "content": "Görevine başla."})
+    for i in range(120):  # uzun araç zinciri: araç tanımlarıyla birlikte 30K sınırını aşar
+        agent.messages.append({"role": "assistant", "content": "", "tool_calls": [
+            {"id": f"t{i}", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]})
+        agent.messages.append({"role": "tool", "tool_call_id": f"t{i}", "name": "read_file", "content": "z " * 600})
+    assert agent.run_turn("devam et") == "bitti"
+    assert any("ÖZET" in str(m.get("content")) for m in agent.messages)
+    assert 0 < seen["summary_chars"] <= int(30000 * 2.4)
+    for i, m in enumerate(agent.messages):  # araç çağrısı ve sonucu ayrılmamış olmalı
+        if m["role"] == "tool":
+            assert agent.messages[i - 1]["role"] in ("assistant", "tool")
+
+
+def test_tool_specs_get_lean_when_they_alone_fill_a_tiny_model(workdir):
+    from alice.agent import lean_specs
+    from alice.providers.router import estimate_tokens
+
+    specs = [t.spec() for t in all_tools()]
+    assert estimate_tokens([], lean_specs(specs)) < estimate_tokens([], specs) * 0.75
+    assert {s["function"]["name"] for s in lean_specs(specs)} == {s["function"]["name"] for s in specs}

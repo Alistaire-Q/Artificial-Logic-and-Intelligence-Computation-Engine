@@ -137,6 +137,32 @@ def _add_usage(row: dict[str, float], usage: dict[str, Any]) -> None:
         row["cost"] = round(row.get("cost", 0.0) + float(cost), 6)
 
 
+def human_failure(reasons: list[str]) -> str:
+    """Router'ın ham hata satırlarını ("ref: neden") kısa, okunur bir açıklamaya çevirir."""
+    out: list[str] = []
+    for line in reasons:
+        ref, _, why = line.partition(": ")
+        name = ref.split(":", 1)[-1].split("/")[-1] or ref
+        low = why.lower()
+        if m := re.search(r"soğumada \((\d+) sn\)", why):
+            secs = int(m.group(1))
+            when = f"~{secs // 3600} sa" if secs >= 3600 else f"~{max(1, secs // 60)} dk"
+            text = f"{name} beklemede ({when} sonra açılır)"
+        elif "model sınırı" in low or "too_large" in low or "context" in low:
+            text = f"{name} için konuşma çok uzun"
+        elif any(w in low for w in ("quota", "kota", "429", "rate")):
+            text = f"{name} kotası dolu"
+        elif any(w in low for w in ("auth", "401", "403", "anahtar", " yok")):
+            text = f"{name} için API anahtarı yok/geçersiz"
+        elif any(w in low for w in ("timeout", "network", "unreachable", "bağlan", "veri göndermiyor")):
+            text = f"{name} bağlantı sorunu"
+        else:
+            text = f"{name}: {why[:80]}"
+        if text not in out:
+            out.append(text)
+    return ("; ".join(out[:4]) + (f" (+{len(out) - 4})" if len(out) > 4 else "")) or "hiçbir model cevap veremedi"
+
+
 def _council_brief(c: dict[str, Any]) -> dict[str, Any]:
     res = c.get("result") or {}
     return {"id": c.get("id"), "kind": c.get("kind"), "state": c.get("state"), "decision": res.get("decision"),
@@ -304,6 +330,7 @@ class Team:
         self.lessons: list[str] = []  # kurulların bu projede yakaladığı sorunlar (sonraki işlere ders)
         self.timeline: list[dict[str, Any]] = []  # zaman çizelgesi: {at, who, kind, text}
         self.usage: dict[str, dict[str, float]] = {}  # kim -> {in, out, cost}: token ve ücret takibi
+        self._live_councils: set[Any] = set()  # süren kurullar (proje durunca onlar da durur)
         self._lead_turns = 0
         self._plan_nudges = 0
         self._dirty0: set[str] | None = None  # proje başında zaten değişmiş dosyalar (komut takibi bunlara dokunmaz)
@@ -708,7 +735,13 @@ class Team:
 
         c.on_change = live
         c.on_usage = lambda u: self._use(COUNCIL, u)
-        snap = c.run()
+        self._live_councils.add(c)
+        if self.stopped:
+            c.stop()
+        try:
+            snap = c.run()
+        finally:
+            self._live_councils.discard(c)
         store[slot] = snap
         self.learn(snap)
         res = snap.get("result") or {}
@@ -753,6 +786,8 @@ class Team:
             snap = self._council(kind, subject, context, m.councils, cwd=m.cwd, previous=prev)
         finally:
             m.council_running = False
+        if snap.get("state") == "stopped":
+            return  # proje durduruldu; sürdürülünce kurul yeniden toplanır
         with self.cond:
             self.log.append(Message(COUNCIL, m.name, report(snap).splitlines()[0]))
         self._apply_council(m, snap, report(snap), fix_list(snap))
@@ -761,6 +796,13 @@ class Team:
         if m.status != "review":
             return  # bu arada kullanıcı/yönetici karar verdi
         decision = (snap.get("result") or {}).get("decision")
+        from alice.council import blocking
+
+        if decision == "approve_conditions" and not blocking(snap):
+            # Şartlar sadece küçük ayrıntı: iş onaylanır, şartlar yöneticiye not olarak gider (yeni tur açılmaz).
+            self.review_member(m.name, True, by=COUNCIL)
+            self.event(f"Kurul {m.name} işini onayladı; küçük iyileştirme önerileri (zorunlu değil):\n{fixes}")
+            return
         if decision == "approve":
             self.review_member(m.name, True, by=COUNCIL)
         elif decision in ("approve_conditions", "revise") and m.council_cycles < 2:
@@ -784,6 +826,10 @@ class Team:
                          f"Dosyalar: {', '.join(m.files) or '-'}\nFark:\n{self.diff(m.name, limit=6000) or '-'}")
         snap = self._council("final", f"Projenin tamamı: {self.goal}", "\n\n".join(parts)[:40_000], self.councils,
                              critical=True)
+        if snap.get("state") == "stopped":  # sürdürülünce yeniden toplanır
+            self.final_runs -= 1
+            self._final_pending = True
+            return
         decision = (snap.get("result") or {}).get("decision")
         last = self.final_runs >= 2
         if decision in ("approve", "approve_conditions"):
@@ -816,6 +862,8 @@ class Team:
                          for m in self.members.values()]
                 snap = self._council("adhoc", f"Projenin şu anki hali: {self.goal}", "\n\n".join(parts)[:40_000],
                                      self.councils)
+                if snap.get("state") == "stopped":
+                    return
                 self.event(f"Kullanıcı kurula sordu, sonuç:\n{report(snap)}\nGerekiyorsa ajanlara yön ver.")
 
             self._spawn(run)
@@ -1135,12 +1183,13 @@ class Team:
         return ""
 
     def learn(self, snap: dict[str, Any]) -> None:
-        """Kurulun doğruladığı ciddi bulgular projenin derslerine eklenir (sonraki ajanlara ve kurullara gider)."""
-        for f in snap.get("findings", []):
-            if f.get("status") == "confirmed" and f.get("severity") in ("critical", "major"):
-                lesson = f"{f['title']}" + (f" → {f['fix']}" if f.get("fix") else "")
-                if lesson not in self.lessons:
-                    self.lessons.append(lesson[:240])
+        """Kurulun doğruladığı ciddi bulgular projenin derslerine eklenir (sonraki ajanlara ve kurullara gider).
+        Aynı dersi başka sözcüklerle tekrar eklemez."""
+        from alice.council import dedupe
+
+        new = [f"{f['title']}" + (f" → {f['fix']}" if f.get("fix") else "") for f in snap.get("findings", [])
+               if f.get("status") == "confirmed" and f.get("severity") in ("critical", "major")]
+        self.lessons += [x[:240] for x in dedupe(new, self.lessons)]
         del self.lessons[:-15]
 
     def brief(self, m: Member) -> str:
@@ -1187,6 +1236,8 @@ Kurallar:
         with self.cond:
             if self.lead_thread is not None and self.lead_thread.is_alive():
                 return  # döngü çalışıyor; olay gelen kutusundan alınacak
+            if self.stopped:
+                return  # durmuş projede yönetici çalışmaz; olaylar bekler, sürdürülünce işlenir
             if self.parent_ctx.state.get("agent") is None or self.parent_ctx.router is None:
                 return
             self.lead_thread = threading.Thread(target=self._lead_loop, daemon=True, name=f"lead-{self.id}")
@@ -1224,7 +1275,17 @@ Kurallar:
             if self.lead_agent is None:
                 self.lead_agent = self._make_lead()
             while True:
-                msgs = self.wait_messages(LEAD, 1.0, lambda: self.finished)
+                if self.stopped and not self.finished:
+                    with self.cond:  # olaylar gelen kutusunda kalır; Sürdür ya da kullanıcının mesajı yeniden başlatır
+                        self.lead_thread = None
+                    self.lead_state = "idle"
+                    self._changed()
+                    return
+                msgs = self.wait_messages(LEAD, 1.0, lambda: self.finished or self.stopped)
+                if msgs and self.stopped and not self.finished:
+                    with self.cond:
+                        self.inbox[LEAD] = msgs + self.inbox.get(LEAD, [])
+                    continue
                 if not msgs:
                     self._watch_stalls()
                     nudge = "" if self.finished or self.stopped else self._nudge()
@@ -1490,7 +1551,9 @@ Kurallar:
                    cwd=Path(data["cwd"]) if data.get("cwd") else None, council=bool(data.get("council", False)))
         team.councils = [c for c in data.get("councils") or [] if c.get("state") != "running"]
         team.check = str(data.get("check") or "")
-        team.lessons = list(data.get("lessons") or [])
+        from alice.council import dedupe
+
+        team.lessons = dedupe([str(x) for x in data.get("lessons") or []])
         team.timeline = list(data.get("timeline") or [])
         team.usage = {k: dict(v) for k, v in (data.get("usage") or {}).items() if isinstance(v, dict)}
         team.final_runs = int(data.get("final_runs") or 0)
@@ -1605,8 +1668,11 @@ Kurallar:
         self.mark(USER, "stop", f"{name} durduruldu" if name else "proje durduruldu")
         if not name:
             self.stopped = True
+            self.lead_state = "idle"
             if self.lead_agent is not None:
                 self.lead_agent.stop()
+            for c in list(self._live_councils):
+                c.stop()
         for m in targets:
             if m.status == "queued":
                 m.status = "stopped"
@@ -1629,7 +1695,12 @@ Kurallar:
                     self._launch(m)
                 else:
                     self._launch(m, resume=True)
+        for m in self.members.values():  # durdurulurken yarıda kalan iş kurulları yeniden toplanır
+            if m.status == "review" and self.council and m.councils and m.councils[-1].get("state") == "stopped" \
+                    and not m.council_running:
+                self._spawn(self._member_council, m)
         self.event("Kullanıcı projeyi sürdürdü. Durumu gözden geçir, gerekiyorsa ajanlara yön ver.")
+        self._maybe_final()
         self._changed(save=True)
 
     def save_template(self, name: str) -> dict[str, Any]:
@@ -1713,8 +1784,8 @@ class MemberUI:
         if "adım limiti" in msg:
             self.member.limit_hit = True
         elif "hiçbir model cevap veremedi" in msg:
-            reasons = [x.strip() for x in msg.splitlines()[1:4] if x.strip()]  # ilk satır iç rol adını taşır
-            self.member.provider_failed = ("; ".join(reasons) or "hiçbir model cevap veremedi")[:300]
+            reasons = [x.strip() for x in msg.splitlines()[1:] if x.strip()]  # ilk satır iç rol adını taşır
+            self.member.provider_failed = human_failure(reasons)
 
     def tool_end(self, call_id: str, name: str, result: ToolResult) -> None:
         if result.is_error:
