@@ -636,7 +636,8 @@ function renderThread(det, m, d) {
 const ROLE_TR = { critic: "eleştirmen", advocate: "savunucu", verifier: "kontrolcü", security: "güvenlik",
   performance: "performans", ux: "kullanıcı gözü" };
 const VOTE_TR2 = { approve: "onay", conditional: "şartlı onay", reject: "ret" };
-const DEC_TR = { approve: "onay", approve_conditions: "şartlı onay", revise: "düzeltme gerekli", contested: "çekişmeli" };
+const DEC_TR = { approve: "onay", approve_conditions: "şartlı onay", revise: "düzeltme gerekli", contested: "çekişmeli",
+  stopped: "durduruldu" };
 const KIND_TR = { plan: "Plan kurulu", work: "İş kurulu", recheck: "Kontrol turu", final: "Final kurulu", adhoc: "Kurula sor" };
 const SEV_TR = { critical: "kritik", major: "önemli", minor: "küçük" };
 const FST_TR = { confirmed: "doğrulandı", refuted: "çürütüldü", unclear: "belirsiz", pending: "bekliyor" };
@@ -746,7 +747,7 @@ function councilCard(c, target, latest) {
   card.dataset.k = "cc" + (c.id || c.started || "") + target;
   const head = el("summary", "cc-head");
   head.append(el("b", "", KIND_TR[c.kind] || "Kurul"));
-  if (running) head.appendChild(el("span", "pill running", `toplanıyor · tur ${c.round || 1}/${c.rounds || "?"}`));
+  if (running) head.appendChild(el("span", "pill running", c.rounds ? `toplanıyor · tur ${c.round || 1}/${c.rounds}` : "toplanıyor"));
   else head.appendChild(el("span", "pill dec-" + (res.decision || "contested"), DEC_TR[res.decision] || "tamamlanamadı"));
   if (c.started) head.appendChild(el("small", "cc-when", new Date(c.started * 1000).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })));
   card.appendChild(head);
