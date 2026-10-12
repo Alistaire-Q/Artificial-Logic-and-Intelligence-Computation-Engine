@@ -56,6 +56,7 @@ NAME_RX = re.compile(r"^[a-z0-9][a-z0-9_-]{0,23}$")
 ACTIVE = ("running", "waiting", "asking")
 FINAL = ("done", "failed", "stopped")
 SAVE_EVERY = 1.5  # saniye: canlı güncellemelerde diske en sık bu aralıkla yazılır
+DESIGN_FILE = "DESIGN.md"
 MAX_MEMBERS = 8
 ORIGINAL_LIMIT = 400_000  # geri alma/fark için saklanan dosya ilk hali (bayt); daha büyükleri saklanmaz
 
@@ -77,7 +78,7 @@ class Member:
     task: str
     constraints: str = ""
     scope: list[str] = field(default_factory=list)  # yazılabilecek yollar (boş: tüm çalışma klasörü)
-    model: str = "brain"  # rol adı (brain, fast...) ya da sağlayıcı:model
+    model: str = "auto"  # auto (işe göre akıllı seçim), rol adı (brain, fast...) ya da sağlayıcı:model
     thinking: str = "default"
     isolation: str = "shared"
     max_steps: int = 60
@@ -110,10 +111,11 @@ class Member:
     recovering: bool = False  # takıldığı için durduruldu; bitince başka modelle kaldığı yerden devam edecek
     recoveries: int = 0  # kaç kez otomatik kurtarıldı
     resume_note: str = ""  # bir sonraki devamda ajana söylenecek not
+    picked: str = ""  # auto seçimde: "tasarım · glm-5.3"
 
     def snapshot(self) -> dict[str, Any]:
         now = self.ended or time.time()
-        return {"name": self.name, "task": self.task, "model": self.model, "thinking": self.thinking,
+        return {"name": self.name, "task": self.task, "model": self.model, "picked": self.picked, "thinking": self.thinking,
                 "isolation": self.isolation, "status": self.status, "steps": self.steps, "last": self.last,
                 "branch": self.branch, "scope": self.scope, "result": self.result[:1500], "files": self.files[-50:],
                 "constraints": self.constraints, "after": self.after, "question": self.question,
@@ -309,7 +311,7 @@ class Team:
 
     def __init__(self, parent_ctx: ToolContext, goal: str, max_parallel: int = 5,
                  publish: Callable[[dict[str, Any]], None] | None = None, origin: str = "alice",
-                 project_id: str = "", title: str = "", review: bool = True, lead_model: str = "brain",
+                 project_id: str = "", title: str = "", review: bool = True, lead_model: str = "auto",
                  lead_thinking: str = "default", cwd: Path | None = None, council: bool = True, check: str = ""):
         self.parent_ctx = parent_ctx
         self.goal = goal
@@ -331,6 +333,8 @@ class Team:
         self.timeline: list[dict[str, Any]] = []  # zaman çizelgesi: {at, who, kind, text}
         self.usage: dict[str, dict[str, float]] = {}  # kim -> {in, out, cost}: token ve ücret takibi
         self._live_councils: set[Any] = set()  # süren kurullar (proje durunca onlar da durur)
+        self.picks: dict[str, str] = {}  # auto model seçimleri (ad -> "alan · model")
+        self._screens_warned = False
         self._lead_turns = 0
         self._plan_nudges = 0
         self._dirty0: set[str] | None = None  # proje başında zaten değişmiş dosyalar (komut takibi bunlara dokunmaz)
@@ -505,7 +509,7 @@ class Team:
         think = str(spec.get("thinking") or "default")
         if think not in THINKING:
             raise ToolError(f"{name}: thinking {', '.join(THINKING)} olmalı")
-        model = str(spec.get("model") or "brain").strip()
+        model = str(spec.get("model") or "auto").strip()
         self._check_model(model, name)
         after = [str(a).strip().lower() for a in spec.get("after") or [] if str(a).strip()]
         bad = [a for a in after if a not in self.members]
@@ -521,13 +525,15 @@ class Team:
         return m
 
     def _check_model(self, model: str, who: str) -> None:
+        if model == "auto":
+            return
         router = self.parent_ctx.router
         try:
             ok = router is None or bool(router.chain(model))
         except KeyError:
             ok = False
         if not ok:
-            raise ToolError(f"{who}: '{model}' için model yok. Rol adı (brain, fast...) ya da sağlayıcı:model yaz.")
+            raise ToolError(f"{who}: '{model}' için model yok. auto, rol adı (brain, fast...) ya da sağlayıcı:model yaz.")
 
     def _repo_top(self) -> Path:
         r = _git(self.cwd, "rev-parse", "--show-toplevel", timeout=20)
@@ -761,7 +767,16 @@ class Team:
 
         root = cwd or self.cwd
         entry = find_entry(root)
-        return screenshots(root, entry) if entry else {}
+        if not entry:
+            return {}
+        shots = screenshots(root, entry)
+        if not shots and not self._screens_warned:
+            self._screens_warned = True
+            note = ("Kurul siteyi göremedi (ekran görüntüsü alınamadı); sadece koda bakıyor. Görsel inceleme için: "
+                    "pip install playwright ve playwright install chromium")
+            self.mark(SYSTEM, "council", note)
+            self._emit(f"{self.title}: {note}", kind="info")
+        return shots
 
     @staticmethod
     def _critical(text: str) -> bool:
@@ -1045,10 +1060,20 @@ class Team:
         self._changed(save=True)
 
     # --------------------------------------------------------------- ajanlar
-    def _role(self, name: str, model: str, thinking: str) -> str:
+    def _role(self, name: str, model: str, thinking: str, text: str = "", domain: str = "") -> str:
+        """Ajanın router rolü. model=auto: işin alanına göre (tasarım, kod, inceleme...) en uygun model sırası."""
+        from alice.providers import picker
+
         role = f"team:{self.id}:{name}"
         router = self.parent_ctx.router
-        router.role_overrides[role] = list(router.chain(model))
+        if model == "auto":
+            domain = domain or picker.classify(text)
+            chain = picker.chain_for(router, domain, fallback="fast" if domain == "light" else "brain")
+            self.picks[name] = picker.explain(chain[0], domain) if chain else ""
+        else:
+            chain = list(router.chain(model))
+            self.picks[name] = ""
+        router.role_overrides[role] = chain
         if thinking != "default":
             router.thinking_overrides[role] = thinking
         if role not in self.roles:
@@ -1073,7 +1098,8 @@ class Team:
                       system_prompt=build_system_prompt(m.cwd, personality=False) + "\n\n" + self.brief(m),
                       is_child=True)
         agent.stream = bool(parent.config.agent.get("stream", True))  # cevap yazılırken canlı aksın
-        agent.role = self._role(m.name, m.model, m.thinking)
+        agent.role = self._role(m.name, m.model, m.thinking, text=f"{m.task}\n{m.constraints}")
+        m.picked = self.picks.get(m.name, "")
         agent.on_usage = lambda u, _n=m.name: self._use(_n, u)
         agent.tool_specs = lambda _a=agent: [t.spec() for t in _a.tools.values()]  # gruplar yok: hepsi açık
         ctx.state["agent"] = agent  # uzun araçlar Durdur'u görsün
@@ -1203,6 +1229,7 @@ class Team:
                    "\n".join(f"- {x}" for x in self.lessons[-8:]) + "\n") if self.lessons else ""
         after = f"Bu iş şunlar bittikten sonra başladı: {', '.join(m.after)}. Onların değişiklikleri hazır.\n" \
             if m.after else ""
+        design = self.design_brief(m)
         return f"""# Proje görevi
 Sen "{self.title}" projesinin "{m.name}" adlı ajanısın. Büyük bir işin bir parçasını yapıyorsun; kullanıcıyla değil
 projenin yöneticisiyle (ALICE, adı "{LEAD}") ve takım arkadaşlarınla konuşursun.
@@ -1213,7 +1240,7 @@ Senin görevin: {m.task}
 Sınırlar: {m.constraints or "özel bir sınır yok; yine de sadece kendi görevini yap."}
 Yazma kapsamın: {", ".join(m.scope) if m.scope else "tüm çalışma klasörü (ama başkalarının alanına girme)"}
 Çalışma klasörü: {m.cwd}. {where[m.isolation]}
-{after}{lessons}
+{after}{lessons}{design}
 Takım arkadaşların:
 {roster}
 
@@ -1261,7 +1288,7 @@ Kurallar:
                       system_prompt=build_system_prompt(self.cwd, personality=False) + "\n\n" + self.lead_brief(),
                       is_child=True)
         agent.stream = bool(parent.config.agent.get("stream", True))  # cevap yazılırken canlı aksın
-        agent.role = self._role(LEAD, self.lead_model, self.lead_thinking)
+        agent.role = self._role(LEAD, self.lead_model, self.lead_thinking, domain="review")
         agent.on_usage = lambda u: self._use(LEAD, u)
         agent.tool_specs = lambda _a=agent: [t.spec() for t in _a.tools.values()]
         ctx.state["agent"] = agent
@@ -1445,8 +1472,9 @@ Hedef: {self.goal}
 Görevlerin:
 1. Plan: ajan yoksa kodu kısaca incele (glob, grep, read_file) ve işi çakışmayan parçalara bölüp plan aracıyla
    bütün ajanları birden sun (en çok {MAX_MEMBERS}){council_plan}. Sonradan ek ajan için assign. Her ajana konuşmayı görmeyen birinin anlayacağı netlikte görev, doğrulama yolu ve yazma
-   kapsamı (scope) ver; kapsamlar çakışmasın. Zor tasarım/hata ayıklama: model=brain thinking=high; mekanik iş:
-   model=fast thinking=low. Birbirine bağlı işlerde after kullan (ör. testler backend'den sonra). Aynı dosyalara
+   kapsamı (scope) ver; kapsamlar çakışmasın. model'i boş bırak (auto): sistem işin alanına göre (tasarım, kod,
+   inceleme, metin, basit iş) o alanda en iyi modeli seçer; sadece özel bir model gerekiyorsa yaz. Zor
+   tasarım/hata ayıklama: thinking=high; mekanik iş: thinking=low. Birbirine bağlı işlerde after kullan (ör. testler backend'den sonra). Aynı dosyalara
    dokunabilecek büyük değişikliklerde isolation=worktree. Sadece inceleme/araştırma için isolation=readonly.
 2. İzle: sana olaylar "[olaylar]" mesajı olarak gelir. Ajan soru sorarsa message ile cevap ver. Kullanıcının tercihine
    bağlı, senin karar veremeyeceğin şeyleri ask_user ile sor (gereksiz soru sorma).
@@ -1456,10 +1484,44 @@ Görevlerin:
    gerekirse küçük bir entegrasyon düzeltmesini kendin yap, sonra finish ile kullanıcıya özet yaz: ne yapıldı, hangi
    dosyalar, nasıl doğrulandı, açık kalanlar.
 
-Kurallar:
+{self._design_note()}Kurallar:
 - Ajanların işini kendin yapma; sen planla, yönlendir, incele.
 - Olay yoksa turunu bitir; bekleme aracı yok, yeni olay gelince uyandırılırsın.
 - Kısa ve net yaz; ajanlara gereksiz mesaj atma.
+"""
+
+    def design_brief(self, m: Member) -> str:
+        """Tasarım yönü belgesi varsa her ajana gösterilir (renk, yazı tipi, düzen kararları tek yerden)."""
+        f = (m.cwd if m.cwd else self.cwd) / DESIGN_FILE
+        if not f.is_file():
+            f = self.cwd / DESIGN_FILE
+        try:
+            text = f.read_text(encoding="utf-8")[:5000] if f.is_file() else ""
+        except OSError:
+            text = ""
+        return f"\n# Tasarım yönü ({DESIGN_FILE}) — buna uy, kendi renk/yazı tipi uydurma\n{text}\n" if text.strip() else ""
+
+    def is_design(self) -> bool:
+        """Proje görünüşü önemli bir iş mi (web sitesi, arayüz)?"""
+        from alice.providers import picker
+
+        return picker.classify(self.goal) == "design" or bool(re.search(r"web ?site|internet sitesi|arayüz|landing",
+                                                                         self.goal.lower()))
+
+    def _design_note(self) -> str:
+        if not self.is_design():
+            return ""
+        return f"""Tasarım işi: bu projenin başarısı büyük ölçüde görünüşüne bağlı. Yapay zekâ yapımı gibi duran şablon
+siteler (ortalanmış dev başlık + gradyan, radar/ızgara/parçacık süsleri, her yerde aynı kart ızgarası, "Geleceği
+şekillendiriyoruz / Tavizsiz üstünlük" gibi boş sloganlar, emoji) başarısızlıktır. Bu yüzden:
+- Planın ilk ajanı "tasarim" olsun: kod yazmadan önce {DESIGN_FILE} dosyasına özgün bir tasarım yönü yazsın: kime ve
+  hangi hisle konuşuyoruz, 2-3 gerçek dünya referansı (ne alınacak), yazı tipi eşleşmesi, renk paleti (sınırlı),
+  düzen ve ızgara fikri (simetrik kart ızgarası dışında), görsel dil (fotoğraf yerine ne: çizim, diyagram, teknik
+  çizim...), hareket ilkeleri, metin tonu ve açık bir "yapma" listesi. Sonra ortak stil temelini (değişkenler,
+  temel bileşenler) kursun. Diğer ajanlar after ile onu beklesin; {DESIGN_FILE} her ajana otomatik gösterilir.
+- Sayfa ajanlarının görevine "{DESIGN_FILE}'deki yöne uy" de; kendi renk/yazı tipi uydurmasınlar.
+- İncelemede önce görünüşe bak: şablon gibi duruyorsa bu "önemli" bir sorundur, küçük kod ayrıntıları değil.
+
 """
 
     # ----------------------------------------------------------------- durum
@@ -1483,6 +1545,7 @@ Kurallar:
         return {"type": "team", "id": self.id, "title": self.title, "goal": self.goal, "origin": self.origin,
                 "cwd": str(self.cwd), "created": self.created, "status": self.status(), "review": self.review,
                 "summary": self.summary, "lead": {"state": self.lead_state, "model": self.lead_model,
+                                                  "picked": self.picks.get(LEAD, ""),
                                                   "thinking": self.lead_thinking, "last": self.lead_last[:600]},
                 "questions": self.questions[-20:], "progress": [done, len(self.members)], "council": self.council,
                 "council_busy": self.council_busy, "councils": [_council_brief(c) for c in self.councils],
@@ -1896,7 +1959,7 @@ class LeadPlan(Tool):
             raise ToolError(f"geçersiz ya da tekrarlanan ajan adı: {', '.join(bad) or 'tekrar var'}")
         cond_note = ""
         if t.council and not skip_council:
-            lines = [f"- {a.get('name')}: {a.get('task')} | model={a.get('model', 'brain')} "
+            lines = [f"- {a.get('name')}: {a.get('task')} | model={a.get('model') or 'auto'} "
                      f"düşünme={a.get('thinking', 'default')} yer={a.get('isolation', 'shared')} "
                      f"kapsam={a.get('scope') or 'her yer'} sonra={a.get('after') or '-'} sınır={a.get('constraints') or '-'}"
                      for a in specs]
@@ -1935,7 +1998,8 @@ class LeadAssign(Tool):
         "constraints": {"type": "string", "description": "Sınırlar: dokunmayacağı yerler, uyacağı kurallar."},
         "scope": {"type": "array", "items": {"type": "string"},
                   "description": "Yazabileceği dosya/klasörler (çalışma klasörüne göre). Boş: her yer."},
-        "model": {"type": "string", "description": "brain (güçlü), fast (hızlı) ya da sağlayıcı:model."},
+        "model": {"type": "string", "description": "Boş/auto (önerilen): işe göre en uygun model seçilir. "
+                  "Ya da brain (güçlü), fast (hızlı), sağlayıcı:model."},
         "thinking": {"type": "string", "enum": list(THINKING), "description": "Düşünme seviyesi."},
         "isolation": {"type": "string", "enum": list(ISOLATIONS),
                       "description": "shared: aynı klasör | worktree: kendi git dalı (onayda birleştirilir) | "

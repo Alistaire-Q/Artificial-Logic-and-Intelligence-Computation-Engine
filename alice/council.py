@@ -83,6 +83,9 @@ ROLES: dict[str, Role] = {
         r"user|tasarım|design|form|dialog|pencere|menü"),
 }
 CORE = ("critic", "advocate", "verifier")
+# Akıllı model seçiminde rolün alanı
+ROLE_DOMAIN = {"critic": "review", "advocate": "review", "verifier": "review", "security": "review",
+               "performance": "code", "ux": "design"}
 
 
 class CouncilStopped(Exception):
@@ -287,6 +290,8 @@ class Council:
             return "brain", "high" if role in ("critic", "verifier") else "medium"
         if role in ("critic", "verifier"):
             return "brain", "medium"
+        if role == "ux" and "ux" in self.relevant:  # arayüz işinde tasarım değerlendirmesi zayıf modele kalmasın
+            return "brain", "medium"
         return "fast", "low"
 
     def _agent(self, role: str):
@@ -312,7 +317,16 @@ class Council:
         agent.ui = _QuietUI(ui)
         model, think = self.model_for(role)
         rname = f"council:{self.id}:{role}"
-        router.role_overrides[rname] = list(router.chain(model))
+        if model in ("brain", "vision"):
+            # Güçlü model gereken rollerde işin alanına göre en uygun model (eleştiri/kontrol: inceleme,
+            # performans: kod, kullanıcı gözü: tasarım ya da ekran görüntüsü varsa görsel).
+            from alice.providers import picker
+
+            domain = "vision" if model == "vision" else ROLE_DOMAIN.get(role, "review")
+            chain = picker.chain_for(router, domain, fallback=model)
+        else:
+            chain = list(router.chain(model))
+        router.role_overrides[rname] = chain
         router.thinking_overrides[rname] = think
         self._roles_router.append(rname)
         agent.role = rname

@@ -441,7 +441,7 @@ class AppState:
         cwd = self.ctx.resolve(str(d["cwd"])) if d.get("cwd") else self.ctx.cwd
         if not cwd.is_dir():
             raise ToolError(f"klasör yok: {cwd}")
-        lead_model = str(d.get("lead_model") or "brain").strip()
+        lead_model = str(d.get("lead_model") or "auto").strip()
         lead_thinking = str(d.get("lead_thinking") or "default")
         team = Team(self.ctx, goal, int(self.cfg.agent.get("team_max_parallel", 5)), self.bus.publish, origin="user",
                     review=d.get("review") is not False, council=d.get("council") is not False, lead_model=lead_model,
