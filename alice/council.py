@@ -393,6 +393,8 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
             raise CouncilStopped()
         agent = self._agent(role)
         self._agents.append(agent)
+        if self._stop.is_set():  # tam bu arada durduruldu
+            raise CouncilStopped()
         images = list(self.images.values()) if role == "ux" else None
         if images:
             prompt += ("\n\nEkte sitenin ekran görüntüleri var (" + ", ".join(self.images) + "). Koda ek olarak "
@@ -631,9 +633,12 @@ def fix_list(snap: dict[str, Any]) -> str:
 
 
 def blocking(snap: dict[str, Any]) -> bool:
-    """Kurulun istediği düzeltme işi durdurmaya değer mi: doğrulanmış ya da belirsiz kritik/önemli bulgu var mı."""
-    return any(f.get("status") in ("confirmed", "unclear") and f.get("severity") in ("critical", "major")
-               for f in snap.get("findings", []))
+    """Kurulun istediği düzeltme işi durdurmaya değer mi: doğrulanmış ya da belirsiz kritik/önemli bulgu var mı.
+    Şart yazılmış ama hiç bulgu yoksa şartın ağırlığı bilinemez: düzeltmeye değer sayılır."""
+    live = [f for f in snap.get("findings", []) if f.get("status") in ("confirmed", "unclear")]
+    if not live and (snap.get("result") or {}).get("conditions"):
+        return True
+    return any(f.get("severity") in ("critical", "major") for f in live)
 
 
 _WORD = re.compile(r"[\wçğıöşüÇĞİÖŞÜ]+", re.U)
@@ -643,15 +648,16 @@ def _words(text: str) -> set[str]:
     return {w for w in _WORD.findall(text.lower()) if len(w) > 2}
 
 
-def dedupe(items: list[str], against: list[str] | None = None, same: float = 0.5) -> list[str]:
-    """Aynı şeyi başka sözcüklerle söyleyen maddeleri ayıkla (sözcük örtüşmesi); `against` ile örtüşenler de atılır."""
+def dedupe(items: list[str], against: list[str] | None = None, same: float = 0.55) -> list[str]:
+    """Aynı şeyi başka sözcüklerle söyleyen maddeleri ayıkla; `against` ile örtüşenler de atılır. Temkinli: en az dört
+    ortak sözcük ve yüksek benzerlik (Jaccard) gerekir, yoksa farklı şartları yutabilir."""
     kept: list[str] = []
     pool = [_words(x) for x in (against or [])]
     for it in items:
         w = _words(it)
         if not w:
             continue
-        if any(len(w & p) >= 2 and len(w & p) / max(1, min(len(w), len(p))) >= same for p in pool):
+        if any(len(w & p) >= 4 and len(w & p) / len(w | p) >= same for p in pool):
             continue
         kept.append(it)
         pool.append(w)

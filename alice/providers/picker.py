@@ -115,10 +115,11 @@ def pool(router) -> list[str]:
                 or any(x in r.lower() for x in ranking.EXCLUDE):
             continue
         try:
-            if router.available(r)[0]:
-                out.append(r)
+            ok, why = router.available(r)
         except Exception:  # noqa: BLE001 - tanımsız sağlayıcı vb.
             continue
+        if ok or why.startswith("soğumada"):  # kısa süre meşgul model havuzdan düşmesin (router zaten sırayla dener)
+            out.append(r)
     return out
 
 

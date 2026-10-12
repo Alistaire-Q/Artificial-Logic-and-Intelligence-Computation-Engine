@@ -401,12 +401,6 @@ class AppState:
         team = self.get_team(pid)
         out = team.snapshot()
         out["log"] = [{"from": x.sender, "to": x.to, "text": x.text, "at": x.at} for x in team.log[-300:]]
-        if member == "__council":  # proje düzeyi kurullar: plan, final, kurula sor
-            out["council_list"] = team.councils
-            return out
-        if member == "__timeline":
-            out["timeline"] = team.timeline_view()
-            return out
         from alice.site import find_entry, last_change
 
         entry = find_entry(team.cwd)
@@ -414,7 +408,14 @@ class AppState:
             out["preview"] = {"entry": entry, "base": f"/preview/{self.preview_token}/{team.id}/"}
             if member == "__preview":
                 out["preview"]["changed"] = last_change(team.cwd)
-                return out
+        if member == "__preview":
+            return out  # site yoksa arayüz önizlemeyi kapatır
+        if member == "__council":  # proje düzeyi kurullar: plan, final, kurula sor
+            out["council_list"] = team.councils
+            return out
+        if member == "__timeline":
+            out["timeline"] = team.timeline_view()
+            return out
         if member:
             from alice.team import LEAD, LeadAssign, LeadDiff, LeadReview, TeamSend, TeamWait
 

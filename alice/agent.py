@@ -141,6 +141,12 @@ def fits_after_compact(errors: list[str]) -> int:
     """Modeller sadece konuşma bağlamlarına sığmadığı için düştüyse, sığacak en büyük bağlam (token); yoksa 0."""
     limits = [int(m.group(2)) for e in errors if (m := _TOO_BIG.search(e))]
     big = [int(m.group(1)) for e in errors if (m := _TOO_BIG.search(e))]
+    # Büyük bir model sadece kısa süreliğine meşgulse (birkaç dakikalık bekleme, hız sınırı) konuşmayı kalıcı olarak
+    # küçültme: beklemek daha iyi. Saatlik kota beklemesi ise kısa değil.
+    for e in errors:
+        w = re.search(r"soğumada \((\d+) sn\)", e)
+        if (w and int(w.group(1)) < 300) or "rate_limit" in e or "429" in e:
+            return 0
     if not limits or max(limits) < 4000 or (big and max(limits) >= max(big)):
         return 0
     return max(limits)
@@ -333,6 +339,8 @@ class Agent:
                     res = self._interruptible(self.router.chat, self.role, list(self.messages), tools=self._specs(),
                                               stream=sink if self.stream else None)
                 msg = res.message
+                if getattr(self, "_lean", False) and self._roomy(res):
+                    self._lean = False  # geniş bağlamlı model geri geldi: tam araç tanımlarına dön
                 if self.on_usage is not None:
                     try:
                         self.on_usage(res.usage or {})
@@ -705,6 +713,13 @@ class Agent:
         self.messages = head + self.messages[cut:]
         self.checkpoints.clear()  # mesaj indeksleri değişti, eski geri sarma noktaları geçersiz
         return True
+
+    def _roomy(self, res: ChatResult) -> bool:
+        try:
+            limit = self.router.context_limit(f"{res.provider}:{res.model}")
+        except Exception:  # noqa: BLE001
+            return False
+        return limit > estimate_tokens(self.messages[:1], self.tool_specs()) * 3
 
     def _specs(self) -> list[dict[str, Any]]:
         specs = self.tool_specs()

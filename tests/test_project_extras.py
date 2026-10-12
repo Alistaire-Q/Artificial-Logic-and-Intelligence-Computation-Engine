@@ -367,4 +367,27 @@ def test_duplicate_conditions_and_lessons_are_dropped():
              "şart: initCounters içinde data-aura-counter koruması (guard) eklenmeli",
              "Bülten formu seçicisi spesifik hale getirin (örn. .newsletter-form)",
              "Newsletter form seçicisi .newsletter-form ile daraltılmalı", "sıfır kontrolü"]
-    assert dedupe(items) == [items[0], items[2], items[4]]
+    assert dedupe(items) == [items[0], items[2], items[3], items[4]]  # temkinli: emin olmadığını tutar
+    assert dedupe(["Mobile menu must close on link click", "Mobile menu must have aria-expanded"]) == \
+        ["Mobile menu must close on link click", "Mobile menu must have aria-expanded"]
+    assert len(dedupe(["Add tests for login", "Add tests for logout"])) == 2
+
+
+def test_stopping_during_final_council_does_not_loop(workdir):
+    agent, _, ctx = make(lambda *a, **k: "tamam", workdir)
+    team = Team(ctx, "iş", council=True)
+    m = team.add({"name": "web", "task": "a"})
+    m.status = "done"
+    team.stop()
+    team._final_pending = True
+    team._maybe_final()
+    time.sleep(0.5)
+    assert len(team.councils) == 0 and team.council_busy == 0 and team._final_pending
+
+
+def test_conditions_without_findings_still_block():
+    from alice.council import blocking
+
+    assert blocking({"result": {"conditions": ["mobil menü kapanmıyor"]}, "findings": []})
+    assert not blocking({"result": {"conditions": ["x"]},
+                         "findings": [{"severity": "minor", "status": "confirmed"}]})

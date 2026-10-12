@@ -139,6 +139,10 @@ def _add_usage(row: dict[str, float], usage: dict[str, Any]) -> None:
         row["cost"] = round(row.get("cost", 0.0) + float(cost), 6)
 
 
+class _Stopped(Exception):
+    """Ajan başlarken proje durduruldu."""
+
+
 def human_failure(reasons: list[str]) -> str:
     """Router'ın ham hata satırlarını ("ref: neden") kısa, okunur bir açıklamaya çevirir."""
     out: list[str] = []
@@ -635,6 +639,8 @@ class Team:
             else:
                 prompt = "Görevine başla."
             m.limit_hit, m.provider_failed = False, ""
+            if self.stopped:  # tam başlarken proje durduruldu
+                raise _Stopped()
             text = m.agent.run_turn(prompt, max_steps=m.max_steps) or ""
             if self.stopped or m.agent.cancel.is_set():
                 final = "stopped"
@@ -644,6 +650,8 @@ class Team:
             else:
                 final = "review" if self.review and m.isolation != "readonly" else "done"
             m.result = text.strip() or m.result or "(rapor yazmadı)"
+        except _Stopped:
+            final = "stopped"
         except Exception as e:  # noqa: BLE001 - bir ajanın çökmesi projeyi durdurmasın
             m.result = f"hata: {type(e).__name__}: {e}"
         finally:
@@ -655,6 +663,7 @@ class Team:
         if final == "stopped" and m.recovering and not self.stopped:
             self._recover(m)
             return
+        m.recovering = False  # kurtarma sürerken proje durdurulduysa bayrak kalmasın
         self.mark(m.name, final, {"review": "bitirdi, incelemede", "done": "bitirdi", "failed": "hata verdi",
                                   "stopped": "durdu"}.get(final, final) + (f": {m.result[:160]}" if final != "stopped" else ""))
         if final == "failed":
@@ -695,8 +704,8 @@ class Team:
     def _maybe_final(self) -> None:
         """Final kurulu, sürmekte olan kurullar (ör. son ajanın iş kurulu) bitince toplanır."""
         with self.cond:
-            if not self._final_pending or self.council_busy or not self.all_done() or self.finished:
-                return
+            if not self._final_pending or self.council_busy or not self.all_done() or self.finished or self.stopped:
+                return  # durmuş projede final kurulu toplanmaz; Sürdür'de yeniden denenir
             self._final_pending = False
             self.final_runs += 1
         self._spawn(self._final_council)
@@ -796,7 +805,8 @@ class Team:
         self._changed()
         try:
             subject, context = self._member_material(m)
-            prev = m.councils[-1] if m.councils and m.council_cycles and not adhoc else None
+            done = [c for c in m.councils if c.get("state") != "stopped"]  # yarıda kesilen kurul önceki sayılmaz
+            prev = done[-1] if done and m.council_cycles and not adhoc else None
             kind = "adhoc" if adhoc else ("recheck" if prev else "work")
             snap = self._council(kind, subject, context, m.councils, cwd=m.cwd, previous=prev)
         finally:
@@ -1304,10 +1314,12 @@ Kurallar:
             while True:
                 if self.stopped and not self.finished:
                     with self.cond:  # olaylar gelen kutusunda kalır; Sürdür ya da kullanıcının mesajı yeniden başlatır
-                        self.lead_thread = None
-                    self.lead_state = "idle"
-                    self._changed()
-                    return
+                        if self.stopped:  # kilit altında yeniden bak: tam bu arada sürdürüldüyse çıkma
+                            self.lead_thread = None
+                    if self.lead_thread is None:
+                        self.lead_state = "idle"
+                        self._changed()
+                        return
                 msgs = self.wait_messages(LEAD, 1.0, lambda: self.finished or self.stopped)
                 if msgs and self.stopped and not self.finished:
                     with self.cond:

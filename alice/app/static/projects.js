@@ -254,7 +254,7 @@ function renderProject() {
   const pr = S.proj, d = pr.data, v = $("#projectView");
   // Yazılmakta olan mesaj ve kaydırma yeri yenilemede kaybolmasın.
   const keep = {};
-  for (const t of v.querySelectorAll("textarea[data-k], input[data-k]")) keep[t.dataset.k] = { v: t.value, f: document.activeElement === t };
+  for (const t of v.querySelectorAll("textarea[data-k], input[data-k], select[data-k]")) keep[t.dataset.k] = { v: t.value, f: document.activeElement === t };
   // Açılıp kapanan bölümler (kurul kartları, adımlar, ayrıntılar) yenilemede kullanıcının bıraktığı gibi kalsın.
   pr.openState = pr.openState || {};
   for (const x of v.querySelectorAll("details[data-k]")) pr.openState[x.dataset.k] = x.open;
@@ -405,7 +405,8 @@ function renderProject() {
   if (pr.sel === "__log") renderTeamLog(det, d);
   else if (pr.sel === "__council") renderProjectCouncils(det, d);
   else if (pr.sel === "__timeline") renderTimeline(det, d);
-  else if (pr.sel === "__preview") renderPreview(det, d);
+  else if (pr.sel === "__preview" && d.preview) renderPreview(det, d);
+  else if (pr.sel === "__preview") { pr.sel = "alice"; refreshProjectSoon(); det.appendChild(el("div", "pd-empty", "Site bulunamadı")); }
   else if (d.member) renderThread(det, d.member, d);
   else det.appendChild(el("div", "pd-empty", "Bir konu seç"));
   body.append(list, grip, det);
@@ -417,7 +418,7 @@ function renderProject() {
   if (nf) nf.scrollTop = atBottom || pr.lastSel !== pr.sel ? nf.scrollHeight : oldTop;
   pr.lastSel = pr.sel;
   for (const x of v.querySelectorAll("details[data-k]")) if (x.dataset.k in pr.openState) x.open = pr.openState[x.dataset.k];
-  for (const t of v.querySelectorAll("textarea[data-k], input[data-k]")) {
+  for (const t of v.querySelectorAll("textarea[data-k], input[data-k], select[data-k]")) {
     const k = keep[t.dataset.k];
     if (k) { t.value = k.v; if (k.f) t.focus(); }
   }
