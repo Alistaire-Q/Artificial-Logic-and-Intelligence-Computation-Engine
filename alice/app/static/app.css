@@ -1207,3 +1207,10 @@ details.cc[open] > summary.cc-head::after { transform: rotate(45deg); }
 #projectView .pd-say { padding-left: max(14px, calc((100% - 940px) / 2)); padding-right: max(14px, calc((100% - 940px) / 2)); }
 .pf-tooling { margin-top: 4px; }
 .pf-tooling[hidden] { display: none; }
+/* proje konuşması normal sohbetle aynı ritimde */
+#projectView .pd-feed.chat { gap: 0; padding-top: 14px; padding-left: max(22px, calc((100% - 800px) / 2)); padding-right: max(22px, calc((100% - 800px) / 2)); }
+#projectView .pd-feed.chat > .turn-ai { margin: 6px 0; }
+#projectView .pd-feed.chat > .pf-msg { margin: 10px 0; align-self: flex-start; max-width: 85%; }
+#projectView .pd-feed.chat > .tool, #projectView .pd-feed.chat > .tool-group { margin: 2px 0; }
+#projectView .pd-feed.chat .working[hidden] { display: none; }
+#projectView .pd-feed.chat > .pf-note, #projectView .pd-feed.chat > .note { margin: 10px auto; }

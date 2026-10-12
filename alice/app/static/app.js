@@ -348,6 +348,12 @@ const VERBS = {
   process_list: ["Süreçler", IC.list], process_kill: ["Süreç sonlandırıldı", IC.x], todo_write: ["Plan", IC.list],
   memory: ["Hafıza", IC.brain], task: ["Alt ajan", IC.spark], reflex: ["Reflex", IC.bolt],
 };
+Object.assign(VERBS, {
+  assign: ["Ajan kuruldu", IC.spark], plan: ["Plan sunuldu", IC.list], review: ["İnceleme kararı", IC.check],
+  message: ["Mesaj", IC.chat], team_send: ["Mesaj", IC.chat], team_wait: ["Cevap beklendi", IC.chat],
+  diff: ["Farka bakıldı", IC.diff], council: ["Kurula soruldu", IC.shield], apply_patch: ["Yama", IC.pen],
+  file_ops: ["Dosya işlemi", IC.folder], git: ["Git", IC.branch], http_request: ["İstek", IC.globe],
+});
 function verbFor(name) {
   if (name.startsWith("mcp__")) {
     const [, srv, tool] = name.split("__");
@@ -403,9 +409,8 @@ function updateGroup(g) {
   if (errors) g._meta.appendChild(el("span", "d", `${errors} hata`));
 }
 
-function toolRow(id, name, summary, running) {
-  hideWorking();
-  if (S.cur) { closeThought(S.cur); if (!S.cur.text && !S.cur.thought) S.cur.root.remove(); S.cur = null; }
+// Araç satırı (listeye eklemeden): sohbet ve proje konuşmaları aynı parçayı kullanır.
+function makeTool(name, summary, running) {
   const [verb, icon] = verbFor(name);
   const t = el("div", "tool" + (running ? " running" : ""));
   const row = el("div", "tool-row");
@@ -423,6 +428,12 @@ function toolRow(id, name, summary, running) {
   row.addEventListener("click", () => t.classList.toggle("open"));
   t._v = v; t._meta = meta; t._body = body; t._peek = peek; t._name = name; t._summary = summary || "";
   t._t0 = running ? performance.now() : 0;
+  return t;
+}
+function toolRow(id, name, summary, running) {
+  hideWorking();
+  if (S.cur) { closeThought(S.cur); if (!S.cur.text && !S.cur.thought) S.cur.root.remove(); S.cur = null; }
+  const t = makeTool(name, summary, running);
   if (running && S.turn) S.turn.tools++;
   if (running) {
     // Uzun süren araçta geçen süre canlı yazsın (Claude Code'daki gibi).
@@ -989,28 +1000,35 @@ function drawLive() {
   if (!ev) { if (box) box.remove(); return; }
   const stick = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 60;
   if (!box) {
-    box = el("div", "pf-ai pf-stream");
-    const th = el("details", "pf-think");
-    th.appendChild(el("summary", "", "düşünüyor…"));
-    th.appendChild(el("div", "pf-think-t"));
-    box.append(th, el("div", "prose"), el("div", "pf-live pf-tooling"));
+    // Normal sohbetteki canlı cevapla aynı: açılır düşünme bölümü, imleçli metin, araç hazırlanırken gösterge.
+    box = el("div", "turn-ai pf-stream");
+    const th = el("details", "thought");
+    const sum = el("summary");
+    sum.append(svg(IC.chev), el("span", "shimmer", "Düşünüyor"));
+    th.append(sum, el("div", "tbody"));
+    const w = el("div", "working pf-tooling");
+    w.append(svg(IC.spark, "spark"), el("span", "lbl shimmer", ""));
+    box.append(th, el("div", "prose cursor"), w);
     const live = feed.querySelector(".pf-live");
     if (live) live.remove();
     feed.appendChild(box);
   }
-  const th = box.querySelector(".pf-think");
+  const th = box.querySelector(".thought");
   th.hidden = !ev.think;
-  th.querySelector(".pf-think-t").textContent = ev.think || "";
-  th.querySelector("summary").textContent = ev.text ? "düşündü" : "düşünüyor…";
-  setMd(box.querySelector(".prose"), ev.text || "");
-  box.querySelector(".prose").hidden = !ev.text && !!ev.tool;
-  // Model bir aracı yazarken (ör. büyük dosya) ne hazırladığı ve ne kadar yazdığı
+  th.querySelector(".tbody").textContent = ev.think || "";
+  const ts = th.querySelector("summary span");
+  ts.textContent = ev.text || ev.tool ? "Düşündü" : "Düşünüyor";
+  ts.classList.toggle("shimmer", !(ev.text || ev.tool));
+  const prose = box.querySelector(".prose");
+  setMd(prose, ev.text || "");
+  prose.hidden = !ev.text;
   const tl = box.querySelector(".pf-tooling");
   tl.hidden = !ev.tool;
   if (ev.tool) {
     const [name, ...rest] = ev.tool.split(" hazırlıyor");
     const size = rest.join("").replace(/^ · /, "");
-    tl.replaceChildren(el("i", "dot st-running"), el("span", "", (TOOL_ING[name] || "araç hazırlıyor") + "…" + (size ? " " + size : "")));
+    const what = TOOL_ING[name] || "araç hazırlıyor";
+    tl.querySelector(".lbl").textContent = what.charAt(0).toUpperCase() + what.slice(1) + "…" + (size ? " " + size : "");
   }
   if (stick) feed.scrollTop = feed.scrollHeight;
 }
@@ -1410,7 +1428,7 @@ function renderThread(det, m, d) {
     }
     det.appendChild(tabs);
   }
-  const feed = el("div", "pd-feed");
+  const feed = el("div", "pd-feed" + (!pr.tab || pr.tab === "chat" || isLead ? " chat" : ""));
   if (!isLead && pr.tab === "council") {
     const list = (m.councils || []).slice().reverse();
     list.forEach((c, i) => feed.appendChild(councilCard(c, m.name, i === 0)));
@@ -1426,8 +1444,9 @@ function renderThread(det, m, d) {
   } else {
     for (const node of buildFeed(m.history || [], isLead)) feed.appendChild(node);
     if (st === "running") {
-      const w = el("div", "pf-live");
-      w.append(el("i", "dot st-running"), el("span", "", m.last ? friendlyLast(m.last) : (isLead ? "Alice çalışıyor…" : "çalışıyor…")));
+      const w = el("div", "working pf-live");
+      const lbl = m.last ? friendlyLast(m.last) : "çalışıyor…";
+      w.append(svg(IC.spark, "spark"), el("span", "lbl shimmer", lbl.charAt(0).toUpperCase() + lbl.slice(1)));
       feed.appendChild(w);
     }
     if (!feed.childNodes.length) feed.appendChild(el("div", "pd-empty", "Henüz bir şey yok"));
@@ -1750,54 +1769,69 @@ function msgCard(from, to, text) {
   const t = el("div", "pf-msg-t"); setMd(t, text); c.appendChild(t);
   return c;
 }
+// Proje konuşması normal sohbetle aynı görünür: balonlar, araç satırları (okumalar gruplanır), terminal ve
+// fark kutuları. İç olaylar kısa notlara, takım mesajları kartlara dönüşür.
+function chatBubble(text) {
+  const wrap = el("div", "turn-user");
+  const b = el("div", "bubble");
+  b.textContent = text;
+  wrap.appendChild(b);
+  return wrap;
+}
+function chatAi(text) {
+  const root = el("div", "turn-ai final");
+  const prose = el("div", "prose");
+  setMd(prose, text);
+  root.appendChild(prose);
+  aiActions(root, text, "");
+  return root;
+}
 function buildFeed(history, isLead) {
   if (rawView()) return history.map(feedItem);
   const out = [];
-  let group = [];
-  const flush = () => {
-    const visible = group.filter((it) => !HIDDEN_TOOLS.has(it.name));
-    group = [];
-    if (!visible.length) return;
-    const box = el("details", "pf-steps");
-    box.dataset.k = "st" + (S.proj ? S.proj.sel : "") + out.length;
-    const counts = {};
-    for (const it of visible) { const k = (TOOL_TR[it.name] || [it.name, it.name])[1]; counts[k] = (counts[k] || 0) + 1; }
-    const errs = visible.filter((it) => it.is_error).length;
-    const head = Object.entries(counts).map(([k, n]) => (n > 1 ? `${k} ×${n}` : k)).join(" · ");
-    box.appendChild(el("summary", "", head + (errs ? ` · ${errs} hata` : "")));
-    for (const it of visible) {
-      const row = el("div", "pf-step" + (it.is_error ? " err" : ""));
-      row.appendChild(el("span", "", toolLine(it)));
-      const pre = el("pre", "", (it.text || "").slice(0, 3000));
-      row.appendChild(pre);
-      row.addEventListener("click", () => row.classList.toggle("open"));
-      box.appendChild(row);
+  let group = null;
+  const tool = (it) => {
+    if (it.name === "todo_write" && !it.is_error) { out.push(renderTodo(it.text || "")); return; }
+    const t = makeTool(it.name, it.summary, false);
+    finishTool(t, { is_error: it.is_error, text: it.text }, false);
+    const last = out[out.length - 1];
+    if (GROUP_KIND[it.name] && last) {
+      if (last === group) { group._body.appendChild(t); updateGroup(group); return; }
+      if (last.classList && last.classList.contains("tool") && GROUP_KIND[last._name]) {
+        group = makeGroup();
+        group._body.append(last, t);
+        out[out.length - 1] = group;
+        updateGroup(group);
+        return;
+      }
     }
-    out.push(box);
+    out.push(t);
   };
+  const note = (text) => out.push(el("div", "note", text));
+  const msg = (from, to, text) => out.push(from === "kullanıcı"
+    ? chatBubble(text.replace(/^Sorduğun soruya cevap \([\s\S]*?\): /, "")) : msgCard(from, to, text));
   for (const it of history) {
-    if (it.type === "tool") { group.push(it); continue; }
-    flush();
-    if (it.type === "assistant") { if ((it.text || "").trim()) out.push(feedItem(it)); continue; }
+    if (it.type === "tool") { if (!HIDDEN_TOOLS.has(it.name)) tool(it); continue; }
+    if (it.type === "assistant") { if ((it.text || "").trim()) out.push(chatAi(it.text)); continue; }
+    if (it.type === "info") { note(it.text); continue; }
     const txt = it.text || "";
-    if (txt === "Görevine başla.") { out.push(el("div", "pf-note", "Görev başladı")); continue; }
+    if (txt === "Görevine başla.") { note("Görev başladı"); continue; }
     if (txt.startsWith("[olaylar]")) {
       const body = txt.replace(/^\[olaylar\]\n/, "").replace(/\n\n\[durum\]\n[\s\S]*$/, "");
-      for (const n of eventNotes(body)) out.push(n.kind === "msg" ? msgCard(n.from, n.to, n.text) : el("div", "pf-note", n.text));
+      for (const n of eventNotes(body)) n.kind === "msg" ? msg(n.from, n.to, n.text) : note(n.text);
       continue;
     }
     if (txt.startsWith("[takım mesaj")) {
       const body = txt.replace(/^\[takım mesajı\]\n|^\[takım mesajları\]\n/, "").replace(/\n\nBunlara göre işine devam et[\s\S]*$/, "");
       for (const line of body.split(/\n(?=\[)/)) {
         const m = line.match(/^\[([^\]]+?) -> ([^\]]+?)\] ([\s\S]*)$/);
-        out.push(m ? msgCard(m[1], m[2], m[3]) : el("div", "pf-note", line.slice(0, 200)));
+        if (m) msg(m[1], m[2], m[3]); else note(line.slice(0, 200));
       }
       continue;
     }
-    if (txt === "Devam et.\n\nBunlara göre işine devam et; bitince yine kısa rapor yaz.") { out.push(el("div", "pf-note", "Devam ediyor")); continue; }
-    out.push(feedItem(it));
+    if (txt.startsWith("Devam et.")) { note("Devam ediyor"); continue; }
+    out.push(chatBubble(txt));
   }
-  flush();
   return out;
 }
 function feedItem(it) {
