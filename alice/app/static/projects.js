@@ -491,7 +491,9 @@ function renderThread(det, m, d) {
   const st = isLead ? (m.status === "running" ? "running" : m.status === "done" ? "done" : "idle") : m.status;
   const nm = el("div", "pd-name");
   const mu = usageText(((d.usage || {}).by || {})[m.name]);
-  nm.append(el("b", "", isLead ? "Alice" : m.name), el("small", "", (isLead ? "yönetici" : TEAM_ST[st] || st) + (mu ? " · " + mu : "")));
+  const picked = isLead ? (d.lead || {}).picked : m.picked;
+  nm.append(el("b", "", isLead ? "Alice" : m.name),
+    el("small", "", [isLead ? "yönetici" : TEAM_ST[st] || st, picked, mu].filter(Boolean).join(" · ")));
   nm.title = [m.model, m.thinking !== "default" ? "düşünme " + m.thinking : "", isLead ? "" : m.isolation,
     m.steps ? `${m.steps} adım` : "", m.secs ? fmtSecs(m.secs) : ""].filter(Boolean).join(" · ");
   r1.append(avatar(isLead ? "alice" : m.name, st), nm);
@@ -529,15 +531,21 @@ function renderThread(det, m, d) {
   const pacts = el("div", "pd-acts");
   for (const b of [...r1.querySelectorAll(":scope > .btn")]) pacts.appendChild(b);
   r1.appendChild(pacts);
-  const task = el("div", "pd-task", m.task);
+  // Görev tek satır; tıklayınca görev, sınırlar ve kapsam açılır.
+  const task = el("div", "pd-task");
+  task.appendChild(el("span", "", m.task));
+  const more = el("div", "pd-task-more");
+  if (m.constraints) more.appendChild(el("div", "", "Sınırlar: " + m.constraints));
+  if (m.scope && m.scope.length) more.appendChild(el("div", "", "Yazabileceği yerler: " + m.scope.join(", ")));
+  if (m.after && m.after.length) more.appendChild(el("div", "", "Şunlar bitince başladı: " + m.after.join(", ")));
+  task.appendChild(more);
   task.title = "Tamamını göster";
-  task.addEventListener("click", () => task.classList.toggle("open"));
+  pr.taskOpen = pr.taskOpen || {};
+  if (pr.taskOpen[m.name]) task.classList.add("open");
+  task.addEventListener("click", () => { pr.taskOpen[m.name] = task.classList.toggle("open"); });
   h.appendChild(r1);
   if (!isLead) h.appendChild(task);
   const r2 = el("div", "pd-row");
-  if (m.constraints) r2.appendChild(el("span", "chip", "sınır: " + m.constraints));
-  if (m.scope && m.scope.length) r2.appendChild(el("span", "chip", "yazar: " + m.scope.join(", ")));
-  if (m.after && m.after.length) r2.appendChild(el("span", "chip", "sonra: " + m.after.join(", ")));
   if (m.branch) r2.appendChild(el("span", "chip file", "dal " + m.branch));
   if (m.limit_hit) r2.appendChild(el("span", "chip warn", "adım limiti doldu"));
   if (r2.childNodes.length) h.appendChild(r2);
@@ -556,6 +564,18 @@ function renderThread(det, m, d) {
     const ok = el("button", "btn accent", "Onayla");
     ok.addEventListener("click", () => projectAction("approve", m.name));
     row.append(fb, no, ok);
+    bar.appendChild(row);
+    det.appendChild(bar);
+  } else if (m.status === "failed" && !isLead) {
+    const bar = el("div", "pd-review err");
+    bar.appendChild(el("div", "pd-rv-t", (m.result || "Hata verdi.").replace(/^hata: /, "Hata: ")));
+    const row = el("div", "pd-ask-row");
+    const go = el("button", "btn accent", "Kaldığı yerden sürdür");
+    go.title = "Konuşması korunur; gerekirse özetlenip başka modelle devam eder";
+    go.addEventListener("click", () => projectAction("send", m.name, "Devam et; yarım kalan işini bitir."));
+    const rs = el("button", "btn", "Baştan başlat");
+    rs.addEventListener("click", () => projectAction("restart", m.name));
+    row.append(go, rs);
     bar.appendChild(row);
     det.appendChild(bar);
   } else if (m.status === "asking" && m.question) {
@@ -624,9 +644,7 @@ function councilItem(d) {
   return navItem("__council", "Kurul", d.council_busy ? "Toplanıyor…" : last ? `${KIND_TR[last.kind] || last.kind}: ${DEC_TR[last.decision] || "sürüyor"}` : "", IC.shield, "");
 }
 function renderProjectCouncils(det, d) {
-  const h = el("div", "pd-head");
-  const r = el("div", "pd-row"); r.appendChild(el("b", "", "Kurul"));
-  h.appendChild(r);
+  const h = viewHead(IC.shield, "Kurul", "Plan, iş ve final kurullarının kararları");
   const feed = el("div", "pd-feed");
   if ((d.lessons || []).length) {
     const box = el("div", "cc lessons");
@@ -648,23 +666,29 @@ const TL_ICON = { start: "▶", run: "▷", review: "◎", done: "✓", approve:
 function timelineItem(d) {
   return navItem("__timeline", "Akış", "Kim ne zaman ne yaptı", IC.list, "");
 }
+function tlText(x) {
+  let t = x.text || "";
+  if (x.kind === "msg") {
+    t = t.replace(/^→ all: takıma yeni ajan katıldı: ([^:]+):[\s\S]*/, "$1 takıma katıldı")
+      .replace(/^→ all:/, "→ herkes:").replace(/^→ alice:/, "→ Alice:").replace(/^→ kullanıcı:/, "→ sana:");
+  }
+  return t;
+}
 function renderTimeline(det, d) {
-  const h = el("div", "pd-head");
-  const r = el("div", "pd-row"); r.appendChild(el("b", "", "Akış"));
-  h.append(r, el("div", "pd-task", "Projede olan her şey sırayla: başlayan ve biten işler, kurul kararları, onaylar, sorular, mesajlar."));
-  const feed = el("div", "pd-feed tl");
+  const feed = el("div", "pd-feed chat tl");
   let day = "";
   for (const x of d.timeline || []) {
     const dt = new Date(x.at * 1000);
     const dd = dt.toLocaleDateString("tr-TR", { day: "numeric", month: "long" });
     if (dd !== day) { day = dd; feed.appendChild(el("div", "tl-day", dd)); }
     const row = el("div", "tl-row k-" + x.kind);
-    row.append(el("small", "", dt.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit", second: "2-digit" })),
-      el("i", "", TL_ICON[x.kind] || "•"), el("b", "", x.who), el("span", "", x.text));
+    const who = x.who === "kullanıcı" ? "Sen" : x.who === "alice" ? "Alice" : x.who === "kurul" ? "Kurul" : x.who === "sistem" ? "Sistem" : x.who;
+    row.append(el("small", "", dt.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })),
+      el("i", "", TL_ICON[x.kind] || "•"), el("b", "", who), clamp(tlText(x), 2, "tl-t"));
     feed.appendChild(row);
   }
   if (!(d.timeline || []).length) feed.appendChild(el("div", "pd-empty", "Henüz olay yok"));
-  det.append(h, feed);
+  det.append(viewHead(IC.list, "Akış", "Projede olan her şey sırayla"), feed);
 }
 function saveTemplateDialog(d) {
   showDialog((dl) => {
@@ -914,7 +938,7 @@ function msgCard(from, to, text) {
   c.append(el("b", "", from === "kullanıcı" ? "Sen" : from === "alice" ? "Alice" : from), el("span", "", to && to !== "alice" ? ` → ${to}` : ""));
   // Soruya verilen cevaplar yöneticiye "Sorduğun soruya cevap (soru): cevap" diye gider; kullanıcıya sadece cevap.
   if (from === "kullanıcı") text = text.replace(/^Sorduğun soruya cevap \([\s\S]*?\): /, "");
-  const t = el("div", "pf-msg-t"); setMd(t, text); c.appendChild(t);
+  c.appendChild(clamp(text, 6, "pf-msg-t"));
   return c;
 }
 // Proje konuşması normal sohbetle aynı görünür: balonlar, araç satırları (okumalar gruplanır), terminal ve
@@ -1008,21 +1032,47 @@ function feedItem(it) {
   }
   return el("div", "pf-tool", it.text || "");
 }
-function renderTeamLog(det, d) {
+// Uzun metin: birkaç satırla sınırlı, tıklayınca tamamı.
+function clamp(text, lines, cls) {
+  const t = el("div", "clamp" + (cls ? " " + cls : ""));
+  t.style.setProperty("--lines", lines);
+  setMd(t, text);
+  t.addEventListener("click", (e) => { if (!e.target.closest("a")) t.classList.toggle("open"); });
+  return t;
+}
+function viewHead(icon, title, sub) {
   const h = el("div", "pd-head");
-  const r = el("div", "pd-row"); r.appendChild(el("b", "", "Takım sohbeti"));
-  h.append(r, el("div", "pd-task", "Ajanların birbirine, Alice'e ve sana yazdıkları. Buradan herkese ya da tek bir ajana yazabilirsin."));
-  const feed = el("div", "pd-feed");
+  const r = el("div", "pd-row");
+  const nm = el("div", "pd-name");
+  nm.append(el("b", "", title), el("small", "", sub));
+  r.append(avatar("", "", icon), nm);
+  h.appendChild(r);
+  return h;
+}
+function renderTeamLog(det, d) {
+  const feed = el("div", "pd-feed chat log");
+  let day = "";
   for (const x of d.log) {
-    const row = el("div", "pf-log" + (x.from === "kullanıcı" ? " me" : x.from === "sistem" ? " sys" : ""));
-    row.append(el("b", "", `${x.from} → ${x.to}`), el("span", "", x.text),
-      el("small", "", new Date(x.at * 1000).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })));
+    const dt = new Date(x.at * 1000);
+    const dd = dt.toLocaleDateString("tr-TR", { day: "numeric", month: "long" });
+    if (dd !== day) { day = dd; feed.appendChild(el("div", "tl-day", dd)); }
+    if (x.from === "sistem") { feed.appendChild(el("div", "pf-note", x.text.split("\n")[0].replace(/^takıma yeni ajan katıldı: ([^:]+):.*/, "$1 takıma katıldı").slice(0, 160))); continue; }
+    const me = x.from === "kullanıcı";
+    const row = el("div", "lg" + (me ? " me" : ""));
+    const who = me ? "Sen" : x.from === "alice" ? "Alice" : x.from === "kurul" ? "Kurul" : x.from;
+    if (!me) row.appendChild(avatar(x.from === "kurul" ? "" : x.from, "", x.from === "kurul" ? IC.shield : null));
+    const body = el("div", "lg-b");
+    const top = el("div", "lg-top");
+    top.append(el("b", "", who), el("span", "", x.to === "all" ? "→ herkes" : x.to === "kullanıcı" ? "→ sana" : `→ ${x.to === "alice" ? "Alice" : x.to}`),
+      el("small", "", dt.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })));
+    body.append(top, clamp(x.text, 6, "lg-t"));
+    row.appendChild(body);
     feed.appendChild(row);
   }
   if (!d.log.length) feed.appendChild(el("div", "pd-empty", "Henüz mesaj yok"));
   const say = el("div", "pd-say");
   const sel = el("select"); sel.dataset.k = "logto";
-  for (const [v, l] of [["alice", "alice (yönetici)"], ["all", "herkes"], ...d.members.map((m) => [m.name, m.name])]) {
+  for (const [v, l] of [["alice", "Alice (yönetici)"], ["all", "herkes"], ...d.members.map((m) => [m.name, m.name])]) {
     const o = el("option", "", l); o.value = v; sel.appendChild(o);
   }
   const ta = el("textarea"); ta.rows = 1; ta.placeholder = "Takıma yaz…"; ta.dataset.k = "logsay";
@@ -1031,7 +1081,7 @@ function renderTeamLog(det, d) {
   go.addEventListener("click", send);
   ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } });
   say.append(sel, ta, go);
-  det.append(h, feed, say);
+  det.append(viewHead(IC.chat, "Takım sohbeti", "Ajanların birbirine, Alice'e ve sana yazdıkları"), feed, say);
 }
 async function projectAction(action, name, text, agent) {
   if (!S.proj) return false;

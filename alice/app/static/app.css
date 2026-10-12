@@ -1223,3 +1223,46 @@ details.cc[open] > summary.cc-head::after { transform: rotate(45deg); }
 .pv-host { position: fixed; z-index: 5; border-radius: 12px; overflow: hidden; }
 .pv-host[hidden] { display: none; }
 .pv-host iframe { width: 100%; height: 100%; border: 0; background: #fff; display: block; }
+
+/* ---- uzun metin: birkaç satır, tıklayınca tamamı */
+.clamp { display: -webkit-box; -webkit-line-clamp: var(--lines, 3); -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; overflow-wrap: anywhere; }
+.clamp.open { display: block; }
+.clamp p, .clamp ul, .clamp ol { margin: 0 0 4px; }
+.clamp ul, .clamp ol { padding-left: 18px; }
+
+/* ---- takım sohbeti: avatarlı mesajlar */
+#projectView .pd-feed.log { gap: 12px; }
+.lg { display: flex; gap: 10px; align-items: flex-start; max-width: 92%; }
+.lg .av { width: 28px; height: 28px; font-size: 12px; margin-top: 2px; }
+.lg-b { min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 8px 12px; }
+.lg-top { display: flex; gap: 6px; align-items: baseline; font-size: 12.5px; margin-bottom: 2px; }
+.lg-top b { font-weight: 600; }
+.lg-top span { color: var(--faint); }
+.lg-top small { margin-left: auto; padding-left: 10px; color: var(--faint); font-size: 11px; }
+.lg-t { font-size: 13.5px; line-height: 1.5; }
+.lg.me { align-self: flex-end; }
+.lg.me .lg-b { background: var(--user); border-color: transparent; }
+
+/* ---- akış */
+#projectView .pd-feed.tl { gap: 0; }
+#projectView .tl-row { grid-template-columns: 46px 18px 92px 1fr; gap: 8px; padding: 5px 0; border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); font-size: 13px; }
+#projectView .tl-row small { font: 11px var(--sans); font-variant-numeric: tabular-nums; }
+#projectView .tl-row b { font: 600 12.5px var(--sans); color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#projectView .tl-t { color: var(--muted); line-height: 1.45; }
+#projectView .tl-row.k-failed .tl-t { color: var(--err); }
+#projectView .tl-day { padding: 14px 0 6px; text-transform: uppercase; letter-spacing: .06em; font-size: 11px; font-weight: 600; }
+
+/* ---- konu başlığı: görev tek satır, açılınca sınırlar ve kapsam */
+#projectView .pd-task span { overflow: hidden; text-overflow: ellipsis; }
+.pd-task-more { display: none; }
+#projectView .pd-task.open .pd-task-more { display: block; margin-top: 6px; color: var(--faint); font-size: 12.5px; }
+#projectView .pd-task.open .pd-task-more > div { margin-top: 2px; }
+#projectView .pd-head .chip { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#projectView .pd-review.err { background: color-mix(in srgb, var(--err) 14%, transparent); }
+#projectView .pd-review.err .pd-rv-t { color: var(--text); }
+
+/* ---- mesaj kartı */
+#projectView .pf-msg { max-width: 92%; }
+
+/* ---- geniş ekranda biraz daha geniş sütun */
+#projectView .pd-feed.chat { padding-left: max(22px, calc((100% - 880px) / 2)); padding-right: max(22px, calc((100% - 880px) / 2)); }
