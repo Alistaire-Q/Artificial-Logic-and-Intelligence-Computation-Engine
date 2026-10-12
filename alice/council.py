@@ -232,7 +232,8 @@ class Council:
     def __init__(self, ctx: ToolContext, kind: str, subject: str, context: str, cwd: Path | None = None,
                  critical: bool = False, depth: int | str = "auto", roles: list[str] | None = None,
                  previous: dict[str, Any] | None = None, on_change: Callable[[], None] | None = None,
-                 title: str = "", rules: str = "", lessons: list[str] | None = None, check: str = ""):
+                 title: str = "", rules: str = "", lessons: list[str] | None = None, check: str = "",
+                 images: dict[str, str] | None = None):
         self.ctx = ctx
         self.kind = kind
         self.subject = subject.strip()
@@ -245,12 +246,19 @@ class Council:
         self.check = check  # projenin kontrol komutu (kontrolcü bilir)
         self.title = title or self.subject.splitlines()[0][:80]
         self.id = secrets.token_hex(4)
+        self.on_usage: Callable[[dict[str, Any]], None] | None = None  # üyelerin token kullanımı (proje sayacı)
         size = context.count("\n")
         self.roles, self.rounds = plan_council(kind, subject + "\n" + context[:4000], size, critical, depth, roles)
         if previous and kind == "recheck":
             keep = [v["role"] for v in previous.get("votes", []) if v.get("last") != "approve"]
             self.roles = list(dict.fromkeys([r for r in keep if r in ROLES] + ["verifier"]))
+        # Sitenin ekran görüntüleri varsa kullanıcı gözü kesin katılır ve görsel kaliteye de bakar.
+        self.images = dict(images or {})
+        if self.images and "ux" not in self.roles:
+            self.roles.insert(max(0, len(self.roles) - 1), "ux")
         self.relevant = [r for r in relevant_experts(subject + "\n" + context[:4000]) if r in self.roles]
+        if self.images and "ux" not in self.relevant:
+            self.relevant.append("ux")
         self.votes: dict[str, Vote] = {}
         self.findings: list[Finding] = []
         self.transcript: list[dict[str, Any]] = []  # {round, role, text}
@@ -266,6 +274,8 @@ class Council:
     # ------------------------------------------------------------- modeller
     def model_for(self, role: str) -> tuple[str, str]:
         """Rolüne ve işin önemine göre model ve düşünme seviyesi."""
+        if role == "ux" and self.images:  # ekran görüntülerini görebilen model
+            return "vision", "medium" if self.critical or self.kind == "final" else "low"
         if self.critical or self.kind == "final":
             return "brain", "high" if role in ("critic", "verifier") else "medium"
         if role in ("critic", "verifier"):
@@ -299,6 +309,7 @@ class Council:
         router.thinking_overrides[rname] = think
         self._roles_router.append(rname)
         agent.role = rname
+        agent.on_usage = self.on_usage
         agent.tool_specs = lambda _a=agent: [t.spec() for t in _a.tools.values()]
         cctx.state["agent"] = agent
         self.votes.setdefault(role, Vote(role, f"{model}·{think}", 1.0))
@@ -343,7 +354,13 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
 
     def _ask(self, role: str, prompt: str) -> str:
         agent = self._agent(role)
-        text = agent.run_turn(prompt, max_steps=REVIEWER_STEPS) or ""
+        images = list(self.images.values()) if role == "ux" else None
+        if images:
+            prompt += ("\n\nEkte sitenin ekran görüntüleri var (" + ", ".join(self.images) + "). Koda ek olarak "
+                       "görünüşü de değerlendir: görsel hiyerarşi, boşluklar, tipografi, renk, tutarlılık, telefonda "
+                       "taşma/kırılma, şablon gibi ya da 'yapay zekâ yapımı' duran yerler. Görselden gördüğün sorunu "
+                       "kanıt olarak hangi görüntüde nerede olduğunu yazarak ver.")
+        text = agent.run_turn(prompt, max_steps=REVIEWER_STEPS, images=images) or ""
         if not parse_block(text) and text.strip():
             # Zayıf modeller JSON'u unutabiliyor: bir kez, sadece biçimi iste.
             again = agent.run_turn("Cevabının sonunda istenen JSON bloğu yoktu. Kararını değiştirmeden şimdi sadece o "
@@ -513,6 +530,7 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
                 "rounds": self.rounds, "roles": self.roles, "critical": self.critical, "relevant": self.relevant,
                 "votes": [v.as_dict() for v in self.votes.values()], "findings": [f.as_dict() for f in self.findings],
                 "result": self.result, "user_vote": self.user_vote, "started": self.started, "ended": self.ended,
+                "screens": list(self.images),
                 "transcript": [{**t, "text": prose(t["text"])} for t in self.transcript]}
 
 

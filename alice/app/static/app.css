@@ -1201,3 +1201,25 @@ details.cc[open] > summary.cc-head::after { transform: rotate(45deg); }
   #projectView .pd-acts { margin-left: 0; width: 100%; overflow-x: auto; }
   #projectView .pd-task, #projectView .pd-head > .pd-row:last-child:not(:first-child) { padding-left: 0; }
 }
+
+/* geniş ekranda konuşma okunur genişlikte ortalanır */
+#projectView .pd-feed { padding-left: max(22px, calc((100% - 920px) / 2)); padding-right: max(22px, calc((100% - 920px) / 2)); }
+#projectView .pd-say { padding-left: max(14px, calc((100% - 940px) / 2)); padding-right: max(14px, calc((100% - 940px) / 2)); }
+.pf-tooling { margin-top: 4px; }
+.pf-tooling[hidden] { display: none; }
+/* proje konuşması normal sohbetle aynı ritimde */
+#projectView .pd-feed.chat { gap: 0; padding-top: 14px; padding-left: max(22px, calc((100% - 800px) / 2)); padding-right: max(22px, calc((100% - 800px) / 2)); }
+#projectView .pd-feed.chat > .turn-ai { margin: 6px 0; }
+#projectView .pd-feed.chat > .pf-msg { margin: 10px 0; align-self: flex-start; max-width: 85%; }
+#projectView .pd-feed.chat > .tool, #projectView .pd-feed.chat > .tool-group { margin: 2px 0; }
+#projectView .pd-feed.chat .working[hidden] { display: none; }
+#projectView .pd-feed.chat > .pf-note, #projectView .pd-feed.chat > .note { margin: 10px auto; }
+.pv-usage { font-variant-numeric: tabular-nums; cursor: help; }
+
+/* site önizlemesi */
+.pv-frame-wrap { flex: 1; min-height: 0; display: flex; justify-content: center; padding: 14px; background: var(--side); }
+.pv-frame-slot { flex: 1; border-radius: 12px; border: 1px solid var(--line); background: #fff; }
+.pv-frame-wrap.phone .pv-frame-slot { flex: 0 0 390px; max-width: 100%; border-radius: 26px; }
+.pv-host { position: fixed; z-index: 5; border-radius: 12px; overflow: hidden; }
+.pv-host[hidden] { display: none; }
+.pv-host iframe { width: 100%; height: 100%; border: 0; background: #fff; display: block; }

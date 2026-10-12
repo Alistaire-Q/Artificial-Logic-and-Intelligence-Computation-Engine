@@ -117,6 +117,11 @@ def classify_error(status: int, body: str, headers: dict[str, str] | None = None
 
 
 class OpenAICompatProvider:
+    # Akış bu kadar saniye gerçek veri (metin, düşünme, araç parçası) göndermezse kesilir. Bazı sağlayıcılar
+    # beklerken ": PROCESSING" gibi canlı tutma satırları yollar; bunlar okuma zaman aşımını sıfırladığı için
+    # yoksa çağrı saatlerce asılı kalabiliyor.
+    STREAM_IDLE = 300.0
+
     def __init__(self, cfg: ProviderConfig, timeout: float = 180.0, client: httpx.Client | None = None):
         self.cfg = cfg
         self.name = cfg.name
@@ -155,6 +160,8 @@ class OpenAICompatProvider:
         extra: dict[str, Any] | None = None,
     ) -> ChatResult:
         body = self._body(model, messages, tools, temperature, max_tokens, response_format, extra)
+        if "openrouter.ai" in self.cfg.base_url:
+            body.setdefault("usage", {"include": True})
         t0 = time.monotonic()
         try:
             r = self._client.post(f"{self.cfg.base_url}/chat/completions", headers=self._headers(), json=body)
@@ -210,10 +217,14 @@ class OpenAICompatProvider:
         cancel: Callable[[], bool] | None = None,
         on_reasoning: Callable[[str], None] | None = None,
         on_first: Callable[[], None] | None = None,
+        on_tool: Callable[[str, int], None] | None = None,
     ) -> ChatResult:
-        """SSE ile akışlı cevap. Metin parçaları on_delta'ya gider, tool_call parçaları birleştirilir."""
+        """SSE ile akışlı cevap. Metin parçaları on_delta'ya gider, tool_call parçaları birleştirilir (yazıldıkça
+        on_tool'a araç adı ve argümanların o ana kadarki uzunluğu bildirilir)."""
         body = self._body(model, messages, tools, temperature, max_tokens, response_format, extra)
         body["stream"] = True
+        if "openrouter.ai" in self.cfg.base_url:  # kullanım ve ücret son parçada gelsin (proje maliyet takibi)
+            body.setdefault("usage", {"include": True})
         t0 = time.monotonic()
         text_parts: list[str] = []
         calls: dict[int, dict[str, Any]] = {}
@@ -221,6 +232,7 @@ class OpenAICompatProvider:
         served_model = model
         finish = None
         think = ThinkFilter()
+        last_data = time.monotonic()
         try:
             with self._client.stream("POST", f"{self.cfg.base_url}/chat/completions",
                                      headers=self._headers(), json=body) as r:
@@ -230,6 +242,8 @@ class OpenAICompatProvider:
                 for line in r.iter_lines():
                     if cancel and cancel():
                         raise StreamCancelled()
+                    if time.monotonic() - last_data > self.STREAM_IDLE:
+                        raise ProviderError("network", f"akış {int(self.STREAM_IDLE)} sn'dir veri göndermiyor")
                     if not line or not line.startswith("data:"):
                         continue
                     payload = line[5:].strip()
@@ -250,6 +264,9 @@ class OpenAICompatProvider:
                         usage = chunk["usage"]
                     for ch in chunk.get("choices") or []:
                         delta = ch.get("delta") or {}
+                        if delta.get("content") or delta.get("tool_calls") or delta.get("reasoning_content") \
+                                or delta.get("reasoning"):
+                            last_data = time.monotonic()
                         if on_first is not None and (delta.get("content") or delta.get("tool_calls")
                                                      or delta.get("reasoning_content") or delta.get("reasoning")):
                             on_first()  # ilk token süresi (model sıralaması için)
@@ -267,6 +284,10 @@ class OpenAICompatProvider:
                             on_delta(piece)
                         for tc in delta.get("tool_calls") or []:
                             _merge_tool_delta(calls, tc)
+                        if delta.get("tool_calls") and on_tool is not None:
+                            cur = calls[max(calls)] if calls else {}
+                            fn = cur.get("function") or {}
+                            on_tool(fn.get("name") or "", len(fn.get("arguments") or ""))
                         finish = ch.get("finish_reason") or finish
         except httpx.TimeoutException as e:
             raise ProviderError("network", f"timeout: {e}") from e

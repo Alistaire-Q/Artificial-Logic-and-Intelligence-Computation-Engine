@@ -275,3 +275,63 @@ def test_member_output_streams_live(workdir):
     assert any(e["think"] == "önce dosyaya bakayım" for e in live)
     assert live[-1]["text"] == "" and live[-1]["think"] == ""  # bitince canlı kutu kapandı
     team.stop()
+
+
+def test_member_tool_progress_counts_as_activity(tmp_path):
+    from alice.team import Member, MemberUI
+
+    events = []
+    team = type("T", (), {"id": "p1", "publish": lambda self, ev: events.append(ev)})()
+    m = Member(name="web", task="site")
+    m.last_at, m.stall_warned = 1.0, True
+    ui = MemberUI(team, m)
+    ui.tool_delta("write_file", 12500)
+    assert m.last_at > 1.0 and m.stall_warned is False
+    assert events[-1]["tool"] == "write_file hazırlıyor · 12 KB"
+    ui.stream_end("", "x")
+    assert events[-1]["tool"] == ""
+
+
+def test_stuck_member_is_restarted_on_next_model_and_usage_is_counted(workdir):
+    from alice.agent import Agent, NullUI
+    from alice.permissions import Permissions
+    from alice.providers.router import Router
+    from alice.tools import ToolContext, all_tools
+    from tests.conftest import FakeProvider, make_config
+
+    gate = threading.Event()
+
+    def script(model, messages, tools, **kw):
+        if is_lead(messages):
+            return "tamam"
+        if steps(messages) == 0:
+            return tool_call("list_dir", {})
+        if model == "m":
+            gate.wait(20)  # ilk model ikinci adımda takılıyor
+            return "geç kaldım"
+        return "rapor: bitti"
+
+    cfg = make_config({"brain": ["a:m", "a:m2"], "fast": ["a:m"], "vision": ["a:m"]}, team_stall_minutes=0.01)
+    prov = FakeProvider("a", script)
+    router = Router(cfg, provider_factory=lambda pc: prov, sleep=lambda s: None)
+    ctx = ToolContext(cwd=workdir, config=cfg, router=router)
+    agent = Agent(cfg, router, all_tools(), ctx, Permissions("auto"), NullUI(), system_prompt="sys")
+    agent.stream = False
+    ctx.state["agent"] = agent
+    team = Team(ctx, "iş", council=False, review=False)
+    seen = []
+    team._notify = lambda text, kind: seen.append(text)
+    team.add({"name": "backend", "task": "a"})
+    team.start()
+    m = team.members["backend"]
+    try:
+        assert team.wait_until(lambda: m.status == "done", 20)
+    finally:
+        gate.set()
+    assert m.recoveries == 1 and m.result == "rapor: bitti"
+    resumed = [str(x["content"]) for x in m.agent.messages if x["role"] == "user"]
+    assert any(c.startswith("[sistem] Önceki adımın") for c in resumed)
+    assert any("otomatik yeniden başlatıldı" in x["text"] for x in team.timeline)
+    usage = team.snapshot()["usage"]
+    assert usage["by"]["backend"]["in"] >= 20 and usage["total"]["out"] > 0
+    assert Team.load(team.id, ctx).usage["backend"]["in"] == usage["by"]["backend"]["in"]

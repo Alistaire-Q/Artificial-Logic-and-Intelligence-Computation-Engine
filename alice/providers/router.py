@@ -425,7 +425,8 @@ class Router:
                             _sink.on_delta(piece)
 
                         r = client.chat_stream(model, msgs, on_delta, cancel=stream.cancelled,
-                                               on_reasoning=getattr(stream, "on_reasoning", None), **kw)
+                                               on_reasoning=getattr(stream, "on_reasoning", None),
+                                               **({"on_tool": stream.on_tool} if hasattr(stream, "on_tool") else {}), **kw)
                         if not r.usage:
                             r.usage = {"prompt_tokens": est, "completion_tokens": int(len(r.text) / 3.5)}
                         return r

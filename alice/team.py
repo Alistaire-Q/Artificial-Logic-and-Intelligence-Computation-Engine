@@ -107,6 +107,9 @@ class Member:
     stall_warned: bool = False
     merge_attempts: int = 0
     provider_failed: str = ""  # bütün modeller düştüyse nedeni
+    recovering: bool = False  # takıldığı için durduruldu; bitince başka modelle kaldığı yerden devam edecek
+    recoveries: int = 0  # kaç kez otomatik kurtarıldı
+    resume_note: str = ""  # bir sonraki devamda ajana söylenecek not
 
     def snapshot(self) -> dict[str, Any]:
         now = self.ended or time.time()
@@ -123,6 +126,15 @@ class Member:
         if self.agent is not None:
             return self.agent.messages[1:]
         return self.saved_messages
+
+
+def _add_usage(row: dict[str, float], usage: dict[str, Any]) -> None:
+    """Token ve (sağlayıcı bildiriyorsa) ücret sayacı."""
+    row["in"] = row.get("in", 0) + int(usage.get("prompt_tokens") or 0)
+    row["out"] = row.get("out", 0) + int(usage.get("completion_tokens") or 0)
+    cost = usage.get("cost")
+    if isinstance(cost, (int, float)):
+        row["cost"] = round(row.get("cost", 0.0) + float(cost), 6)
 
 
 def _council_brief(c: dict[str, Any]) -> dict[str, Any]:
@@ -291,6 +303,7 @@ class Team:
         self.check = (check or "").strip()  # kontrol komutu (testler): kurul öncesi otomatik çalışır
         self.lessons: list[str] = []  # kurulların bu projede yakaladığı sorunlar (sonraki işlere ders)
         self.timeline: list[dict[str, Any]] = []  # zaman çizelgesi: {at, who, kind, text}
+        self.usage: dict[str, dict[str, float]] = {}  # kim -> {in, out, cost}: token ve ücret takibi
         self._lead_turns = 0
         self._plan_nudges = 0
         self._dirty0: set[str] | None = None  # proje başında zaten değişmiş dosyalar (komut takibi bunlara dokunmaz)
@@ -584,6 +597,8 @@ class Team:
                 msgs = self.take(m.name)
                 prompt = ("[takım mesajları]\n" + "\n".join(x.line() for x in msgs) if msgs else "Devam et.") + \
                     "\n\nBunlara göre işine devam et; bitince yine kısa rapor yaz."
+                if m.resume_note:
+                    prompt, m.resume_note = m.resume_note + "\n\n" + prompt, ""
             else:
                 prompt = "Görevine başla."
             m.limit_hit, m.provider_failed = False, ""
@@ -604,6 +619,9 @@ class Team:
                 m.status, m.ended, m.question = final, time.time(), ""
                 self.save()
                 self.cond.notify_all()
+        if final == "stopped" and m.recovering and not self.stopped:
+            self._recover(m)
+            return
         self.mark(m.name, final, {"review": "bitirdi, incelemede", "done": "bitirdi", "failed": "hata verdi",
                                   "stopped": "durdu"}.get(final, final) + (f": {m.result[:160]}" if final != "stopped" else ""))
         if final == "failed":
@@ -682,13 +700,14 @@ class Team:
                             f"({'GEÇTİ' if chk['code'] == 0 else 'BAŞARISIZ'})\n```\n{chk['out'][-3000:]}\n```")
         c = Council(self.parent_ctx, kind, subject, context, cwd=cwd or self.cwd, previous=previous,
                     critical=critical or self._critical(subject + context), rules=self.review_rules(),
-                    lessons=self.lessons[-10:], check=self.check)
+                    lessons=self.lessons[-10:], check=self.check, images=self._screens(kind, subject + context, cwd))
 
         def live() -> None:
             store[slot] = c.snapshot()
             self._changed()
 
         c.on_change = live
+        c.on_usage = lambda u: self._use(COUNCIL, u)
         snap = c.run()
         store[slot] = snap
         self.learn(snap)
@@ -696,6 +715,20 @@ class Team:
         self.mark(COUNCIL, "council", f"{subject[:60]}: {res.get('decision', '?')} (%{round(100 * (res.get('score') or 0))})")
         self._changed(save=True)
         return snap
+
+    def _screens(self, kind: str, text: str, cwd: Path | None) -> dict[str, str]:
+        """Proje bir web sitesiyse ve iş görünüşe dokunuyorsa kurul için masaüstü ve telefon ekran görüntüleri."""
+        if kind not in ("work", "recheck", "final", "adhoc"):
+            return {}
+        if kind != "final" and not re.search(r"\.(html?|css|scss|sass|less|jsx|tsx|vue|svelte|astro)\b", text):
+            return {}
+        if not bool(self.parent_ctx.config.agent.get("team_screenshots", True)):
+            return {}
+        from alice.site import find_entry, screenshots
+
+        root = cwd or self.cwd
+        entry = find_entry(root)
+        return screenshots(root, entry) if entry else {}
 
     @staticmethod
     def _critical(text: str) -> bool:
@@ -993,6 +1026,7 @@ class Team:
                       is_child=True)
         agent.stream = bool(parent.config.agent.get("stream", True))  # cevap yazılırken canlı aksın
         agent.role = self._role(m.name, m.model, m.thinking)
+        agent.on_usage = lambda u, _n=m.name: self._use(_n, u)
         agent.tool_specs = lambda _a=agent: [t.spec() for t in _a.tools.values()]  # gruplar yok: hepsi açık
         ctx.state["agent"] = agent  # uzun araçlar Durdur'u görsün
         scope = [ctx.resolve(s) for s in m.scope]
@@ -1141,6 +1175,8 @@ Kurallar:
 - Karar gerekiyorsa, takıldıysan ya da kapsam dışına çıkman gerekiyorsa {LEAD}'e sor ve team_wait ile cevabı
   bekle. Gereksiz mesaj atma; kısa ve net yaz.
 - Sana gelen mesajlar konuşmana "[takım mesajı]" olarak eklenir.
+- Büyük dosyaları (yaklaşık 300 satırdan uzun) tek write_file ile yazma: önce iskeleti yaz, sonra bölüm bölüm
+  edit_file ile doldur. Tek seferde dev bir araç çağrısı çok yavaş olur, kopabilir ve takılmış sanılırsın.
 - İşini doğrula (test, çalıştırma). Bitince son mesajında kısa rapor yaz: ne yaptın, hangi dosyalar değişti,
   nasıl doğruladın, açık kalan ne. Yönetici işini inceler; düzeltme isterse yine sana yazar.
 """
@@ -1175,6 +1211,7 @@ Kurallar:
                       is_child=True)
         agent.stream = bool(parent.config.agent.get("stream", True))  # cevap yazılırken canlı aksın
         agent.role = self._role(LEAD, self.lead_model, self.lead_thinking)
+        agent.on_usage = lambda u: self._use(LEAD, u)
         agent.tool_specs = lambda _a=agent: [t.spec() for t in _a.tools.values()]
         ctx.state["agent"] = agent
         if self.lead_saved:
@@ -1226,16 +1263,67 @@ Kurallar:
             return True
 
     def _watch_stalls(self) -> None:
-        """Uzun süredir araç adımı atmayan (takılmış olabilecek) ajanı yöneticiye ve kullanıcıya bildir."""
+        """Uzun süredir ilerlemeyen ajan: önce yöneticiye ve kullanıcıya haber verilir; bir o kadar daha beklerse
+        durdurulup sıradaki modelle kaldığı yerden sürdürülür (en fazla iki kez, sonra kullanıcıya bırakılır)."""
         limit = float(self.parent_ctx.config.agent.get("team_stall_minutes", 10)) * 60
         now = time.time()
-        for m in self.members.values():
-            if m.status == "running" and m.last_at and not m.stall_warned and now - m.last_at > limit:
+        for m in list(self.members.values()):
+            if m.status != "running" or not m.last_at or m.recovering:
+                continue
+            idle = now - m.last_at
+            if not m.stall_warned and idle > limit:
                 m.stall_warned = True
-                mins = int((now - m.last_at) // 60)
-                self.event(f"{m.name} {mins} dakikadır ilerlemiyor (son adım: {m.last or '-'}). message ile durumunu "
-                           "sor, gerekiyorsa görevi küçült ya da kullanıcıya haber ver.")
+                mins = int(idle // 60)
+                self.event(f"{m.name} {mins} dakikadır ilerlemiyor (son adım: {m.last or '-'}). Biraz daha "
+                           "ilerlemezse sistem onu başka modelle kaldığı yerden yeniden başlatacak; sen de message ile "
+                           "durumunu sorabilir ya da görevi küçültebilirsin.")
                 self._emit(f"{self.title} / {m.name} {mins} dakikadır ilerlemiyor", kind="stall")
+            elif m.stall_warned and idle > 2 * limit and m.agent is not None:
+                if m.recoveries >= 2:
+                    if m.recoveries == 2:  # bir kez haber ver
+                        m.recoveries += 1
+                        self.event(f"{m.name} iki otomatik yeniden başlatmadan sonra yine takıldı. Görevi böl, "
+                                   "başka ajana ver ya da kullanıcıya sor.")
+                        self._emit(f"{self.title} / {m.name} yine takıldı; bakman gerekebilir", kind="stall")
+                    continue
+                m.recovering = True
+                self.mark(SYSTEM, "stall", f"{m.name} takıldı; durdurulup başka modelle sürdürülecek")
+                m.agent.stop()
+
+    def _recover(self, m: Member) -> None:
+        """Takıldığı için durdurulan ajanı sıradaki modelle kaldığı yerden sürdür."""
+        m.recovering = False
+        m.recoveries += 1
+        model = self._rotate_model(m)
+        m.resume_note = ("[sistem] Önceki adımın uzun süre ilerlemediği için yarıda kesildi. Kaldığın yerden devam et. "
+                         "Büyük dosyaları tek seferde yazma: önce iskeleti yaz, sonra bölüm bölüm düzenle.")
+        self.mark(SYSTEM, "run", f"{m.name} otomatik yeniden başlatıldı" + (f" ({model})" if model else ""))
+        self.event(f"{m.name} takılmıştı; sistem onu durdurup " + (f"{model} ile " if model else "") +
+                   "kaldığı yerden sürdürdü. Bir şey yapmana gerek yok.")
+        self._emit(f"{self.title} / {m.name} takıldı, otomatik yeniden başlatıldı", kind="info")
+        self._launch(m, resume=True)
+        self._changed(save=True)
+
+    def _rotate_model(self, m: Member) -> str:
+        """Ajanın model zincirinde bir sonrakine geç (takılan model sona gider). Yeni ilk modeli döndürür."""
+        router = self.parent_ctx.router
+        chain = router.role_overrides.get(f"team:{self.id}:{m.name}") if router is not None else None
+        if not chain or len(chain) < 2:
+            return ""
+        chain.append(chain.pop(0))
+        return str(chain[0])
+
+    def _use(self, who: str, usage: dict[str, Any]) -> None:
+        _add_usage(self.usage.setdefault(who, {}), usage)
+
+    def usage_total(self) -> dict[str, float]:
+        tot: dict[str, float] = {"in": 0, "out": 0}
+        for row in self.usage.values():
+            tot["in"] += row.get("in", 0)
+            tot["out"] += row.get("out", 0)
+            if "cost" in row:
+                tot["cost"] = round(tot.get("cost", 0.0) + row["cost"], 6)
+        return tot
 
     def _nudge(self) -> str:
         """Yönetici turunu bitirdi ama iş ortada kaldıysa hatırlat; iki kez olmazsa projeyi kendisi kapat."""
@@ -1338,6 +1426,7 @@ Kurallar:
                 "questions": self.questions[-20:], "progress": [done, len(self.members)], "council": self.council,
                 "council_busy": self.council_busy, "councils": [_council_brief(c) for c in self.councils],
                 "check": self.check, "lessons": self.lessons[-15:], "timeline_n": len(self.timeline),
+                "usage": {"total": self.usage_total(), "by": self.usage},
                 "members": [m.snapshot() for m in self.members.values()],
                 "log": [{"from": x.sender, "to": x.to, "text": x.text[:400], "at": x.at} for x in self.log[-40:]],
                 "active": self.active()}
@@ -1386,7 +1475,7 @@ Kurallar:
                 "finished": self.finished, "lead_last": self.lead_last, "lead_messages": _slim(lead_msgs),
                 "questions": self.questions, "members": members, "council": self.council,
                 "councils": self.councils[-10:], "final_runs": self.final_runs, "plan_rejects": self.plan_rejects,
-                "check": self.check, "lessons": self.lessons, "timeline": self.timeline[-500:],
+                "check": self.check, "lessons": self.lessons, "timeline": self.timeline[-500:], "usage": self.usage,
                 "log": [{"from": x.sender, "to": x.to, "text": x.text, "at": x.at} for x in self.log[-500:]]}
 
     @classmethod
@@ -1403,6 +1492,7 @@ Kurallar:
         team.check = str(data.get("check") or "")
         team.lessons = list(data.get("lessons") or [])
         team.timeline = list(data.get("timeline") or [])
+        team.usage = {k: dict(v) for k, v in (data.get("usage") or {}).items() if isinstance(v, dict)}
         team.final_runs = int(data.get("final_runs") or 0)
         team.plan_rejects = int(data.get("plan_rejects") or 0)
         team.created = float(data.get("created") or time.time())
@@ -1574,7 +1664,7 @@ class MemberUI:
 
     def __init__(self, team: Team, member: Member):
         self.team, self.member = team, member
-        self.text, self.think = "", ""
+        self.text, self.think, self.tool = "", "", ""
         self._last = 0.0
 
     def __getattr__(self, name: str):
@@ -1587,11 +1677,18 @@ class MemberUI:
         self._last = now
         try:
             self.team.publish({"type": "team_live", "id": self.team.id, "name": self.member.name,
-                               "text": self.text[-8000:], "think": self.think[-4000:]})
+                               "text": self.text[-8000:], "think": self.think[-4000:], "tool": self.tool})
         except Exception:  # noqa: BLE001
             pass
 
+    def tool_delta(self, name: str, size: int) -> None:
+        """Model bir aracı (ör. büyük bir dosya) yazarken: ilerleme sayılır, ekranda ne yazdığı görünür."""
+        self.member.last_at, self.member.stall_warned = time.time(), False
+        self.tool = f"{name} hazırlıyor · {size // 1000} KB" if size >= 1000 else f"{name} hazırlıyor"
+        self._live()
+
     def stream_start(self) -> None:
+        self.tool = ""
         self.text, self.think = "", ""
         self._live(force=True)
         self._last = 0.0  # ilk parça beklemeden görünsün
@@ -1609,7 +1706,7 @@ class MemberUI:
         self._live(force=True)
 
     def stream_end(self, text: str, source: str) -> None:
-        self.text, self.think = "", ""  # cevap artık konuşmada; canlı kutu kapanır
+        self.text, self.think, self.tool = "", "", ""  # cevap artık konuşmada; canlı kutu kapanır
         self._live(force=True)
 
     def info(self, msg: str) -> None:
