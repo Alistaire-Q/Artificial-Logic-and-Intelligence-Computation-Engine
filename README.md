@@ -174,7 +174,9 @@ Büyük bir iş (büyük bir kod tabanında birden çok modül, backend + fronte
 **Asılı kalmaz:**
 * Yönetici bir olaya cevap vermeden turunu bitirirse iki kez hatırlatılır; yine kapatmazsa proje kendiliğinden kapanır.
 * Plan sunmadan turunu bitirirse iki kez hatırlatılır; yine sunmazsa iş tek bir ajana ("worker") verilir.
-* Bir ajan uzun süre (varsayılan 10 dk, `[agent] team_stall_minutes`) hiç adım atmazsa yöneticiye ve sana "ilerlemiyor" bildirimi gider.
+* Bir ajan uzun süre (varsayılan 10 dk, `[agent] team_stall_minutes`) hiç adım atmazsa yöneticiye ve sana "ilerlemiyor" bildirimi gider. Bir o kadar daha ilerlemezse **kendiliğinden kurtarılır**: durdurulur ve model zincirindeki sıradaki modelle kaldığı yerden sürer (en fazla iki kez; sonra sana haber verilir). Model büyük bir dosyayı yazarken geçen süre ilerleme sayılır ("Dosya yazıyor… 12 KB").
+* Sağlayıcı "işliyorum" deyip 5 dakika hiç veri göndermezse çağrı kesilir ve sıradaki modele geçilir (saatlerce asılı kalmaz).
+* Ajanlara büyük dosyaları tek seferde değil, iskelet + bölüm bölüm düzenleme ile yazmaları söylenir.
 * Hiçbir model cevap veremezse (kota, anahtar) ajan boş raporla incelemeye düşmez, **hata** olur; neden ekranda yazar, yöneticiye bildirilir.
 * Ayrı git dalındaki ajanın dalı onayda çakışırsa ajana geri gider: ana dalı kendi dalına alıp çakışmayı çözer, sonra yeniden incelenir ve birleştirilir (en çok 2 deneme).
 
@@ -191,6 +193,8 @@ Büyük bir iş (büyük bir kod tabanında birden çok modül, backend + fronte
 * İnceleme bekleyen ajanda **Onayla** / **Düzeltme iste** (geri bildirimle). Yönetici de inceler; kararı istersen sen verirsin.
 * Ajana yaz (çalışıyorsa bir sonraki adımında görür, bitmişse devam eder), **Durdur**, **Baştan başlat** (temiz konuşmayla), **Değişiklikleri geri al** (dosya araçlarıyla yaptıklarını eski haline döndürür).
 * **Ajan ekle** (çalışan ya da bitmiş projeye; diğerlerine haber verilir), **Durdur** / **Sürdür**, **Sil**. Yöneticiye yazarak bitmiş projeye yeni iş verebilirsin.
+* **Önizleme:** proje bir web sitesiyse (`index.html` kökte ya da `dist`, `public`, `site`, `src`… altında) Genel grubunda çıkar. Site korumalı (ayrı kökenli) bir çerçevede ve ayrı bir önizleme anahtarıyla açılır: sitenin kodu ALICE'e ve API'sine ulaşamaz, `.env` / `.git` gibi gizli dosyalar sunulmaz. Dosyalar değişince kendini yeniler; **Masaüstü / Telefon** görünümü, **Yeni sekmede aç**.
+* **Token takibi:** proje başlığında toplam token (OpenRouter'da harcanan ücret de), fareyle üzerine gelince ajan/yönetici/kurul dağılımı; her ajanın başlığında kendi kullanımı.
 * **Akış:** projede olan her şey zaman sırasıyla: başlayan/biten işler, kontrol komutu sonuçları, kurul kararları, onaylar, sorular, mesajlar.
 * Sohbette çalışan projenin küçük kartı (ilerleme, o an ne yapıldığı) durur; soru ve bitiş bildirimleri tıklanınca projeyi açan kartlar olarak gelir.
 
@@ -208,6 +212,8 @@ Büyük bir iş (büyük bir kod tabanında birden çok modül, backend + fronte
 ### İnceleme kurulu
 
 İşleri tek bir göz değil, farklı bakış açıları olan bir **kurul** değerlendirir. Projelerde varsayılan olarak açık (yeni proje Ayarlar'ında kapatılabilir); sohbette `/kurul <konu>` ile bir fikri, dosyayı, kararı ya da PR'ı da sorabilirsin.
+
+**Siteye gözle bakar:** iş görünüşe dokunuyorsa (html/css/js…) ve her final kurulunda sitenin masaüstü ve telefon ekran görüntüleri alınır; **kullanıcı gözü** bunları görsel destekli modelle (`vision` rolü) inceler: hiyerarşi, boşluklar, tipografi, telefonda taşma, "şablon gibi" duran yerler. Playwright ve bir Chromium tarayıcısı gerekir (`pip install playwright` + `playwright install chromium`, ya da sistemdeki Chrome/Edge; `ALICE_CHROMIUM` ile yol verilebilir). Yoksa kurul koda bakmaya devam eder. Kapatmak: `[agent] team_screenshots = false`.
 
 **Roller:**
 * **Eleştirmen:** acımasız ama kanıtlı. Hataları, eksikleri, riskleri ve kötü tasarımı arar; her bulguya kanıt (dosya:satır, alıntı, tekrar adımı) yazmak zorunda.

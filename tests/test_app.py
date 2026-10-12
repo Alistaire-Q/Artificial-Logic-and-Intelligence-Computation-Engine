@@ -52,7 +52,8 @@ def test_requires_token_and_local_host(app):
     assert httpx.get(base + "/api/state", headers={"X-Alice-Token": state.token, "Host": "evil.com"}).status_code == 403
     r = httpx.get(srv.url)
     assert r.status_code == 200 and state.token in r.text and "Content-Security-Policy" in r.headers
-    assert client.get("/static/app.js").status_code == 200
+    for f in ("app.js", "projects.js", "ui.js", "main.js"):  # arayüz dört betiğe bölünmüş, sırayla yüklenir
+        assert client.get(f"/static/{f}").status_code == 200 and f"/static/{f}" in r.text
     assert client.get("/static/alice.png").headers["content-type"] == "image/png"
     assert client.get("/static/../server.py").status_code == 404
 
