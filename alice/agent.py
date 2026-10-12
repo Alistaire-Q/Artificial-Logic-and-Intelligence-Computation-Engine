@@ -181,6 +181,7 @@ class Agent:
         self._error_streak = 0
         # Her araç adımından sonra çağrılır (oturumu kaydetmek için): tur takılır ya da çökerse iz kaybolmasın.
         self.on_step: Any = None
+        self.on_usage: Any = None  # her model cevabının kullanım bilgisi (token, varsa ücret) buraya da bildirilir
         # Uzun süreli hafıza (alice.memory.LongMemory): oturum kuranlar bağlar; testler ve gözetimsiz görevlerde None.
         self.memory: Any = None
         self.memory_channel = ""
@@ -292,6 +293,11 @@ class Agent:
                 res = self._interruptible(self.router.chat, self.role, list(self.messages), tools=self.tool_specs(),
                                           stream=sink if self.stream else None)
                 msg = res.message
+                if self.on_usage is not None:
+                    try:
+                        self.on_usage(res.usage or {})
+                    except Exception:  # noqa: BLE001 - sayaç hatası turu bozmasın
+                        pass
                 pt = int((res.usage or {}).get("prompt_tokens") or 0)
                 self._last_prompt = (pt, sent, self.messages[sent - 1]) if pt else None
                 if not self.stream and msg.get("content"):

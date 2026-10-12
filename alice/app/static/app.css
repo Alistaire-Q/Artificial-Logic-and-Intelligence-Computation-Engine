@@ -1214,3 +1214,4 @@ details.cc[open] > summary.cc-head::after { transform: rotate(45deg); }
 #projectView .pd-feed.chat > .tool, #projectView .pd-feed.chat > .tool-group { margin: 2px 0; }
 #projectView .pd-feed.chat .working[hidden] { display: none; }
 #projectView .pd-feed.chat > .pf-note, #projectView .pd-feed.chat > .note { margin: 10px auto; }
+.pv-usage { font-variant-numeric: tabular-nums; cursor: help; }

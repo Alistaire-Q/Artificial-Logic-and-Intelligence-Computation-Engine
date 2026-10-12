@@ -160,6 +160,8 @@ class OpenAICompatProvider:
         extra: dict[str, Any] | None = None,
     ) -> ChatResult:
         body = self._body(model, messages, tools, temperature, max_tokens, response_format, extra)
+        if "openrouter.ai" in self.cfg.base_url:
+            body.setdefault("usage", {"include": True})
         t0 = time.monotonic()
         try:
             r = self._client.post(f"{self.cfg.base_url}/chat/completions", headers=self._headers(), json=body)
@@ -221,6 +223,8 @@ class OpenAICompatProvider:
         on_tool'a araç adı ve argümanların o ana kadarki uzunluğu bildirilir)."""
         body = self._body(model, messages, tools, temperature, max_tokens, response_format, extra)
         body["stream"] = True
+        if "openrouter.ai" in self.cfg.base_url:  # kullanım ve ücret son parçada gelsin (proje maliyet takibi)
+            body.setdefault("usage", {"include": True})
         t0 = time.monotonic()
         text_parts: list[str] = []
         calls: dict[int, dict[str, Any]] = {}

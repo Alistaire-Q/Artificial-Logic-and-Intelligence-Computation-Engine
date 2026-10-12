@@ -245,6 +245,7 @@ class Council:
         self.check = check  # projenin kontrol komutu (kontrolcü bilir)
         self.title = title or self.subject.splitlines()[0][:80]
         self.id = secrets.token_hex(4)
+        self.on_usage: Callable[[dict[str, Any]], None] | None = None  # üyelerin token kullanımı (proje sayacı)
         size = context.count("\n")
         self.roles, self.rounds = plan_council(kind, subject + "\n" + context[:4000], size, critical, depth, roles)
         if previous and kind == "recheck":
@@ -299,6 +300,7 @@ class Council:
         router.thinking_overrides[rname] = think
         self._roles_router.append(rname)
         agent.role = rname
+        agent.on_usage = self.on_usage
         agent.tool_specs = lambda _a=agent: [t.spec() for t in _a.tools.values()]
         cctx.state["agent"] = agent
         self.votes.setdefault(role, Vote(role, f"{model}·{think}", 1.0))

@@ -1145,6 +1145,13 @@ function renderProject() {
   const [done, total] = d.progress || [0, 0];
   const t2 = el("div", "pv-sub");
   t2.append(progressBar(done, total), el("span", "", total ? `${done}/${total} iş onaylandı` : "henüz ajan yok"), el("span", "", relTime(d.created)));
+  const use = usageText(d.usage && d.usage.total);
+  if (use) {
+    const u = el("span", "pv-usage", use);
+    u.title = "Bu projede harcanan token" + (d.usage.total.cost !== undefined ? " ve sağlayıcının bildirdiği ücret" : "") +
+      "\n" + Object.entries(d.usage.by || {}).map(([k, r]) => `${k === "kurul" ? "kurul" : k}: ${usageText(r)}`).join("\n");
+    t2.appendChild(u);
+  }
   mid.append(t1, t2);
   const g = (d.goal || "").trim();
   if (g && g !== d.title.trim()) {
@@ -1282,6 +1289,13 @@ function renderProject() {
     if (k) { t.value = k.v; if (k.f) t.focus(); }
   }
 }
+// Token (ve sağlayıcı bildiriyorsa ücret) özeti: "84k token · $0,12"
+function usageText(u) {
+  if (!u) return "";
+  const n = (u.in || 0) + (u.out || 0);
+  if (!n) return "";
+  return `${fmtTok(n)} token` + (u.cost ? ` · $${u.cost < 0.01 ? u.cost.toFixed(4) : u.cost.toFixed(2)}` : "");
+}
 // Proje ekranı tercihleri (liste genişliği, daraltılmış gruplar) bu tarayıcıda hatırlanır.
 function projUI(patch) {
   let ui = { w: 288, rail: false, closed: { done: false } };
@@ -1344,7 +1358,8 @@ function renderThread(det, m, d) {
   const r1 = el("div", "pd-row");
   const st = isLead ? (m.status === "running" ? "running" : m.status === "done" ? "done" : "idle") : m.status;
   const nm = el("div", "pd-name");
-  nm.append(el("b", "", isLead ? "Alice" : m.name), el("small", "", isLead ? "yönetici" : TEAM_ST[st] || st));
+  const mu = usageText(((d.usage || {}).by || {})[m.name]);
+  nm.append(el("b", "", isLead ? "Alice" : m.name), el("small", "", (isLead ? "yönetici" : TEAM_ST[st] || st) + (mu ? " · " + mu : "")));
   nm.title = [m.model, m.thinking !== "default" ? "düşünme " + m.thinking : "", isLead ? "" : m.isolation,
     m.steps ? `${m.steps} adım` : "", m.secs ? fmtSecs(m.secs) : ""].filter(Boolean).join(" · ");
   r1.append(avatar(isLead ? "alice" : m.name, st), nm);
