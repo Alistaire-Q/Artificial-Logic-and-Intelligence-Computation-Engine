@@ -56,6 +56,7 @@ NAME_RX = re.compile(r"^[a-z0-9][a-z0-9_-]{0,23}$")
 ACTIVE = ("running", "waiting", "asking")
 FINAL = ("done", "failed", "stopped")
 SAVE_EVERY = 1.5  # saniye: canlı güncellemelerde diske en sık bu aralıkla yazılır
+DESIGN_FILE = "DESIGN.md"
 MAX_MEMBERS = 8
 ORIGINAL_LIMIT = 400_000  # geri alma/fark için saklanan dosya ilk hali (bayt); daha büyükleri saklanmaz
 
@@ -77,7 +78,7 @@ class Member:
     task: str
     constraints: str = ""
     scope: list[str] = field(default_factory=list)  # yazılabilecek yollar (boş: tüm çalışma klasörü)
-    model: str = "brain"  # rol adı (brain, fast...) ya da sağlayıcı:model
+    model: str = "auto"  # auto (işe göre akıllı seçim), rol adı (brain, fast...) ya da sağlayıcı:model
     thinking: str = "default"
     isolation: str = "shared"
     max_steps: int = 60
@@ -110,10 +111,11 @@ class Member:
     recovering: bool = False  # takıldığı için durduruldu; bitince başka modelle kaldığı yerden devam edecek
     recoveries: int = 0  # kaç kez otomatik kurtarıldı
     resume_note: str = ""  # bir sonraki devamda ajana söylenecek not
+    picked: str = ""  # auto seçimde: "tasarım · glm-5.3"
 
     def snapshot(self) -> dict[str, Any]:
         now = self.ended or time.time()
-        return {"name": self.name, "task": self.task, "model": self.model, "thinking": self.thinking,
+        return {"name": self.name, "task": self.task, "model": self.model, "picked": self.picked, "thinking": self.thinking,
                 "isolation": self.isolation, "status": self.status, "steps": self.steps, "last": self.last,
                 "branch": self.branch, "scope": self.scope, "result": self.result[:1500], "files": self.files[-50:],
                 "constraints": self.constraints, "after": self.after, "question": self.question,
@@ -135,6 +137,36 @@ def _add_usage(row: dict[str, float], usage: dict[str, Any]) -> None:
     cost = usage.get("cost")
     if isinstance(cost, (int, float)):
         row["cost"] = round(row.get("cost", 0.0) + float(cost), 6)
+
+
+class _Stopped(Exception):
+    """Ajan başlarken proje durduruldu."""
+
+
+def human_failure(reasons: list[str]) -> str:
+    """Router'ın ham hata satırlarını ("ref: neden") kısa, okunur bir açıklamaya çevirir."""
+    out: list[str] = []
+    for line in reasons:
+        ref, _, why = line.partition(": ")
+        name = ref.split(":", 1)[-1].split("/")[-1] or ref
+        low = why.lower()
+        if m := re.search(r"soğumada \((\d+) sn\)", why):
+            secs = int(m.group(1))
+            when = f"~{secs // 3600} sa" if secs >= 3600 else f"~{max(1, secs // 60)} dk"
+            text = f"{name} beklemede ({when} sonra açılır)"
+        elif "model sınırı" in low or "too_large" in low or "context" in low:
+            text = f"{name} için konuşma çok uzun"
+        elif any(w in low for w in ("quota", "kota", "429", "rate")):
+            text = f"{name} kotası dolu"
+        elif any(w in low for w in ("auth", "401", "403", "anahtar", " yok")):
+            text = f"{name} için API anahtarı yok/geçersiz"
+        elif any(w in low for w in ("timeout", "network", "unreachable", "bağlan", "veri göndermiyor")):
+            text = f"{name} bağlantı sorunu"
+        else:
+            text = f"{name}: {why[:80]}"
+        if text not in out:
+            out.append(text)
+    return ("; ".join(out[:4]) + (f" (+{len(out) - 4})" if len(out) > 4 else "")) or "hiçbir model cevap veremedi"
 
 
 def _council_brief(c: dict[str, Any]) -> dict[str, Any]:
@@ -283,7 +315,7 @@ class Team:
 
     def __init__(self, parent_ctx: ToolContext, goal: str, max_parallel: int = 5,
                  publish: Callable[[dict[str, Any]], None] | None = None, origin: str = "alice",
-                 project_id: str = "", title: str = "", review: bool = True, lead_model: str = "brain",
+                 project_id: str = "", title: str = "", review: bool = True, lead_model: str = "auto",
                  lead_thinking: str = "default", cwd: Path | None = None, council: bool = True, check: str = ""):
         self.parent_ctx = parent_ctx
         self.goal = goal
@@ -304,6 +336,9 @@ class Team:
         self.lessons: list[str] = []  # kurulların bu projede yakaladığı sorunlar (sonraki işlere ders)
         self.timeline: list[dict[str, Any]] = []  # zaman çizelgesi: {at, who, kind, text}
         self.usage: dict[str, dict[str, float]] = {}  # kim -> {in, out, cost}: token ve ücret takibi
+        self._live_councils: set[Any] = set()  # süren kurullar (proje durunca onlar da durur)
+        self.picks: dict[str, str] = {}  # auto model seçimleri (ad -> "alan · model")
+        self._screens_warned = False
         self._lead_turns = 0
         self._plan_nudges = 0
         self._dirty0: set[str] | None = None  # proje başında zaten değişmiş dosyalar (komut takibi bunlara dokunmaz)
@@ -478,7 +513,7 @@ class Team:
         think = str(spec.get("thinking") or "default")
         if think not in THINKING:
             raise ToolError(f"{name}: thinking {', '.join(THINKING)} olmalı")
-        model = str(spec.get("model") or "brain").strip()
+        model = str(spec.get("model") or "auto").strip()
         self._check_model(model, name)
         after = [str(a).strip().lower() for a in spec.get("after") or [] if str(a).strip()]
         bad = [a for a in after if a not in self.members]
@@ -494,13 +529,15 @@ class Team:
         return m
 
     def _check_model(self, model: str, who: str) -> None:
+        if model == "auto":
+            return
         router = self.parent_ctx.router
         try:
             ok = router is None or bool(router.chain(model))
         except KeyError:
             ok = False
         if not ok:
-            raise ToolError(f"{who}: '{model}' için model yok. Rol adı (brain, fast...) ya da sağlayıcı:model yaz.")
+            raise ToolError(f"{who}: '{model}' için model yok. auto, rol adı (brain, fast...) ya da sağlayıcı:model yaz.")
 
     def _repo_top(self) -> Path:
         r = _git(self.cwd, "rev-parse", "--show-toplevel", timeout=20)
@@ -602,6 +639,8 @@ class Team:
             else:
                 prompt = "Görevine başla."
             m.limit_hit, m.provider_failed = False, ""
+            if self.stopped:  # tam başlarken proje durduruldu
+                raise _Stopped()
             text = m.agent.run_turn(prompt, max_steps=m.max_steps) or ""
             if self.stopped or m.agent.cancel.is_set():
                 final = "stopped"
@@ -611,6 +650,8 @@ class Team:
             else:
                 final = "review" if self.review and m.isolation != "readonly" else "done"
             m.result = text.strip() or m.result or "(rapor yazmadı)"
+        except _Stopped:
+            final = "stopped"
         except Exception as e:  # noqa: BLE001 - bir ajanın çökmesi projeyi durdurmasın
             m.result = f"hata: {type(e).__name__}: {e}"
         finally:
@@ -622,6 +663,7 @@ class Team:
         if final == "stopped" and m.recovering and not self.stopped:
             self._recover(m)
             return
+        m.recovering = False  # kurtarma sürerken proje durdurulduysa bayrak kalmasın
         self.mark(m.name, final, {"review": "bitirdi, incelemede", "done": "bitirdi", "failed": "hata verdi",
                                   "stopped": "durdu"}.get(final, final) + (f": {m.result[:160]}" if final != "stopped" else ""))
         if final == "failed":
@@ -662,8 +704,8 @@ class Team:
     def _maybe_final(self) -> None:
         """Final kurulu, sürmekte olan kurullar (ör. son ajanın iş kurulu) bitince toplanır."""
         with self.cond:
-            if not self._final_pending or self.council_busy or not self.all_done() or self.finished:
-                return
+            if not self._final_pending or self.council_busy or not self.all_done() or self.finished or self.stopped:
+                return  # durmuş projede final kurulu toplanmaz; Sürdür'de yeniden denenir
             self._final_pending = False
             self.final_runs += 1
         self._spawn(self._final_council)
@@ -708,7 +750,13 @@ class Team:
 
         c.on_change = live
         c.on_usage = lambda u: self._use(COUNCIL, u)
-        snap = c.run()
+        self._live_councils.add(c)
+        if self.stopped:
+            c.stop()
+        try:
+            snap = c.run()
+        finally:
+            self._live_councils.discard(c)
         store[slot] = snap
         self.learn(snap)
         res = snap.get("result") or {}
@@ -728,7 +776,16 @@ class Team:
 
         root = cwd or self.cwd
         entry = find_entry(root)
-        return screenshots(root, entry) if entry else {}
+        if not entry:
+            return {}
+        shots = screenshots(root, entry)
+        if not shots and not self._screens_warned:
+            self._screens_warned = True
+            note = ("Kurul siteyi göremedi (ekran görüntüsü alınamadı); sadece koda bakıyor. Görsel inceleme için: "
+                    "pip install playwright ve playwright install chromium")
+            self.mark(SYSTEM, "council", note)
+            self._emit(f"{self.title}: {note}", kind="info")
+        return shots
 
     @staticmethod
     def _critical(text: str) -> bool:
@@ -748,11 +805,14 @@ class Team:
         self._changed()
         try:
             subject, context = self._member_material(m)
-            prev = m.councils[-1] if m.councils and m.council_cycles and not adhoc else None
+            done = [c for c in m.councils if c.get("state") != "stopped"]  # yarıda kesilen kurul önceki sayılmaz
+            prev = done[-1] if done and m.council_cycles and not adhoc else None
             kind = "adhoc" if adhoc else ("recheck" if prev else "work")
             snap = self._council(kind, subject, context, m.councils, cwd=m.cwd, previous=prev)
         finally:
             m.council_running = False
+        if snap.get("state") == "stopped":
+            return  # proje durduruldu; sürdürülünce kurul yeniden toplanır
         with self.cond:
             self.log.append(Message(COUNCIL, m.name, report(snap).splitlines()[0]))
         self._apply_council(m, snap, report(snap), fix_list(snap))
@@ -761,6 +821,13 @@ class Team:
         if m.status != "review":
             return  # bu arada kullanıcı/yönetici karar verdi
         decision = (snap.get("result") or {}).get("decision")
+        from alice.council import blocking
+
+        if decision == "approve_conditions" and not blocking(snap):
+            # Şartlar sadece küçük ayrıntı: iş onaylanır, şartlar yöneticiye not olarak gider (yeni tur açılmaz).
+            self.review_member(m.name, True, by=COUNCIL)
+            self.event(f"Kurul {m.name} işini onayladı; küçük iyileştirme önerileri (zorunlu değil):\n{fixes}")
+            return
         if decision == "approve":
             self.review_member(m.name, True, by=COUNCIL)
         elif decision in ("approve_conditions", "revise") and m.council_cycles < 2:
@@ -784,6 +851,10 @@ class Team:
                          f"Dosyalar: {', '.join(m.files) or '-'}\nFark:\n{self.diff(m.name, limit=6000) or '-'}")
         snap = self._council("final", f"Projenin tamamı: {self.goal}", "\n\n".join(parts)[:40_000], self.councils,
                              critical=True)
+        if snap.get("state") == "stopped":  # sürdürülünce yeniden toplanır
+            self.final_runs -= 1
+            self._final_pending = True
+            return
         decision = (snap.get("result") or {}).get("decision")
         last = self.final_runs >= 2
         if decision in ("approve", "approve_conditions"):
@@ -816,6 +887,8 @@ class Team:
                          for m in self.members.values()]
                 snap = self._council("adhoc", f"Projenin şu anki hali: {self.goal}", "\n\n".join(parts)[:40_000],
                                      self.councils)
+                if snap.get("state") == "stopped":
+                    return
                 self.event(f"Kullanıcı kurula sordu, sonuç:\n{report(snap)}\nGerekiyorsa ajanlara yön ver.")
 
             self._spawn(run)
@@ -997,10 +1070,20 @@ class Team:
         self._changed(save=True)
 
     # --------------------------------------------------------------- ajanlar
-    def _role(self, name: str, model: str, thinking: str) -> str:
+    def _role(self, name: str, model: str, thinking: str, text: str = "", domain: str = "") -> str:
+        """Ajanın router rolü. model=auto: işin alanına göre (tasarım, kod, inceleme...) en uygun model sırası."""
+        from alice.providers import picker
+
         role = f"team:{self.id}:{name}"
         router = self.parent_ctx.router
-        router.role_overrides[role] = list(router.chain(model))
+        if model == "auto":
+            domain = domain or picker.classify(text)
+            chain = picker.chain_for(router, domain, fallback="fast" if domain == "light" else "brain")
+            self.picks[name] = picker.explain(chain[0], domain) if chain else ""
+        else:
+            chain = list(router.chain(model))
+            self.picks[name] = ""
+        router.role_overrides[role] = chain
         if thinking != "default":
             router.thinking_overrides[role] = thinking
         if role not in self.roles:
@@ -1025,7 +1108,8 @@ class Team:
                       system_prompt=build_system_prompt(m.cwd, personality=False) + "\n\n" + self.brief(m),
                       is_child=True)
         agent.stream = bool(parent.config.agent.get("stream", True))  # cevap yazılırken canlı aksın
-        agent.role = self._role(m.name, m.model, m.thinking)
+        agent.role = self._role(m.name, m.model, m.thinking, text=f"{m.task}\n{m.constraints}")
+        m.picked = self.picks.get(m.name, "")
         agent.on_usage = lambda u, _n=m.name: self._use(_n, u)
         agent.tool_specs = lambda _a=agent: [t.spec() for t in _a.tools.values()]  # gruplar yok: hepsi açık
         ctx.state["agent"] = agent  # uzun araçlar Durdur'u görsün
@@ -1135,12 +1219,13 @@ class Team:
         return ""
 
     def learn(self, snap: dict[str, Any]) -> None:
-        """Kurulun doğruladığı ciddi bulgular projenin derslerine eklenir (sonraki ajanlara ve kurullara gider)."""
-        for f in snap.get("findings", []):
-            if f.get("status") == "confirmed" and f.get("severity") in ("critical", "major"):
-                lesson = f"{f['title']}" + (f" → {f['fix']}" if f.get("fix") else "")
-                if lesson not in self.lessons:
-                    self.lessons.append(lesson[:240])
+        """Kurulun doğruladığı ciddi bulgular projenin derslerine eklenir (sonraki ajanlara ve kurullara gider).
+        Aynı dersi başka sözcüklerle tekrar eklemez."""
+        from alice.council import dedupe
+
+        new = [f"{f['title']}" + (f" → {f['fix']}" if f.get("fix") else "") for f in snap.get("findings", [])
+               if f.get("status") == "confirmed" and f.get("severity") in ("critical", "major")]
+        self.lessons += [x[:240] for x in dedupe(new, self.lessons)]
         del self.lessons[:-15]
 
     def brief(self, m: Member) -> str:
@@ -1154,6 +1239,7 @@ class Team:
                    "\n".join(f"- {x}" for x in self.lessons[-8:]) + "\n") if self.lessons else ""
         after = f"Bu iş şunlar bittikten sonra başladı: {', '.join(m.after)}. Onların değişiklikleri hazır.\n" \
             if m.after else ""
+        design = self.design_brief(m)
         return f"""# Proje görevi
 Sen "{self.title}" projesinin "{m.name}" adlı ajanısın. Büyük bir işin bir parçasını yapıyorsun; kullanıcıyla değil
 projenin yöneticisiyle (ALICE, adı "{LEAD}") ve takım arkadaşlarınla konuşursun.
@@ -1164,7 +1250,7 @@ Senin görevin: {m.task}
 Sınırlar: {m.constraints or "özel bir sınır yok; yine de sadece kendi görevini yap."}
 Yazma kapsamın: {", ".join(m.scope) if m.scope else "tüm çalışma klasörü (ama başkalarının alanına girme)"}
 Çalışma klasörü: {m.cwd}. {where[m.isolation]}
-{after}{lessons}
+{after}{lessons}{design}
 Takım arkadaşların:
 {roster}
 
@@ -1187,6 +1273,8 @@ Kurallar:
         with self.cond:
             if self.lead_thread is not None and self.lead_thread.is_alive():
                 return  # döngü çalışıyor; olay gelen kutusundan alınacak
+            if self.stopped:
+                return  # durmuş projede yönetici çalışmaz; olaylar bekler, sürdürülünce işlenir
             if self.parent_ctx.state.get("agent") is None or self.parent_ctx.router is None:
                 return
             self.lead_thread = threading.Thread(target=self._lead_loop, daemon=True, name=f"lead-{self.id}")
@@ -1210,7 +1298,7 @@ Kurallar:
                       system_prompt=build_system_prompt(self.cwd, personality=False) + "\n\n" + self.lead_brief(),
                       is_child=True)
         agent.stream = bool(parent.config.agent.get("stream", True))  # cevap yazılırken canlı aksın
-        agent.role = self._role(LEAD, self.lead_model, self.lead_thinking)
+        agent.role = self._role(LEAD, self.lead_model, self.lead_thinking, domain="review")
         agent.on_usage = lambda u: self._use(LEAD, u)
         agent.tool_specs = lambda _a=agent: [t.spec() for t in _a.tools.values()]
         ctx.state["agent"] = agent
@@ -1224,7 +1312,19 @@ Kurallar:
             if self.lead_agent is None:
                 self.lead_agent = self._make_lead()
             while True:
-                msgs = self.wait_messages(LEAD, 1.0, lambda: self.finished)
+                if self.stopped and not self.finished:
+                    with self.cond:  # olaylar gelen kutusunda kalır; Sürdür ya da kullanıcının mesajı yeniden başlatır
+                        if self.stopped:  # kilit altında yeniden bak: tam bu arada sürdürüldüyse çıkma
+                            self.lead_thread = None
+                    if self.lead_thread is None:
+                        self.lead_state = "idle"
+                        self._changed()
+                        return
+                msgs = self.wait_messages(LEAD, 1.0, lambda: self.finished or self.stopped)
+                if msgs and self.stopped and not self.finished:
+                    with self.cond:
+                        self.inbox[LEAD] = msgs + self.inbox.get(LEAD, [])
+                    continue
                 if not msgs:
                     self._watch_stalls()
                     nudge = "" if self.finished or self.stopped else self._nudge()
@@ -1384,8 +1484,9 @@ Hedef: {self.goal}
 Görevlerin:
 1. Plan: ajan yoksa kodu kısaca incele (glob, grep, read_file) ve işi çakışmayan parçalara bölüp plan aracıyla
    bütün ajanları birden sun (en çok {MAX_MEMBERS}){council_plan}. Sonradan ek ajan için assign. Her ajana konuşmayı görmeyen birinin anlayacağı netlikte görev, doğrulama yolu ve yazma
-   kapsamı (scope) ver; kapsamlar çakışmasın. Zor tasarım/hata ayıklama: model=brain thinking=high; mekanik iş:
-   model=fast thinking=low. Birbirine bağlı işlerde after kullan (ör. testler backend'den sonra). Aynı dosyalara
+   kapsamı (scope) ver; kapsamlar çakışmasın. model'i boş bırak (auto): sistem işin alanına göre (tasarım, kod,
+   inceleme, metin, basit iş) o alanda en iyi modeli seçer; sadece özel bir model gerekiyorsa yaz. Zor
+   tasarım/hata ayıklama: thinking=high; mekanik iş: thinking=low. Birbirine bağlı işlerde after kullan (ör. testler backend'den sonra). Aynı dosyalara
    dokunabilecek büyük değişikliklerde isolation=worktree. Sadece inceleme/araştırma için isolation=readonly.
 2. İzle: sana olaylar "[olaylar]" mesajı olarak gelir. Ajan soru sorarsa message ile cevap ver. Kullanıcının tercihine
    bağlı, senin karar veremeyeceğin şeyleri ask_user ile sor (gereksiz soru sorma).
@@ -1395,10 +1496,44 @@ Görevlerin:
    gerekirse küçük bir entegrasyon düzeltmesini kendin yap, sonra finish ile kullanıcıya özet yaz: ne yapıldı, hangi
    dosyalar, nasıl doğrulandı, açık kalanlar.
 
-Kurallar:
+{self._design_note()}Kurallar:
 - Ajanların işini kendin yapma; sen planla, yönlendir, incele.
 - Olay yoksa turunu bitir; bekleme aracı yok, yeni olay gelince uyandırılırsın.
 - Kısa ve net yaz; ajanlara gereksiz mesaj atma.
+"""
+
+    def design_brief(self, m: Member) -> str:
+        """Tasarım yönü belgesi varsa her ajana gösterilir (renk, yazı tipi, düzen kararları tek yerden)."""
+        f = (m.cwd if m.cwd else self.cwd) / DESIGN_FILE
+        if not f.is_file():
+            f = self.cwd / DESIGN_FILE
+        try:
+            text = f.read_text(encoding="utf-8")[:5000] if f.is_file() else ""
+        except OSError:
+            text = ""
+        return f"\n# Tasarım yönü ({DESIGN_FILE}) — buna uy, kendi renk/yazı tipi uydurma\n{text}\n" if text.strip() else ""
+
+    def is_design(self) -> bool:
+        """Proje görünüşü önemli bir iş mi (web sitesi, arayüz)?"""
+        from alice.providers import picker
+
+        return picker.classify(self.goal) == "design" or bool(re.search(r"web ?site|internet sitesi|arayüz|landing",
+                                                                         self.goal.lower()))
+
+    def _design_note(self) -> str:
+        if not self.is_design():
+            return ""
+        return f"""Tasarım işi: bu projenin başarısı büyük ölçüde görünüşüne bağlı. Yapay zekâ yapımı gibi duran şablon
+siteler (ortalanmış dev başlık + gradyan, radar/ızgara/parçacık süsleri, her yerde aynı kart ızgarası, "Geleceği
+şekillendiriyoruz / Tavizsiz üstünlük" gibi boş sloganlar, emoji) başarısızlıktır. Bu yüzden:
+- Planın ilk ajanı "tasarim" olsun: kod yazmadan önce {DESIGN_FILE} dosyasına özgün bir tasarım yönü yazsın: kime ve
+  hangi hisle konuşuyoruz, 2-3 gerçek dünya referansı (ne alınacak), yazı tipi eşleşmesi, renk paleti (sınırlı),
+  düzen ve ızgara fikri (simetrik kart ızgarası dışında), görsel dil (fotoğraf yerine ne: çizim, diyagram, teknik
+  çizim...), hareket ilkeleri, metin tonu ve açık bir "yapma" listesi. Sonra ortak stil temelini (değişkenler,
+  temel bileşenler) kursun. Diğer ajanlar after ile onu beklesin; {DESIGN_FILE} her ajana otomatik gösterilir.
+- Sayfa ajanlarının görevine "{DESIGN_FILE}'deki yöne uy" de; kendi renk/yazı tipi uydurmasınlar.
+- İncelemede önce görünüşe bak: şablon gibi duruyorsa bu "önemli" bir sorundur, küçük kod ayrıntıları değil.
+
 """
 
     # ----------------------------------------------------------------- durum
@@ -1422,6 +1557,7 @@ Kurallar:
         return {"type": "team", "id": self.id, "title": self.title, "goal": self.goal, "origin": self.origin,
                 "cwd": str(self.cwd), "created": self.created, "status": self.status(), "review": self.review,
                 "summary": self.summary, "lead": {"state": self.lead_state, "model": self.lead_model,
+                                                  "picked": self.picks.get(LEAD, ""),
                                                   "thinking": self.lead_thinking, "last": self.lead_last[:600]},
                 "questions": self.questions[-20:], "progress": [done, len(self.members)], "council": self.council,
                 "council_busy": self.council_busy, "councils": [_council_brief(c) for c in self.councils],
@@ -1490,7 +1626,9 @@ Kurallar:
                    cwd=Path(data["cwd"]) if data.get("cwd") else None, council=bool(data.get("council", False)))
         team.councils = [c for c in data.get("councils") or [] if c.get("state") != "running"]
         team.check = str(data.get("check") or "")
-        team.lessons = list(data.get("lessons") or [])
+        from alice.council import dedupe
+
+        team.lessons = dedupe([str(x) for x in data.get("lessons") or []])
         team.timeline = list(data.get("timeline") or [])
         team.usage = {k: dict(v) for k, v in (data.get("usage") or {}).items() if isinstance(v, dict)}
         team.final_runs = int(data.get("final_runs") or 0)
@@ -1605,8 +1743,11 @@ Kurallar:
         self.mark(USER, "stop", f"{name} durduruldu" if name else "proje durduruldu")
         if not name:
             self.stopped = True
+            self.lead_state = "idle"
             if self.lead_agent is not None:
                 self.lead_agent.stop()
+            for c in list(self._live_councils):
+                c.stop()
         for m in targets:
             if m.status == "queued":
                 m.status = "stopped"
@@ -1629,7 +1770,12 @@ Kurallar:
                     self._launch(m)
                 else:
                     self._launch(m, resume=True)
+        for m in self.members.values():  # durdurulurken yarıda kalan iş kurulları yeniden toplanır
+            if m.status == "review" and self.council and m.councils and m.councils[-1].get("state") == "stopped" \
+                    and not m.council_running:
+                self._spawn(self._member_council, m)
         self.event("Kullanıcı projeyi sürdürdü. Durumu gözden geçir, gerekiyorsa ajanlara yön ver.")
+        self._maybe_final()
         self._changed(save=True)
 
     def save_template(self, name: str) -> dict[str, Any]:
@@ -1713,8 +1859,8 @@ class MemberUI:
         if "adım limiti" in msg:
             self.member.limit_hit = True
         elif "hiçbir model cevap veremedi" in msg:
-            reasons = [x.strip() for x in msg.splitlines()[1:4] if x.strip()]  # ilk satır iç rol adını taşır
-            self.member.provider_failed = ("; ".join(reasons) or "hiçbir model cevap veremedi")[:300]
+            reasons = [x.strip() for x in msg.splitlines()[1:] if x.strip()]  # ilk satır iç rol adını taşır
+            self.member.provider_failed = human_failure(reasons)
 
     def tool_end(self, call_id: str, name: str, result: ToolResult) -> None:
         if result.is_error:
@@ -1825,7 +1971,7 @@ class LeadPlan(Tool):
             raise ToolError(f"geçersiz ya da tekrarlanan ajan adı: {', '.join(bad) or 'tekrar var'}")
         cond_note = ""
         if t.council and not skip_council:
-            lines = [f"- {a.get('name')}: {a.get('task')} | model={a.get('model', 'brain')} "
+            lines = [f"- {a.get('name')}: {a.get('task')} | model={a.get('model') or 'auto'} "
                      f"düşünme={a.get('thinking', 'default')} yer={a.get('isolation', 'shared')} "
                      f"kapsam={a.get('scope') or 'her yer'} sonra={a.get('after') or '-'} sınır={a.get('constraints') or '-'}"
                      for a in specs]
@@ -1864,7 +2010,8 @@ class LeadAssign(Tool):
         "constraints": {"type": "string", "description": "Sınırlar: dokunmayacağı yerler, uyacağı kurallar."},
         "scope": {"type": "array", "items": {"type": "string"},
                   "description": "Yazabileceği dosya/klasörler (çalışma klasörüne göre). Boş: her yer."},
-        "model": {"type": "string", "description": "brain (güçlü), fast (hızlı) ya da sağlayıcı:model."},
+        "model": {"type": "string", "description": "Boş/auto (önerilen): işe göre en uygun model seçilir. "
+                  "Ya da brain (güçlü), fast (hızlı), sağlayıcı:model."},
         "thinking": {"type": "string", "enum": list(THINKING), "description": "Düşünme seviyesi."},
         "isolation": {"type": "string", "enum": list(ISOLATIONS),
                       "description": "shared: aynı klasör | worktree: kendi git dalı (onayda birleştirilir) | "

@@ -401,12 +401,6 @@ class AppState:
         team = self.get_team(pid)
         out = team.snapshot()
         out["log"] = [{"from": x.sender, "to": x.to, "text": x.text, "at": x.at} for x in team.log[-300:]]
-        if member == "__council":  # proje düzeyi kurullar: plan, final, kurula sor
-            out["council_list"] = team.councils
-            return out
-        if member == "__timeline":
-            out["timeline"] = team.timeline_view()
-            return out
         from alice.site import find_entry, last_change
 
         entry = find_entry(team.cwd)
@@ -414,7 +408,14 @@ class AppState:
             out["preview"] = {"entry": entry, "base": f"/preview/{self.preview_token}/{team.id}/"}
             if member == "__preview":
                 out["preview"]["changed"] = last_change(team.cwd)
-                return out
+        if member == "__preview":
+            return out  # site yoksa arayüz önizlemeyi kapatır
+        if member == "__council":  # proje düzeyi kurullar: plan, final, kurula sor
+            out["council_list"] = team.councils
+            return out
+        if member == "__timeline":
+            out["timeline"] = team.timeline_view()
+            return out
         if member:
             from alice.team import LEAD, LeadAssign, LeadDiff, LeadReview, TeamSend, TeamWait
 
@@ -441,7 +442,7 @@ class AppState:
         cwd = self.ctx.resolve(str(d["cwd"])) if d.get("cwd") else self.ctx.cwd
         if not cwd.is_dir():
             raise ToolError(f"klasör yok: {cwd}")
-        lead_model = str(d.get("lead_model") or "brain").strip()
+        lead_model = str(d.get("lead_model") or "auto").strip()
         lead_thinking = str(d.get("lead_thinking") or "default")
         team = Team(self.ctx, goal, int(self.cfg.agent.get("team_max_parallel", 5)), self.bus.publish, origin="user",
                     review=d.get("review") is not False, council=d.get("council") is not False, lead_model=lead_model,

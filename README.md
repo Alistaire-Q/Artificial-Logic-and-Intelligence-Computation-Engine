@@ -175,10 +175,16 @@ Büyük bir iş (büyük bir kod tabanında birden çok modül, backend + fronte
 * Yönetici bir olaya cevap vermeden turunu bitirirse iki kez hatırlatılır; yine kapatmazsa proje kendiliğinden kapanır.
 * Plan sunmadan turunu bitirirse iki kez hatırlatılır; yine sunmazsa iş tek bir ajana ("worker") verilir.
 * Bir ajan uzun süre (varsayılan 10 dk, `[agent] team_stall_minutes`) hiç adım atmazsa yöneticiye ve sana "ilerlemiyor" bildirimi gider. Bir o kadar daha ilerlemezse **kendiliğinden kurtarılır**: durdurulur ve model zincirindeki sıradaki modelle kaldığı yerden sürer (en fazla iki kez; sonra sana haber verilir). Model büyük bir dosyayı yazarken geçen süre ilerleme sayılır ("Dosya yazıyor… 12 KB").
+* Konuşma uzayıp sadece dar bağlamlı modeller açık kalırsa ajan hata vermez: konuşma o modele sığacak kadar özetlenir (gerekirse araç tanımları kısaltılır) ve devam eder. Yine olmazsa hata nedeni okunur yazılır ("glm-5.3 için konuşma çok uzun; gemini beklemede (~5 sa sonra açılır)") ve **Kaldığı yerden sürdür** düğmesi çıkar.
+* **Durdur** gerçekten durdurur: ajanlar, yönetici ve süren kurullar. Bu arada gelen olaylar bekler; **Sürdür**'de işlenir, yarıda kalan kurullar yeniden toplanır.
 * Sağlayıcı "işliyorum" deyip 5 dakika hiç veri göndermezse çağrı kesilir ve sıradaki modele geçilir (saatlerce asılı kalmaz).
 * Ajanlara büyük dosyaları tek seferde değil, iskelet + bölüm bölüm düzenleme ile yazmaları söylenir.
 * Hiçbir model cevap veremezse (kota, anahtar) ajan boş raporla incelemeye düşmez, **hata** olur; neden ekranda yazar, yöneticiye bildirilir.
 * Ayrı git dalındaki ajanın dalı onayda çakışırsa ajana geri gider: ana dalı kendi dalına alıp çakışmayı çözer, sonra yeniden incelenir ve birleştirilir (en çok 2 deneme).
+
+**Akıllı model seçimi:** ajanların ve yöneticinin modeli varsayılan olarak `auto`: görevin alanı (tasarım/arayüz, kod, inceleme, metin, basit iş, görsel) görev metninden çıkarılır ve erişebildiğin modeller o alandaki güçlerine göre sıralanır (ör. tasarımda Claude ve Gemini Pro, kodda Qwen Coder/DeepSeek/GLM, incelemede akıl yürütme modelleri öne çıkar; bağlamı dar modeller ajan işinde geri itilir, basit işte hız önce gelir). Kurulda eleştirmen ve kontrolcü inceleme, performans kod, kullanıcı gözü tasarım ya da (ekran görüntüsü varsa) görsel alanına göre seçilir. Seçim ajanın başlığında görünür ("tasarım · glm-5.3"); elle `brain`, `fast` ya da `sağlayıcı:model` yazarsan ona dokunulmaz. Tablo: `alice/providers/picker.py`.
+
+**Tasarım işleri:** hedef bir web sitesi ya da arayüzse yönetici önce bir **tasarım** ajanına `DESIGN.md` yazdırır: kime ve hangi hisle konuşulduğu, gerçek referanslar, yazı tipi ve renk kararları, düzen fikri ve açık bir "yapma" listesi (şablon gibi duran kalıplar). Bu belge her ajana gösterilir; kurul da önce görünüşe bakar, "şablon gibi duruyor" önemli bir sorundur.
 
 **Başlatmak:** sohbette "bunu proje olarak yap" demen yeter; ALICE `team` aracıyla projeyi başlatır ve sonucu istersen sohbette bekler. Ya da yan menüde Projeler'in yanındaki `+`:
 * **Hedef**i yaz. Şablonlar (Özellik ekle, Hata düzelt, Kod incelemesi, Yeniden düzenle, Test yaz) altına "bitti sayılma" ölçütünü ekler.
@@ -212,6 +218,8 @@ Büyük bir iş (büyük bir kod tabanında birden çok modül, backend + fronte
 ### İnceleme kurulu
 
 İşleri tek bir göz değil, farklı bakış açıları olan bir **kurul** değerlendirir. Projelerde varsayılan olarak açık (yeni proje Ayarlar'ında kapatılabilir); sohbette `/kurul <konu>` ile bir fikri, dosyayı, kararı ya da PR'ı da sorabilirsin.
+
+**Ölçülü tartışır:** önem dereceleri tanımlı (kritik: bozuk/güvensiz, önemli: hedefi karşılamıyor, küçük: ayrıntı). Sadece küçük şartlarla verilen şartlı onay yeni bir düzeltme turu açmaz; iş onaylanır, öneriler yöneticiye not olarak gider. Aynı şartı başka sözcüklerle tekrar eden maddeler ve tekrarlanan dersler ayıklanır.
 
 **Siteye gözle bakar:** iş görünüşe dokunuyorsa (html/css/js…) ve her final kurulunda sitenin masaüstü ve telefon ekran görüntüleri alınır; **kullanıcı gözü** bunları görsel destekli modelle (`vision` rolü) inceler: hiyerarşi, boşluklar, tipografi, telefonda taşma, "şablon gibi" duran yerler. Playwright ve bir Chromium tarayıcısı gerekir (`pip install playwright` + `playwright install chromium`, ya da sistemdeki Chrome/Edge; `ALICE_CHROMIUM` ile yol verilebilir). Yoksa kurul koda bakmaya devam eder. Kapatmak: `[agent] team_screenshots = false`.
 

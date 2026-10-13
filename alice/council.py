@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import re
 import secrets
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -82,6 +83,13 @@ ROLES: dict[str, Role] = {
         r"user|tasarım|design|form|dialog|pencere|menü"),
 }
 CORE = ("critic", "advocate", "verifier")
+# Akıllı model seçiminde rolün alanı
+ROLE_DOMAIN = {"critic": "review", "advocate": "review", "verifier": "review", "security": "review",
+               "performance": "code", "ux": "design"}
+
+
+class CouncilStopped(Exception):
+    """Proje durduruldu; kurul yarıda bırakıldı."""
 
 
 @dataclass
@@ -212,7 +220,7 @@ def tally(votes: list[Vote], findings: list[Finding], user: dict[str, Any] | Non
         total += USER_WEIGHT
         got += USER_WEIGHT * VOTE_SCORE[user["vote"]]
     score = got / total if total else 0.0
-    conds = [c for v in votes if v.counted and v.last == "conditional" for c in v.conditions]
+    conds = dedupe([c for v in votes if v.counted and v.last == "conditional" for c in v.conditions])
     if user and user.get("vote") == "conditional" and user.get("note"):
         conds.append(user["note"])
     if veto:
@@ -247,6 +255,8 @@ class Council:
         self.title = title or self.subject.splitlines()[0][:80]
         self.id = secrets.token_hex(4)
         self.on_usage: Callable[[dict[str, Any]], None] | None = None  # üyelerin token kullanımı (proje sayacı)
+        self._stop = threading.Event()  # proje durdurulunca kurul da durur
+        self._agents: list[Any] = []
         size = context.count("\n")
         self.roles, self.rounds = plan_council(kind, subject + "\n" + context[:4000], size, critical, depth, roles)
         if previous and kind == "recheck":
@@ -280,6 +290,8 @@ class Council:
             return "brain", "high" if role in ("critic", "verifier") else "medium"
         if role in ("critic", "verifier"):
             return "brain", "medium"
+        if role == "ux" and "ux" in self.relevant:  # arayüz işinde tasarım değerlendirmesi zayıf modele kalmasın
+            return "brain", "medium"
         return "fast", "low"
 
     def _agent(self, role: str):
@@ -305,7 +317,16 @@ class Council:
         agent.ui = _QuietUI(ui)
         model, think = self.model_for(role)
         rname = f"council:{self.id}:{role}"
-        router.role_overrides[rname] = list(router.chain(model))
+        if model in ("brain", "vision"):
+            # Güçlü model gereken rollerde işin alanına göre en uygun model (eleştiri/kontrol: inceleme,
+            # performans: kod, kullanıcı gözü: tasarım ya da ekran görüntüsü varsa görsel).
+            from alice.providers import picker
+
+            domain = "vision" if model == "vision" else ROLE_DOMAIN.get(role, "review")
+            chain = picker.chain_for(router, domain, fallback=model)
+        else:
+            chain = list(router.chain(model))
+        router.role_overrides[rname] = chain
         router.thinking_overrides[rname] = think
         self._roles_router.append(rname)
         agent.role = rname
@@ -324,6 +345,11 @@ Kuruldaki diğer roller: {others}. Karar gerekçeli ağırlıklı oylamayla veri
 İnceleme türü: {KIND_TR.get(self.kind, self.kind)}. Çalışma klasörü: {self.cwd}
 
 Kısa ve somut yaz. Araçlarla kodu ve dosyaları kendin incele; tahmin yürütme. Dosya değiştirme.
+Önce büyük resme bak: iş hedefi karşılıyor mu, kullanıcı sonuçtan memnun kalır mı? Önem derecesini dürüst ver:
+- critical: iş bozuk ya da güvensiz (çalışmıyor, veri kaybı, güvenlik açığı).
+- major: hedefi ciddi biçimde karşılamıyor (eksik sayfa/özellik, kırık akış, şablon gibi duran tasarım).
+- minor: iyileştirme ve ayrıntı (kod tarzı, küçük kenar durumları, mikro optimizasyon). Küçük ayrıntı işi durdurmaz.
+Başlıkları, gerekçeleri ve şartları Türkçe yaz. Aynı şeyi başka sözcüklerle tekrar etme.
 Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy.""" + (
             f"\n\n# Projenin inceleme kuralları (REVIEW.md)\n{self.rules}" if self.rules else "") + (
             "\n\n# Bu projede daha önce yakalanan sorunlar (tekrarlanmış mı bak)\n" +
@@ -332,6 +358,12 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
             if self.check and role == "verifier" else "")
 
     # --------------------------------------------------------------- akış
+    def stop(self) -> None:
+        """Kurulu durdur: konuşan üyeler kesilir, sonuç "durduruldu" olur."""
+        self._stop.set()
+        for a in list(self._agents):
+            a.stop()
+
     def run(self) -> dict[str, Any]:
         try:
             self._round1()
@@ -342,6 +374,10 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
                 if not self._debate():
                     break
             self._finish()
+        except CouncilStopped:
+            self.state = "stopped"
+            self.result = {"decision": "stopped", "score": 0.0, "veto": [], "conditions": []}
+            self.ended = time.time()
         except Exception as e:  # noqa: BLE001 - kurul çökerse karar "çekişmeli" olsun, iş durmasın
             self.state = "failed"
             self.result = {"decision": "contested", "score": 0.0, "veto": [], "conditions": [],
@@ -353,7 +389,12 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
         return self.snapshot()
 
     def _ask(self, role: str, prompt: str) -> str:
+        if self._stop.is_set():
+            raise CouncilStopped()
         agent = self._agent(role)
+        self._agents.append(agent)
+        if self._stop.is_set():  # tam bu arada durduruldu
+            raise CouncilStopped()
         images = list(self.images.values()) if role == "ux" else None
         if images:
             prompt += ("\n\nEkte sitenin ekran görüntüleri var (" + ", ".join(self.images) + "). Koda ek olarak "
@@ -368,6 +409,8 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
             if parse_block(again):
                 text = text.rstrip() + "\n\n" + again
         self.transcript.append({"round": self.round, "role": role, "text": text})
+        if self._stop.is_set():
+            raise CouncilStopped()
         return text
 
     def _parallel(self, roles: list[str], make_prompt: Callable[[str], str]) -> dict[str, str]:
@@ -377,9 +420,13 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
             for r, f in futs.items():
                 try:
                     out[r] = f.result()
+                except CouncilStopped:
+                    out[r] = ""
                 except Exception as e:  # noqa: BLE001
                     out[r] = ""
                     self.transcript.append({"round": self.round, "role": r, "text": f"(hata: {e})"})
+        if self._stop.is_set():
+            raise CouncilStopped()
         return out
 
     def _material(self) -> str:
@@ -575,13 +622,46 @@ def report(snap: dict[str, Any]) -> str:
 
 
 def fix_list(snap: dict[str, Any]) -> str:
-    """Ajana gidecek düzeltme listesi: doğrulanmış/belirsiz bulgular ve şartlar."""
+    """Ajana gidecek düzeltme listesi: doğrulanmış/belirsiz bulgular ve (bulgularla aynı olmayan) şartlar."""
     res = snap.get("result") or {}
+    found = [f for f in snap.get("findings", []) if f.get("status") in ("confirmed", "unclear")]
     items = [f"- [{f['id']}] ({SEV_TR.get(f['severity'], f['severity'])}) {f['title']} — {f.get('fix', '')}"
-             f"{' Kanıt: ' + f['evidence'][:200] if f.get('evidence') else ''}"
-             for f in snap.get("findings", []) if f.get("status") in ("confirmed", "unclear")]
-    items += [f"- şart: {c}" for c in res.get("conditions", [])]
+             f"{' Kanıt: ' + f['evidence'][:200] if f.get('evidence') else ''}" for f in found]
+    seen = [f"{f['title']} {f.get('fix', '')}" for f in found]
+    items += [f"- şart: {c}" for c in dedupe(res.get("conditions", []), seen)]
     return "\n".join(items) or "- (kurul somut bulgu yazmadı; raporunu gözden geçir)"
+
+
+def blocking(snap: dict[str, Any]) -> bool:
+    """Kurulun istediği düzeltme işi durdurmaya değer mi: doğrulanmış ya da belirsiz kritik/önemli bulgu var mı.
+    Şart yazılmış ama hiç bulgu yoksa şartın ağırlığı bilinemez: düzeltmeye değer sayılır."""
+    live = [f for f in snap.get("findings", []) if f.get("status") in ("confirmed", "unclear")]
+    if not live and (snap.get("result") or {}).get("conditions"):
+        return True
+    return any(f.get("severity") in ("critical", "major") for f in live)
+
+
+_WORD = re.compile(r"[\wçğıöşüÇĞİÖŞÜ]+", re.U)
+
+
+def _words(text: str) -> set[str]:
+    return {w for w in _WORD.findall(text.lower()) if len(w) > 2}
+
+
+def dedupe(items: list[str], against: list[str] | None = None, same: float = 0.55) -> list[str]:
+    """Aynı şeyi başka sözcüklerle söyleyen maddeleri ayıkla; `against` ile örtüşenler de atılır. Temkinli: en az dört
+    ortak sözcük ve yüksek benzerlik (Jaccard) gerekir, yoksa farklı şartları yutabilir."""
+    kept: list[str] = []
+    pool = [_words(x) for x in (against or [])]
+    for it in items:
+        w = _words(it)
+        if not w:
+            continue
+        if any(len(w & p) >= 4 and len(w & p) / len(w | p) >= same for p in pool):
+            continue
+        kept.append(it)
+        pool.append(w)
+    return kept
 
 
 class _QuietUI:

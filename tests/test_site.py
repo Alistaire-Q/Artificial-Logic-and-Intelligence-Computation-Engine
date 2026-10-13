@@ -67,3 +67,26 @@ def test_screenshots_of_a_real_page(tmp_path):
     if not shots:
         pytest.skip("tarayıcı açılamadı")
     assert set(shots) == {"masaüstü", "telefon"} and all(len(v) > 1000 for v in shots.values())
+
+
+def test_screenshot_server_hides_secrets_even_when_escaped(tmp_path):
+    import httpx
+
+    from alice.site import serve
+
+    (tmp_path / "index.html").write_text("ok")
+    (tmp_path / ".env").write_text("KEY=gizli")
+    try:  # Windows'ta sembolik bağlantı yetki ister; yoksa o kısım atlanır
+        (tmp_path / "link.txt").symlink_to(tmp_path / ".env")
+    except OSError:
+        pass
+    httpd, base = serve(tmp_path)
+    try:
+        assert httpx.get(base + "index.html").text == "ok"
+        for bad in (".env", "%2eenv", "%2Eenv", "link.txt", ""):
+            r = httpx.get(base + bad)
+            assert "gizli" not in r.text
+    finally:
+        httpd.shutdown()
+    if (tmp_path / "link.txt").is_symlink():
+        assert safe_path(tmp_path, "link.txt") is None

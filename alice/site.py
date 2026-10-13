@@ -45,8 +45,10 @@ def safe_path(root: Path, rel: str) -> Path | None:
         return None
     path = (root / Path(*parts)).resolve() if parts else root
     try:
-        path.relative_to(root)
+        inside = path.relative_to(root)
     except ValueError:
+        return None
+    if any(p.startswith(".") or p in SKIP_DIRS for p in inside.parts):  # bağlantı (symlink) gizli dosyaya çıkıyorsa
         return None
     if path.is_dir():
         path = path / "index.html"
@@ -84,9 +86,11 @@ class _Quiet(SimpleHTTPRequestHandler):
     def log_message(self, *args) -> None:  # noqa: D401
         pass
 
-    def send_head(self):  # gizli dosyaları sunma
-        rel = self.path.split("?", 1)[0].split("#", 1)[0]
-        if any(p.startswith(".") or p in SKIP_DIRS for p in rel.split("/") if p):
+    def send_head(self):  # gizli dosyaları sunma (yol çözülmüş haliyle denetlenir: %2eenv gibi kaçışlar da yakalanır)
+        from urllib.parse import unquote
+
+        rel = unquote(self.path.split("?", 1)[0].split("#", 1)[0])
+        if safe_path(Path(self.directory), rel) is None:
             self.send_error(404)
             return None
         return super().send_head()

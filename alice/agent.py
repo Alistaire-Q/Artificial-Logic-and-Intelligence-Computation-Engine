@@ -118,6 +118,40 @@ REPEAT_OK_NOTE = ("\n\n[ALICE notu] Aynı çağrıyı {n} kez yaptın ve sonuç 
                   "dene ya da elindeki bilgiyle işi bitir.")
 
 
+_TOO_BIG = re.compile(r"istek ~(\d+) token, model sınırı (\d+)")
+
+
+def lean_specs(specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Araç tanımlarının kısa hali: açıklamanın ilk cümlesi, parametre açıklamaları kırpılmış (dar bağlamlı modeller)."""
+    out = []
+    for sp in specs:
+        fn = dict(sp.get("function") or {})
+        desc = (fn.get("description") or "").strip().split("\n")[0]
+        fn["description"] = desc[:160]
+        params = json.loads(json.dumps(fn.get("parameters") or {}))
+        for prop in (params.get("properties") or {}).values():
+            if isinstance(prop, dict) and prop.get("description"):
+                prop["description"] = str(prop["description"])[:60]
+        fn["parameters"] = params
+        out.append({**sp, "function": fn})
+    return out
+
+
+def fits_after_compact(errors: list[str]) -> int:
+    """Modeller sadece konuşma bağlamlarına sığmadığı için düştüyse, sığacak en büyük bağlam (token); yoksa 0."""
+    limits = [int(m.group(2)) for e in errors if (m := _TOO_BIG.search(e))]
+    big = [int(m.group(1)) for e in errors if (m := _TOO_BIG.search(e))]
+    # Büyük bir model sadece kısa süreliğine meşgulse (birkaç dakikalık bekleme, hız sınırı) konuşmayı kalıcı olarak
+    # küçültme: beklemek daha iyi. Saatlik kota beklemesi ise kısa değil.
+    for e in errors:
+        w = re.search(r"soğumada \((\d+) sn\)", e)
+        if (w and int(w.group(1)) < 300) or "rate_limit" in e or "429" in e:
+            return 0
+    if not limits or max(limits) < 4000 or (big and max(limits) >= max(big)):
+        return 0
+    return max(limits)
+
+
 def parse_args(raw: str | dict | None) -> dict[str, Any]:
     if isinstance(raw, dict):
         return raw
@@ -290,9 +324,23 @@ class Agent:
                 sink.parts.clear()
                 self.ui.stream_start()
                 sent = len(self.messages)
-                res = self._interruptible(self.router.chat, self.role, list(self.messages), tools=self.tool_specs(),
-                                          stream=sink if self.stream else None)
+                try:
+                    res = self._interruptible(self.router.chat, self.role, list(self.messages), tools=self._specs(),
+                                              stream=sink if self.stream else None)
+                except AllProvidersFailed as e:
+                    # Kalan modellerin bağlamı konuşmaya yetmiyorsa: o modele sığacak kadar özetle, bir kez daha dene.
+                    room = fits_after_compact(e.errors)
+                    if room and estimate_tokens(self.messages[:1], self.tool_specs()) > room * 0.45:
+                        self._lean = True  # araç tanımları bile dar modeli dolduruyor: kısa tanımlarla gönder
+                    if not room or not self._maybe_compact(force=True, limit=room):
+                        raise
+                    self.ui.stream_start()
+                    sent = len(self.messages)
+                    res = self._interruptible(self.router.chat, self.role, list(self.messages), tools=self._specs(),
+                                              stream=sink if self.stream else None)
                 msg = res.message
+                if getattr(self, "_lean", False) and self._roomy(res):
+                    self._lean = False  # geniş bağlamlı model geri geldi: tam araç tanımlarına dön
                 if self.on_usage is not None:
                     try:
                         self.on_usage(res.usage or {})
@@ -607,11 +655,24 @@ class Agent:
                 return real
         return est
 
-    def _maybe_compact(self, force: bool = False) -> bool:
+    def _maybe_compact(self, force: bool = False, limit: int = 0) -> bool:
+        """Konuşmayı özetle. limit: konuşmanın sığması gereken model bağlamı (ör. sadece küçük modeller açıkken)."""
         if not force and self.context_tokens() < self.compact_at:
             return False
-        budget = int(self.compact_at * 0.35)
-        users = [i for i, m in enumerate(self.messages) if i > 0 and m["role"] == "user" and not m.get("_image")]
+        window = min(limit, self.compact_at) if limit else self.compact_at
+        budget = int(window * 0.35)
+        summary_tokens = 2000
+        if limit:
+            # Dar model: sistem istemi ve araç tanımları sabit yer kaplar; özet ve kalan konuşma geri kalana sığmalı.
+            fixed = estimate_tokens(self.messages[:1], self._specs())
+            summary_tokens = max(300, min(2000, limit // 8))
+            budget = int(limit * 0.85) - fixed - summary_tokens
+            if budget < 500:
+                return False
+        # Kesme noktaları: kullanıcı mesajları ve asistan adımlarının başı (araç çağrısı ile sonucu ayrılmaz).
+        # Ajanlar tek görev mesajıyla uzun araç zincirleri yürüttüğü için asistan adımlarından da kesilebilmeli.
+        users = [i for i, m in enumerate(self.messages) if i > 1 and m["role"] in ("user", "assistant")
+                 and not m.get("_image")]
         if not users:
             return False
         cut = users[-1]
@@ -623,10 +684,12 @@ class Agent:
         old = self.messages[1:cut]
         if not old:
             # Tek turda bile çok büyümüş: büyük araç çıktılarını kısalt.
+            changed = False
             for m in self.messages[cut:]:
-                if m["role"] == "tool" and len(m["content"]) > 3000:
+                if m["role"] == "tool" and isinstance(m.get("content"), str) and len(m["content"]) > 3000:
                     m["content"] = truncate(m["content"], 3000)
-            return False
+                    changed = True
+            return changed and bool(limit)
         transcript = []
         for m in strip_images(old):
             c = m.get("content") or ""
@@ -637,17 +700,30 @@ class Agent:
         try:
             res: ChatResult = self.router.chat("brain", [
                 {"role": "system", "content": COMPACT_PROMPT},
-                {"role": "user", "content": "\n\n".join(transcript)[-max(120000, self.compact_at * 2):]},
-            ], max_tokens=2000)
+                # Özet isteği de modele sığmalı: dar bağlamda dökümün sonu (karakter ≈ 3 token) gönderilir.
+                {"role": "user", "content": "\n\n".join(transcript)[-(int(limit * 2.4) if limit else
+                                                                       max(120000, self.compact_at * 2)):]},
+            ], max_tokens=summary_tokens)
         except AllProvidersFailed as e:
             self.ui.info(f"özetleme başarısız: {e}")
             return False
-        self.messages = [self.messages[0],
-                         {"role": "user", "content": f"[Önceki konuşmanın özeti]\n{res.text}"},
-                         {"role": "assistant", "content": "Özeti aldım, kaldığım yerden devam ediyorum."},
-                         *self.messages[cut:]]
+        head = [self.messages[0], {"role": "user", "content": f"[Önceki konuşmanın özeti]\n{res.text}"}]
+        if self.messages[cut]["role"] == "user":  # roller sırayla gitsin
+            head.append({"role": "assistant", "content": "Özeti aldım, kaldığım yerden devam ediyorum."})
+        self.messages = head + self.messages[cut:]
         self.checkpoints.clear()  # mesaj indeksleri değişti, eski geri sarma noktaları geçersiz
         return True
+
+    def _roomy(self, res: ChatResult) -> bool:
+        try:
+            limit = self.router.context_limit(f"{res.provider}:{res.model}")
+        except Exception:  # noqa: BLE001
+            return False
+        return limit > estimate_tokens(self.messages[:1], self.tool_specs()) * 3
+
+    def _specs(self) -> list[dict[str, Any]]:
+        specs = self.tool_specs()
+        return lean_specs(specs) if getattr(self, "_lean", False) else specs
 
     def compact(self) -> bool:
         return self._maybe_compact(force=True)

@@ -335,3 +335,59 @@ def test_stuck_member_is_restarted_on_next_model_and_usage_is_counted(workdir):
     usage = team.snapshot()["usage"]
     assert usage["by"]["backend"]["in"] >= 20 and usage["total"]["out"] > 0
     assert Team.load(team.id, ctx).usage["backend"]["in"] == usage["by"]["backend"]["in"]
+
+
+def test_design_projects_get_a_design_direction_step(workdir):
+    agent, _, ctx = make(lambda *a, **k: "tamam", workdir)
+    web = Team(ctx, "Savunma firması için çok sayfalı web sitesi", council=False)
+    assert "DESIGN.md" in web.lead_brief() and "şablon" in web.lead_brief()
+    assert "DESIGN.md" not in Team(ctx, "Ödeme servisini yeniden düzenle", council=False).lead_brief()
+    (workdir / "DESIGN.md").write_text("Renk: kömür + sinyal turuncusu. Yazı: IBM Plex.", encoding="utf-8")
+    m = web.add({"name": "sayfalar", "task": "about.html yaz"})
+    assert m.model == "auto" and "sinyal turuncusu" in web.brief(m)
+
+
+def test_minor_only_conditions_approve_without_a_new_round(workdir):
+    agent, _, ctx = make(lambda *a, **k: "tamam", workdir)
+    team = Team(ctx, "iş", council=True)
+    m = team.add({"name": "web", "task": "a"})
+    m.status = "review"
+    seen = []
+    team.event = lambda text: seen.append(text)
+    snap = {"result": {"decision": "approve_conditions", "conditions": ["sayaç biçimi daha okunur olsun"]},
+            "findings": [{"id": "F1", "severity": "minor", "status": "confirmed", "title": "sayaç biçimi", "fix": "x"}]}
+    team._apply_council(m, snap, "rapor", "- şart: sayaç biçimi")
+    assert m.status == "done" and m.council_cycles == 0 and "zorunlu değil" in seen[-1]
+
+
+def test_duplicate_conditions_and_lessons_are_dropped():
+    from alice.council import dedupe
+
+    items = ["initCounters içinde data-aura-counter guard ekleyin",
+             "şart: initCounters içinde data-aura-counter koruması (guard) eklenmeli",
+             "Bülten formu seçicisi spesifik hale getirin (örn. .newsletter-form)",
+             "Newsletter form seçicisi .newsletter-form ile daraltılmalı", "sıfır kontrolü"]
+    assert dedupe(items) == [items[0], items[2], items[3], items[4]]  # temkinli: emin olmadığını tutar
+    assert dedupe(["Mobile menu must close on link click", "Mobile menu must have aria-expanded"]) == \
+        ["Mobile menu must close on link click", "Mobile menu must have aria-expanded"]
+    assert len(dedupe(["Add tests for login", "Add tests for logout"])) == 2
+
+
+def test_stopping_during_final_council_does_not_loop(workdir):
+    agent, _, ctx = make(lambda *a, **k: "tamam", workdir)
+    team = Team(ctx, "iş", council=True)
+    m = team.add({"name": "web", "task": "a"})
+    m.status = "done"
+    team.stop()
+    team._final_pending = True
+    team._maybe_final()
+    time.sleep(0.5)
+    assert len(team.councils) == 0 and team.council_busy == 0 and team._final_pending
+
+
+def test_conditions_without_findings_still_block():
+    from alice.council import blocking
+
+    assert blocking({"result": {"conditions": ["mobil menü kapanmıyor"]}, "findings": []})
+    assert not blocking({"result": {"conditions": ["x"]},
+                         "findings": [{"severity": "minor", "status": "confirmed"}]})
