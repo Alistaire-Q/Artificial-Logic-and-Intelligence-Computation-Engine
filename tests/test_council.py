@@ -231,3 +231,74 @@ def test_prose_drops_json_decisions():
     assert prose('Kısa not {"vote": "approve", "findings": []}') == "Kısa not"
     assert prose('```json\n{"checks": [') == ""
     assert prose("a" * 2000).endswith("…") and len(prose("a" * 2000)) == 1501
+
+
+def plan_council_script(state):
+    """Plan kurulu: ilk planda bölme sorunu (planı bozan) + küçük öneri; düzeltilmiş planda sadece öneri kalır.
+    state['stubborn'] ise kurul düzeltilmiş plana da itiraz eder."""
+    def run(model, messages, tools, **kw):
+        role = role_of(messages)
+        prompt = str(messages[1]["content"]) if len(messages) > 1 else ""
+        if role:
+            state.setdefault("prompts", []).append((role, messages[0]["content"], prompt))
+            fixed = "düzeltilmiş plan" in prompt and not state.get("stubborn")
+            if role == "critic":
+                findings = [] if fixed else [{"severity": "critical", "area": "bölme", "agent": "web",
+                                              "title": "iki ajan aynı dosyaya yazıyor", "evidence": "web ve css",
+                                              "fix": "css'i web'e bağla"}]
+                findings.append({"severity": "minor", "area": "doğrulama", "agent": "web",
+                                 "title": "sayfalar tarayıcıda açılıp bakılsın", "fix": "kontrol adımı ekle"})
+                return js(vote="approve" if fixed else "reject", reason="plan",
+                          scores={"kapsam": 4, "bölme": 2 if not fixed else 4, "sıra": 4, "doğrulama": 3, "risk": 4},
+                          findings=findings)
+            if role == "verifier":
+                return js(checks=[{"id": "F1", "status": "confirmed"},
+                                  {"id": "F2", "status": "unclear", "severity": "minor"}] if not fixed else
+                          [{"id": "F1", "status": "unclear", "severity": "minor"}],
+                          vote="approve" if fixed else "reject")
+            return js(vote="approve", scores={"kapsam": 5})
+        if "projesinin yöneticisisin" in messages[0]["content"]:
+            last = messages[-1]
+            if last["role"] == "tool" and "ajanlar başladı" in str(last.get("content")):
+                return "tamam"
+            if last["role"] == "tool" and "Kurul planı onaylamadı" in str(last.get("content")):
+                return tool_call("plan", {"summary": "düzeltilmiş plan", "agents": [{"name": "web", "task": "site"}]}, "p2")
+            if any("henüz ajan yok" in str(m.get("content")) for m in messages if m["role"] == "user") and \
+                    not any(m.get("tool_calls") for m in messages if m["role"] == "assistant"):
+                return tool_call("plan", {"summary": "ilk plan", "agents": [{"name": "web", "task": "site"}]}, "p1")
+            return "tamam"
+        return "rapor: yaptım"
+    return run
+
+
+def test_plan_council_blocks_only_plan_breaking_issues_and_routes_notes(workdir):
+    (workdir / "index.html").write_text("x")
+    state: dict = {}
+    agent, _, ctx = make(plan_council_script(state), workdir)
+    team = Team(ctx, "kurumsal web sitesi", council=True)
+    team.start(plan=True)
+    assert team.wait_until(lambda: "web" in team.members, 30), team.status_text()
+    plans = [c for c in team.councils if c["kind"] == "plan"]
+    assert [c["result"]["decision"] for c in plans] == ["revise", "approve_conditions"]
+    assert all(f["severity"] != "critical" for c in plans for f in c["findings"])  # planda kritik/veto yok
+    assert plans[0]["result"]["veto"] == [] and plans[0]["result"]["blocking"] == ["F1"]
+    assert plans[0]["rubric"]["bölme"] == 2 and plans[0]["rubric"]["kapsam"] >= 4
+    assert "Kurul notu: sayfalar tarayıcıda açılıp bakılsın" in team.members["web"].constraints
+    sys_prompt, material = next((s, p) for r, s, p in state["prompts"] if r == "critic")
+    assert "Plan incelemesi" in sys_prompt and "Yasak: uygulama ayrıntıları" in sys_prompt
+    assert "Proje klasörü" in material and "index.html" in material and "DESIGN.md" in material
+    second = [p for r, s, p in state["prompts"] if r == "critic"][-1]
+    assert "Önceki kurulun bulguları" in second  # düzeltilmiş plan öncekine göre incelenir
+    assert team.plan_rejects == 0
+
+
+def test_plan_starts_with_notes_after_one_revision(workdir):
+    state: dict = {"stubborn": True}
+    agent, _, ctx = make(plan_council_script(state), workdir)
+    team = Team(ctx, "kurumsal web sitesi", council=True)
+    team.start(plan=True)
+    assert team.wait_until(lambda: "web" in team.members, 30), team.status_text()
+    assert [c["result"]["decision"] for c in team.councils if c["kind"] == "plan"] == ["revise", "revise"]
+    assert not team.questions  # kullanıcıya sorulmadı, notlarla başlandı
+    assert any("notlarıyla başlatıldı" in x["text"] for x in team.timeline)
+    assert "Kurul notu" in team.members["web"].constraints
