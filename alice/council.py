@@ -531,11 +531,12 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
             except Exception:  # noqa: BLE001
                 pass
 
-    def _set_phase(self, text: str) -> None:
+    def _set_phase(self, text: str, everyone: bool = False) -> None:
         self.phase = text
-        for a in self.activity.values():  # yeni aşamada herkes yeniden çalışacak
-            if a.get("state") == "done":
-                a["state"] = "waiting"
+        if everyone:  # tartışma turunda herkes yeniden konuşacak
+            for a in self.activity.values():
+                if a.get("state") == "done":
+                    a["state"] = "waiting"
         self._tick(force=True)
 
     def _parallel(self, roles: list[str], make_prompt: Callable[[str], str]) -> dict[str, str]:
@@ -684,7 +685,7 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
     def _debate(self) -> bool:
         """Bir tartışma turu. Görüş değişmediyse False (tartışma biter)."""
         self.round += 1
-        self._set_phase(f"Tartışma turu {self.round}")
+        self._set_phase(f"Tartışma turu {self.round}", everyone=True)
         positions = "\n".join(f"- {ROLES[v.role].title}: {VOTE_TR.get(v.last, 'oy yok')}. {v.reason}"
                               for v in self.votes.values())
         fmt = ('{"vote": "approve|conditional|reject", "reason": "...", "conditions": ["..."], "stances": [{"id": '
@@ -721,6 +722,9 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
         return any(before.get(r) != v.last for r, v in self.votes.items())
 
     def _finish(self) -> None:
+        for a in self.activity.values():
+            if a.get("state") in ("waiting", "working"):
+                a["state"] = "done"
         self.result = tally(list(self.votes.values()), self.findings, self.user_vote, self.relevant)
         if self.kind == "plan":
             self.result = plan_override(plan_decision(self.result, self.findings), self.findings, self.user_vote)
