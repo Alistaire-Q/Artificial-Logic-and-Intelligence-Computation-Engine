@@ -474,7 +474,7 @@ function threadItem(m, isLead) {
   let line;
   if (m.status === "queued" && m.after && m.after.length) line = `${m.after.join(", ")} bitince başlar`;
   else if (m.status === "asking" && m.question) line = m.question;
-  else if (m.council_running) line = m.council && m.council.rounds ? `Kurul tartışıyor · tur ${m.council.round || 1}/${m.council.rounds}` : "Kurul toplanıyor";
+  else if (m.council_running) line = m.council && m.council.state === "running" ? councilLine(m.council) : "Kurul toplanıyor";
   else if (m.status === "review" && m.council && m.council.decision) line = "Kurul: " + (DEC_TR[m.council.decision] || m.council.decision);
   else if (st === "running" && m.last) line = friendlyLast(m.last);
   else line = m.task;
@@ -556,7 +556,8 @@ function renderThread(det, m, d) {
 
   if (m.status === "review") {
     const bar = el("div", "pd-review");
-    const rvText = m.council_running ? "Kurul toplandı, tartışıyor. İstersen beklemeden kararı sen ver."
+    const rvText = m.council_running ? `${m.council && m.council.state === "running" ? councilLine(m.council) +
+      (m.council.phase ? " · " + m.council.phase.toLowerCase() : "") : "Kurul toplandı"}. İstersen beklemeden kararı sen ver.`
       : m.council && m.council.decision === "contested" ? "Kurul ikiye bölündü; Alice karar verecek. Kurul sekmesinden oy verebilir ya da kararı sen verebilirsin."
       : d.review ? "İnceleme bekliyor. Alice inceliyor; istersen kararı sen ver." : "Bitti, onay bekliyor.";
     bar.appendChild(el("div", "pd-rv-t", rvText));
