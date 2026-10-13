@@ -171,8 +171,12 @@ def human_failure(reasons: list[str]) -> str:
 
 def _council_brief(c: dict[str, Any]) -> dict[str, Any]:
     res = c.get("result") or {}
+    act = c.get("activity") or {}
     return {"id": c.get("id"), "kind": c.get("kind"), "state": c.get("state"), "decision": res.get("decision"),
-            "score": res.get("score"), "round": c.get("round"), "rounds": c.get("rounds")}
+            "score": res.get("score"), "round": c.get("round"), "rounds": c.get("rounds"), "phase": c.get("phase", ""),
+            "done": sum(1 for a in act.values() if a.get("state") in ("done", "failed")),
+            "total": len(c.get("roles") or act),
+            "started": c.get("started")}
 
 
 def _rel(path: Path, base: Path) -> str:

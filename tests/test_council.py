@@ -339,3 +339,19 @@ def test_plan_verifier_cannot_escalate_or_veto(workdir):
     sev = {f["id"]: f["severity"] for f in snap["findings"]}
     assert sev["F1"] == "minor"  # yükseltilemez
     assert all(f["severity"] != "critical" for f in snap["findings"]) and snap["result"]["veto"] == []
+
+
+def test_council_reports_live_progress(workdir):
+    seen = []
+
+    def script(model, messages, tools, **kw):
+        return js(vote="approve")
+
+    agent, _, ctx = make(script, workdir)
+    c = Council(ctx, "plan", "Proje planı", "plan", depth=1)
+    c.on_change = lambda: seen.append((c.phase, {r: a.get("state") for r, a in c.activity.items()}))
+    snap = c.run()
+    phases = [p for p, _ in seen]
+    assert "Plan inceleniyor" in phases and "Kontrolcü bulguları doğruluyor" in phases
+    assert any("working" in states.values() for _, states in seen)
+    assert all(a["state"] == "done" and a["vote"] == "approve" for a in snap["activity"].values())

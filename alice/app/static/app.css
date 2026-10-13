@@ -1274,3 +1274,14 @@ details.cc[open] > summary.cc-head::after { transform: rotate(45deg); }
 .cc-rubric .rb.ok b { color: var(--ok); }
 .cc-rubric .rb.mid b { color: var(--warn); }
 .cc-rubric .rb.low b { color: var(--err); }
+/* süren kurulun canlı görünümü */
+.cc-live { display: flex; flex-direction: column; gap: 4px; }
+.cc-live-top { display: flex; align-items: center; gap: 8px; font-size: 13.5px; color: var(--text); margin-bottom: 2px; }
+.cc-live-top small { margin-left: auto; color: var(--faint); font-variant-numeric: tabular-nums; }
+.cc-live-row { display: grid; grid-template-columns: 10px 110px 1fr; gap: 8px; align-items: center; font-size: 12.5px; padding: 2px 0; }
+.cc-live-row b { font-weight: 500; }
+.cc-live-row span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cc-live-row.st-waiting span { color: var(--faint); }
+.cc-live-row span.v-approve { color: var(--ok); }
+.cc-live-row span.v-conditional { color: var(--warn); }
+.cc-live-row span.v-reject, .cc-live-row.st-failed span { color: var(--err); }
