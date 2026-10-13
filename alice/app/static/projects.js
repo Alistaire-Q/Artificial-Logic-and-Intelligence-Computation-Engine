@@ -723,7 +723,7 @@ function findingRow(f) {
   const against = (f.notes || []).length - agree;
   t.append(el("b", "", f.id), el("span", "chip sev-" + f.severity, SEV_TR[f.severity] || f.severity),
     el("span", "cf-title", f.title));
-  const meta = el("small", "", [ROLE_TR[f.by] || f.by, FST_TR[f.status] || f.status,
+  const meta = el("small", "", [f.area ? f.area + (f.agent && f.agent !== "genel" ? " · " + f.agent : "") : "", ROLE_TR[f.by] || f.by, FST_TR[f.status] || f.status,
     agree ? `${agree} katılıyor` : "", against ? `${against} itiraz` : ""].filter(Boolean).join(" · "));
   t.appendChild(meta);
   fc.appendChild(t);
@@ -763,12 +763,24 @@ function councilCard(c, target, latest) {
     const parts = ["reject", "conditional", "approve"].filter((k) => cnt[k]).map((k) => `${cnt[k]} ${VOTE_TR2[k]}`);
     card.appendChild(el("div", "cc-sum", `${vs.length} üye oy verdi: ${parts.join(", ")}.`));
   }
+  if (!running && c.rubric && Object.keys(c.rubric).length) {
+    // Plan kurulu: ölçüt başına ortalama puan (1-5)
+    const rb = el("div", "cc-rubric");
+    for (const [k, v] of Object.entries(c.rubric)) {
+      const chip = el("span", "rb " + (v >= 4 ? "ok" : v >= 3 ? "mid" : "low"));
+      chip.append(el("span", "", k), el("b", "", String(v).replace(".", ",")));
+      rb.appendChild(chip);
+    }
+    card.appendChild(rb);
+  }
   if (!running) {
     const sevRank = { critical: 0, major: 1, minor: 2 };
     const todo = [...new Set([...(res.conditions || []),
       ...(c.findings || []).filter((f) => f.status === "confirmed" && f.severity !== "minor")
         .sort((a, b) => sevRank[a.severity] - sevRank[b.severity]).map((f) => f.title)])];
-    if (todo.length && res.decision !== "approve") {
+    if (c.kind === "plan" && res.decision === "approve_conditions")
+      card.appendChild(el("div", "cc-sum", "Plan onaylandı; öneriler ilgili ajanların görevine not olarak eklendi."));
+    else if (todo.length && res.decision !== "approve") {
       const ul = el("ul", "cc-todo");
       for (const x of todo.slice(0, 4)) ul.appendChild(el("li", "", x));
       if (todo.length > 4) ul.appendChild(el("li", "more", `ve ${todo.length - 4} madde daha`));
@@ -1228,12 +1240,15 @@ function projectDialog(project) {
     const rvl = el("label", "chk"); rvl.append(rv, document.createTextNode(" Biten işleri Alice incelesin (onaylasın ya da düzeltmeye göndersin)"));
     const kc = el("input"); kc.type = "checkbox"; kc.checked = true;
     const kcl = el("label", "chk"); kcl.append(kc, document.createTextNode(" İnceleme kurulu: plan, her iş ve final; eleştirmen, savunucu, kontrolcü ve uzmanlar tartışıp oylar"));
-    rv.addEventListener("change", () => { kc.disabled = !rv.checked; if (!rv.checked) kc.checked = false; });
+    const pc = el("input"); pc.type = "checkbox"; pc.checked = true;
+    const pcl = el("label", "chk sub"); pcl.append(pc, document.createTextNode(" Plan da kurula gitsin (kapalıysa Alice'in planı doğrudan başlar)"));
+    rv.addEventListener("change", () => { kc.disabled = !rv.checked; if (!rv.checked) kc.checked = false; pc.disabled = !kc.checked; });
+    kc.addEventListener("change", () => { pc.disabled = !kc.checked; });
     g.append(field("Klasör", cwd), field("Yönetici modeli", lm), field("Yönetici düşünmesi", lt));
     const ckf = field("Kontrol komutu", ck, "Testler/lint: her kurul öncesi otomatik çalışır, çıktısı kanıt olur.");
     ckf.classList.add("wide");
     g.appendChild(ckf);
-    opts.append(g, rvl, kcl);
+    opts.append(g, rvl, kcl, pcl);
     d.append(opts, err);
     const row = el("div", "row");
     const no = el("button", "btn", "Vazgeç"); no.addEventListener("click", closeDialog);
@@ -1245,7 +1260,7 @@ function projectDialog(project) {
       if (!manual.hidden && !agents.length) { err.textContent = "En az bir ajan ekle ya da planı Alice'e bırak"; return; }
       ok.disabled = true;
       const r = await api("/api/project/create", { goal: g2, agents, cwd: cwd.value.trim(), lead_model: lm.value.trim() || "auto",
-        lead_thinking: lt.value, review: rv.checked, council: kc.checked, check: ck.value.trim() });
+        lead_thinking: lt.value, review: rv.checked, council: kc.checked, plan_council: pc.checked, check: ck.value.trim() });
       ok.disabled = false;
       if (!r.ok) { err.textContent = r.error || "Başlatılamadı"; return; }
       closeDialog();
@@ -1259,7 +1274,7 @@ function projectDialog(project) {
     const fill = (t) => {
       goal.value = t.goal || "";
       lm.value = t.lead_model || "auto"; lt.value = t.lead_thinking || "default";
-      rv.checked = t.review !== false; kc.checked = t.council !== false; ck.value = t.check || "";
+      rv.checked = t.review !== false; kc.checked = t.council !== false; pc.checked = t.plan_council !== false; pc.disabled = !kc.checked; ck.value = t.check || "";
       list.replaceChildren();
       (t.agents || []).forEach((a, i) => list.appendChild(agentCard(a, i + 1)));
       setMode((t.agents || []).length > 0);

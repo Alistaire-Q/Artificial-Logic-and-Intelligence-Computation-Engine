@@ -449,6 +449,7 @@ class AppState:
                     check=str(d.get("check") or ""),
                     lead_thinking=lead_thinking if lead_thinking in THINKING else "default", cwd=cwd)
         team._check_model(lead_model, "yönetici")
+        team.plan_council = d.get("plan_council") is not False
         for spec in specs:
             team.add(spec)
         self._teams()[team.id] = team

@@ -1266,3 +1266,11 @@ details.cc[open] > summary.cc-head::after { transform: rotate(45deg); }
 
 /* ---- geniş ekranda biraz daha geniş sütun */
 #projectView .pd-feed.chat { padding-left: max(22px, calc((100% - 880px) / 2)); padding-right: max(22px, calc((100% - 880px) / 2)); }
+.chk.sub { margin-top: 4px; padding-left: 22px; }
+/* plan kurulu puanları */
+.cc-rubric { display: flex; flex-wrap: wrap; gap: 6px; }
+.cc-rubric .rb { display: inline-flex; gap: 6px; align-items: baseline; font-size: 12px; padding: 2px 9px; border-radius: 99px; background: var(--hover); color: var(--muted); }
+.cc-rubric .rb b { font-variant-numeric: tabular-nums; }
+.cc-rubric .rb.ok b { color: var(--ok); }
+.cc-rubric .rb.mid b { color: var(--warn); }
+.cc-rubric .rb.low b { color: var(--err); }

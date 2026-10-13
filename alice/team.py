@@ -339,6 +339,8 @@ class Team:
         self._live_councils: set[Any] = set()  # süren kurullar (proje durunca onlar da durur)
         self.picks: dict[str, str] = {}  # auto model seçimleri (ad -> "alan · model")
         self._screens_warned = False
+        self.plan_council = True  # kurul açıkken plan da kurula gider (yeni proje penceresinden kapatılabilir)
+        self.plan_prev_id = ""  # planı reddeden son kurulun kimliği (düzeltilmiş plan ona göre incelenir)
         self._lead_turns = 0
         self._plan_nudges = 0
         self._dirty0: set[str] | None = None  # proje başında zaten değişmiş dosyalar (komut takibi bunlara dokunmaz)
@@ -1473,7 +1475,8 @@ Kurallar:
             review = ("Biten her işi inceleme kurulu (eleştirmen, savunucu, kontrolcü, gerekince uzmanlar) tartışıp "
                       "oylar ve kararı uygular; sana sadece çekişmeli ya da iki düzeltmeye rağmen kabul edilmeyen "
                       "işler gelir, onlarda kurul raporunu okuyup sen karar ver.")
-            council_plan = "; kurul planı tartışıp oylar, reddederse eleştirilere göre düzeltip tekrar sun"
+            council_plan = ("; kurul planı inceler, planı bozan bir sorun bulursa bir kez düzeltip tekrar sunarsın, "
+                            "kurulun önerileri ilgili ajanların görevine not olarak eklenir") if self.plan_council else ""
         return f"""# Proje yöneticisi
 Sen ALICE'sin ve "{self.title}" projesinin yöneticisisin (orkestratör, ajanlar sana "{LEAD}" diye yazar).
 Proje arka planda, kullanıcının sohbetinden bağımsız yürüyor. Kullanıcıyla sadece ask_user ve finish ile konuşursun.
@@ -1611,6 +1614,7 @@ siteler (ortalanmış dev başlık + gradyan, radar/ızgara/parçacık süsleri,
                 "finished": self.finished, "lead_last": self.lead_last, "lead_messages": _slim(lead_msgs),
                 "questions": self.questions, "members": members, "council": self.council,
                 "councils": self.councils[-10:], "final_runs": self.final_runs, "plan_rejects": self.plan_rejects,
+                "plan_council": self.plan_council, "plan_prev_id": self.plan_prev_id,
                 "check": self.check, "lessons": self.lessons, "timeline": self.timeline[-500:], "usage": self.usage,
                 "log": [{"from": x.sender, "to": x.to, "text": x.text, "at": x.at} for x in self.log[-500:]]}
 
@@ -1633,6 +1637,8 @@ siteler (ortalanmış dev başlık + gradyan, radar/ızgara/parçacık süsleri,
         team.usage = {k: dict(v) for k, v in (data.get("usage") or {}).items() if isinstance(v, dict)}
         team.final_runs = int(data.get("final_runs") or 0)
         team.plan_rejects = int(data.get("plan_rejects") or 0)
+        team.plan_council = data.get("plan_council") is not False
+        team.plan_prev_id = str(data.get("plan_prev_id") or "")
         team.created = float(data.get("created") or time.time())
         team.summary = data.get("summary", "")
         team.finished = bool(data.get("finished"))
@@ -1781,6 +1787,7 @@ siteler (ortalanmış dev başlık + gradyan, radar/ızgara/parçacık süsleri,
     def save_template(self, name: str) -> dict[str, Any]:
         """Projeyi şablon olarak kaydet: hedef, ayarlar ve ajan tanımları (konuşmalar değil)."""
         tpl = {"name": name.strip()[:60], "goal": self.goal, "review": self.review, "council": self.council,
+               "plan_council": self.plan_council,
                "lead_model": self.lead_model, "lead_thinking": self.lead_thinking, "check": self.check,
                "agents": [{"name": m.name, "task": m.task, "constraints": m.constraints, "scope": m.scope,
                            "model": m.model, "thinking": m.thinking, "isolation": m.isolation, "after": m.after,
@@ -1936,6 +1943,58 @@ class TeamWait(Tool):
         return ToolResult("\n".join(x.line() for x in msgs))
 
 
+def _tree(root: Path, limit: int = 80) -> str:
+    """Kurulun ve yöneticinin göreceği kısa klasör özeti (iki seviye, gizli ve büyük klasörler hariç)."""
+    from alice.site import SKIP_DIRS
+
+    rows: list[str] = []
+    try:
+        for p in sorted(root.iterdir(), key=lambda x: (x.is_file(), x.name.lower())):
+            if p.name.startswith(".") or p.name in SKIP_DIRS:
+                continue
+            if p.is_dir():
+                try:
+                    kids = []
+                    for k in p.iterdir():
+                        if not k.name.startswith("."):
+                            kids.append(k.name)
+                        if len(kids) >= 40:
+                            break
+                    kids = sorted(kids)[:12]
+                except OSError:
+                    kids = ["(okunamadı)"]
+                rows.append(f"{p.name}/  ({', '.join(kids) or 'boş'})")
+            else:
+                rows.append(p.name)
+            if len(rows) >= limit:
+                rows.append("…")
+                break
+    except OSError:
+        pass
+    return "\n".join(rows) or "(klasör boş)"
+
+
+def route_plan_notes(snap: dict[str, Any], specs: list[dict[str, Any]]) -> list[str]:
+    """Plan kurulunun notlarını ilgili ajanın görevine 'kurul notu' olarak ekler; hiçbir ajana ait olmayanları döndürür."""
+    from alice.council import dedupe
+
+    by_name = {str(a.get("name") or "").strip().lower(): a for a in specs}
+    general: list[str] = []
+    for f in snap.get("findings", []):
+        if f.get("status") == "refuted":
+            continue
+        text = f"{f['title']}" + (f" → {f['fix']}" if f.get("fix") else "")
+        spec = by_name.get(str(f.get("agent") or "").strip().lower())
+        if spec is None:
+            general.append(text)
+            continue
+        old = str(spec.get("constraints") or "").strip()
+        if dedupe([text], [x for x in old.splitlines() if x.strip()]):
+            spec["constraints"] = (old + "\n" if old else "") + f"Kurul notu: {text}"
+    general += list((snap.get("result") or {}).get("conditions") or [])
+    return dedupe(general)
+
+
 class LeadPlan(Tool):
     name = "plan"
     description = ("Planı ve ajanları birden sunar. Kurul açıksa plan önce inceleme kurulunda tartışılıp oylanır: "
@@ -1960,43 +2019,81 @@ class LeadPlan(Tool):
         from alice.council import report
 
         t = self.team
-        specs = [a for a in agents or [] if isinstance(a, dict)]
+        specs = [dict(a) for a in agents or [] if isinstance(a, dict)]  # kopya: kurul notları yöneticinin geçmişine sızmasın
         if not specs:
             raise ToolError("en az bir ajan gerekli")
         if len(specs) + len(t.members) > MAX_MEMBERS:
             raise ToolError(f"bir projede en çok {MAX_MEMBERS} ajan olur")
         names = [str(a.get("name") or "").strip().lower() for a in specs]
-        bad = [n for n in names if not NAME_RX.match(n) or n in (LEAD, "all", USER, SYSTEM) or n in t.members]
+        bad = [n for n in names if not NAME_RX.match(n) or n in (LEAD, "all", USER, SYSTEM, COUNCIL) or n in t.members]
         if bad or len(set(names)) != len(names):
             raise ToolError(f"geçersiz ya da tekrarlanan ajan adı: {', '.join(bad) or 'tekrar var'}")
+        _check_specs(t, specs, names)  # kurul boşuna toplanmasın: tanım hataları önce
         cond_note = ""
-        if t.council and not skip_council:
+        if t.council and t.plan_council and not skip_council:
             lines = [f"- {a.get('name')}: {a.get('task')} | model={a.get('model') or 'auto'} "
                      f"düşünme={a.get('thinking', 'default')} yer={a.get('isolation', 'shared')} "
                      f"kapsam={a.get('scope') or 'her yer'} sonra={a.get('after') or '-'} sınır={a.get('constraints') or '-'}"
                      for a in specs]
+            context = (f"# Yaklaşım\n{summary}\n\n# Ajanlar\n" + "\n".join(lines) +
+                       f"\n\n# Proje klasörü ({t.cwd})\n{_tree(t.cwd)}")
+            if t.is_design():
+                context += (f"\n\n# Not\nBu bir tasarım işi: plan kod yazılmadan önce özgün bir tasarım yönü "
+                            f"({DESIGN_FILE}) belirleyen bir adımla başlamalı ve sayfa ajanları ona bağlı (after) olmalı. "
+                            f"Bu adım yoksa 'tasarım' alanında önemli bulgu yaz.")
+            # Düzeltilmiş plan, reddeden kurulun kendisine göre incelenir (kimliğiyle bulunur).
+            prev = next((c for c in reversed(t.councils) if c.get("id") == t.plan_prev_id), None) \
+                if t.plan_rejects and t.plan_prev_id else None
             t.council_busy += 1
             try:
-                snap = t._council("plan", f"Proje planı: {t.goal}", f"# Yaklaşım\n{summary}\n\n# Ajanlar\n" +
-                                  "\n".join(lines), t.councils)
+                snap = t._council("plan", f"Proje planı: {t.goal}", context, t.councils, previous=prev)
             finally:
                 with t.cond:
                     t.council_busy -= 1
+            if snap.get("state") == "stopped":
+                return ToolResult("Proje durduruldu; plan kurulu yarıda kaldı. Sürdürülünce planı tekrar sun.",
+                                  is_error=True)
+            failed = snap.get("state") == "failed"  # kurul çöktüyse plan reddedilmiş sayılmaz
             dec = (snap.get("result") or {}).get("decision")
-            if dec not in ("approve", "approve_conditions"):
+            if not failed and dec not in ("approve", "approve_conditions") and t.plan_rejects < 1:
                 t.plan_rejects += 1
-                if t.plan_rejects >= 2:
-                    t.ask_user("Plan kurulda iki kez onaylanmadı. Bu planla başlayayım mı, yoksa nasıl değiştireyim?\n\n"
-                               f"Plan: {summary[:1200]}\n\nKurul: {report(snap)[:1500]}")
-                    return ToolResult("Plan yine onaylanmadı; kullanıcıya soruldu. Cevabı gelince ona göre planı sun "
-                                      "(kullanıcı bu planı onaylarsa skip_council=true ile).\n\n" + report(snap))
-                return ToolResult("Kurul planı onaylamadı. Eleştirileri dikkate alıp planı düzelt ve plan ile tekrar "
-                                  "sun.\n\n" + report(snap), is_error=True)
-            cond_note = "\n\n" + report(snap)
+                t.plan_prev_id = str(snap.get("id") or "")
+                return ToolResult("Kurul planı onaylamadı. Engelleyici bulguları gider (sadece onları; ayrıntı avına "
+                                  "çıkma), planı düzeltip plan ile tekrar sun.\n\n" + report(snap), is_error=True)
+            general = route_plan_notes(snap, specs)
+            if failed:
+                general.insert(0, "Plan kurulu çalışamadı; plan kurulsuz başlatıldı.")
+            elif dec not in ("approve", "approve_conditions"):
+                note = "Plan kurulu düzeltilmiş plana da itiraz etti; plan kurulun notlarıyla başlatıldı."
+                t.mark(COUNCIL, "plan", note)
+                t._emit(f"{t.title}: {note}", kind="info")
+                general.insert(0, note)
+            cond_note = "\n\n" + report(snap) + (("\n\nGenel notlar (ajanlara dağıtılmadı, sen göz önünde tut):\n" +
+                                                   "\n".join(f"- {x}" for x in general)) if general else "")
+        t.plan_rejects, t.plan_prev_id = 0, ""  # plan başlıyor: sonraki plan yeni plandır
         added = []
         for spec in specs:
             added.append(t.add_member(spec, announce=False).name)
         return ToolResult(f"Plan onaylandı, ajanlar başladı: {', '.join(added)}{cond_note}")
+
+
+def _check_specs(t: Team, specs: list[dict[str, Any]], names: list[str]) -> None:
+    """Ajan tanımlarını kurul toplanmadan önce doğrula (görev, çalışma yeri, düşünme, model, sıra)."""
+    known = set(names) | set(t.members)
+    for a, name in zip(specs, names):
+        if not str(a.get("task") or "").strip():
+            raise ToolError(f"{name}: task boş")
+        if str(a.get("isolation") or "shared") not in ISOLATIONS:
+            raise ToolError(f"{name}: isolation {', '.join(ISOLATIONS)} olmalı")
+        if str(a.get("thinking") or "default") not in THINKING:
+            raise ToolError(f"{name}: thinking {', '.join(THINKING)} olmalı")
+        t._check_model(str(a.get("model") or "auto").strip(), name)
+        unknown = [str(x).strip().lower() for x in a.get("after") or [] if str(x).strip().lower() not in known]
+        if unknown:
+            raise ToolError(f"{name}: after içinde olmayan ajan: {', '.join(unknown)}")
+        if names.index(name) < len(names) and any(names.index(str(x).strip().lower()) > names.index(name)
+                                                  for x in a.get("after") or [] if str(x).strip().lower() in names):
+            raise ToolError(f"{name}: after'daki ajanlar listede ondan önce gelmeli")
 
 
 class LeadAssign(Tool):

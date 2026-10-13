@@ -17,6 +17,7 @@ Döngü yok: tur sayısı en çok 3, her rol bir turda tek ajan turu (adım sın
 from __future__ import annotations
 
 import json
+import math
 import re
 import secrets
 import threading
@@ -88,6 +89,79 @@ ROLE_DOMAIN = {"critic": "review", "advocate": "review", "verifier": "review", "
                "performance": "code", "ux": "design"}
 
 
+# Plan kurulu: kod yokken uygulama ayrıntısı avına çıkmadan, planın doğru adımları atıp atmadığına bakar.
+PLAN_AREAS = {"kapsam": "hedefin tamamı karşılanıyor mu, büyük bir parça eksik mi",
+              "bölme": "iş anlamlı ve çakışmayan parçalara bölünmüş mü, yazma kapsamları çakışıyor mu",
+              "sıra": "bağımlılıklar ve sıra doğru mu (önce temel, sonra üstüne kurulanlar)",
+              "doğrulama": "her parça nasıl doğrulanacak belli mi",
+              "risk": "yaklaşımda işi baştan bozacak bir seçim var mı (yanlış teknoloji, imkânsız varsayım)"}
+PLAN_BLOCKING = ("kapsam", "bölme", "sıra", "risk", "tasarım")
+PLAN_MAX_FINDINGS = 5
+_AREA_ALIASES = {"kapsam": "kapsam", "scope": "kapsam", "coverage": "kapsam", "bölme": "bölme", "bolme": "bölme",
+                 "decomposition": "bölme", "split": "bölme", "sıra": "sıra", "sira": "sıra", "order": "sıra",
+                 "doğrulama": "doğrulama", "dogrulama": "doğrulama", "verification": "doğrulama", "risk": "risk",
+                 "tasarım": "tasarım", "tasarim": "tasarım", "design": "tasarım"}
+
+
+def norm_area(value: Any) -> str:
+    """Modelin yazdığı alanı ("Kapsam", "SIRA", "scope", "kapsam|bölme") bilinen bir alana çevirir; bilinmiyorsa boş."""
+    raw = str(value or "").replace("İ", "i").replace("I", "ı").lower()
+    for part in re.split(r"[|,/ ]+", raw):
+        if part in _AREA_ALIASES:
+            return _AREA_ALIASES[part]
+    return ""
+
+
+def norm_scores(raw: Any) -> dict[str, int]:
+    """Plan puanları: bilinen ölçütler, 1-5 arası tam sayı; NaN, sonsuz, mantıksal ve bozuk değerler atlanır."""
+    out: dict[str, int] = {}
+    if not isinstance(raw, dict):
+        return out
+    for k, x in raw.items():
+        key = norm_area(k)
+        if isinstance(x, str):
+            try:
+                x = float(x.strip())
+            except ValueError:
+                continue
+        if key not in PLAN_AREAS or isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x):
+            continue
+        out[key] = max(1, min(5, int(round(x))))
+    return out
+
+
+def plan_finding(fid: str, by: str, f: dict[str, Any], default: str = "minor", **kw: Any) -> "Finding":
+    """Plan kurulunda bulgu: kritik yok (en fazla önemli), alan ve ajan normalize."""
+    sev = str(f.get("severity") or default).lower()
+    sev = "major" if sev == "critical" else sev if sev in SEVERITIES else default
+    return Finding(fid, by, sev, str(f.get("title") or "")[:200], str(f.get("evidence") or "")[:800],
+                   str(f.get("fix") or "")[:400], area=norm_area(f.get("area")),
+                   agent=str(f.get("agent") or "")[:40].strip().lower(), **kw)
+
+
+def plan_decision(res: dict[str, Any], findings: list["Finding"]) -> dict[str, Any]:
+    """Plan kurulunun kararı: plan ancak doğrulanmış önemli bir plan sorunu (eksik parça, çakışma, yanlış sıra, işi
+    bozacak yaklaşım) varsa ya da kurul açıkça reddediyorsa düzeltilir; gerisi notlarla onaydır. Veto yoktur."""
+    blocking = [f.id for f in findings if f.status == "confirmed" and f.severity != "minor" and f.area != "doğrulama"]
+    # Oy puanı sadece sayılan oy varsa kullanılır: hiç oy sayılamadıysa (model hatası, gerekçesiz ret) plan reddedilmez.
+    if blocking or (res.get("weight", 1) and res.get("score", 1) < REJECT_BELOW):
+        decision = "revise"
+    else:
+        notes = [f for f in findings if f.status != "refuted"]
+        decision = "approve_conditions" if notes or res.get("conditions") else "approve"
+    return {**res, "decision": decision, "veto": [], "blocking": blocking}
+
+
+def plan_override(res: dict[str, Any], findings: list["Finding"], user: dict[str, Any] | None) -> dict[str, Any]:
+    """Planda kullanıcının sözü geçer: onaylarsa plan başlar, reddederse düzeltilir."""
+    vote = (user or {}).get("vote")
+    if vote == "approve":
+        res["decision"] = "approve_conditions" if any(f.status != "refuted" for f in findings) else "approve"
+    elif vote == "reject":
+        res["decision"] = "revise"
+    return res
+
+
 class CouncilStopped(Exception):
     """Proje durduruldu; kurul yarıda bırakıldı."""
 
@@ -103,6 +177,8 @@ class Finding:
     status: str = "pending"  # pending | confirmed | refuted | unclear
     check: str = ""  # kontrolcünün notu
     notes: list[dict[str, str]] = field(default_factory=list)  # tartışma: {by, stance, note}
+    area: str = ""  # plan kurulunda: kapsam | bölme | sıra | doğrulama | risk | tasarım
+    agent: str = ""  # plan kurulunda: bulgunun ilgili olduğu ajan ("genel" ya da boş: bütün plan)
 
     def as_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
@@ -120,6 +196,7 @@ class Vote:
     basis: list[str] = field(default_factory=list)  # dayandığı bulgu kimlikleri
     counted: bool = True
     note: str = ""  # sayılmadıysa nedeni
+    scores: dict[str, int] = field(default_factory=dict)  # plan kurulunda ölçüt puanları (1-5)
 
     def as_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
@@ -233,7 +310,7 @@ def tally(votes: list[Vote], findings: list[Finding], user: dict[str, Any] | Non
         decision = "revise"
     else:
         decision = "contested"
-    return {"score": round(score, 3), "decision": decision, "veto": veto, "conditions": conds}
+    return {"score": round(score, 3), "decision": decision, "veto": veto, "conditions": conds, "weight": total}
 
 
 class Council:
@@ -336,6 +413,22 @@ class Council:
         self.votes.setdefault(role, Vote(role, f"{model}·{think}", 1.0))
         return agent
 
+    def plan_brief(self) -> str:
+        areas = "\n".join(f"- {k}: {v}" for k, v in PLAN_AREAS.items())
+        return f"""
+
+# Plan incelemesi
+Henüz kod yok; bir PLANI inceliyorsun. Soru şu: bu plan uygulanırsa hedefe doğru adımlarla ulaşılır mı?
+Bakılacaklar:
+{areas}
+Yasak: uygulama ayrıntıları. Güvenlik açıkları, erişilebilirlik ayrıntıları, performans, kod tarzı, kütüphane
+seçiminin inceliği ve "planda X yazmıyor" türü eksikler ajanın işi yaparken zaten halledeceği şeylerdir; bunları
+bulgu olarak yazma (kod yazılınca iş kurulu bakar). Bir şey ancak planı bozuyorsa bulgudur.
+Kanıt olarak planın ilgili maddesini (ajan adı ve görevinden alıntı) ya da proje klasöründe gördüğün şeyi yaz.
+Her bulgunun alanını (area) ve ilgili ajanı (agent; bütün planı ilgilendiriyorsa "genel") belirt.
+"critical" kullanma: planda en fazla "major" (planı bozan) ya da "minor" (ajana not olarak eklenecek öneri) olur.
+En fazla {PLAN_MAX_FINDINGS} bulgu yaz; en önemlileri."""
+
     def brief(self, role: str) -> str:
         r = ROLES[role]
         others = ", ".join(ROLES[x].title for x in self.roles if x != role)
@@ -355,7 +448,7 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
             "\n\n# Bu projede daha önce yakalanan sorunlar (tekrarlanmış mı bak)\n" +
             "\n".join(f"- {x}" for x in self.lessons) if self.lessons else "") + (
             f"\n\nProjenin kontrol komutu: `{self.check}` (çıktısı incelenen malzemede; gerekirse yeniden çalıştır)."
-            if self.check and role == "verifier" else "")
+            if self.check and role == "verifier" else "") + (self.plan_brief() if self.kind == "plan" else "")
 
     # --------------------------------------------------------------- akış
     def stop(self) -> None:
@@ -447,6 +540,15 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
         fmt = ('{"vote": "approve|conditional|reject", "reason": "kısa gerekçe", "findings": [{"severity": '
                '"critical|major|minor", "title": "...", "evidence": "dosya:satır, alıntı ya da tekrar adımı", "fix": '
                '"ne yapılmalı"}], "conditions": ["şartlı onaysa: şunlar düzelirse olur"]}')
+        if self.kind == "plan":
+            ask = ("Bu planın düzeltilmiş hali. Önceki kurulun engelleyici bulguları giderildi mi, ona bak; yeni bulguyu "
+                   "ancak yeni planın getirdiği, planı bozan bir sorunsa yaz." if self.previous else
+                   "Planı bağımsız incele (diğer rollerin ne dediğini görmüyorsun).")
+            fmt = ('{"vote": "approve|conditional|reject", "reason": "kısa gerekçe", "scores": {"kapsam": 1-5, '
+                   '"bölme": 1-5, "sıra": 1-5, "doğrulama": 1-5, "risk": 1-5}, "findings": [{"severity": "major|minor", '
+                   '"area": "kapsam|bölme|sıra|doğrulama|risk|tasarım", "agent": "ilgili ajan adı ya da genel", '
+                   '"title": "...", "evidence": "planın ilgili maddesi", "fix": "plana ne eklenmeli/değişmeli"}], '
+                   '"conditions": ["..."]}')
         texts = self._parallel(reviewers, lambda r: f"{self._material()}\n\n{ask}\nSonunda şu biçimde JSON ver:\n{fmt}")
         n = len(self.findings)
         for role, text in texts.items():
@@ -455,13 +557,19 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
             v.first = v.last = norm_vote(data.get("vote"))
             v.reason = str(data.get("reason") or "")[:600] or (text.strip()[-300:] if not data else "")
             v.conditions = [str(c)[:300] for c in data.get("conditions") or [] if str(c).strip()][:8]
-            for f in (data.get("findings") or [])[:12]:
+            plan = self.kind == "plan"
+            if plan:
+                v.scores = norm_scores(data.get("scores"))
+            for f in (data.get("findings") or [])[:PLAN_MAX_FINDINGS if plan else 12]:
                 if not isinstance(f, dict) or not str(f.get("title") or "").strip():
                     continue
                 n += 1
-                sev = str(f.get("severity") or "minor").lower()
-                fd = Finding(f"F{n}", role, sev if sev in SEVERITIES else "minor", str(f["title"])[:200],
-                             str(f.get("evidence") or "")[:800], str(f.get("fix") or "")[:400])
+                if plan:
+                    fd = plan_finding(f"F{n}", role, f)  # planda kritik/veto yok
+                else:
+                    sev = str(f.get("severity") or "minor").lower()
+                    fd = Finding(f"F{n}", role, sev if sev in SEVERITIES else "minor", str(f["title"])[:200],
+                                 str(f.get("evidence") or "")[:800], str(f.get("fix") or "")[:400])
                 self.findings.append(fd)
                 v.basis.append(fd.id)
         self.on_change()
@@ -481,10 +589,20 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
         fmt = ('{"checks": [{"id": "F1", "status": "confirmed|refuted|unclear", "note": "ne denedin, ne gördün"}], '
                '"findings": [{"severity": "...", "title": "...", "evidence": "...", "fix": "..."}], '
                '"vote": "approve|conditional|reject", "reason": "..."}')
+        how = ("Her bulguyu kendin doğrula (dosyayı oku, gerekirse testleri/kodu çalıştır). Kendi bulduğun kesin "
+               "sorunları (ör. kırılan test) findings'e ekle.")
+        if self.kind == "plan":
+            how = ("Her bulguyu plana ve proje klasörüne bakarak doğrula. Bir bulgu ancak plan böyle uygulanırsa hedefe "
+                   "ulaşılamayacağını ya da işin bozulacağını gösteriyorsa 'confirmed'dır. 'Planda yazmıyor' tek başına "
+                   "doğrulama değildir: ajan bunu görevinin doğal parçası olarak zaten yapacaksa 'refuted', ajana not "
+                   "olarak eklenmesi yeterliyse 'unclear' de ve severity'yi 'minor'a indir. Uygulama ayrıntısıysa "
+                   "(güvenlik, erişilebilirlik, performans, kod tarzı) 'refuted'. Her check'e gerekirse "
+                   '"severity": "major|minor" ekleyebilirsin.')
+            fmt = fmt.replace('"note": "ne denedin, ne gördün"}', '"note": "neden", "severity": "minor (düşürmek için)"}')
+            fmt = fmt.replace('"findings": [{"severity": "...",', '"findings": [{"severity": "major|minor", "area": "...", '
+                              '"agent": "...",')
         text = self._ask("verifier", f"{self._material()}\n\n# Diğer rollerin bulguları\n"
-                         f"{self._findings_text(with_status=False)}\n\nHer bulguyu kendin doğrula (dosyayı oku, gerekirse "
-                         f"testleri/kodu çalıştır). Kendi bulduğun kesin sorunları (ör. kırılan test) findings'e ekle. "
-                         f"Sonunda şu biçimde JSON ver:\n{fmt}")
+                         f"{self._findings_text(with_status=False)}\n\n{how} Sonunda şu biçimde JSON ver:\n{fmt}")
         data = parse_block(text)
         self._apply_checks(data)
         v = self.votes.setdefault("verifier", Vote("verifier", "?", 1.0))
@@ -494,10 +612,14 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
         for f in (data.get("findings") or [])[:6]:
             if isinstance(f, dict) and str(f.get("title") or "").strip():
                 n += 1
-                sev = str(f.get("severity") or "major").lower()
-                self.findings.append(Finding(f"F{n}", "verifier", sev if sev in SEVERITIES else "major",
-                                             str(f["title"])[:200], str(f.get("evidence") or "")[:800],
-                                             str(f.get("fix") or "")[:400], status="confirmed", check="kendi denedi"))
+                if self.kind == "plan":  # kontrolcünün kendi bulguları da plan kurallarına uyar
+                    self.findings.append(plan_finding(f"F{n}", "verifier", f, status="confirmed", check="kendi baktı"))
+                else:
+                    sev = str(f.get("severity") or "major").lower()
+                    self.findings.append(Finding(f"F{n}", "verifier", sev if sev in SEVERITIES else "major",
+                                                 str(f["title"])[:200], str(f.get("evidence") or "")[:800],
+                                                 str(f.get("fix") or "")[:400], status="confirmed",
+                                                 check="kendi denedi"))
                 v.basis.append(f"F{n}")
         for f in self.findings:  # kontrolcünün bakmadığı bulgular belirsiz kalır
             if f.status == "pending":
@@ -513,6 +635,10 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
             st = str(c.get("status") or "").lower()
             if f is not None and st in ("confirmed", "refuted", "unclear"):
                 f.status, f.check = st, str(c.get("note") or "")[:400]
+                sev = str(c.get("severity") or "").lower()
+                rank = {"critical": 0, "major": 1, "minor": 2}
+                if self.kind == "plan" and sev in rank and rank[sev] > rank.get(f.severity, 2):
+                    f.severity = sev  # planda kontrolcü abartılı dereceyi sadece düşürebilir
 
     def _contested(self) -> bool:
         """Tartışmaya değer mi: oylar bölünmüş ya da tartışmalı (belirsiz) bulgu var."""
@@ -561,6 +687,8 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
 
     def _finish(self) -> None:
         self.result = tally(list(self.votes.values()), self.findings, self.user_vote, self.relevant)
+        if self.kind == "plan":
+            self.result = plan_override(plan_decision(self.result, self.findings), self.findings, self.user_vote)
         self.state = "done"
         self.ended = time.time()
 
@@ -577,8 +705,17 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
                 "rounds": self.rounds, "roles": self.roles, "critical": self.critical, "relevant": self.relevant,
                 "votes": [v.as_dict() for v in self.votes.values()], "findings": [f.as_dict() for f in self.findings],
                 "result": self.result, "user_vote": self.user_vote, "started": self.started, "ended": self.ended,
-                "screens": list(self.images),
+                "screens": list(self.images), "rubric": rubric(self.votes.values()),
                 "transcript": [{**t, "text": prose(t["text"])} for t in self.transcript]}
+
+
+def rubric(votes: Any) -> dict[str, float]:
+    """Plan kurulunda ölçüt başına ortalama puan (1-5)."""
+    out: dict[str, list[int]] = {}
+    for v in votes:
+        for k, x in (v.scores if isinstance(v, Vote) else v.get("scores") or {}).items():
+            out.setdefault(k, []).append(x)
+    return {k: round(sum(xs) / len(xs), 1) for k, xs in out.items() if xs}
 
 
 def retally(snap: dict[str, Any], user_vote: dict[str, Any] | None) -> dict[str, Any]:
@@ -587,6 +724,8 @@ def retally(snap: dict[str, Any], user_vote: dict[str, Any] | None) -> dict[str,
     findings = [Finding(**{k: v for k, v in d.items() if k in Finding.__dataclass_fields__})
                 for d in snap.get("findings", [])]
     res = tally(votes, findings, user_vote, snap.get("relevant") or [])
+    if snap.get("kind") == "plan":
+        res = plan_override(plan_decision(res, findings), findings, user_vote)
     return {**snap, "result": res, "user_vote": user_vote, "votes": [v.as_dict() for v in votes]}
 
 
@@ -599,6 +738,8 @@ def report(snap: dict[str, Any]) -> str:
              f"{', veto: ' + ', '.join(res['veto']) if res.get('veto') else ''})"]
     if res.get("error"):
         lines.append(f"Kurul tamamlanamadı: {res['error']}")
+    if snap.get("rubric"):
+        lines.append("Plan puanları (1-5): " + ", ".join(f"{k} {v}" for k, v in snap["rubric"].items()))
     for v in snap.get("votes", []):
         role = ROLES.get(v["role"]).title if v["role"] in ROLES else v["role"]
         change = f"{VOTE_TR.get(v['first'], '-')} → " if v.get("first") and v["first"] != v.get("last") else ""
@@ -608,7 +749,8 @@ def report(snap: dict[str, Any]) -> str:
     if real:
         lines.append("Bulgular:")
         for f in real:
-            lines.append(f"- [{f['id']}] {SEV_TR.get(f['severity'], f['severity'])} ({STATUS_TR.get(f['status'])}): "
+            where = f" [{f['area']}{' / ' + f['agent'] if f.get('agent') else ''}]" if f.get("area") else ""
+            lines.append(f"- [{f['id']}] {SEV_TR.get(f['severity'], f['severity'])} ({STATUS_TR.get(f['status'])}){where}: "
                          f"{f['title']}. Öneri: {f.get('fix', '')}")
     gone = len(snap.get("findings", [])) - len(real)
     if gone:
