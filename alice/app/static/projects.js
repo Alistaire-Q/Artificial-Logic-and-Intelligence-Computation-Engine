@@ -414,6 +414,7 @@ function renderProject() {
 
   drawLive();
   placePreview();
+  if (d.council_busy) setTimeout(() => { if (S.proj === pr) refreshProjectSoon(); }, 4000);  // süren kurulun süresi aksın
   const nf = v.querySelector(".pd-feed");
   if (nf) nf.scrollTop = atBottom || pr.lastSel !== pr.sel ? nf.scrollHeight : oldTop;
   pr.lastSel = pr.sel;
@@ -473,7 +474,7 @@ function threadItem(m, isLead) {
   let line;
   if (m.status === "queued" && m.after && m.after.length) line = `${m.after.join(", ")} bitince başlar`;
   else if (m.status === "asking" && m.question) line = m.question;
-  else if (m.council_running) line = m.council && m.council.rounds ? `Kurul tartışıyor · tur ${m.council.round || 1}/${m.council.rounds}` : "Kurul toplanıyor";
+  else if (m.council_running) line = m.council && m.council.state === "running" ? councilLine(m.council) : "Kurul toplanıyor";
   else if (m.status === "review" && m.council && m.council.decision) line = "Kurul: " + (DEC_TR[m.council.decision] || m.council.decision);
   else if (st === "running" && m.last) line = friendlyLast(m.last);
   else line = m.task;
@@ -555,7 +556,8 @@ function renderThread(det, m, d) {
 
   if (m.status === "review") {
     const bar = el("div", "pd-review");
-    const rvText = m.council_running ? "Kurul toplandı, tartışıyor. İstersen beklemeden kararı sen ver."
+    const rvText = m.council_running ? `${m.council && m.council.state === "running" ? councilLine(m.council) +
+      (m.council.phase ? " · " + m.council.phase.toLowerCase() : "") : "Kurul toplandı"}. İstersen beklemeden kararı sen ver.`
       : m.council && m.council.decision === "contested" ? "Kurul ikiye bölündü; Alice karar verecek. Kurul sekmesinden oy verebilir ya da kararı sen verebilirsin."
       : d.review ? "İnceleme bekliyor. Alice inceliyor; istersen kararı sen ver." : "Bitti, onay bekliyor.";
     bar.appendChild(el("div", "pd-rv-t", rvText));
@@ -614,7 +616,8 @@ function renderThread(det, m, d) {
     for (const node of buildFeed(m.history || [], isLead)) feed.appendChild(node);
     if (st === "running") {
       const w = el("div", "working pf-live");
-      const lbl = m.last ? friendlyLast(m.last) : "çalışıyor…";
+      const live = isLead ? runningCouncil(d) : null;  // yönetici planı kurulda bekletiyorsa bunu söyle
+      const lbl = live ? councilLine(live) : m.last ? friendlyLast(m.last) : "çalışıyor…";
       w.append(svg(IC.spark, "spark"), el("span", "lbl shimmer", lbl.charAt(0).toUpperCase() + lbl.slice(1)));
       feed.appendChild(w);
     }
@@ -644,7 +647,42 @@ const SEV_TR = { critical: "kritik", major: "önemli", minor: "küçük" };
 const FST_TR = { confirmed: "doğrulandı", refuted: "çürütüldü", unclear: "belirsiz", pending: "bekliyor" };
 function councilItem(d) {
   const last = (d.councils || [])[d.councils.length - 1];
-  return navItem("__council", "Kurul", d.council_busy ? "Toplanıyor…" : last ? `${KIND_TR[last.kind] || last.kind}: ${DEC_TR[last.decision] || "sürüyor"}` : "", IC.shield, "");
+  const live = runningCouncil(d);
+  const sub = live ? councilLine(live) : d.council_busy ? "Toplanıyor…" :
+    last ? `${KIND_TR[last.kind] || last.kind}: ${DEC_TR[last.decision] || "sürüyor"}` : "";
+  return navItem("__council", "Kurul", sub, IC.shield, "");
+}
+// Süren proje kurulu (plan, final, kurula sor) ve tek satırlık durumu: "Plan kurulu · 2/6 üye bitirdi · 3 dk"
+function runningCouncil(d) {
+  return [...(d.councils || [])].reverse().find((c) => c.state === "running") || null;
+}
+function councilLine(c) {
+  const parts = [KIND_TR[c.kind] || "Kurul"];
+  if (c.total) parts.push(`${c.done}/${c.total} üye bitirdi`);
+  else parts.push("toplanıyor");
+  if (c.started) parts.push(fmtSecs(Math.max(0, Math.round(Date.now() / 1000 - c.started))));
+  return parts.join(" · ");
+}
+// Süren kurulun canlı görünümü: aşama, geçen süre ve her üyenin durumu (inceliyor / bitti + oyu / ne okuyor).
+function councilProgress(c) {
+  const box = el("div", "cc-live");
+  const secs = c.started ? Math.max(0, Math.round(Date.now() / 1000 - c.started)) : 0;
+  const top = el("div", "cc-live-top");
+  top.append(el("i", "dot st-running"), el("span", "", c.phase || "Üyeler toplanıyor"), el("small", "", secs ? fmtSecs(secs) : ""));
+  box.appendChild(top);
+  const act = c.activity || {};
+  const roles = (c.roles || []).length ? c.roles : Object.keys(act);
+  for (const r of roles) {
+    const a = act[r] || { state: "waiting" };
+    const row = el("div", "cc-live-row st-" + a.state);
+    const st = a.state === "working" ? (a.last ? friendlyLast(a.last) : "inceliyor…")
+      : a.state === "done" ? (a.vote ? VOTE_TR2[a.vote] : "bitirdi")
+      : a.state === "failed" ? "cevap veremedi" : "sırasını bekliyor";
+    row.append(el("i", "dot " + (a.state === "working" ? "st-running" : a.state === "done" ? "st-done" : a.state === "failed" ? "st-failed" : "st-idle")),
+      el("b", "", ROLE_TR[r] || r), el("span", "v-" + (a.vote || "none"), st));
+    box.appendChild(row);
+  }
+  return box;
 }
 function renderProjectCouncils(det, d) {
   const h = viewHead(IC.shield, "Kurul", "Plan, iş ve final kurullarının kararları");
@@ -756,7 +794,7 @@ function councilCard(c, target, latest) {
 
   // İlk bakışta sadece özet: oyların tek cümlesi ve düzeltilecek birkaç madde. Gerisi "Ayrıntılar"da.
   const vs = (c.votes || []).filter((v) => v.last);
-  if (running) card.appendChild(el("div", "cc-sum", "Üyeler inceliyor, sonuç birazdan burada."));
+  if (running) card.appendChild(councilProgress(c));
   else if (vs.length) {
     const cnt = {};
     for (const v of vs) cnt[v.last] = (cnt[v.last] || 0) + 1;

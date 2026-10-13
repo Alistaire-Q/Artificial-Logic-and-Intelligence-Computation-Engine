@@ -36,6 +36,7 @@ APPROVE_AT, REJECT_BELOW = 0.6, 0.4
 USER_WEIGHT = 3.0
 MAX_ROUNDS = 3
 REVIEWER_STEPS = 14
+PLAN_STEPS = 5  # plan incelemesinde az dosya okumak yeter; kurul dakikalarca sürmesin
 SEVERITIES = ("critical", "major", "minor")
 SEV_TR = {"critical": "kritik", "major": "önemli", "minor": "küçük"}
 STATUS_TR = {"confirmed": "doğrulandı", "refuted": "çürütüldü", "unclear": "belirsiz", "pending": "bekliyor"}
@@ -333,6 +334,9 @@ class Council:
         self.id = secrets.token_hex(4)
         self.on_usage: Callable[[dict[str, Any]], None] | None = None  # üyelerin token kullanımı (proje sayacı)
         self._stop = threading.Event()  # proje durdurulunca kurul da durur
+        self.phase = ""  # ekranda: hangi aşamada (bağımsız inceleme, kontrolcü, tartışma turu)
+        self.activity: dict[str, dict[str, Any]] = {}  # rol -> {state, last, vote}: canlı ilerleme
+        self._tick_at = 0.0
         self._agents: list[Any] = []
         size = context.count("\n")
         self.roles, self.rounds = plan_council(kind, subject + "\n" + context[:4000], size, critical, depth, roles)
@@ -391,7 +395,7 @@ class Council:
                       system_prompt=build_system_prompt(self.cwd, personality=False) + "\n\n" + self.brief(role),
                       is_child=True)
         agent.stream = False
-        agent.ui = _QuietUI(ui)
+        agent.ui = _QuietUI(ui, self, role)
         model, think = self.model_for(role)
         rname = f"council:{self.id}:{role}"
         if model in ("brain", "vision"):
@@ -494,7 +498,16 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
                        "görünüşü de değerlendir: görsel hiyerarşi, boşluklar, tipografi, renk, tutarlılık, telefonda "
                        "taşma/kırılma, şablon gibi ya da 'yapay zekâ yapımı' duran yerler. Görselden gördüğün sorunu "
                        "kanıt olarak hangi görüntüde nerede olduğunu yazarak ver.")
-        text = agent.run_turn(prompt, max_steps=REVIEWER_STEPS, images=images) or ""
+        act = self.activity.setdefault(role, {})
+        act.update(state="working", last="", vote="")
+        self._tick(force=True)
+        try:
+            text = agent.run_turn(prompt, max_steps=PLAN_STEPS if self.kind == "plan" else REVIEWER_STEPS,
+                                  images=images) or ""
+        except Exception:
+            act["state"] = "failed"
+            self._tick(force=True)
+            raise
         if not parse_block(text) and text.strip():
             # Zayıf modeller JSON'u unutabiliyor: bir kez, sadece biçimi iste.
             again = agent.run_turn("Cevabının sonunda istenen JSON bloğu yoktu. Kararını değiştirmeden şimdi sadece o "
@@ -502,9 +515,29 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
             if parse_block(again):
                 text = text.rstrip() + "\n\n" + again
         self.transcript.append({"round": self.round, "role": role, "text": text})
+        act.update(state="done" if text.strip() else "failed", last="", vote=norm_vote(parse_block(text).get("vote")))
+        self._tick(force=True)
         if self._stop.is_set():
             raise CouncilStopped()
         return text
+
+    def _tick(self, force: bool = False) -> None:
+        """Canlı ilerlemeyi ekrana yansıt (en sık saniyede bir)."""
+        now = time.monotonic()
+        if force or now - self._tick_at > 1.0:
+            self._tick_at = now
+            try:
+                self.on_change()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _set_phase(self, text: str, everyone: bool = False) -> None:
+        self.phase = text
+        if everyone:  # tartışma turunda herkes yeniden konuşacak
+            for a in self.activity.values():
+                if a.get("state") == "done":
+                    a["state"] = "waiting"
+        self._tick(force=True)
 
     def _parallel(self, roles: list[str], make_prompt: Callable[[str], str]) -> dict[str, str]:
         out: dict[str, str] = {}
@@ -534,6 +567,7 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
 
     def _round1(self) -> None:
         self.round = 1
+        self._set_phase("Plan inceleniyor" if self.kind == "plan" else "Bağımsız inceleme")
         reviewers = [r for r in self.roles if r != "verifier"] or ["critic"]
         ask = ("Önceki bulgular düzeltildi mi kontrol et; sadece hâlâ duran ya da yeni çıkan ciddi sorunları yaz."
                if self.kind == "recheck" else "Bağımsız incele (diğer rollerin ne dediğini görmüyorsun).")
@@ -586,6 +620,7 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
 
     def _verify(self) -> None:
         self.round = max(self.round, 1)
+        self._set_phase("Kontrolcü bulguları doğruluyor")
         fmt = ('{"checks": [{"id": "F1", "status": "confirmed|refuted|unclear", "note": "ne denedin, ne gördün"}], '
                '"findings": [{"severity": "...", "title": "...", "evidence": "...", "fix": "..."}], '
                '"vote": "approve|conditional|reject", "reason": "..."}')
@@ -650,6 +685,7 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
     def _debate(self) -> bool:
         """Bir tartışma turu. Görüş değişmediyse False (tartışma biter)."""
         self.round += 1
+        self._set_phase(f"Tartışma turu {self.round}", everyone=True)
         positions = "\n".join(f"- {ROLES[v.role].title}: {VOTE_TR.get(v.last, 'oy yok')}. {v.reason}"
                               for v in self.votes.values())
         fmt = ('{"vote": "approve|conditional|reject", "reason": "...", "conditions": ["..."], "stances": [{"id": '
@@ -686,6 +722,9 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
         return any(before.get(r) != v.last for r, v in self.votes.items())
 
     def _finish(self) -> None:
+        for a in self.activity.values():
+            if a.get("state") in ("waiting", "working"):
+                a["state"] = "done"
         self.result = tally(list(self.votes.values()), self.findings, self.user_vote, self.relevant)
         if self.kind == "plan":
             self.result = plan_override(plan_decision(self.result, self.findings), self.findings, self.user_vote)
@@ -705,7 +744,8 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
                 "rounds": self.rounds, "roles": self.roles, "critical": self.critical, "relevant": self.relevant,
                 "votes": [v.as_dict() for v in self.votes.values()], "findings": [f.as_dict() for f in self.findings],
                 "result": self.result, "user_vote": self.user_vote, "started": self.started, "ended": self.ended,
-                "screens": list(self.images), "rubric": rubric(self.votes.values()),
+                "screens": list(self.images), "rubric": rubric(self.votes.values()), "phase": self.phase,
+                "activity": {r: dict(a) for r, a in self.activity.items()},
                 "transcript": [{**t, "text": prose(t["text"])} for t in self.transcript]}
 
 
@@ -809,11 +849,18 @@ def dedupe(items: list[str], against: list[str] | None = None, same: float = 0.5
 class _QuietUI:
     """Kurul üyelerinin arayüzü: izin soruları (sadece kontrolcü) ana arayüze gider, gerisi sessiz."""
 
-    def __init__(self, base: Any):
-        self.base = base
+    def __init__(self, base: Any, council: Any = None, role: str = ""):
+        self.base, self.council, self.role = base, council, role
 
     def __getattr__(self, name: str):
         return lambda *a, **k: None
+
+    def tool_start(self, call_id: str, name: str, summary: str) -> None:
+        """Üyenin o an ne yaptığı (dosya okuyor, arıyor...) ekranda görünsün."""
+        if self.council is not None:
+            act = self.council.activity.setdefault(self.role, {})
+            act["last"] = f"{name} {summary}".strip()[:120]
+            self.council._tick()
 
     def ask_permission(self, name: str, summary: str, risk: str) -> str:
         ask = getattr(self.base, "ask_permission", None)
