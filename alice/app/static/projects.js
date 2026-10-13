@@ -1274,7 +1274,7 @@ function projectDialog(project) {
     const fill = (t) => {
       goal.value = t.goal || "";
       lm.value = t.lead_model || "auto"; lt.value = t.lead_thinking || "default";
-      rv.checked = t.review !== false; kc.checked = t.council !== false; pc.checked = t.plan_council !== false; ck.value = t.check || "";
+      rv.checked = t.review !== false; kc.checked = t.council !== false; pc.checked = t.plan_council !== false; pc.disabled = !kc.checked; ck.value = t.check || "";
       list.replaceChildren();
       (t.agents || []).forEach((a, i) => list.appendChild(agentCard(a, i + 1)));
       setMode((t.agents || []).length > 0);

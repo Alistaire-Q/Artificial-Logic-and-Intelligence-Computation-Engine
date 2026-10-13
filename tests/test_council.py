@@ -302,3 +302,40 @@ def test_plan_starts_with_notes_after_one_revision(workdir):
     assert not team.questions  # kullanıcıya sorulmadı, notlarla başlandı
     assert any("notlarıyla başlatıldı" in x["text"] for x in team.timeline)
     assert "Kurul notu" in team.members["web"].constraints
+
+
+def test_plan_decision_edge_cases():
+    from alice.council import Finding, Vote, norm_area, norm_scores, plan_decision, plan_override, tally
+
+    # hiç oy sayılamadı (gerekçesiz ret): plan reddedilmez
+    res = tally([Vote("critic", "m", 1.0, last="reject")], [])
+    assert plan_decision(res, [])["decision"] == "approve"
+    # büyük harfli / İngilizce alan da planı bozan sorun sayılır
+    f = Finding("F1", "critic", "major", "eksik sayfa", status="confirmed", area=norm_area("Kapsam"))
+    assert plan_decision({"score": 0.9, "weight": 3}, [f])["decision"] == "revise"
+    assert norm_area("SIRA") == "sıra" and norm_area("scope") == "kapsam" and norm_area("x") == ""
+    # doğrulama alanı tek başına planı durdurmaz
+    g = Finding("F2", "critic", "major", "test adımı yok", status="confirmed", area="doğrulama")
+    assert plan_decision({"score": 0.9, "weight": 3}, [g])["decision"] == "approve_conditions"
+    # bozuk puanlar kurulu çökertmez
+    assert norm_scores({"kapsam": float("nan"), "Bölme": "4", "sıra": True, "risk": float("inf"), "doğrulama": 9}) == \
+        {"bölme": 4, "doğrulama": 5}
+    # kullanıcının reddi de geçer
+    assert plan_override({"decision": "approve"}, [], {"vote": "reject"})["decision"] == "revise"
+
+
+def test_plan_verifier_cannot_escalate_or_veto(workdir):
+    def script(model, messages, tools, **kw):
+        role = role_of(messages)
+        if role == "critic":
+            return js(vote="approve", findings=[{"severity": "minor", "area": "doğrulama", "title": "öneri"}])
+        if role == "verifier":
+            return js(checks=[{"id": "F1", "status": "confirmed", "severity": "major"}], vote="approve",
+                      findings=[{"severity": "critical", "title": "planda X yazmıyor"}])
+        return js(vote="approve")
+
+    agent, _, ctx = make(script, workdir)
+    snap = Council(ctx, "plan", "Proje planı", "plan metni", depth=1).run()
+    sev = {f["id"]: f["severity"] for f in snap["findings"]}
+    assert sev["F1"] == "minor"  # yükseltilemez
+    assert all(f["severity"] != "critical" for f in snap["findings"]) and snap["result"]["veto"] == []
