@@ -1390,3 +1390,117 @@ def test_speech_segments_drop_echo_of_custom_prompt():
     echo = S(text="Bingo, cannon, waypoint.", no_speech_prob=0.5, avg_logprob=-1.0, compression_ratio=1.0)
     real = S(text="Cannon kaç mermi kaldı?", no_speech_prob=0.05, avg_logprob=-0.3, compression_ratio=1.0)
     assert speech_segments([echo, real], "Hey Alice. Bingo, cannon, waypoint, tanker.") == [real]
+
+
+# ------------------------------------------------------------------ "Alice sus" ve takip penceresi
+@pytest.mark.parametrize("text, hush", [
+    ("Alice sus", True), ("Alice, sus artık.", True), ("sus", True), ("Tamam Alice sessiz ol lütfen", True),
+    ("Hey Alice, kapa çeneni!", True), ("sus Alice", True),
+    ("susam al", False), ("sus diye bağırdı", False), ("Alice saat kaç", False), ("bugün sessiz olacak mı", False),
+])
+def test_is_hush(text, hush):
+    from alice.voice.listen import is_hush
+
+    assert is_hush(text) is hush
+
+
+def test_ends_with_hush_on_streamed_transcript():
+    from alice.voice.listen import ends_with_hush
+
+    assert ends_with_hush("YouTube aç bakalım Alice sus")
+    assert not ends_with_hush("olsun bakalım")
+
+
+def test_strict_wake_needs_name_at_start():
+    assert strip_wake("bak şimdi Alice saat kaç") == "saat kaç"
+    assert strip_wake("bak şimdi Alice saat kaç", strict=True) is None
+    assert strip_wake("Alice saat kaç", strict=True) == "saat kaç"
+
+
+def test_hush_mutes_until_alice_is_said_again():
+    agent, sp = FakeAgent(), FakeSpeaker()
+    va = VoiceAssistant(agent, sp, stt=None, follow_up=5)
+    va.handle_text("Hey Alice, GPU kaç derece?", direct=False)
+    assert wait_for(lambda: va.armed_until > time.monotonic())
+    va.handle_text("Alice sus", direct=False)
+    assert va.muted and va.armed_until == 0 and agent.turns == ["GPU kaç derece?"]
+    # susturulmuşken pencere yok, "Alice" cümlenin ortasında da uyandırmaz
+    va.handle_text("peki ya dün?", direct=False)
+    va.handle_text("bak şimdi Alice ne diyecek", direct=False)
+    time.sleep(0.1)
+    assert agent.turns == ["GPU kaç derece?"] and va.muted
+    va.handle_text("Alice, hava nasıl?", direct=False)
+    assert wait_for(lambda: agent.turns[-1] == "hava nasıl?")
+    assert not va.muted
+
+
+def test_hush_from_a_friend_while_idle_is_ignored():
+    agent, sp = FakeAgent(), FakeSpeaker()
+    va = VoiceAssistant(agent, sp, stt=None)
+    va.handle_text("sus", direct=False)  # pencere yok, Alice konuşmuyor: başkasına söylenmiş
+    assert not va.muted
+
+
+def test_push_to_talk_unmutes():
+    agent, sp = FakeAgent(), FakeSpeaker()
+    va = VoiceAssistant(agent, sp, stt=None)
+    va._hush()
+    va.handle_text("saat kaç", direct=True)
+    assert wait_for(lambda: agent.turns == ["saat kaç"]) and not va.muted
+
+
+def test_follow_up_is_capped_at_five_seconds():
+    va = VoiceAssistant(FakeAgent(), FakeSpeaker(), stt=None, follow_up=8, live_follow=12)
+    assert va.follow_up == 5 and va.live_follow == 5
+
+
+def test_follow_window_counts_from_speech_start():
+    va = VoiceAssistant(FakeAgent(), FakeSpeaker(), stt=None)
+    now = time.monotonic()
+    va.armed_until = now - 1  # pencere az önce kapandı
+    assert va._armed(now - 2)  # cümle pencere içinde başladı: sayılır
+    assert not va._armed(now - 0.5)  # pencere kapandıktan sonra başladı: sayılmaz
+    va._hush()
+    assert not va._armed(now - 2)
+
+
+def test_live_window_does_not_extend_after_idle_close():
+    class FakeLive:
+        available = True
+        hushed = False
+        last_active = 0.0
+
+        def converse(self, text, frames, stop, first_audio=b"", hint=None):
+            self.last_active = time.monotonic() - 5  # 5 sn sessizlikten sonra kapandı
+
+    live = FakeLive()
+    va = VoiceAssistant(FakeAgent(), FakeSpeaker(), stt=None, live=live)
+    va._converse_live("merhaba")
+    assert va.armed_until <= time.monotonic() + 0.1
+    live.hushed = True
+    va._converse_live("merhaba")
+    assert va.muted and va.armed_until == 0
+
+
+def test_old_girlfriend_personality_is_upgraded_to_assistant(tmp_path, monkeypatch):
+    from alice import config
+
+    monkeypatch.setattr(config, "alice_home", lambda: tmp_path)
+    (tmp_path / "personality.md").write_text(config.PERSONALITY_TEMPLATE_V3, encoding="utf-8")
+    body = config.personality_text()
+    assert "kişisel asistanı" in body and "JARVIS" in body and "Mommy öyle dedi" not in body
+    assert "JARVIS" in (tmp_path / "personality.md").read_text(encoding="utf-8")
+    (tmp_path / "personality.md").write_text("# kendi kişiliğim", encoding="utf-8")
+    assert config.personality_text() == "# kendi kişiliğim"  # kullanıcının yazdığına dokunulmaz
+
+
+def test_speaking_over_alice_counts_as_follow_up():
+    agent, sp = FakeAgent(), FakeSpeaker()
+    va = VoiceAssistant(agent, sp, stt=None)
+    sp.speaking = True
+    va._on_speech_start()
+    assert va._armed(va._speech_at)
+    va._hush()
+    sp.speaking = True
+    va._on_speech_start()
+    assert not va._armed(va._speech_at)

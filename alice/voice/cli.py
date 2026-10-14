@@ -362,7 +362,7 @@ def _run(cfg, argv) -> int:
     agent, speaker, ctx = build_voice_agent(cfg, RichUI())
     va = VoiceAssistant(agent, speaker, make_stt(cfg), ptt_key=a.ptt or v.get("ptt_key", ""),
                         wake_model=v.get("wake_model", ""), wake_phrase=not a.no_wake and v.get("wake_phrase", True),
-                        barge_in=v.get("barge_in", True), follow_up=float(v.get("follow_up", 8)),
+                        barge_in=v.get("barge_in", True), follow_up=float(v.get("follow_up", 5)),
                         emit=lambda s: console.print(f"[dim]  {escape(s)}[/]"), live=make_live(cfg, agent),
                         end_silence=float(v.get("end_silence", 0.5)), **live_text_options(v))
     keys = f"bas-konuş: {va.ptt_key}" if va.ptt_key else ""

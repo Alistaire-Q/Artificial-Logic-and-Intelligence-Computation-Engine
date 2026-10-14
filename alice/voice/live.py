@@ -18,7 +18,7 @@ import time
 from typing import Any, Callable
 
 from alice.tools.base import ToolResult
-from alice.voice.listen import is_yes
+from alice.voice.listen import FOLLOW_MAX, ends_with_hush, is_yes
 from alice.voice.vocab import known_names
 
 URL = ("wss://generativelanguage.googleapis.com/ws/"
@@ -332,7 +332,12 @@ class LiveSession:
                                   "")
         self.models = list(v.get("live_models") or DEFAULT_MODELS)
         self.voice = str(v.get("live_voice", "Kore"))
-        self.idle = float(v.get("live_idle", 30))
+        # Alice susunca (ya da kullanıcı konuşmayı bitirince) bu kadar sn sessizlikte oturum kapanır; en fazla 5 sn,
+        # yoksa yanındakilerle konuşurken söylenenler de komut sanılıyordu.
+        self.idle = min(float(v.get("live_idle", FOLLOW_MAX)), FOLLOW_MAX)
+        self.gated = False  # True: gelen kareler konuşma süzgecinden geçmiş (sessizlik = sıfır), ses = gerçek konuşma
+        self.hushed = False  # son oturum "Alice sus" ile kapandı
+        self.last_active = 0.0  # son oturumda son konuşmanın/sesin anı (takip penceresi buradan sayılır)
         # Live'ın "kullanıcı sustu" kararı: kısa = cevaba erken başlar; çok kısa olursa cümle ortasında keser.
         self.silence_ms = int(v.get("live_silence_ms", 600))
         self._connect = connect
@@ -491,7 +496,9 @@ class LiveSession:
         old_ui, self.agent.ui = self.agent.ui, ui
         calls: queue.Queue[dict[str, Any] | None] = queue.Queue()
         done = threading.Event()
-        state = {"active": time.monotonic(), "said": [], "heard": [], "mute": False, "framed": True}
+        state = {"active": time.monotonic(), "said": [], "heard": [], "mute": False, "framed": True, "cur": "",
+                 "pending": True}
+        self.hushed = False
         self.log(f"live açıldı [{self.model}]")
 
         def touch() -> None:
@@ -537,7 +544,15 @@ class LiveSession:
                                 state["framed"] = True
                                 threading.Thread(target=send_frame, daemon=True).start()
                             state["heard"].append(t)
-                            state["asked"], state["spoke"] = time.monotonic(), False
+                            state["cur"] += t
+                            if ends_with_hush(state["cur"]):
+                                self.hushed = True  # "Alice sus": hemen sus ve oturumu kapat
+                                state["mute"] = True
+                                out.clear()
+                                self.log(f"live susturuldu: {state['cur'][-80:]}")
+                                done.set()
+                                break
+                            state["asked"], state["spoke"], state["pending"] = time.monotonic(), False, True
                             self._new_turn()
                             ui.last_user = "".join(state["heard"])[-200:]
                             touch()
@@ -554,6 +569,8 @@ class LiveSession:
                             self._flush_log(state, ui)
                             state["mute"] = False
                             state["framed"] = False
+                            if sc.get("turnComplete"):
+                                state["cur"], state["pending"] = "", False
                     if msg.get("toolCall"):
                         for fc in msg["toolCall"].get("functionCalls", []):
                             calls.put(fc)
@@ -571,9 +588,12 @@ class LiveSession:
             buf = b""
             while not done.is_set() and not stop.is_set():
                 try:
-                    buf += frames.get(timeout=0.2)
+                    chunk = frames.get(timeout=0.2)
                 except queue.Empty:
                     continue
+                if self.gated and any(chunk):
+                    touch()  # kullanıcı konuşuyor (yazı dökümü gecikse de pencere kapanmasın)
+                buf += chunk
                 if len(buf) >= 3200:  # 100 ms
                     try:
                         ws.send(json.dumps({"realtimeInput": {"audio": {
@@ -621,10 +641,13 @@ class LiveSession:
                     continue
                 if out.playing or self._bg:
                     touch()
+                elif state["pending"] and time.monotonic() - state.get("asked", 0) < 20:
+                    touch()  # kullanıcı konuştu, cevap bekleniyor: model düşünürken kapanma
                 if time.monotonic() - state["active"] > self.idle:
                     break
         finally:
             done.set()
+            self.last_active = state["active"]
             self._flush_log(state, ui)
             try:
                 ws.close()

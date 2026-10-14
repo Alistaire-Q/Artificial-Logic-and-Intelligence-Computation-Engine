@@ -324,3 +324,17 @@ def test_live_consecutive_duplicate_call_not_rerun():
     s._run_call(ws, {"id": "3", "name": "computer", "args": {"action": "scroll"}})
     s._run_call(ws, {"id": "4", "name": "computer", "args": {"action": "scroll"}})
     assert len(calls) == 3  # kaydırma gibi tekrar edilebilir işler engellenmez
+
+
+def test_live_idle_is_capped_and_hush_closes_session(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    ws = FakeWS([{"serverContent": {"inputTranscription": {"text": "Alice "}}},
+                 {"serverContent": {"inputTranscription": {"text": "sus"}}}])
+    agent = SimpleNamespace(messages=[{"role": "system", "content": "s"}], ctx=SimpleNamespace(state={}), ui=None,
+                            tool_specs=lambda: [], _enable_groups_for=lambda **k: None, _execute_calls=lambda c: [])
+    assert LiveSession(SimpleNamespace(data={"voice": {"live_idle": 30}}), agent, connect=lambda u, **k: ws).idle == 5
+    cfg = SimpleNamespace(data={"voice": {"live_idle": 3, "live_models": ["m1"]}})
+    s = LiveSession(cfg, agent, connect=lambda url, **k: ws, out_factory=FakeOut)
+    t0 = time.monotonic()
+    s.converse("selam", queue.Queue(), threading.Event())
+    assert time.monotonic() - t0 < 2 and s.hushed and s.last_active > 0

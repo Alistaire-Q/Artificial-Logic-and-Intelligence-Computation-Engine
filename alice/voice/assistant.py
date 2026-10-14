@@ -17,7 +17,7 @@ from typing import Any, Callable
 
 from alice.tools.base import ToolResult
 from alice.voice.audio import Audio, Microphone
-from alice.voice.listen import VAD, PushToTalk, WakeWord, is_yes, strip_wake, utterances
+from alice.voice.listen import FOLLOW_MAX, VAD, PushToTalk, WakeWord, is_hush, is_yes, strip_wake, utterances
 from alice.voice.speaker import Speaker
 from alice.voice.stt import STTError, is_hallucination
 from alice.voice.tone import SentenceSplitter
@@ -189,15 +189,15 @@ def trim_history(messages: list[dict[str, Any]], keep_turns: int) -> list[dict[s
 class VoiceAssistant:
     def __init__(self, agent, speaker: Speaker, stt, mic_factory: Callable[[], Microphone] = Microphone,
                  ptt_key: str = "", wake_model: str = "", wake_phrase: bool = True, barge_in: bool = True,
-                 follow_up: float = 8.0, emit: Callable[[str], None] = lambda s: None,
+                 follow_up: float = FOLLOW_MAX, emit: Callable[[str], None] = lambda s: None,
                  keep_turns: int = 4, idle_reset: float = 300.0, live=None, end_silence: float = 0.5,
-                 live_text_min: float | None = -0.7, live_text_wait: float = 1.5, live_follow: float = 12.0,
+                 live_text_min: float | None = -0.7, live_text_wait: float = 1.5, live_follow: float = FOLLOW_MAX,
                  full_text_max: float = 8.0, live_gate: bool = True):
         self.agent = agent
         # İlk cümlenin yerel dökümü bu güvenin (ortalama log olasılık) üstündeyse Live'a ses yerine yazı gider.
         self.live_text_min = live_text_min
         self.live_text_wait = live_text_wait
-        self.live_follow = live_follow  # canlı konuşma bitince bu kadar sn "Alice" demeden devam edilebilir
+        self.live_follow = min(live_follow, FOLLOW_MAX)  # canlı konuşma bitince "Alice" demeden devam süresi
         self.full_text_max = full_text_max  # bu uzunluğa kadar cümle uyandırmada bir kerede yazıya dökülür
         self._pre_text: tuple[Any, bool] = (None, False)
         from alice.voice.listen import SpeechGate
@@ -205,6 +205,8 @@ class VoiceAssistant:
         self.live_gate: SpeechGate | None = SpeechGate() if live_gate else None
         self.end_silence = end_silence  # konuşma bitti saymak için sessizlik (sn)
         self.live = live  # Gemini Live: "Hey Alice"ten sonra sesten sese canlı konuşma
+        if live is not None:
+            live.gated = live_gate  # Live'a giden kareler süzülüyor: ses varsa gerçekten konuşma var
         self._live_q: queue.Queue | None = None  # doluyken mikrofon kareleri Live'a gider
         self._live_down = 0.0
         self.keep_turns = keep_turns
@@ -217,7 +219,9 @@ class VoiceAssistant:
         self.wake_model = wake_model
         self.wake_phrase = wake_phrase
         self.barge_in = barge_in
-        self.follow_up = follow_up
+        self.follow_up = min(follow_up, FOLLOW_MAX)
+        self.muted = False  # "Alice sus": yeniden "Alice" denene kadar hiçbir şeyi komut sayma
+        self._speech_at = 0.0  # son konuşmanın BAŞLADIĞI an (takip penceresi buna göre)
         self.emit = emit
         self.ui: VoiceUI = agent.ui if isinstance(agent.ui, VoiceUI) else VoiceUI(speaker, agent.ui)
         agent.ui = self.ui
@@ -242,8 +246,27 @@ class VoiceAssistant:
             self.emit("araya girildi, susuyorum")
 
     def _on_speech_start(self) -> None:
+        self._speech_at = time.monotonic()
+        if self.speaker.speaking and not self.muted:
+            self.armed_until = max(self.armed_until, self._speech_at)  # Alice konuşurken söze girmek de ona söylenmiştir
         if self.barge_in and self.speaker.speaking:
             self._interrupt()
+
+    def _armed(self, at: float | None = None) -> bool:
+        """'Alice' demeden konuşulabilir mi? Konuşmanın başladığı ana bakılır: pencere içinde başlayıp dışında biten
+        cümle sayılır, pencere kapandıktan sonra başlayan sayılmaz."""
+        return not self.muted and (at or time.monotonic()) <= self.armed_until
+
+    def _hush(self, why: str = "") -> None:
+        """'Alice sus': konuşmayı kes, takip penceresini kapat, yeniden 'Alice' denene kadar dinleme."""
+        self.muted = True
+        self.armed_until = 0.0
+        self.speaker.stop()
+        if self._busy.is_set():
+            self.ui.mute()
+            self.agent.stop()
+        voice_log(f"susturuldu{f': {why}' if why else ''} (yeniden 'Alice' denene kadar komut alınmıyor)")
+        self.emit("sustum; 'Alice' diyene kadar dinlemiyorum")
 
     def ask_yes_no(self, question: str, timeout: float = 10) -> bool:
         """Sesli onay: soruyu söyle, sıradaki konuşmayı cevap say."""
@@ -269,12 +292,23 @@ class VoiceAssistant:
         text = text.strip()
         if not text:
             return
+        rest = strip_wake(text, strict=self.muted)
+        armed = direct or self._armed()
+        if is_hush(text) and (armed or rest is not None or self._awaiting_answer or self.speaker.speaking
+                              or self._busy.is_set()):
+            if self._awaiting_answer:
+                self._answers.put("hayır")
+            self._hush(text)
+            return
         if self._awaiting_answer:
             self._answers.put(text)
             return
+        if self.muted:
+            if rest is None and not direct:
+                return  # susturulmuş: sadece "Alice ..." ya da bas-konuş uyandırır
+            self.muted = False
+            voice_log("susturma kalktı")
         # Uyandırma kelimesi varsa her durumda at; yoksa sadece bas-konuş / takip penceresinde geçerli.
-        rest = strip_wake(text)
-        armed = direct or time.monotonic() <= self.armed_until
         if rest is not None and (armed or self.wake_phrase):
             text = rest
         elif not armed:
@@ -284,6 +318,7 @@ class VoiceAssistant:
             if self._live_ready():
                 self._jobs.put("")  # canlı konuşmayı aç, kullanıcı söyleyecek
                 return
+            self.speaker.wait(5)  # pencere "Efendim?" bittikten sonra başlasın
             self.armed_until = time.monotonic() + self.follow_up
             return
         if self._busy.is_set():
@@ -291,7 +326,7 @@ class VoiceAssistant:
             self.agent.stop()
         self._jobs.put(text)
 
-    def handle_audio(self, audio: Audio, direct: bool) -> None:
+    def handle_audio(self, audio: Audio, direct: bool, started: float | None = None) -> None:
         if audio.seconds < 0.3:
             return
         gate = getattr(self.stt, "wake_gate", None)
@@ -299,7 +334,7 @@ class VoiceAssistant:
             pre = self._live_ready() and not self._busy.is_set() and audio.seconds >= 0.6
             if pre:
                 self.live.prefetch()  # bağlantı, uyandırma kontrolüyle aynı anda açılsın
-            armed = time.monotonic() <= self.armed_until  # canlı konuşma az önce bitti: "Alice" demeden devam
+            armed = self._armed(started)  # az önce cevap verdi: "Alice" demeden devam
             full = self._full_text(audio) if pre else None
             head = full[0] if full else gate.heard(audio)
             if head is not None and not head.strip() and not full:
@@ -308,9 +343,17 @@ class VoiceAssistant:
             # "Alice" demeden devam: gürültüden uydurulmuş ya da çok güvensiz döküm canlı konuşmayı yeniden açmasın.
             follow = (armed and len(head.strip()) > 1 and not is_hallucination(head) and conf > -1.2
                       if head is not None else False)
-            woke = head is not None and (strip_wake(head) is not None or follow)
+            woke = head is not None and (strip_wake(head, strict=self.muted) is not None or follow)
             if pre and not woke:
                 self.live.discard()
+            if head is not None and woke and is_hush(head):
+                if pre:
+                    self.live.discard()
+                self._hush(head)  # "Alice sus" canlı konuşma açmasın
+                return
+            if head is not None and woke and self.muted:
+                self.muted = False
+                voice_log("susturma kalktı")
             if head is not None:
                 if not woke:
                     if audio.seconds >= 0.6:
@@ -439,8 +482,14 @@ class VoiceAssistant:
             return False
         finally:
             self._live_q = None
-            # Kısa bir süre "Alice" demeden devam edilebilsin (sonra yeniden "Hey Alice" gerekir).
-            self.armed_until = time.monotonic() + self.live_follow
+            if getattr(self.live, "hushed", False) is True:
+                self._hush("canlı konuşmada")
+            else:
+                # Pencere son konuşmadan (Alice'in ya da kullanıcının) itibaren sayılır; Live zaten o kadar sessizlikten
+                # sonra kapandıysa ek süre kalmaz, yeniden "Alice" gerekir.
+                last = getattr(self.live, "last_active", None)
+                base = last if isinstance(last, (int, float)) and last > 0 else time.monotonic()
+                self.armed_until = base + self.live_follow
 
     def _worker(self) -> None:
         while True:
@@ -507,7 +556,8 @@ class VoiceAssistant:
             tools = f" araçlar: {', '.join(self.ui.tools)}" if self.ui.tools else ""
             voice_log(f"cevap [{', '.join(dict.fromkeys(self.ui.models))}]{tools}: {reply}")
         self.speaker.wait(120)
-        self.armed_until = time.monotonic() + self.follow_up
+        if not self.muted:
+            self.armed_until = time.monotonic() + self.follow_up
 
     # ------------------------------------------------------------------ döngü
     def run(self) -> None:
@@ -553,6 +603,7 @@ class VoiceAssistant:
                         continue
                     if wake is not None and wake.detect(frame):
                         self._interrupt()
+                        self.muted = False
                         self.armed_until = time.monotonic() + self.follow_up
                         self.emit("uyandım")
                     # ALICE konuşurken kendi sesini konuşma sanmasın.
@@ -564,8 +615,9 @@ class VoiceAssistant:
                 gate.warm_up()
             for audio in utterances(frames(), self.vad, stop=self.stop_event.is_set, end_silence=self.end_silence,
                                     on_start=self._on_speech_start):
-                direct = time.monotonic() <= self.armed_until
-                threading.Thread(target=self.handle_audio, args=(audio, direct), daemon=True).start()
+                started = self._speech_at or None
+                direct = self._armed(started)
+                threading.Thread(target=self.handle_audio, args=(audio, direct, started), daemon=True).start()
         if ptt is not None:
             ptt.stop()
 
@@ -601,7 +653,7 @@ def live_text_options(v: dict[str, Any]) -> dict[str, Any]:
     m = v.get("live_text_min", -0.7)
     return {"live_text_min": None if m in ("", False, None) else float(m),
             "live_text_wait": float(v.get("live_text_wait", 1.5)),
-            "live_follow": float(v.get("live_follow", 12)),
+            "live_follow": float(v.get("live_follow", FOLLOW_MAX)),
             "live_gate": bool(v.get("live_gate", True))}
 
 

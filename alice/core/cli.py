@@ -193,7 +193,7 @@ def _start_voice(cfg, core):
         return None
     va = VoiceAssistant(agent, speaker, stt, ptt_key=v.get("ptt_key", ""),
                         wake_model=v.get("wake_model", ""), wake_phrase=v.get("wake_phrase", True),
-                        barge_in=v.get("barge_in", True), follow_up=float(v.get("follow_up", 8)),
+                        barge_in=v.get("barge_in", True), follow_up=float(v.get("follow_up", 5)),
                         live=make_live(cfg, agent),
                         end_silence=float(v.get("end_silence", 0.5)), **live_text_options(v))
     threading.Thread(target=va.run, daemon=True, name="alice-voice").start()
