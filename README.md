@@ -184,7 +184,11 @@ Büyük bir iş (büyük bir kod tabanında birden çok modül, backend + fronte
 
 **Akıllı model seçimi:** ajanların ve yöneticinin modeli varsayılan olarak `auto`: görevin alanı (tasarım/arayüz, kod, inceleme, metin, basit iş, görsel) görev metninden çıkarılır ve erişebildiğin modeller o alandaki güçlerine göre sıralanır (ör. tasarımda Claude ve Gemini Pro, kodda Qwen Coder/DeepSeek/GLM, incelemede akıl yürütme modelleri öne çıkar; bağlamı dar modeller ajan işinde geri itilir, basit işte hız önce gelir). Kurulda eleştirmen ve kontrolcü inceleme, performans kod, kullanıcı gözü tasarım ya da (ekran görüntüsü varsa) görsel alanına göre seçilir. Seçim ajanın başlığında görünür ("tasarım · glm-5.3"); elle `brain`, `fast` ya da `sağlayıcı:model` yazarsan ona dokunulmaz. Tablo: `alice/providers/picker.py`.
 
+**Token:** her adım bütün konuşmayı yeniden gönderdiği için proje ajanları, yönetici ve kurul üyelerinin konuşması 64k token'ı geçince özetlenir (`[agent] team_compact_at`, 0 = sınır yok). 1M bağlamlı modellerde bu sınır yokken tek bir site projesi ~100M token yakabiliyordu.
+
 **Tasarım işleri:** hedef bir web sitesi ya da arayüzse yönetici önce bir **tasarım** ajanına `DESIGN.md` yazdırır: kime ve hangi hisle konuşulduğu, gerçek referanslar, yazı tipi ve renk kararları, düzen fikri ve açık bir "yapma" listesi (şablon gibi duran kalıplar). Bu belge her ajana gösterilir; kurul da önce görünüşe bakar, "şablon gibi duruyor" önemli bir sorundur.
+
+**Yapay zekâ kalıbı denetimi:** modeller hep aynı kalıplara kayıyor ("AETH-SYS // BRİFİNG-01" gibi mono etiketler, "> İNCELE" düğmeleri, "128.400+" sayaç şeritleri, "ŞEKİL 01" gibi sahte teknik notlar, neon parlamalar, gradyan yazı, boş sloganlar). Bu kalıplar sitenin dosyalarından sayılır (modelden bağımsız) ve dosya/örnek/düzeltme olarak yöneticinin inceleme notuna ve kurulun malzemesine girer; denetim temiz değilse iş o haliyle onaylanmaz. Ajanlar `design_check` aracıyla kendi işlerine bakar: ekran görüntüsü alınır, kalıplar sayılır ve görüntüler bir "sanat yönetmeni" modele (görsel destekli) eleştirtilir. Yasak liste `DESIGN.md`'nin de üstündedir.
 
 **Başlatmak:** sohbette "bunu proje olarak yap" demen yeter; ALICE `team` aracıyla projeyi başlatır ve sonucu istersen sohbette bekler. Ya da yan menüde Projeler'in yanındaki `+`:
 * **Hedef**i yaz. Şablonlar (Özellik ekle, Hata düzelt, Kod incelemesi, Yeniden düzenle, Test yaz) altına "bitti sayılma" ölçütünü ekler.
@@ -223,7 +227,7 @@ Büyük bir iş (büyük bir kod tabanında birden çok modül, backend + fronte
 
 **Ölçülü tartışır:** önem dereceleri tanımlı (kritik: bozuk/güvensiz, önemli: hedefi karşılamıyor, küçük: ayrıntı). Sadece küçük şartlarla verilen şartlı onay yeni bir düzeltme turu açmaz; iş onaylanır, öneriler yöneticiye not olarak gider. Aynı şartı başka sözcüklerle tekrar eden maddeler ve tekrarlanan dersler ayıklanır.
 
-**Siteye gözle bakar:** iş görünüşe dokunuyorsa (html/css/js…) ve her final kurulunda sitenin masaüstü ve telefon ekran görüntüleri alınır; **kullanıcı gözü** bunları görsel destekli modelle (`vision` rolü) inceler: hiyerarşi, boşluklar, tipografi, telefonda taşma, "şablon gibi" duran yerler. Playwright ve bir Chromium tarayıcısı gerekir (`pip install playwright` + `playwright install chromium`, ya da sistemdeki Chrome/Edge; `ALICE_CHROMIUM` ile yol verilebilir). Yoksa kurul koda bakmaya devam eder. Kapatmak: `[agent] team_screenshots = false`.
+**Siteye gözle bakar:** iş görünüşe dokunuyorsa (html/css/js…) ve her final kurulunda sitenin masaüstü ve telefon ekran görüntüleri alınır; **kullanıcı gözü** bunları görsel destekli modelle (`vision` rolü) inceler: hiyerarşi, boşluklar, tipografi, telefonda taşma, "şablon gibi" duran yerler. Ek kurulum gerekmez: Playwright yoksa bilgisayardaki Edge ya da Chrome pencere açmadan (headless) kullanılır (`ALICE_CHROMIUM` ile yol verilebilir). Hiçbiri yoksa kurul koda bakmaya devam eder. Kapatmak: `[agent] team_screenshots = false`.
 
 **Roller:**
 * **Eleştirmen:** acımasız ama kanıtlı. Hataları, eksikleri, riskleri ve kötü tasarımı arar; her bulguya kanıt (dosya:satır, alıntı, tekrar adımı) yazmak zorunda.

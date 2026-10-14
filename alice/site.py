@@ -9,6 +9,9 @@ from __future__ import annotations
 import base64
 import mimetypes
 import os
+import shutil
+import subprocess
+import tempfile
 import threading
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -86,6 +89,9 @@ class _Quiet(SimpleHTTPRequestHandler):
     def log_message(self, *args) -> None:  # noqa: D401
         pass
 
+    def guess_type(self, path):  # metin dosyaları utf-8 ilan edilsin (yoksa tarayıcı Türkçe harfleri bozuyor)
+        return content_type(Path(str(path)))
+
     def send_head(self):  # gizli dosyaları sunma (yol çözülmüş haliyle denetlenir: %2eenv gibi kaçışlar da yakalanır)
         from urllib.parse import unquote
 
@@ -112,7 +118,7 @@ def screenshots(root: Path, entry: str = "", timeout: float = 20.0) -> dict[str,
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        return {}
+        return cli_screenshots(root, entry, timeout)
     httpd, base = serve(root)
     out: dict[str, str] = {}
     try:
@@ -127,8 +133,65 @@ def screenshots(root: Path, entry: str = "", timeout: float = 20.0) -> dict[str,
                     page.close()
             finally:
                 browser.close()
-    except Exception:  # noqa: BLE001 - tarayıcı yok/çöktü: görüntüsüz devam
-        return out
+    except Exception:  # noqa: BLE001 - tarayıcı yok/çöktü: komut satırı tarayıcısını dene
+        out = out or {}
+    finally:
+        httpd.shutdown()
+    return out or cli_screenshots(root, entry, timeout)
+
+
+def browser_exe() -> str:
+    """Pencere açmadan ekran görüntüsü alabilecek Chromium tabanlı tarayıcı: ALICE_CHROMIUM, sonra Edge (Windows'ta
+    her zaman kurulu), Chrome, Chromium. Bulunamazsa boş."""
+    exe = os.environ.get("ALICE_CHROMIUM", "")
+    if exe and Path(exe).is_file():
+        return exe
+    cands: list[Path] = []
+    for env in ("PROGRAMFILES(X86)", "PROGRAMFILES", "LOCALAPPDATA"):
+        base = os.environ.get(env)
+        if base:
+            cands += [Path(base) / "Microsoft/Edge/Application/msedge.exe",
+                      Path(base) / "Google/Chrome/Application/chrome.exe"]
+    cands += [Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+              Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge")]
+    for c in cands:
+        if c.is_file():
+            return str(c)
+    for name in ("msedge", "chrome", "google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
+                 "microsoft-edge"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return ""
+
+
+def cli_screenshots(root: Path, entry: str = "", timeout: float = 20.0) -> dict[str, str]:
+    """Playwright yoksa: tarayıcıyı komut satırından görünmez (headless) çalıştırıp ekran görüntüsü al. Böylece
+    kurul ve tasarım eleştirmeni ek kurulum olmadan siteyi görür."""
+    entry = entry or find_entry(root)
+    exe = browser_exe()
+    if not entry or not exe:
+        return {}
+    httpd, base = serve(root)
+    out: dict[str, str] = {}
+    try:
+        with tempfile.TemporaryDirectory(prefix="alice-shot-") as tmp:
+            for name, (w, h) in VIEWPORTS.items():
+                png = Path(tmp) / f"{len(out)}.png"
+                cmd = [exe, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-first-run",
+                       "--no-default-browser-check", "--disable-extensions", "--mute-audio",
+                       f"--user-data-dir={Path(tmp) / 'profile'}",  # açık tarayıcıya bağlanmasın
+                       f"--window-size={w},{h}", "--virtual-time-budget=2500", f"--screenshot={png}",
+                       base + entry]
+                if os.name != "nt" and hasattr(os, "geteuid") and os.geteuid() == 0:
+                    cmd.insert(1, "--no-sandbox")
+                try:
+                    subprocess.run(cmd, capture_output=True, timeout=timeout, check=False,
+                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                except (OSError, subprocess.TimeoutExpired):
+                    break
+                if png.is_file() and png.stat().st_size > 1000:
+                    out[name] = base64.b64encode(png.read_bytes()).decode()
     finally:
         httpd.shutdown()
     return out

@@ -204,6 +204,9 @@ class Agent:
         a = config.agent
         self.max_steps = int(a.get("max_steps", 80))
         self._compact_cfg = a.get("compact_at_tokens", "auto")
+        # Üst sınır (0 = yok). Proje ajanları ve kurul için konur: 1M bağlamlı modelde her adım yüz binlerce token
+        # gönderiyordu (bir proje ~100M token).
+        self.compact_cap = 0
         self._last_prompt: tuple[int, int, Any] | None = None  # (sağlayıcının saydığı token, mesaj sayısı, son mesaj)
         self.output_limit = int(a.get("tool_output_chars", 12000))
         self.keep_images = int(a.get("keep_images", 2))
@@ -629,15 +632,16 @@ class Agent:
         """Özetleme sınırı. "auto": kullanılan modelin bağlam penceresinin %80'i (GLM 5.3 ve Gemini'de ~840K,
         Groq gibi dar ücretsiz katmanlarda sağlayıcı sınırı). Sayı yazılırsa o kullanılır."""
         v = self._compact_cfg
+        cap = self.compact_cap or 10**9
         if isinstance(v, (int, float)) and not isinstance(v, bool) and int(v) > 0 and int(v) != LEGACY_COMPACT_AT:
-            return int(v)
+            return min(int(v), cap)
         try:
             ref = self.router.last_ref.get(self.role) or self.router.first_available(self.role)
         except KeyError:
             ref = None
         if not ref:
-            return LEGACY_COMPACT_AT
-        return max(16000, int(self.router.context_limit(ref) * 0.8))
+            return min(LEGACY_COMPACT_AT, cap)
+        return min(max(16000, int(self.router.context_limit(ref) * 0.8)), cap)
 
     @compact_at.setter
     def compact_at(self, value: int) -> None:

@@ -395,6 +395,9 @@ class Council:
                       system_prompt=build_system_prompt(self.cwd, personality=False) + "\n\n" + self.brief(role),
                       is_child=True)
         agent.stream = False
+        from alice.team import team_compact_cap
+
+        agent.compact_cap = min(team_compact_cap(parent.config) or 48000, 48000)  # kurul üyesi kısa iş yapar
         agent.ui = _QuietUI(ui, self, role)
         model, think = self.model_for(role)
         rname = f"council:{self.id}:{role}"
@@ -446,7 +449,7 @@ Kısa ve somut yaz. Araçlarla kodu ve dosyaları kendin incele; tahmin yürütm
 - critical: iş bozuk ya da güvensiz (çalışmıyor, veri kaybı, güvenlik açığı).
 - major: hedefi ciddi biçimde karşılamıyor (eksik sayfa/özellik, kırık akış, şablon gibi duran tasarım).
 - minor: iyileştirme ve ayrıntı (kod tarzı, küçük kenar durumları, mikro optimizasyon). Küçük ayrıntı işi durdurmaz.
-Başlıkları, gerekçeleri ve şartları Türkçe yaz. Aynı şeyi başka sözcüklerle tekrar etme.
+Bütün metinleri (başlık, kanıt, düzeltme, şart, gerekçe) Türkçe yaz; malzeme İngilizce olsa da İngilizce yazma. Aynı şeyi başka sözcüklerle tekrar etme; başka bir üyenin bulgusuyla aynıysa yeni bulgu açma.
 Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy.""" + (
             f"\n\n# Projenin inceleme kuralları (REVIEW.md)\n{self.rules}" if self.rules else "") + (
             "\n\n# Bu projede daha önce yakalanan sorunlar (tekrarlanmış mı bak)\n" +
