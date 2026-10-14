@@ -507,7 +507,7 @@ ALICE bilgisayarın dışındaki şeyleri de yönetiyor. Hepsi sohbetle ya da se
 
 **Samsung TV (`tv`):** Samsung'un yerel uzaktan kumanda API'si kullanılıyor, TV'de bir şey kurmak gerekmiyor (`pip install websockets` ya da `alice-harness[home]`). TV açıkken "Alice, televizyonu bul" de, sonra bağlan. TV ekranında çıkan izin sorusunda "İzin ver"i seç. Token, IP ve MAC adresi `[samsung_tv]` altına kaydediliyor. Yapabildikleri: aç/kapa, ses, kanal, yön tuşları, kaynak/HDMI, uygulama açma (TV'de kurulu her uygulama adıyla), YouTube'da video açma, açık klavyeye yazı yazma. TV kapalıyken ağ kartı da uyuduğu için açma işi Wake-on-LAN ile yapılıyor. Bunun için TV'de Ayarlar > Genel > Ağ > Uzman Ayarları > "Mobil ile aç" açık olmalı.
 
-Modem desteği henüz yok.
+**Modem (`wifi modem`):** Modelini bilmesen de olur. Modem UPnP ile kendini tanıtıyor (çoğu ev modeminde varsayılan olarak açık), ALICE de marka ve modeli, dış IP'yi, bağlantı durumunu, modemin ne kadardır açık olduğunu, hat hızını ve trafiği okuyor. UPnP kapalıysa yönetim sayfasının başlığından tahmin ediyor. Yeniden başlatma ve bağlı cihaz listesi gibi işler modele özel; model belli olunca eklenecek. O zamana kadar ağdaki cihazlar için `wifi devices` var.
 
 ## Küçük eklemeler
 

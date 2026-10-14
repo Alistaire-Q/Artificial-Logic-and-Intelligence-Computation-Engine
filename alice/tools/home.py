@@ -68,11 +68,13 @@ class Wifi(Tool):
     name = "wifi"
     description = ("Wi-Fi ve ev ağı: bağlantı durumu ve sinyal, çevredeki ağlar, kayıtlı ağlar, bir ağa bağlan "
                    "(kayıtlı değilse şifreyle) ya da bağlantıyı kes, ağdaki cihazları listele (IP, MAC, ad), bir "
-                   "cihazı Wake-on-LAN ile uyandır.")
+                   "cihazı Wake-on-LAN ile uyandır, modem bilgisi (marka/model, dış IP, bağlantı, açık kalma süresi, trafik).")
     parameters = obj({
-        "action": {"type": "string", "enum": ["status", "scan", "saved", "connect", "disconnect", "devices", "wake"],
+        "action": {"type": "string", "enum": ["status", "scan", "saved", "connect", "disconnect", "devices", "wake",
+                                              "modem"],
                    "description": "status | scan: çevredeki ağlar | saved: kayıtlı ağlar | connect: ssid'e bağlan | "
-                   "disconnect | devices: ağdaki cihazlar (birkaç saniye sürer) | wake: mac'teki cihaza WoL paketi."},
+                   "disconnect | devices: ağdaki cihazlar (birkaç saniye sürer) | wake: mac'teki cihaza WoL paketi | "
+                   "modem: modem modeli ve internet bağlantısı (UPnP)."},
         "ssid": {"type": "string", "description": "connect için ağ adı, tam yazımıyla."},
         "password": {"type": "string", "description": "connect için şifre; ağ zaten kayıtlıysa gerekmez."},
         "mac": {"type": "string", "description": "wake için cihazın MAC adresi, ör. 'aa:bb:cc:dd:ee:ff'."},
@@ -86,6 +88,10 @@ class Wifi(Tool):
         from alice.home import net, wifi
 
         try:
+            if action == "modem":
+                from alice.home import modem
+
+                return ToolResult(modem.info())
             if action == "status":
                 return ToolResult(wifi.status())
             if action == "scan":

@@ -362,3 +362,51 @@ def test_samsung_youtube_deep_link(monkeypatch, tmp_path):
     SamsungTV().run(ctx, action="youtube", url="https://youtu.be/dQw4w9WgXcQ")
     assert ws.sent[-1]["params"]["data"] == {"appId": "111299001912", "action_type": "DEEP_LINK",
                                              "metaTag": "v=dQw4w9WgXcQ"}
+
+
+# ---------- modem (UPnP) ----------
+
+from alice.home import modem  # noqa: E402
+
+IGD_XML = """<?xml version="1.0"?>
+<root xmlns="urn:schemas-upnp-org:device-1-0">
+ <device>
+  <deviceType>urn:schemas-upnp-org:device:InternetGatewayDevice:1</deviceType>
+  <friendlyName>Superonline Fiber</friendlyName>
+  <manufacturer>Huawei</manufacturer>
+  <modelName>HG8245Q2</modelName>
+  <modelNumber>V5</modelNumber>
+  <deviceList><device>
+   <deviceType>urn:schemas-upnp-org:device:WANDevice:1</deviceType>
+   <serviceList><service>
+    <serviceType>urn:schemas-upnp-org:service:WANCommonInterfaceConfig:1</serviceType>
+    <controlURL>/upnp/control/WANCommonIFC1</controlURL>
+   </service></serviceList>
+   <deviceList><device>
+    <serviceList><service>
+     <serviceType>urn:schemas-upnp-org:service:WANPPPConnection:1</serviceType>
+     <controlURL>/upnp/control/WANPPPConn1</controlURL>
+    </service></serviceList>
+   </device></deviceList>
+  </device></deviceList>
+ </device>
+</root>"""
+
+SOAP_REPLY = """<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>
+<u:GetStatusInfoResponse xmlns:u="urn:schemas-upnp-org:service:WANPPPConnection:1">
+<NewConnectionStatus>Connected</NewConnectionStatus><NewLastConnectionError>ERROR_NONE</NewLastConnectionError>
+<NewUptime>183900</NewUptime></u:GetStatusInfoResponse></s:Body></s:Envelope>"""
+
+
+def test_modem_description_and_soap_parse():
+    d = modem.parse_description(IGD_XML, "http://192.168.1.1:37215/desc.xml")
+    assert (d["manufacturer"], d["model"], d["model_number"]) == ("Huawei", "HG8245Q2", "V5")
+    assert d["wan"] == ("urn:schemas-upnp-org:service:WANPPPConnection:1",
+                        "http://192.168.1.1:37215/upnp/control/WANPPPConn1")
+    assert d["common"] == "http://192.168.1.1:37215/upnp/control/WANCommonIFC1"
+    r = modem.parse_soap(SOAP_REPLY)
+    assert r["NewConnectionStatus"] == "Connected" and r["NewUptime"] == "183900"
+    assert modem.fmt_uptime(183900) == "2 gün 3 sa 5 dk"
+    assert modem.fmt_bytes(5 * 1024 ** 3) == "5.0 GB"
+    assert modem.page_title("<html><TITLE>\n ZXHN H298A </TITLE>") == "ZXHN H298A"
