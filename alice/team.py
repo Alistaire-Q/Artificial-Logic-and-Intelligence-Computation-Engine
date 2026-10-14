@@ -57,15 +57,34 @@ ACTIVE = ("running", "waiting", "asking")
 FINAL = ("done", "failed", "stopped")
 SAVE_EVERY = 1.5  # saniye: canlı güncellemelerde diske en sık bu aralıkla yazılır
 DESIGN_FILE = "DESIGN.md"
+RESEARCH_DIR = "research"  # referans sitelerin ekran görüntüleri ve çözümlemeleri (site_study yazar)
+
+
+def research_refs(root: Path, limit: int = 2) -> dict[str, str]:
+    """Araştırılmış referans sitelerin masaüstü görüntüleri (ad -> base64), karşılaştırma için."""
+    import base64
+
+    d = Path(root) / RESEARCH_DIR
+    out: dict[str, str] = {}
+    try:
+        files = sorted(d.glob("*-masaustu.png"), key=lambda p: p.stat().st_mtime)
+    except OSError:
+        return out
+    for f in files[:limit]:
+        try:
+            out["referans-" + f.name[:-len("-masaustu.png")]] = base64.b64encode(f.read_bytes()).decode()
+        except OSError:
+            continue
+    return out
 
 
 def team_compact_cap(config) -> int:
     """Proje ajanlarının konuşması bu kadar token'ı geçince özetlenir ([agent] team_compact_at, 0 = sınırsız).
     Her adım bütün konuşmayı yeniden gönderir; 1M bağlamlı modelde sınır olmayınca bir proje ~100M token yakıyordu."""
     try:
-        return max(0, int(config.agent.get("team_compact_at", 64000)))
+        return max(0, int(config.agent.get("team_compact_at", 128000)))
     except (TypeError, ValueError):
-        return 64000
+        return 128000
 MAX_MEMBERS = 8
 ORIGINAL_LIMIT = 400_000  # geri alma/fark için saklanan dosya ilk hali (bayt); daha büyükleri saklanmaz
 
@@ -778,7 +797,7 @@ class Team:
                             "sayıldı, tahmin değil. Her biri 'major' tasarım sorunudur (iş hedefi 'AI yapımı gibi "
                             "durmasın'); küçük kod ayrıntılarından önce bunlara bak:\n" + slop)
         c = Council(self.parent_ctx, kind, subject, context, cwd=cwd or self.cwd, previous=previous,
-                    critical=critical or self._critical(subject + context), rules=self.review_rules(),
+                    critical=critical or self._critical(subject), rules=self.review_rules(),
                     lessons=self.lessons[-10:], check=self.check, images=self._screens(kind, subject + context, cwd))
 
         def live() -> None:
@@ -816,6 +835,8 @@ class Team:
         if not entry:
             return {}
         shots = screenshots(root, entry)
+        if shots and kind == "final":
+            shots.update(research_refs(self.cwd))  # kurul bizim siteyi örnek alınan sitelerle yan yana görsün
         if not shots and not self._screens_warned:
             self._screens_warned = True
             note = ("Kurul siteyi göremedi (ekran görüntüsü alınamadı); sadece koda bakıyor. Görsel inceleme için "
@@ -826,8 +847,12 @@ class Team:
 
     @staticmethod
     def _critical(text: str) -> bool:
-        return bool(re.search(r"güvenlik|security|şifre|password|secret|token|veri kaybı|migration|göç|silme|delete|"
-                              r"auth|ödeme|payment|para", text[:6000], re.I))
+        """İş kritik mi (kurul tüm uzmanlarla ve 3 turla toplanır)? Sadece görev metnine bakılır: fark/kod her yerde
+        "token", "delete" içeriyor. Sözcük sınırı şart: "para" eskiden "paragraf"ı yakalayıp bir web sitesi projesinde
+        16 kurulun hepsini kritik yapmıştı (kurul ~40M token)."""
+        return bool(re.search(r"\b(?:güvenlik|security|şifre\w*|parola\w*|password|secret|kimlik doğrulama|auth\w*|"
+                              r"veri kaybı|migration|göç\w*|ödeme\w*|payment|para(?:sı|yı|nın)?|kredi kartı|"
+                              r"veritabanı silme|drop table)\b", text[:4000], re.I))
 
     def _member_material(self, m: Member) -> tuple[str, str]:
         subject = f"'{m.name}' ajanının işi. Görevi: {m.task}" + (f"\nSınırlar: {m.constraints}" if m.constraints else "")
@@ -1140,7 +1165,7 @@ class Team:
         tools = [t for n, t in parent.tools.items() if n in MEMBER_TOOLS] + [TeamSend(self, m.name),
                                                                             TeamWait(self, m.name)]
         if self.is_design() and m.isolation != "readonly":
-            tools.append(DesignCheck(self, m.name))
+            tools += [DesignCheck(self, m.name), SiteStudy(self, m.name)]
         perms = Permissions("plan" if m.isolation == "readonly" else parent.permissions.mode)
         perms.always_allow = set(parent.permissions.always_allow)
         agent = Agent(parent.config, parent.router, tools, ctx, perms, MemberUI(self, m), parent.decider,
@@ -1311,7 +1336,9 @@ Kurallar:
     def _member_design_rule(self, m: Member) -> str:
         if not self.is_design() or m.isolation == "readonly":
             return ""
-        return ("- Görünüşe dokunan işi bitirmeden önce design_check çalıştır: sitenin ekran görüntüsünü alır, yapay zekâ "
+        return ("- Tasarım kararı vermeden önce araştır: web_search ile konunun gerçek, iyi sitelerini bul, site_study "
+                "ile bak (ekran görüntüsü + çözümleme). Kafandaki ortalama site değil, gördüğün iyi örnekler ölçüt.\n"
+                "- Görünüşe dokunan işi bitirmeden önce design_check çalıştır: sitenin ekran görüntüsünü alır, yapay zekâ "
                 "kalıplarını sayar ve bir sanat yönetmenine eleştirtir. Çıkan sorunları düzelt, sonra bir kez daha "
                 "çalıştır. Kalıp listesi boş değilse işin reddedilir.\n")
 
@@ -1584,11 +1611,17 @@ site başarısızlıktır; ne kadar çok sayfa ve kod olursa olsun. Modeller hep
 Bu liste {DESIGN_FILE}'den üstündür: "teknik/askerî his" gibi bir yön bu kalıplarla verilmez.
 
 Nasıl yapılır:
-- Planın ilk ajanı "tasarim" olsun: kod yazmadan önce {DESIGN_FILE} dosyasına özgün bir tasarım yönü yazsın: kime ve
-  hangi hisle konuşuyoruz, 2-3 GERÇEK referans site (o sektörün iyi örnekleri; ne alınacak, somut), yazı tipi
-  eşleşmesi, sınırlı palet (açık zemin de bir seçenek), düzen fikri (asimetri, büyük görsel, bol boşluk, editoryal
-  ritim), görsel dil, hareket ilkeleri (az ve anlamlı), metin tonu (somut bilgi, sıfat yığını değil) ve yukarıdaki
-  yasak listesini de içeren bir "yapma" listesi. Sonra ortak stil temelini kursun. Diğer ajanlar after ile onu beklesin.
+- Planın ilk ajanı "tasarim" olsun ve işe ARAŞTIRMAYLA başlasın (max_steps en az 70):
+  1. web_search ile konunun gerçek, iyi tasarlanmış 4-6 sitesini bulsun (o sektörün öne çıkan firmaları; gerekirse
+     tasarım ödülü almış benzer kurumsal siteler).
+  2. Her birine site_study ile baksın: ekran görüntüsü + düzen, tipografi ölçüleri, renk oranları, görsel dil,
+     metin tonu çözümlemesi. Açılmayanı atlayıp başkasını denesin; görmediği siteyi referans saymasın.
+  3. {DESIGN_FILE}'yi bu araştırmaya dayandırsın. Sıfat değil ölçü ve karar: "başlık 72px/1.05, 600 ağırlık, en çok
+     6 sözcük (X sitesindeki gibi)", "8px boşluk birimi, bölümler arası 160px", "%85 kırık beyaz, %12 grafit, %3
+     vurgu", "ilk ekranın %70'i tam genişlik fotoğraf". Her önemli karar hangi referanstan alındığını söylesin.
+     Ayrıca: kime ve hangi hisle konuşuyoruz, sayfa sayfa yerleşim taslağı, bileşen kuralları, hareket ilkeleri
+     (az ve anlamlı), metin tonu (başlık örnekleriyle) ve yukarıdaki yasak listesini içeren bir "yapma" listesi.
+  4. Sonra ortak stil temelini (değişkenler, temel bileşenler) kursun. Diğer ajanlar after ile onu beklesin.
 - Görsel: soyut süs yerine gerçek fotoğraf en güçlü araçtır. Wikimedia Commons ya da Unsplash'ten konuya uygun
   fotoğraf kullanılabilir; adresi web_fetch ile doğrulanmalı, uydurma URL yazılmamalı. Fotoğraf yoksa güçlü
   tipografi ve boşluk; süs çizimi değil.
@@ -2011,11 +2044,75 @@ class DesignCheck(Tool):
             self.critiques += 1
             design = self.team.design_brief(self.team.members[self.me]) if self.me in self.team.members else ""
             goal = self.team.goal + (f"\nÖzellikle bak: {focus}" if focus else "")
-            text = critique(ctx.router, shots, goal, design, slop)
+            text = critique(ctx.router, shots, goal, design, slop, refs=research_refs(self.team.cwd))
             if text:
                 parts.append("Sanat yönetmeninin eleştirisi:\n" + text)
                 self.team.mark(self.me, "design", f"design_check: {text.splitlines()[0][:140]}")
         return ToolResult("\n\n".join(parts), images=list(shots.values()))
+
+
+class SiteStudy(Tool):
+    name = "site_study"
+    description = ("Gerçek bir web sitesine bakar: masaüstü, uzun (sayfanın aşağısı) ve telefon ekran görüntülerini alır ve "
+                   "görebilen bir modele çözümletir: düzen, tipografi ölçüleri, renk oranları, görsel dil, metin tonu ve "
+                   "bizim siteye alınacaklar. Tasarım yönünü belirlemeden önce konunun iyi örneklerini bununla incele. "
+                   "Görüntüler ve çözümleme research/ klasörüne kaydedilir.")
+    parameters = obj({"url": {"type": "string", "description": "İncelenecek sitenin adresi (https://...)."},
+                      "focus": {"type": "string", "description": "İsteğe bağlı: özellikle neye bakılsın."}}, ["url"])
+    risk = READ
+    MAX_STUDIES = 8  # ajan başına
+
+    def __init__(self, team: Team, me: str):
+        self.team, self.me = team, me
+        self.studies = 0
+
+    def summary(self, args: dict[str, Any]) -> str:
+        return str(args.get("url", ""))[:120]
+
+    def run(self, ctx: ToolContext, url: str, focus: str = "") -> ToolResult:
+        from urllib.parse import urlparse
+
+        from alice.design_check import study
+        from alice.site import STUDY_VIEWPORTS, capture, reachable
+
+        url = url.strip()
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        host = urlparse(url).hostname or ""
+        if not host or host in ("localhost", "127.0.0.1") or host.startswith(("10.", "192.168.", "169.254.")):
+            return ToolResult("Sadece internetteki gerçek siteler incelenebilir.", is_error=True)
+        if self.studies >= self.MAX_STUDIES:
+            return ToolResult(f"Bu ajan için {self.MAX_STUDIES} site incelendi; elindekilerle devam et.", is_error=True)
+        ok, info = reachable(url)
+        if not ok:
+            return ToolResult(f"{url} açılamadı ({info}); başka bir referans dene.", is_error=True)
+        shots = capture(info, timeout=40, settle=2500, viewports=STUDY_VIEWPORTS)
+        if not shots:
+            return ToolResult("Ekran görüntüsü alınamadı (Edge/Chrome ya da Playwright yok). web_fetch ile metnine "
+                              "bakabilirsin ama görünüşü hakkında tahmin yürütme.", is_error=True)
+        self.studies += 1
+        slug = re.sub(r"[^a-z0-9]+", "-", host.lower().removeprefix("www.")).strip("-")[:40] or "site"
+        out_dir = self.team.cwd / RESEARCH_DIR
+        import base64
+
+        try:
+            out_dir.mkdir(exist_ok=True)
+            for name, b64 in shots.items():
+                (out_dir / f"{slug}-{name.replace('ü', 'u').replace('ş', 's')}.png").write_bytes(base64.b64decode(b64))
+        except OSError:
+            pass
+        text = study(ctx.router, shots, info, self.team.goal, focus)
+        if text:
+            try:
+                (out_dir / f"{slug}.md").write_text(f"# {info}\n\n{text}\n", encoding="utf-8")
+            except OSError:
+                pass
+            self.team.mark(self.me, "design", f"site_study {host}: {text.splitlines()[0][:120]}")
+        else:
+            text = ("(Görsel model çözümleme yapamadı; görüntüler ekte. Görebiliyorsan kendin çözümle, göremiyorsan "
+                    "bu siteyi referans olarak kullanma.)")
+        return ToolResult(f"{info} incelendi; görüntüler {RESEARCH_DIR}/{slug}-*.png\n\n{text}",
+                          images=[shots[k] for k in ("masaüstü", "telefon") if k in shots])
 
 
 class TeamWait(Tool):

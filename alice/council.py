@@ -501,6 +501,9 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
                        "görünüşü de değerlendir: görsel hiyerarşi, boşluklar, tipografi, renk, tutarlılık, telefonda "
                        "taşma/kırılma, şablon gibi ya da 'yapay zekâ yapımı' duran yerler. Görselden gördüğün sorunu "
                        "kanıt olarak hangi görüntüde nerede olduğunu yazarak ver.")
+            if any(k.startswith("referans") for k in self.images):
+                prompt += ("\n\n'referans-' ile başlayan görüntüler ekibin örnek aldığı gerçek siteler. Bizim siteyi "
+                           "onlarla karşılaştır: aynı kalitede mi? Değilse aradaki en büyük farkı 'major' bulgu yaz.")
         act = self.activity.setdefault(role, {})
         act.update(state="working", last="", vote="")
         self._tick(force=True)
