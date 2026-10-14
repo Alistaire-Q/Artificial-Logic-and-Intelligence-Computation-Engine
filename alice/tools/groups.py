@@ -50,10 +50,10 @@ GROUPS: dict[str, tuple[set[str], str, str]] = {
     "personal": ({"notes", "report", "media"}, "notlar, sabah/PC raporu, müzik ve ses seviyesi",
                  r"\bnot\b|notlar|not al|rapor|özet|sabah|müzik|şarkı|ses seviyesi|sesi aç|sesi kıs|spotify|"
                  r"kapat .*dakika|dakika sonra"),
-    "home": ({"pc", "wifi", "android"}, "PC gücü/parlaklık, Wi-Fi ve ev ağı, Android TV ve telefon",
+    "home": ({"pc", "wifi", "android", "tv"}, "PC gücü/parlaklık, Wi-Fi ve ev ağı, TV, Android telefon",
              r"kilitle|uyut|uyku|hazırda|yeniden başlat|restart|parlaklı|monitör|ekranı kapat|güç plan|wi-?fi|"
              r"kablosuz|internet|modem|\bağ(a|da|ı|daki)?\b|ssid|\btv\b|televizyon|android|telefon|bildirim|"
-             r"\bpil\b|şarj|wake.?on|uzaktan aç|\bmac\b|netflix"),
+             r"\bpil\b|şarj|wake.?on|uzaktan aç|\bmac\b|netflix|samsung|kanal"),
 }
 
 TOOL_TO_GROUP = {name: g for g, (names, _, _) in GROUPS.items() for name in names}

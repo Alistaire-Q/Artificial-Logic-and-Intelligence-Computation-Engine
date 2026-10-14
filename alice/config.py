@@ -200,6 +200,12 @@ adb = ""
 tv = ""
 phone = ""
 
+# Samsung (Tizen) TV. host, token (TV'deki izinden sonra) ve mac (kapalıyken açmak için) connect'te yazılır.
+[samsung_tv]
+host = ""
+token = ""
+mac = ""
+
 # Sabah özeti (`alice brief`, kurmak için `alice brief --install 08:00`).
 # days: haftanın günlerine göre program, ör. pazartesi = "okul", salı = "staj".
 [brief]

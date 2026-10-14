@@ -257,4 +257,146 @@ class Android(Tool):
         return d
 
 
-TOOLS = [PC(), Wifi(), Android()]
+class SamsungTV(Tool):
+    name = "tv"
+    description = ("Samsung (Tizen) akıllı TV: aç/kapa, durum, ses, kanal, tuşlar (yön, tamam, geri, ana ekran, "
+                   "kaynak/HDMI), uygulama aç (YouTube, Netflix ya da TV'de kurulu herhangi biri), YouTube'da video "
+                   "aç, açık klavyeye yazı yaz, kurulu uygulamalar. İlk kullanımda find (ağda TV'yi arar) ya da host "
+                   "ile connect; TV ekranında çıkan izin sorusu onaylanmalı. Android TV ve telefon için android.")
+    parameters = obj({
+        "action": {"type": "string", "enum": ["find", "connect", "power", "key", "open_app", "youtube", "type",
+                                              "apps", "status"],
+                   "description": "find | connect: host'a bağlan ve kaydet | power: state'e göre | key: key tuşuna "
+                   "times kez | open_app: app | youtube: query ya da url'deki video | type: text | apps | status."},
+        "host": {"type": "string", "description": "connect için TV'nin IP adresi."},
+        "state": {"type": "string", "enum": ["on", "off", "toggle"], "description": "power için."},
+        "key": {"type": "string", "description": "key için: volume_up, volume_down, mute, channel_up, channel_down, "
+                "up, down, left, right, ok, back, home, source, hdmi, play, pause, stop, menu, exit ya da 0-9."},
+        "times": {"type": "integer", "description": "key için basış sayısı. Varsayılan 1."},
+        "app": {"type": "string", "description": "open_app için uygulama adı, ör. 'netflix', 'exxen'."},
+        "query": {"type": "string", "description": "youtube için arama."},
+        "url": {"type": "string", "description": "youtube için video adresi."},
+        "text": {"type": "string", "description": "type için yazı (TV'de klavye açıkken)."},
+    }, ["action"])
+    risk = COMPUTER
+
+    def risk_for(self, args: dict[str, Any]) -> str:
+        return READ if args.get("action") in ("find", "apps", "status") else COMPUTER
+
+    def run(self, ctx: ToolContext, action: str, host: str = "", state: str = "toggle", key: str = "",
+            times: int = 1, app: str = "", query: str = "", url: str = "", text: str = "") -> ToolResult:
+        from alice.home import samsung
+
+        conf = ctx.config.data.setdefault("samsung_tv", {})
+        try:
+            if action == "find":
+                from alice.home.net import scan_port
+
+                tvs = []
+                for ip in scan_port(8001):
+                    try:
+                        d = samsung.info(ip, 2)
+                    except samsung.TVError:
+                        continue
+                    if samsung.is_samsung(d):
+                        tvs.append(f"{ip} ({(d.get('device') or {}).get('name') or d.get('name') or 'Samsung TV'})")
+                return ToolResult(("Bulunan Samsung TV: " + ", ".join(tvs) + ". Bağlanmak için connect host=...")
+                                  if tvs else "Ağda açık bir Samsung TV bulunamadı (TV açık ve aynı ağda mı?)")
+            if action == "connect":
+                target = host or conf.get("host", "")
+                with samsung.Remote(target, conf.get("token", "") if not host or host == conf.get("host") else "") as r:
+                    token = r.token
+                d = samsung.info(target)
+                mac = (d.get("device") or {}).get("wifiMac") or ""
+                self._save(ctx, conf, host=target, token=token, mac=mac)
+                return ToolResult(f"Samsung TV bağlandı ({target})" + ("" if mac else "; MAC okunamadı, kapalıyken "
+                                  "açma çalışmayabilir"))
+            host = conf.get("host", "")
+            if action == "power":
+                return ToolResult(self._power(ctx, conf, state))
+            if action == "status":
+                try:
+                    d = samsung.info(host)
+                except samsung.TVError:
+                    return ToolResult("TV kapalı (ağda cevap vermiyor)")
+                dev = d.get("device") or {}
+                return ToolResult(f"TV {samsung.power_state(d)}: {dev.get('name') or ''} {dev.get('modelName') or ''}"
+                                  .strip())
+            with samsung.Remote(host, conf.get("token", "")) as r:
+                if r.token and r.token != conf.get("token"):
+                    self._save(ctx, conf, token=r.token)
+                if action == "key":
+                    k = samsung.KEYS.get(key.strip().lower()) or (key.upper() if key.upper().startswith("KEY_")
+                                                                  else None)
+                    if not k:
+                        raise ToolError(f"bilinmeyen tuş: {key}. Geçerli: {', '.join(samsung.KEYS)}")
+                    r.keys(k, times)
+                    return ToolResult(f"tv: {key}" + (f" x{times}" if times and times > 1 else ""))
+                if action == "apps":
+                    apps = r.installed_apps()
+                    return ToolResult("\n".join(f"{a.get('name')} ({a.get('appId')})" for a in apps)
+                                      or "TV uygulama listesini vermedi")
+                if action == "open_app":
+                    if not app:
+                        raise ToolError("app gerekli")
+                    app_id = samsung.find_app(app, r.installed_apps())
+                    if not app_id:
+                        raise ToolError(f"'{app}' TV'de bulunamadı; apps ile listeye bak")
+                    r.launch(app_id)
+                    return ToolResult(f"tv: {app} açılıyor")
+                if action == "youtube":
+                    from alice.home.android import youtube_id
+
+                    vid = youtube_id(url) if url else None
+                    title = url
+                    if not vid:
+                        if not query:
+                            raise ToolError("youtube için query ya da url gerekli")
+                        from alice.tools.extras import youtube_search
+
+                        hits = youtube_search(query, 1)
+                        if not hits:
+                            return ToolResult("video bulunamadı")
+                        title, vid = hits[0]
+                    r.launch(samsung.APPS["youtube"], f"v={vid}")
+                    return ToolResult(f"tv: YouTube'da açılıyor ({title})")
+                if action == "type":
+                    r.send(samsung.text_message(text))
+                    return ToolResult("tv: yazıldı")
+        except samsung.TVError as e:
+            raise ToolError(str(e)) from e
+        raise ToolError(f"bilinmeyen action: {action}")
+
+    @staticmethod
+    def _save(ctx: ToolContext, conf: dict, **vals: str) -> None:
+        from alice.config import set_config_value
+
+        for k, v in vals.items():
+            if v and conf.get(k) != v:
+                set_config_value("samsung_tv", k, v)
+                conf[k] = v
+
+    def _power(self, ctx: ToolContext, conf: dict, state: str) -> str:
+        from alice.home import net, samsung
+
+        host = conf.get("host", "")
+        try:
+            cur = samsung.power_state(samsung.info(host))
+        except samsung.TVError:
+            cur = "off"
+        if state == "on" and cur == "on":
+            return "TV zaten açık"
+        if state == "off" and cur != "on":
+            return "TV zaten kapalı"
+        if cur == "off":  # ağ kartı uykuda: tuş gönderilemez, Wake-on-LAN
+            if not conf.get("mac"):
+                raise ToolError("TV kapalı ve MAC adresi bilinmiyor: TV açıkken bir kere connect yap")
+            net.wake_on_lan(conf["mac"], (host.rsplit(".", 1)[0] + ".255") if host else "255.255.255.255")
+            return ("TV'ye açılma paketi gönderildi (açılmazsa TV'de Ayarlar > Genel > Ağ > Uzman Ayarları > "
+                    "'Mobil ile aç' açık olmalı)")
+        with samsung.Remote(host, conf.get("token", "")) as r:
+            r.keys("KEY_POWER")
+        return "TV kapatıldı" if cur == "on" else "TV açıldı"
+
+
+TOOLS = [PC(), Wifi(), Android(), SamsungTV()]

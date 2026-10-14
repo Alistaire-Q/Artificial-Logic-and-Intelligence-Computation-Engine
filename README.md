@@ -505,7 +505,9 @@ ALICE bilgisayarın dışındaki şeyleri de yönetiyor. Hepsi sohbetle ya da se
 * **Telefon (Android 11+):** Geliştirici seçenekleri > Kablosuz hata ayıklama > "Eşleme koduyla cihaz eşle". Ekrandaki IP:port ve kodla bir kere `pair`, sonra Kablosuz hata ayıklama ana ekranındaki IP:port ile `connect`. Port her açılışta değişiyor, ALICE aynı IP'nin yeni portunu mDNS'ten kendisi buluyor.
 * İkisinde de yapabildikleri: aç/kapa, tuşlar (ses, oynat/duraklat, yön, ana ekran), uygulama açma (adıyla, ör. "exxen"), YouTube'da video açma, yazı yazma, ekran görüntüsü. Telefonda ayrıca pil durumu, bildirimleri okuma ve bilgisayardan İndirilenler klasörüne dosya gönderme var.
 
-Samsung (Tizen) TV ve modem desteği henüz yok.
+**Samsung TV (`tv`):** Samsung'un yerel uzaktan kumanda API'si kullanılıyor, TV'de bir şey kurmak gerekmiyor (`pip install websockets` ya da `alice-harness[home]`). TV açıkken "Alice, televizyonu bul" de, sonra bağlan. TV ekranında çıkan izin sorusunda "İzin ver"i seç. Token, IP ve MAC adresi `[samsung_tv]` altına kaydediliyor. Yapabildikleri: aç/kapa, ses, kanal, yön tuşları, kaynak/HDMI, uygulama açma (TV'de kurulu her uygulama adıyla), YouTube'da video açma, açık klavyeye yazı yazma. TV kapalıyken ağ kartı da uyuduğu için açma işi Wake-on-LAN ile yapılıyor. Bunun için TV'de Ayarlar > Genel > Ağ > Uzman Ayarları > "Mobil ile aç" açık olmalı.
+
+Modem desteği henüz yok.
 
 ## Küçük eklemeler
 

@@ -267,3 +267,98 @@ def test_windows_only_actions_fail_clearly_elsewhere(tmp_path):
         PC().run(_ctx(tmp_path, {}), action="plans")
     with pytest.raises(ToolError, match="Windows"):
         Wifi().run(_ctx(tmp_path, {}), action="status")
+
+
+# ---------- Samsung TV ----------
+
+from alice.home import samsung  # noqa: E402
+from alice.tools.home import SamsungTV  # noqa: E402
+
+
+def test_samsung_messages_and_app_lookup():
+    assert samsung.key_message("KEY_VOLUP")["params"]["DataOfCmd"] == "KEY_VOLUP"
+    assert samsung.text_message("ğ")["params"]["Cmd"] == "xJ8="
+    m = samsung.launch_message("111299001912", "v=dQw4w9WgXcQ")["params"]["data"]
+    assert m == {"appId": "111299001912", "action_type": "DEEP_LINK", "metaTag": "v=dQw4w9WgXcQ"}
+    assert samsung.launch_message("3201907018807")["params"]["data"]["action_type"] == "NATIVE_LAUNCH"
+    installed = [{"name": "YouTube", "appId": "111299001912"}, {"name": "Exxen", "appId": "3202001019999"}]
+    assert samsung.find_app("exxen", installed) == "3202001019999"
+    assert samsung.find_app("netflix", installed) == "3201907018807"
+    assert samsung.find_app("3201606009684", []) == "3201606009684"
+    assert samsung.find_app("bilinmeyen", installed) is None
+    assert samsung.power_state({"device": {"PowerState": "standby"}}) == "standby"
+    assert samsung.power_state({"device": {}}) == "on"
+
+
+class FakeWS:
+    def __init__(self, incoming):
+        self.incoming = list(incoming)
+        self.sent: list[dict] = []
+
+    def recv(self, timeout=None):
+        if not self.incoming:
+            raise TimeoutError
+        import json
+
+        return json.dumps(self.incoming.pop(0))
+
+    def send(self, data):
+        import json
+
+        self.sent.append(json.loads(data))
+
+    def close(self):
+        pass
+
+
+def _fake_connect(monkeypatch, ws):
+    import types
+
+    mod = types.ModuleType("websockets.sync.client")
+    mod.connect = lambda *a, **k: ws
+    monkeypatch.setitem(__import__("sys").modules, "websockets.sync.client", mod)
+
+
+def test_samsung_remote_takes_token_and_sends_keys(monkeypatch):
+    ws = FakeWS([{"event": "ms.channel.connect", "data": {"token": "12345678"}}])
+    _fake_connect(monkeypatch, ws)
+    monkeypatch.setattr(samsung.time, "sleep", lambda s: None)
+    with samsung.Remote("192.168.1.60") as r:
+        r.keys("KEY_VOLUP", 2)
+    assert r.token == "12345678"
+    assert [m["params"]["DataOfCmd"] for m in ws.sent] == ["KEY_VOLUP", "KEY_VOLUP"]
+
+
+def test_samsung_remote_denied_is_explained(monkeypatch):
+    _fake_connect(monkeypatch, FakeWS([{"event": "ms.channel.unauthorized"}]))
+    with pytest.raises(samsung.TVError, match="İzin ver"):
+        with samsung.Remote("192.168.1.60"):
+            pass
+
+
+def test_samsung_power_on_when_off_sends_wake_on_lan(monkeypatch, tmp_path):
+    def off(host, timeout=3):
+        raise samsung.TVError("kapalı")
+
+    sent = []
+    monkeypatch.setattr(samsung, "info", off)
+    monkeypatch.setattr(net, "wake_on_lan", lambda mac, bc: sent.append((mac, bc)))
+    ctx = _ctx(tmp_path, {})
+    ctx.config.data["samsung_tv"] = {"host": "192.168.1.60", "mac": "aa:bb:cc:dd:ee:ff"}
+    out = SamsungTV().run(ctx, action="power", state="on").text
+    assert "açılma paketi" in out and sent == [("aa:bb:cc:dd:ee:ff", "192.168.1.255")]
+    assert SamsungTV().run(ctx, action="power", state="off").text == "TV zaten kapalı"
+    ctx.config.data["samsung_tv"] = {"host": "192.168.1.60"}
+    with pytest.raises(ToolError, match="MAC"):
+        SamsungTV().run(ctx, action="power", state="on")
+
+
+def test_samsung_youtube_deep_link(monkeypatch, tmp_path):
+    ws = FakeWS([{"event": "ms.channel.connect", "data": {}}])
+    _fake_connect(monkeypatch, ws)
+    monkeypatch.setattr(samsung.time, "sleep", lambda s: None)
+    ctx = _ctx(tmp_path, {})
+    ctx.config.data["samsung_tv"] = {"host": "192.168.1.60", "token": "1"}
+    SamsungTV().run(ctx, action="youtube", url="https://youtu.be/dQw4w9WgXcQ")
+    assert ws.sent[-1]["params"]["data"] == {"appId": "111299001912", "action_type": "DEEP_LINK",
+                                             "metaTag": "v=dQw4w9WgXcQ"}
