@@ -20,6 +20,8 @@ from pathlib import Path
 SKIP_DIRS = {"node_modules", ".git", "__pycache__", ".venv", "venv", ".alice"}
 ENTRY_DIRS = ("", "dist", "build", "public", "site", "www", "docs", "src", "web", "frontend")
 VIEWPORTS = {"masaüstü": (1366, 860), "telefon": (390, 844)}
+# Referans siteleri incelerken: ilk ekran, sayfanın aşağısı (bölüm ritmi) ve telefon.
+STUDY_VIEWPORTS = {"masaüstü": (1440, 900), "uzun": (1440, 2600), "telefon": (390, 844)}
 
 
 def find_entry(root: Path) -> str:
@@ -110,34 +112,65 @@ def serve(root: Path) -> tuple[ThreadingHTTPServer, str]:
 
 
 def screenshots(root: Path, entry: str = "", timeout: float = 20.0) -> dict[str, str]:
-    """Sitenin masaüstü ve telefon ekran görüntüleri (base64 PNG). Playwright/Chromium yoksa ya da site açılmazsa
-    boş sözlük: inceleme görüntüsüz devam eder."""
+    """Sitenin masaüstü ve telefon ekran görüntüleri (base64 PNG). Tarayıcı yoksa ya da site açılmazsa boş sözlük:
+    inceleme görüntüsüz devam eder."""
     entry = entry or find_entry(root)
     if not entry:
         return {}
+    httpd, base = serve(root)
+    try:
+        return capture(base + entry, timeout)
+    finally:
+        httpd.shutdown()
+
+
+def reachable(url: str, timeout: float = 12.0) -> tuple[bool, str]:
+    """Dış adres açılıyor mu? (tarayıcı açılmayan sitenin hata sayfasının da görüntüsünü alıyor; o "referans" sanılmasın)
+    Döner: (açılıyor mu, son adres ya da hata)."""
+    import httpx
+
+    try:
+        r = httpx.get(url, follow_redirects=True, timeout=timeout,
+                      headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                                             "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"})
+    except httpx.HTTPError as e:
+        return False, f"{type(e).__name__}: {e}"[:200]
+    if r.status_code >= 400:
+        return False, f"HTTP {r.status_code}"
+    if "html" not in r.headers.get("content-type", "html"):
+        return False, f"web sayfası değil ({r.headers.get('content-type')})"
+    return True, str(r.url)
+
+
+def capture(url: str, timeout: float = 20.0, settle: int = 600,
+            viewports: dict[str, tuple[int, int]] | None = None) -> dict[str, str]:
+    """Adresin ekran görüntüleri (varsayılan masaüstü + telefon): önce Playwright, yoksa komut satırı tarayıcısı."""
+    vp = viewports or VIEWPORTS
+    return _pw_capture(url, timeout, settle, vp) or _cli_capture(url, timeout, settle, vp)
+
+
+def _pw_capture(url: str, timeout: float, settle: int, viewports: dict[str, tuple[int, int]] | None = None
+                ) -> dict[str, str]:
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        return cli_screenshots(root, entry, timeout)
-    httpd, base = serve(root)
+        return {}
     out: dict[str, str] = {}
     try:
         with sync_playwright() as p:
             browser = _launch(p)
             try:
-                for name, (w, h) in VIEWPORTS.items():
+                for name, (w, h) in (viewports or VIEWPORTS).items():
                     page = browser.new_page(viewport={"width": w, "height": h})
-                    page.goto(base + entry, wait_until="load", timeout=timeout * 1000)
-                    page.wait_for_timeout(600)  # giriş animasyonları otursun
+                    page.goto(url, wait_until="load", timeout=timeout * 1000)
+                    page.wait_for_timeout(settle)  # giriş animasyonları otursun
                     out[name] = base64.b64encode(page.screenshot(full_page=False)).decode()
                     page.close()
             finally:
                 browser.close()
-    except Exception:  # noqa: BLE001 - tarayıcı yok/çöktü: komut satırı tarayıcısını dene
-        out = out or {}
-    finally:
-        httpd.shutdown()
-    return out or cli_screenshots(root, entry, timeout)
+    except Exception:  # noqa: BLE001 - tarayıcı yok/çöktü/site açılmadı: komut satırı tarayıcısı denenir
+        return out
+    return out
 
 
 def browser_exe() -> str:
@@ -166,34 +199,43 @@ def browser_exe() -> str:
 
 
 def cli_screenshots(root: Path, entry: str = "", timeout: float = 20.0) -> dict[str, str]:
-    """Playwright yoksa: tarayıcıyı komut satırından görünmez (headless) çalıştırıp ekran görüntüsü al. Böylece
-    kurul ve tasarım eleştirmeni ek kurulum olmadan siteyi görür."""
+    """Playwright olmadan: yerel siteyi sun ve komut satırı tarayıcısıyla görüntüle."""
     entry = entry or find_entry(root)
-    exe = browser_exe()
-    if not entry or not exe:
+    if not entry or not browser_exe():
         return {}
     httpd, base = serve(root)
-    out: dict[str, str] = {}
     try:
-        with tempfile.TemporaryDirectory(prefix="alice-shot-") as tmp:
-            for name, (w, h) in VIEWPORTS.items():
-                png = Path(tmp) / f"{len(out)}.png"
-                cmd = [exe, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-first-run",
-                       "--no-default-browser-check", "--disable-extensions", "--mute-audio",
-                       f"--user-data-dir={Path(tmp) / 'profile'}",  # açık tarayıcıya bağlanmasın
-                       f"--window-size={w},{h}", "--virtual-time-budget=2500", f"--screenshot={png}",
-                       base + entry]
-                if os.name != "nt" and hasattr(os, "geteuid") and os.geteuid() == 0:
-                    cmd.insert(1, "--no-sandbox")
-                try:
-                    subprocess.run(cmd, capture_output=True, timeout=timeout, check=False,
-                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-                except (OSError, subprocess.TimeoutExpired):
-                    break
-                if png.is_file() and png.stat().st_size > 1000:
-                    out[name] = base64.b64encode(png.read_bytes()).decode()
+        return _cli_capture(base + entry, timeout)
     finally:
         httpd.shutdown()
+
+
+def _cli_capture(url: str, timeout: float = 20.0, settle: int = 600,
+                 viewports: dict[str, tuple[int, int]] | None = None) -> dict[str, str]:
+    """Tarayıcıyı komut satırından görünmez (headless) çalıştırıp ekran görüntüsü al; ek kurulum gerekmez."""
+    exe = browser_exe()
+    if not exe:
+        return {}
+    out: dict[str, str] = {}
+    with tempfile.TemporaryDirectory(prefix="alice-shot-") as tmp:
+        for name, (w, h) in (viewports or VIEWPORTS).items():
+            png = Path(tmp) / f"{len(out)}.png"
+            cmd = [exe, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-first-run",
+                   "--no-default-browser-check", "--disable-extensions", "--mute-audio",
+                   f"--user-data-dir={Path(tmp) / 'profile'}",  # açık tarayıcıya bağlanmasın
+                   f"--window-size={w},{h}", f"--virtual-time-budget={1900 + settle}", f"--screenshot={png}", url]
+            if os.name != "nt" and hasattr(os, "geteuid") and os.geteuid() == 0:
+                cmd.insert(1, "--no-sandbox")
+            proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+            if proxy and not url.startswith("http://127.0.0.1"):
+                cmd.insert(1, f"--proxy-server={proxy}")
+            try:
+                subprocess.run(cmd, capture_output=True, timeout=timeout, check=False,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            except (OSError, subprocess.TimeoutExpired):
+                break
+            if png.is_file() and png.stat().st_size > 1000:
+                out[name] = base64.b64encode(png.read_bytes()).decode()
     return out
 
 

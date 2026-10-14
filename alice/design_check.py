@@ -211,9 +211,27 @@ Türkçe ve kısa yaz:
 3. Korunması gereken 1-2 iyi şey (varsa)."""
 
 
-def critique(router, shots: dict[str, str], goal: str, design: str = "", lint_text: str = "") -> str:
-    """Ekran görüntülerini görebilen bir modele eleştirt. Model yoksa ya da hata olursa boş."""
-    if not shots or router is None:
+STUDY_PROMPT = """Sen deneyimli bir sanat yönetmenisin ve bir tasarım ekibi için referans araştırması yapıyorsun.
+Ekte gerçek bir sitenin ekran görüntüleri var: {url} ({views}; "uzun" sayfanın aşağısını da gösterir). Çerez
+penceresi ya da açılır pencere varsa yok say.
+Bizim projemiz: {goal}
+{note}
+Bu sitenin tasarımını somut ve ölçülebilir biçimde çöz (sıfat değil gözlem yaz). Türkçe, kısa maddeler:
+1. Genel his ve kime konuşuyor (tek cümle).
+2. Düzen: ızgara, kenar boşlukları, ilk ekranda ne var, bölümler nasıl sıralanıyor, boşluk ritmi (bölümler arası
+   kabaca kaç px), simetri/asimetri.
+3. Tipografi: başlık yazı tipi türü (serif/sans/grotesk, dar/geniş), ağırlık, ana başlığın yaklaşık boyutu (px) ve
+   satır yüksekliği, gövde metni boyutu, büyük harf kullanımı, başlık uzunluğu (kaç sözcük).
+4. Renk: zemin, metin, vurgu renkleri (yaklaşık hex) ve oranları (ör. %80 beyaz, %15 koyu, %5 vurgu).
+5. Görsel dil: fotoğraf mı çizim mi, kadraj, ne gösteriyor; süsleme var mı.
+6. Metin tonu: ana başlığı ve bir alt başlığı aynen yaz; nasıl konuşuyor.
+7. Bunu iyi yapan 3 şey: bizim siteye nasıl uygulanır (somut talimat).
+8. Kaçınılacak 1 şey (varsa)."""
+
+
+def _vision_chat(router, text: str, images: list[str], max_tokens: int = 1500) -> str:
+    """Görüntüleri görebilen modele tek seferlik soru. Model yoksa ya da hata olursa boş."""
+    if not images or router is None:
         return ""
     from alice.providers import picker
 
@@ -223,18 +241,38 @@ def critique(router, shots: dict[str, str], goal: str, design: str = "", lint_te
         return ""
     if not chain:
         return ""
-    role = "design-critic"
+    role = f"design-vision-{id(text) % 100000}"
     router.role_overrides[role] = chain
-    text = CRITIC_PROMPT.format(views=", ".join(shots), goal=goal[:600],
-                                design=f"Tasarım yönü belgesinden özet:\n{design[:1500]}\n" if design.strip() else "")
-    if lint_text:
-        text += f"\n\nKoddan otomatik bulunan kalıplar (görüntüde de kontrol et):\n{lint_text[:2000]}"
     parts: list[dict[str, Any]] = [{"type": "text", "text": text}]
-    parts += [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b}"}} for b in shots.values()]
+    parts += [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b}"}} for b in images]
     try:
-        res = router.chat(role, [{"role": "user", "content": parts}], temperature=0.3, max_tokens=1500)
-    except Exception:  # noqa: BLE001 - görsel model yok/hata: eleştirisiz devam
+        res = router.chat(role, [{"role": "user", "content": parts}], temperature=0.3, max_tokens=max_tokens)
+    except Exception:  # noqa: BLE001 - görsel model yok/hata
         return ""
     finally:
         router.role_overrides.pop(role, None)
     return (getattr(res, "text", "") or "").strip()
+
+
+def study(router, shots: dict[str, str], url: str, goal: str, note: str = "") -> str:
+    """Referans sitenin ekran görüntülerini çözümlet: düzen, tipografi, renk, görsel dil, alınacaklar."""
+    text = STUDY_PROMPT.format(url=url, views=", ".join(shots), goal=goal[:600],
+                               note=f"Özellikle bak: {note}\n" if note.strip() else "")
+    return _vision_chat(router, text, list(shots.values()), max_tokens=1800)
+
+
+def critique(router, shots: dict[str, str], goal: str, design: str = "", lint_text: str = "",
+             refs: dict[str, str] | None = None) -> str:
+    """Ekran görüntülerini görebilen bir modele eleştirt. refs: araştırmadaki referans sitelerin görüntüleri
+    (karşılaştırma için, en çok 2). Model yoksa ya da hata olursa boş."""
+    if not shots:
+        return ""
+    refs = dict(list((refs or {}).items())[:2])
+    text = CRITIC_PROMPT.format(views=", ".join(shots), goal=goal[:600],
+                                design=f"Tasarım yönü belgesinden özet:\n{design[:1500]}\n" if design.strip() else "")
+    if refs:
+        text += ("\n\nSondaki görüntüler ekibin örnek aldığı referans siteler (" + ", ".join(refs) + "). Bizim siteyi "
+                 "onlarla karşılaştır: aynı kalitede mi, aradaki en büyük fark ne?")
+    if lint_text:
+        text += f"\n\nKoddan otomatik bulunan kalıplar (görüntüde de kontrol et):\n{lint_text[:2000]}"
+    return _vision_chat(router, text, list(shots.values()) + list(refs.values()))

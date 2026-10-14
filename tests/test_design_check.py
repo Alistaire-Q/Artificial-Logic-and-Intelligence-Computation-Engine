@@ -73,7 +73,7 @@ def test_design_project_members_get_design_check_and_reviews_see_patterns(workdi
     m = web.add({"name": "anasayfa", "task": "index.html yaz"})
     a = web._make_agent(m)
     assert "design_check" in a.tools and "design_check" in web.brief(m)
-    assert a.compact_cap == team_compact_cap(ctx.config) == 64000
+    assert a.compact_cap == team_compact_cap(ctx.config) == 128000
     m.files = ["index.html"]
     assert "Otomatik kalıp denetimi" in web._review_note(m)
     assert "Geleceği şekillendiriyoruz" in web.lead_brief() and "128.400+" in web.lead_brief()
@@ -82,7 +82,7 @@ def test_design_project_members_get_design_check_and_reviews_see_patterns(workdi
     import alice.site as site
 
     monkeypatch.setattr(site, "screenshots", lambda root, entry="": {"masaüstü": "AAAA"})
-    monkeypatch.setattr(dc, "critique", lambda router, shots, goal, design="", lint_text="": "Puan 2/10: şablon.")
+    monkeypatch.setattr(dc, "critique", lambda router, shots, goal, design="", lint_text="", **kw: "Puan 2/10: şablon.")
     res = a.tools["design_check"].run(a.ctx)
     assert "Kalıp denetimi" in res.text and "Puan 2/10" in res.text and res.images == ["AAAA"]
     assert any(x["kind"] == "design" for x in web.timeline)
@@ -135,3 +135,42 @@ def test_cli_screenshots_without_playwright(tmp_path, monkeypatch):
         pytest.skip("tarayıcı açılamadı")
     assert set(shots) == {"masaüstü", "telefon"}
     assert base64.b64decode(shots["telefon"])[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_site_study_saves_references_and_feeds_comparisons(workdir, monkeypatch):
+    import alice.design_check as dc
+    import alice.site as site
+    from alice.team import research_refs
+
+    agent, _, ctx = make(lambda *a, **k: "tamam", workdir)
+    ctx.state["agent"] = agent
+    web = Team(ctx, "Savunma firması için tanıtım web sitesi", council=False)
+    m = web.add({"name": "tasarim", "task": "DESIGN.md yaz"})
+    a = web._make_agent(m)
+    assert "site_study" in a.tools and "site_study" in web.brief(m)
+    assert "ARAŞTIRMAYLA" in web.lead_brief() and "site_study" in web.lead_brief()
+    png = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"0" * 2000).decode()
+    seen = {}
+    monkeypatch.setattr(site, "reachable", lambda url, timeout=12.0: (True, "https://www.saab.com/"))
+
+    def cap(url, timeout=20.0, settle=600, viewports=None):
+        seen["viewports"] = viewports
+        return {k: png for k in viewports}
+
+    monkeypatch.setattr(site, "capture", cap)
+    monkeypatch.setattr(dc, "study", lambda router, shots, url, goal, note="": "Genel his: sakin, büyük fotoğraf.")
+    res = a.tools["site_study"].run(a.ctx, url="saab.com")
+    assert not res.is_error and "Genel his" in res.text and len(res.images) == 2
+    assert set(seen["viewports"]) == {"masaüstü", "uzun", "telefon"}
+    assert (workdir / "research" / "saab-com-masaustu.png").is_file()
+    assert "büyük fotoğraf" in (workdir / "research" / "saab-com.md").read_text(encoding="utf-8")
+    assert list(research_refs(workdir)) == ["referans-saab-com"]
+    assert a.tools["site_study"].run(a.ctx, url="http://127.0.0.1:8000").is_error
+
+    monkeypatch.setattr(site, "reachable", lambda url, timeout=12.0: (False, "HTTP 403"))
+    assert "açılamadı" in a.tools["site_study"].run(a.ctx, url="https://x.com").text
+
+
+def test_critical_check_needs_whole_words():
+    assert not Team._critical("Uydurma bir savunma firması için paragraf ve parallax içeren site")
+    assert Team._critical("Ödeme sayfasını yaz") and Team._critical("login için auth ekle")

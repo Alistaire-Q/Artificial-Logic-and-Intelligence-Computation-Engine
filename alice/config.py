@@ -39,7 +39,7 @@ max_steps = 80
 compact_at_tokens = "auto"
 # Proje ajanları, yönetici ve kurul üyeleri için üst sınır: her adım bütün konuşmayı yeniden gönderdiği için sınırsız
 # bağlam bir projede on milyonlarca token yakar. 0 = sınır yok.
-team_compact_at = 64000
+team_compact_at = 128000
 tool_output_chars = 12000
 # Takım modunda (team aracı) aynı anda çalışabilecek en fazla ajan; fazlası sıraya girer.
 team_max_parallel = 5
