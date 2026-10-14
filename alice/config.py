@@ -37,6 +37,9 @@ max_steps = 80
 # Konuşma bu token sayısını geçince eski kısmı özetlenir. "auto": kullanılan modelin bağlam penceresinin %80'i
 # (GLM 5.3 ve Gemini'de 1M pencere, Groq gibi dar ücretsiz katmanlarda sağlayıcının max_input_tokens'ı).
 compact_at_tokens = "auto"
+# Proje ajanları, yönetici ve kurul üyeleri için üst sınır: her adım bütün konuşmayı yeniden gönderdiği için sınırsız
+# bağlam bir projede on milyonlarca token yakar. 0 = sınır yok.
+team_compact_at = 64000
 tool_output_chars = 12000
 # Takım modunda (team aracı) aynı anda çalışabilecek en fazla ajan; fazlası sıraya girer.
 team_max_parallel = 5

@@ -57,6 +57,15 @@ ACTIVE = ("running", "waiting", "asking")
 FINAL = ("done", "failed", "stopped")
 SAVE_EVERY = 1.5  # saniye: canlı güncellemelerde diske en sık bu aralıkla yazılır
 DESIGN_FILE = "DESIGN.md"
+
+
+def team_compact_cap(config) -> int:
+    """Proje ajanlarının konuşması bu kadar token'ı geçince özetlenir ([agent] team_compact_at, 0 = sınırsız).
+    Her adım bütün konuşmayı yeniden gönderir; 1M bağlamlı modelde sınır olmayınca bir proje ~100M token yakıyordu."""
+    try:
+        return max(0, int(config.agent.get("team_compact_at", 64000)))
+    except (TypeError, ValueError):
+        return 64000
 MAX_MEMBERS = 8
 ORIGINAL_LIMIT = 400_000  # geri alma/fark için saklanan dosya ilk hali (bayt); daha büyükleri saklanmaz
 
@@ -687,8 +696,24 @@ class Team:
         self._next()
         self._changed()
 
+    def slop_report(self, cwd: Path | None = None) -> str:
+        """Tasarım projesinde sitedeki yapay zekâ kalıpları (koddan sayılır). Tasarım projesi değilse ya da temizse boş."""
+        if not self.is_design():
+            return ""
+        from alice.design_check import lint, report
+
+        try:
+            return report(lint(cwd or self.cwd))
+        except Exception:  # noqa: BLE001 - denetim projeyi durdurmasın
+            return ""
+
     def _review_note(self, m: Member) -> str:
         files = ", ".join(m.files[-30:]) or "dosya değiştirmedi"
+        if re.search(r"\.(html?|css|scss|jsx|tsx|vue|svelte)\b", files):
+            slop = self.slop_report(m.cwd)
+            if slop:
+                files += ("\n\nOtomatik kalıp denetimi (sitede hâlâ yapay zekâ kalıpları var; bunlar ajanın alanındaysa "
+                          "işi revise ile geri gönder):\n" + slop)
         extra = " Adım limiti doldu; iş yarım kalmış olabilir." if m.limit_hit else ""
         return (f"{m.name} bitirdi, inceleme bekliyor.{extra}\nRaporu:\n{m.result[:3000]}\n\nDeğişen dosyalar: {files}"
                 + (f"\nDal: {m.branch} (onaylayınca birleştirilir)" if m.branch else "") +
@@ -746,6 +771,12 @@ class Team:
             if chk:
                 context += (f"\n\n# Kontrol komutu: `{chk['cmd']}` → çıkış {chk['code']} "
                             f"({'GEÇTİ' if chk['code'] == 0 else 'BAŞARISIZ'})\n```\n{chk['out'][-3000:]}\n```")
+        if kind in ("work", "recheck", "final", "adhoc"):
+            slop = self.slop_report(cwd)
+            if slop:
+                context += ("\n\n# Otomatik kalıp denetimi: sitede yapay zekâ yapımı görünen kalıplar\nBunlar koddan "
+                            "sayıldı, tahmin değil. Her biri 'major' tasarım sorunudur (iş hedefi 'AI yapımı gibi "
+                            "durmasın'); küçük kod ayrıntılarından önce bunlara bak:\n" + slop)
         c = Council(self.parent_ctx, kind, subject, context, cwd=cwd or self.cwd, previous=previous,
                     critical=critical or self._critical(subject + context), rules=self.review_rules(),
                     lessons=self.lessons[-10:], check=self.check, images=self._screens(kind, subject + context, cwd))
@@ -787,8 +818,8 @@ class Team:
         shots = screenshots(root, entry)
         if not shots and not self._screens_warned:
             self._screens_warned = True
-            note = ("Kurul siteyi göremedi (ekran görüntüsü alınamadı); sadece koda bakıyor. Görsel inceleme için: "
-                    "pip install playwright ve playwright install chromium")
+            note = ("Kurul siteyi göremedi (ekran görüntüsü alınamadı); sadece koda bakıyor. Görsel inceleme için "
+                    "Edge ya da Chrome gerekir (ALICE_CHROMIUM ile tarayıcı yolu da verilebilir).")
             self.mark(SYSTEM, "council", note)
             self._emit(f"{self.title}: {note}", kind="info")
         return shots
@@ -1108,12 +1139,15 @@ class Team:
                           decider=self.parent_ctx.decider, emit=lambda s: None)
         tools = [t for n, t in parent.tools.items() if n in MEMBER_TOOLS] + [TeamSend(self, m.name),
                                                                             TeamWait(self, m.name)]
+        if self.is_design() and m.isolation != "readonly":
+            tools.append(DesignCheck(self, m.name))
         perms = Permissions("plan" if m.isolation == "readonly" else parent.permissions.mode)
         perms.always_allow = set(parent.permissions.always_allow)
         agent = Agent(parent.config, parent.router, tools, ctx, perms, MemberUI(self, m), parent.decider,
                       system_prompt=build_system_prompt(m.cwd, personality=False) + "\n\n" + self.brief(m),
                       is_child=True)
         agent.stream = bool(parent.config.agent.get("stream", True))  # cevap yazılırken canlı aksın
+        agent.compact_cap = team_compact_cap(parent.config)
         agent.role = self._role(m.name, m.model, m.thinking, text=f"{m.task}\n{m.constraints}")
         m.picked = self.picks.get(m.name, "")
         agent.on_usage = lambda u, _n=m.name: self._use(_n, u)
@@ -1129,7 +1163,8 @@ class Team:
                 if bad:
                     return ToolResult(f"kapsam dışı: {', '.join(bad)}. Sadece şuralara yazabilirsin: "
                                       f"{', '.join(m.scope)}. Başka bir yerin değişmesi gerekiyorsa sahibine ya da "
-                                      f"{LEAD}'e team_send ile yaz.", is_error=True)
+                                      f"{LEAD}'e team_send ile yaz. Kabuk komutuyla (Set-Content, Out-File, echo >) yazarak "
+                                      "kapsamı aşma: dosya kodlamasını bozar (Türkçe harfler) ve iş reddedilir.", is_error=True)
             for p in targets:  # fark ve geri alma için ilk hali sakla
                 m.originals.setdefault(str(p), _read_original(p))
             m.steps += 1
@@ -1271,7 +1306,14 @@ Kurallar:
   edit_file ile doldur. Tek seferde dev bir araç çağrısı çok yavaş olur, kopabilir ve takılmış sanılırsın.
 - İşini doğrula (test, çalıştırma). Bitince son mesajında kısa rapor yaz: ne yaptın, hangi dosyalar değişti,
   nasıl doğruladın, açık kalan ne. Yönetici işini inceler; düzeltme isterse yine sana yazar.
-"""
+{self._member_design_rule(m)}"""
+
+    def _member_design_rule(self, m: Member) -> str:
+        if not self.is_design() or m.isolation == "readonly":
+            return ""
+        return ("- Görünüşe dokunan işi bitirmeden önce design_check çalıştır: sitenin ekran görüntüsünü alır, yapay zekâ "
+                "kalıplarını sayar ve bir sanat yönetmenine eleştirtir. Çıkan sorunları düzelt, sonra bir kez daha "
+                "çalıştır. Kalıp listesi boş değilse işin reddedilir.\n")
 
     # ------------------------------------------------------------- yönetici
     def _ensure_lead(self) -> None:
@@ -1304,6 +1346,7 @@ Kurallar:
                       system_prompt=build_system_prompt(self.cwd, personality=False) + "\n\n" + self.lead_brief(),
                       is_child=True)
         agent.stream = bool(parent.config.agent.get("stream", True))  # cevap yazılırken canlı aksın
+        agent.compact_cap = team_compact_cap(parent.config)
         agent.role = self._role(LEAD, self.lead_model, self.lead_thinking, domain="review")
         agent.on_usage = lambda u: self._use(LEAD, u)
         agent.tool_specs = lambda _a=agent: [t.spec() for t in _a.tools.values()]
@@ -1531,15 +1574,28 @@ Görevlerin:
         if not self.is_design():
             return ""
         return f"""Tasarım işi: bu projenin başarısı büyük ölçüde görünüşüne bağlı. Yapay zekâ yapımı gibi duran şablon
-siteler (ortalanmış dev başlık + gradyan, radar/ızgara/parçacık süsleri, her yerde aynı kart ızgarası, "Geleceği
-şekillendiriyoruz / Tavizsiz üstünlük" gibi boş sloganlar, emoji) başarısızlıktır. Bu yüzden:
+site başarısızlıktır; ne kadar çok sayfa ve kod olursa olsun. Modeller hep şu kalıplara kayıyor, hepsi YASAK:
+- kod/terminal süsü etiketler ("AETH-SYS // BRİFİNG-01", "SEC-02 // ..."), ">" ile başlayan düğmeler ("> İNCELE"),
+- sayaç/istatistik şeritleri ("128.400+", "%99,2", "640+"), sahte teknik notlar ("ŞEKİL 01", "ÇİZİM NO", "REV: D"),
+- koyu lacivert/siyah zemin + tek neon vurgu rengi, neon parlama gölgeleri, gradyan yazı, buzlu cam kartlar,
+- ızgara/tarama çizgisi/radar/parçacık arka planları, her yerde BÜYÜK HARF + mono yazı tipi,
+- kutu içinde küçük çizim/diyagram, her bölümde aynı kart ızgarası, emoji,
+- boş sloganlar ("Geleceği şekillendiriyoruz", "Otonom üstünlük", "yeni nesil", "tavizsiz").
+Bu liste {DESIGN_FILE}'den üstündür: "teknik/askerî his" gibi bir yön bu kalıplarla verilmez.
+
+Nasıl yapılır:
 - Planın ilk ajanı "tasarim" olsun: kod yazmadan önce {DESIGN_FILE} dosyasına özgün bir tasarım yönü yazsın: kime ve
-  hangi hisle konuşuyoruz, 2-3 gerçek dünya referansı (ne alınacak), yazı tipi eşleşmesi, renk paleti (sınırlı),
-  düzen ve ızgara fikri (simetrik kart ızgarası dışında), görsel dil (fotoğraf yerine ne: çizim, diyagram, teknik
-  çizim...), hareket ilkeleri, metin tonu ve açık bir "yapma" listesi. Sonra ortak stil temelini (değişkenler,
-  temel bileşenler) kursun. Diğer ajanlar after ile onu beklesin; {DESIGN_FILE} her ajana otomatik gösterilir.
-- Sayfa ajanlarının görevine "{DESIGN_FILE}'deki yöne uy" de; kendi renk/yazı tipi uydurmasınlar.
-- İncelemede önce görünüşe bak: şablon gibi duruyorsa bu "önemli" bir sorundur, küçük kod ayrıntıları değil.
+  hangi hisle konuşuyoruz, 2-3 GERÇEK referans site (o sektörün iyi örnekleri; ne alınacak, somut), yazı tipi
+  eşleşmesi, sınırlı palet (açık zemin de bir seçenek), düzen fikri (asimetri, büyük görsel, bol boşluk, editoryal
+  ritim), görsel dil, hareket ilkeleri (az ve anlamlı), metin tonu (somut bilgi, sıfat yığını değil) ve yukarıdaki
+  yasak listesini de içeren bir "yapma" listesi. Sonra ortak stil temelini kursun. Diğer ajanlar after ile onu beklesin.
+- Görsel: soyut süs yerine gerçek fotoğraf en güçlü araçtır. Wikimedia Commons ya da Unsplash'ten konuya uygun
+  fotoğraf kullanılabilir; adresi web_fetch ile doğrulanmalı, uydurma URL yazılmamalı. Fotoğraf yoksa güçlü
+  tipografi ve boşluk; süs çizimi değil.
+- Sayfa ajanlarının görevine "{DESIGN_FILE}'deki yöne uy, bitirmeden design_check çalıştır" de.
+- İncelemede önce görünüşe bak: inceleme notunda "Otomatik kalıp denetimi" varsa iş o haliyle onaylanmaz. Şablon gibi
+  durmak "önemli" bir sorundur; kurum adı, yazım, küçük kod ayrıntıları ondan sonra gelir.
+- Az ama iyi: 6 vasat sayfa yerine 3 iyi sayfa daha değerlidir. Ajan sayısını işe göre tut.
 
 """
 
@@ -1920,6 +1976,46 @@ class TeamSend(Tool):
 
     def run(self, ctx: ToolContext, to: str, text: str) -> ToolResult:
         return ToolResult(self.team.send(self.me, str(to).strip().lower(), text))
+
+
+class DesignCheck(Tool):
+    name = "design_check"
+    description = ("Sitenin masaüstü ve telefon ekran görüntülerini alır, yapay zekâ yapımı görünen kalıpları koddan sayar "
+                   "ve görüntüleri bir sanat yönetmenine (görebilen model) eleştirtir. Görünüşe dokunan işi bitirmeden "
+                   "önce çalıştır, çıkan sorunları düzelt.")
+    parameters = obj({"focus": {"type": "string", "description": "İsteğe bağlı: özellikle neye bakılsın (sayfa, bölüm)."}})
+    risk = READ
+    MAX_CRITIQUES = 4  # ajan başına; sonrasında sadece kalıp sayımı ve görüntü
+
+    def __init__(self, team: Team, me: str):
+        self.team, self.me = team, me
+        self.critiques = 0
+
+    def run(self, ctx: ToolContext, focus: str = "") -> ToolResult:
+        from alice.design_check import critique, lint, report
+        from alice.site import find_entry, screenshots
+
+        root = ctx.cwd
+        entry = find_entry(root) or find_entry(self.team.cwd)
+        if not entry:
+            return ToolResult("Sitenin giriş sayfası (index.html) bulunamadı; önce sayfayı oluştur.", is_error=True)
+        base = root if find_entry(root) else self.team.cwd
+        slop = report(lint(base))
+        shots = screenshots(base, entry)
+        parts = [f"Giriş sayfası: {entry}"]
+        parts.append("Kalıp denetimi: temiz." if not slop else "Kalıp denetimi — düzeltilmesi gerekenler:\n" + slop)
+        if not shots:
+            parts.append("Ekran görüntüsü alınamadı (bilgisayarda Edge/Chrome ya da Playwright bulunamadı); sadece "
+                         "kalıp denetimi yapıldı.")
+        elif self.critiques < self.MAX_CRITIQUES:
+            self.critiques += 1
+            design = self.team.design_brief(self.team.members[self.me]) if self.me in self.team.members else ""
+            goal = self.team.goal + (f"\nÖzellikle bak: {focus}" if focus else "")
+            text = critique(ctx.router, shots, goal, design, slop)
+            if text:
+                parts.append("Sanat yönetmeninin eleştirisi:\n" + text)
+                self.team.mark(self.me, "design", f"design_check: {text.splitlines()[0][:140]}")
+        return ToolResult("\n\n".join(parts), images=list(shots.values()))
 
 
 class TeamWait(Tool):

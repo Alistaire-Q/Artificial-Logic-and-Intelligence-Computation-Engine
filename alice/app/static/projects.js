@@ -346,9 +346,12 @@ function renderProject() {
   if (d.summary) {
     const c = el("details", "pv-summary");
     c.dataset.k = "summary";
-    c.open = !pr.summaryClosed;
-    c.addEventListener("toggle", () => { pr.summaryClosed = !c.open; });
-    const sm = el("summary", "", "Proje özeti");
+    // Kapalı başlar: her sekmede ekranın üstünü kaplıyordu. Açınca açık kalır.
+    c.open = !!pr.summaryOpen;
+    c.addEventListener("toggle", () => { pr.summaryOpen = c.open; });
+    const sm = el("summary", "");
+    const peek = (d.summary.split("\n").map((x) => x.replace(/^[#>*\-\s]+/, "").trim()).find((x) => x) || "").slice(0, 160);
+    sm.append(el("span", "", "Proje özeti"), el("span", "sum-peek", peek));
     const body = el("div", "prose");
     setMd(body, d.summary);
     c.append(sm, body);
@@ -703,7 +706,7 @@ function renderProjectCouncils(det, d) {
 }
 // ---- zaman çizelgesi
 const TL_ICON = { start: "▶", run: "▷", review: "◎", done: "✓", approve: "✓", revise: "↺", failed: "✗", stopped: "■",
-  stop: "■", resume: "▶", council: "⚖", ask: "?", answer: "↩", finish: "★", check: "✔", conflict: "⚠", stall: "⏳", plan: "✎", msg: "✉" };
+  stop: "■", resume: "▶", council: "⚖", ask: "?", answer: "↩", finish: "★", check: "✔", conflict: "⚠", stall: "⏳", plan: "✎", msg: "✉", design: "◐" };
 function timelineItem(d) {
   return navItem("__timeline", "Akış", "Kim ne zaman ne yaptı", IC.list, "");
 }
@@ -800,6 +803,12 @@ function councilCard(c, target, latest) {
     for (const v of vs) cnt[v.last] = (cnt[v.last] || 0) + 1;
     const parts = ["reject", "conditional", "approve"].filter((k) => cnt[k]).map((k) => `${cnt[k]} ${VOTE_TR2[k]}`);
     card.appendChild(el("div", "cc-sum", `${vs.length} üye oy verdi: ${parts.join(", ")}.`));
+  }
+  if (!running && (res.veto || []).length) {
+    // Oylar onay yönündeyken karar "düzeltme" olabiliyor: doğrulanmış kritik bulgu veto eder. Nedenini söyle.
+    const byId = Object.fromEntries((c.findings || []).map((f) => [f.id, f]));
+    const names = res.veto.map((id) => (byId[id] ? byId[id].title : id)).slice(0, 2).join("; ");
+    card.appendChild(el("div", "cc-sum veto", `Doğrulanmış kritik bulgu kararı düzeltmeye çevirdi: ${names}`));
   }
   if (!running && c.rubric && Object.keys(c.rubric).length) {
     // Plan kurulu: ölçüt başına ortalama puan (1-5)

@@ -833,7 +833,13 @@ kbd {
 .pv-ask-row input, .pd-ask-row input { flex: 1; min-width: 0; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; font-size: 13px; padding: 6px 10px; }
 .pv-summary { border: 1px solid var(--line-strong); border-radius: 12px; background: var(--panel); padding: 8px 14px; }
 .pv-summary summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--ok); }
-.pv-summary .prose { font-size: 14px; max-height: 260px; overflow-y: auto; }
+.pv-summary .prose { font-size: 14px; max-height: min(260px, 32vh); overflow-y: auto; margin-top: 8px;
+  padding-right: 6px; }
+.pv-summary .prose h1 { font-size: 17px; } .pv-summary .prose h2 { font-size: 15px; } .pv-summary .prose h3 { font-size: 14px; }
+.pv-summary summary { display: flex; gap: 8px; align-items: baseline; list-style-position: inside; }
+.pv-summary summary .sum-peek { font-weight: 400; color: var(--muted); overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; min-width: 0; flex: 1; }
+.pv-summary[open] summary .sum-peek { display: none; }
 .pv-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 270px 1fr; gap: 14px; }
 .pv-threads { overflow-y: auto; display: flex; flex-direction: column; gap: 3px; min-height: 0; padding-right: 2px; }
 .th-sec { font-size: 11.5px; color: var(--faint); padding: 10px 6px 3px; letter-spacing: .02em; }
@@ -1069,6 +1075,7 @@ details.cc:not([open]) { padding-top: 8px; padding-bottom: 8px; }
 /* kurul kartı: önce özet */
 .cc-sum { font-size: 13.5px; color: var(--muted); }
 .cc-sum.ok { color: var(--ok); }
+.cc-sum.veto { color: var(--err, #e5484d); }
 .cc-todo { margin: 0; padding-left: 18px; font-size: 13.5px; display: flex; flex-direction: column; gap: 2px; }
 .cc-todo li.more { list-style: none; margin-left: -18px; color: var(--faint); font-size: 12.5px; }
 .cc-uv { border-top: 0; padding-top: 2px; font-size: 12.5px; color: var(--faint); }
@@ -1229,6 +1236,9 @@ details.cc[open] > summary.cc-head::after { transform: rotate(45deg); }
 .clamp.open { display: block; }
 .clamp p, .clamp ul, .clamp ol { margin: 0 0 4px; }
 .clamp ul, .clamp ol { padding-left: 18px; }
+/* Mesaj ve akış satırlarında markdown başlıkları metin boyunda kalsın (akışta dev başlık çıkıyordu) */
+.clamp h1, .clamp h2, .clamp h3, .clamp h4 { font-size: inherit; line-height: inherit; margin: 0 0 4px; font-weight: 650; }
+.clamp hr { display: none; }
 
 /* ---- takım sohbeti: avatarlı mesajlar */
 #projectView .pd-feed.log { gap: 12px; }
@@ -1285,3 +1295,7 @@ details.cc[open] > summary.cc-head::after { transform: rotate(45deg); }
 .cc-live-row span.v-approve { color: var(--ok); }
 .cc-live-row span.v-conditional { color: var(--warn); }
 .cc-live-row span.v-reject, .cc-live-row.st-failed span { color: var(--err); }
+
+/* Sağ panel (Plan / Değişiklikler / Bağlam) sohbete ait; projede boş "Henüz plan yok" gösterip yer kaplıyordu. */
+#app.in-project #panel, #app.in-project.panel-open #panel { width: 0; border-left-color: transparent; overflow: hidden; }
+#app.in-project #panelBtn { display: none; }
