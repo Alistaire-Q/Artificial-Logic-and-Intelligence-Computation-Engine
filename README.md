@@ -390,7 +390,7 @@ alice tasks                  # liste ve son sonuçlar;  alice tasks run <id>  / 
 
 ALICE cümleyi zamanlamaya çevirip gösterir, onaylarsan kurar. Bilgisayar kapalıyken kaçırılan görev açılışta bir kez telafi edilir. Görevler gözetimsiz çalıştığı için onay gerektiren adımlar (auto modda tehlikeli komutlar) reddedilir; sonuç bildirim olarak gelir.
 
-**Kişilik.** ALICE'in kim olduğu (sevgili rolü, görünüşü, karakteri), sana nasıl hitap edeceği, ne kadar uzun konuşacağı ve ne sıklıkla şaka yapacağı `~/.alice/personality.md` dosyasında (`alice init` oluşturur), her oturumda okunur ve genel asistan tanımının önüne geçer. Dosya eski varsayılan şablonla aynıysa yeni kişiliğe otomatik yükseltilir; kendin değiştirdiysen dokunulmaz.
+**Kişilik.** ALICE'in kim olduğu (JARVIS benzeri, sakin ve yetkin bir kişisel asistan; hafif, baskın olmayan bir mizahı var), sana nasıl hitap edeceği, ne kadar uzun konuşacağı ve ne sıklıkla şaka yapacağı `~/.alice/personality.md` dosyasında (`alice init` oluşturur), her oturumda okunur ve genel asistan tanımının önüne geçer. Dosya eski varsayılan şablonla aynıysa yeni kişiliğe otomatik yükseltilir; kendin değiştirdiysen dokunulmaz.
 
 ## Ses
 
@@ -423,7 +423,8 @@ alice voice test      # mikrofonu dene
 
 * **Bas-konuş:** tuşu basılı tut, konuş, bırak. Tuş `config.toml` içinde `[voice] ptt_key`.
 * **"Hey Alice":** el gerektirmez. [openWakeWord](https://github.com/dscripka/openWakeWord) ile kendi eğittiğin bir model (`wake_model`) verirsen tamamen yerelde dinler. Vermezsen konuşma algılanınca cümlenin başı bilgisayardaki küçük Whisper modeliyle (faster-whisper, `[voice] wake_local = "base"`) yazıya çevrilip "Hey Alice" ile başlayıp başlamadığına bakılır; sadece uyandırma duyulursa ses Groq'a gider. faster-whisper kurulu değilse her cümle Groq'a gönderilir. `alice voice on` sesi açar ve arka plandaki çekirdeği başlatır.
-* ALICE cevap verdikten sonra 8 saniye boyunca "Hey Alice" demeden devam edebilirsin.
+* ALICE cevap verdikten sonra en fazla 5 saniye "Hey Alice" demeden devam edebilirsin. Süre ALICE sustuğu andan sayılır ve konuşmanın başladığı ana bakılır: 5. saniyede başlayan cümle alınır, 6. saniyede başlayan alınmaz (yanındakilerle konuşurken söylenenler komut sanılmasın). Canlı konuşmada (Live) da aynı: 5 saniye sessizlikte oturum kapanır.
+* **"Alice sus"** (ya da "sus", "sessiz ol", "kapa çeneni" ...): konuşmayı keser, takip penceresini kapatır ve sen yeniden "Alice" diyene kadar hiçbir şeyi komut saymaz. Bu sırada isim cümlenin başında olmalı ("bak şimdi Alice ..." uyandırmaz). Bas-konuş tuşu her zaman çalışır.
 * ALICE konuşurken araya girersen susar ve yarım kalan işi durdurur. Hoparlör yerine kulaklık kullanırsan yankı yüzünden yanlışlıkla susmaz.
 * Cevabın tamamını beklemez, ilk cümle hazır olunca söyler. Bir araç çalışacaksa önce "hemen bakıyorum" der. Kod ve uzun yolları okumaz, ekrana yazdığını söyler.
 * Onay gereken bir işte sesli sorar, "evet" dersen yapar.

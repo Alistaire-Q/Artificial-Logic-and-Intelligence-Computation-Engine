@@ -160,9 +160,10 @@ def is_yes(text: str) -> bool:
     return any(w in YES_WORDS or w.startswith(("evet", "tamam", "onaylı")) for w in words)
 
 
-def strip_wake(text: str) -> str | None:
+def strip_wake(text: str, strict: bool = False) -> str | None:
     """'Hey Alice, saat kaç?' -> 'saat kaç?'. Uyandırma yoksa None.
-    Başta bir dolgu sözcüğüne ("ee", "şey") ve Whisper'ın farklı yazımlarına izin verir."""
+    Başta bir dolgu sözcüğüne ("ee", "şey") ve Whisper'ın farklı yazımlarına izin verir.
+    strict: isim cümlenin başında olmalı ("Bak şimdi Alice ..." sayılmaz); susturulmuşken yanlış uyanmasın diye."""
     text = text.strip()
     words = list(re.finditer(r"\w+", text))
     i = 0
@@ -186,10 +187,34 @@ def strip_wake(text: str) -> str | None:
     if i < len(words) and i <= 2 and _name_like(words[i].group(), after_hey):
         return text[words[i].end():].lstrip(" ,.!?;:-'’").strip()
     # "Bak şimdi Alice ..." gibi: ilk üç sözcükte tam isim (benzerlik değil, yanlış uyanmasın)
-    for w in words[:3]:
+    for w in ([] if strict else words[:3]):
         if _name_like(w.group(), False):
             return text[w.end():].lstrip(" ,.!?;:-'’").strip()
     return None
+
+
+# Cevaptan sonra "Alice" demeden konuşulabilecek en uzun süre (sn). Daha uzun pencere, yanındakilerle konuşurken
+# söylenenleri komut sanıyordu; ayar dosyasında daha büyük değer olsa da bu tavan geçerli.
+FOLLOW_MAX = 5.0
+
+HUSH = {"sus", "sessiz ol", "sessize geç", "sessiz kal", "kapa çeneni", "kes sesini", "uyu", "uyku moduna geç",
+        "dinlemeyi bırak", "beni dinleme", "şş", "şşş", "şşşş"}
+_HUSH_FILLERS = {"tamam", "lütfen", "artık", "bi", "bir", "biraz", "hadi", "şimdi", "ya", "lan", "ok", "okey", "bakayım",
+                 "bakim", "bakım", "oke", "ama"}
+
+
+def is_hush(text: str) -> bool:
+    """"Alice sus", "sus artık", "tamam Alice, sessiz ol" gibi susturma komutu mu? Sadece cümlenin tamamı susturmaysa:
+    "sus diye bağırdı" ya da "susam al" sayılmaz."""
+    words = [w for w in re.findall(r"\w+", text.lower())
+             if w not in _HUSH_FILLERS and w not in _FILLERS and w.translate(_TR) not in _HEYS and not _name_like(w, False)]
+    return bool(words) and " ".join(words) in HUSH
+
+
+def ends_with_hush(text: str, max_words: int = 6) -> bool:
+    """Canlı konuşmanın yazı dökümü parça parça gelir: son birkaç sözcük susturma komutu mu?"""
+    words = re.findall(r"\S+", text)
+    return any(is_hush(" ".join(words[-k:])) for k in range(1, min(max_words, len(words)) + 1))
 
 
 class WakeWord:

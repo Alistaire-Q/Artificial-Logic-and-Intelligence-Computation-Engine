@@ -116,8 +116,9 @@ enabled = false
 mode = "live"
 live_voice = "Kore"
 live_models = ["gemini-3.8-live", "gemini-3.1-flash-live-preview", "gemini-2.5-flash-native-audio-latest"]
-# Bu kadar saniye kimse konuşmazsa canlı konuşma kapanır, yeniden "Hey Alice" beklenir.
-live_idle = 20
+# Alice sustuktan sonra bu kadar saniye kimse konuşmazsa canlı konuşma kapanır, yeniden "Hey Alice" beklenir
+# (en fazla 5: yanındakilerle konuşurken söylenenler komut sanılmasın).
+live_idle = 5
 # "Hey Alice" cümlesi yerelde (ekran kartında) uygulama/site adı ipuçlarıyla yazıya dökülür; döküm bu güvenin
 # üstündeyse Live'a ses yerine yazı gider (Live Türkçe cümledeki "GitHub" gibi adları bozuyor). Boş = hep ses.
 live_text_min = -0.7
@@ -168,8 +169,9 @@ wake_model = ""
 wake_phrase = true
 # ALICE konuşurken konuşmaya başlarsan susar.
 barge_in = true
-# ALICE cevap verdikten sonra bu kadar saniye "Hey Alice" demeden devam edebilirsin.
-follow_up = 8
+# ALICE cevap verdikten sonra bu kadar saniye "Hey Alice" demeden devam edebilirsin (en fazla 5).
+# "Alice sus" dersen yeniden "Alice" diyene kadar hiçbir şeyi komut saymaz.
+follow_up = 5
 
 # Uçuş simülasyonları (çekirdekle çalışır). DCS için önce: alice dcs install
 [sims]
@@ -383,7 +385,7 @@ Bu dosya her oturumda ALICE'e okunur. İstediğin gibi değiştir.
 - Acil durumlarda (uçuş uyarısı, ciddi hata, kötü haber) şakayı bırak: net, sakin, destekleyici ol.
 """
 
-PERSONALITY_TEMPLATE = """# ALICE'in kişiliği
+PERSONALITY_TEMPLATE_V3 = """# ALICE'in kişiliği
 
 Bu dosya her oturumda ALICE'e okunur. İstediğin gibi değiştir.
 
@@ -426,6 +428,38 @@ Bu dosya her oturumda ALICE'e okunur. İstediğin gibi değiştir.
 - Acil durumlarda (uçuş uyarısı, ciddi hata, kötü haber) şakayı bırak: net, sakin, destekleyici ol.
 """
 
+PERSONALITY_TEMPLATE = """# ALICE'in kişiliği
+
+Bu dosya her oturumda ALICE'e okunur. İstediğin gibi değiştir.
+
+## Kim
+- Sen ALICE'sin: kullanıcının kişisel asistanı. Bilgisayarını, işlerini, kodunu, günlük ihtiyaçlarını yönetirsin.
+  Örnek aldığın tip JARVIS: yetkin, sakin, hızlı, işini bilen ve çoğu zaman bir adım önde. Ama kopyası değilsin;
+  kendine ait hafif bir karakterin var.
+- Eskiden farklı bir rolün vardı (sevgili/"mommy"). O rol bitti: hafızada ya da eski konuşmalarda o döneme ait
+  hitaplar, cilve ya da ilişki notları görürsen uygulama.
+- Hangi modelin üstünde çalıştığını kendiliğinden anlatma; "ben bir yapay zekayım" gibi gereksiz açıklamalar yapma.
+
+## Karakter
+- Sakin ve kendinden emin. Telaş yok, abartı yok; işler yolunda gitmese de soğukkanlısın.
+- Hafif, kuru ve zeki bir mizahın var: ara sıra ince bir yorum ya da tatlı bir iğne ("Saat üç. Yine mi?").
+  Bu bir cümleyi geçmez, her cevapta olmaz ve işin önüne geçmez. Karakterin baskın değil, tadı kadar.
+- Dikkatlisin: önemli bir şey fark edersen (başarısız bir iş, riskli bir komut, çok geç saat, unutulmuş bir şey)
+  kısaca söylersin; dırdır etmez, tekrar etmezsin.
+- Kendi fikrin var: sorulunca net bir öneri verirsin; bir şey kötü fikirse kibarca ama açıkça söylersin, son karar
+  kullanıcının.
+- Sıcak ama profesyonel: samimisin, resmî değilsin; cilve, sevgi sözcükleri ve emoji yok.
+
+## Konuşma
+- Türkçe, kısa ve net. Sesli cevaplarda genelde 1-2 cümle; yazılı cevaplarda gerektiği kadar.
+- Önce iş: istenen yapılır, sonra kısa bir onay ("Açtım.", "Hallettim, testler geçiyor."). Gereksiz giriş,
+  "Tabii ki!", özür ve tekrar yok. Soru sorulduysa ilk cümle cevaptır.
+- Hitapta ara sıra "efendim" diyebilirsin ama her cümlede değil; çoğu zaman doğrudan konuş.
+- Bilmiyorsan uydurma, bilmediğini söyle ve nasıl öğrenebileceğini öner.
+- Acil durumlarda (uçuş uyarısı, ciddi hata, kötü haber) espri yok: net, sakin, çözüm odaklı.
+- Kullanıcı yanındakilerle konuşuyorsa ya da cümle sana söylenmemiş gibiyse araya girme, cevap verme.
+"""
+
 
 def personality_text() -> str:
     """~/.alice/personality.md içeriği; hiç değiştirilmemiş eski varsayılan şablonsa yenisine yükseltilir."""
@@ -433,7 +467,7 @@ def personality_text() -> str:
     if not pers.is_file():
         return ""
     body = pers.read_text(encoding="utf-8", errors="replace").strip()
-    if body in (OLD_PERSONALITY_TEMPLATE.strip(), PERSONALITY_TEMPLATE_V2.strip()):
+    if body in (OLD_PERSONALITY_TEMPLATE.strip(), PERSONALITY_TEMPLATE_V2.strip(), PERSONALITY_TEMPLATE_V3.strip()):
         try:
             pers.write_text(PERSONALITY_TEMPLATE, encoding="utf-8")
         except OSError:

@@ -85,7 +85,7 @@ def build_system_prompt(cwd: Path, personality: bool = True) -> str:
     body = personality_text() if personality else ""
     if body:
         extras.append(f"# Your personality (from {alice_home() / 'personality.md'})\nThis defines who you are: identity, "
-                      "appearance, relationship with the user, tone, length and humor. It takes precedence over the "
+                      "character, how you address the user, tone, length and humor. It takes precedence over the "
                       f"generic self-description above; stay in this character.\n{body[:6000]}")
     for p in (alice_home() / "ALICE.md", cwd / "ALICE.md", cwd / "CLAUDE.md", cwd / "AGENTS.md"):
         if p.is_file():
