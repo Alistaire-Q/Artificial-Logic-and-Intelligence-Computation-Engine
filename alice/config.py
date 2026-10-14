@@ -193,6 +193,13 @@ export_path = ""
 enabled = false
 port = 8765
 
+# Android TV ve telefon (ADB). tv / phone: "IP:port", ALICE connect'te kendisi yazar.
+# adb: boşsa PATH'teki adb (kurmak için: winget install Google.PlatformTools).
+[android]
+adb = ""
+tv = ""
+phone = ""
+
 # Sabah özeti (`alice brief`, kurmak için `alice brief --install 08:00`).
 # days: haftanın günlerine göre program, ör. pazartesi = "okul", salı = "staj".
 [brief]

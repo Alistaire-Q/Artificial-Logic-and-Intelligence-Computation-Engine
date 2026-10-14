@@ -43,13 +43,17 @@ GROUPS: dict[str, tuple[set[str], str, str]] = {
                r"dcs|war ?thunder|uçuş|uçak|kneeboard|pist|iniş|kalkış|simülasyon|sim\b"),
     "net": ({"http_request"}, "REST API çağırma, webhook, JSON gönderme, URL'den dosya indirme",
             r"\bapi\b|endpoint|webhook|\bjson\b|\brest\b|http isteği|post isteği|istek at|indir|download|curl"),
-    "team": ({"team", "council"}, "büyük işleri otonom ajan projesine bölme ve inceleme kurulu (eleştirmen, savunucu, "
-             "kontrolcü, uzmanlar tartışıp oylar)",
+    "team": ({"team", "council"}, "büyük işleri otonom ajan projesine bölme ve inceleme kurulu (uzmanlar "
+             "tartışıp oylar)",
              r"takım|ekip|paralel|aynı anda|ajanlar|ajan çağır|orkestra|alt ajan|subagent|multi.?agent|büyük (iş|proje|"
              r"kod)|codebase|kod tabanı|refactor|yeniden düzenle|kurul|eleştir|tartış|savun|artı.*eksi|incele"),
     "personal": ({"notes", "report", "media"}, "notlar, sabah/PC raporu, müzik ve ses seviyesi",
                  r"\bnot\b|notlar|not al|rapor|özet|sabah|müzik|şarkı|ses seviyesi|sesi aç|sesi kıs|spotify|"
                  r"kapat .*dakika|dakika sonra"),
+    "home": ({"pc", "wifi", "android"}, "PC gücü/parlaklık, Wi-Fi ve ev ağı, Android TV ve telefon",
+             r"kilitle|uyut|uyku|hazırda|yeniden başlat|restart|parlaklı|monitör|ekranı kapat|güç plan|wi-?fi|"
+             r"kablosuz|internet|modem|\bağ(a|da|ı|daki)?\b|ssid|\btv\b|televizyon|android|telefon|bildirim|"
+             r"\bpil\b|şarj|wake.?on|uzaktan aç|\bmac\b|netflix"),
 }
 
 TOOL_TO_GROUP = {name: g for g, (names, _, _) in GROUPS.items() for name in names}
