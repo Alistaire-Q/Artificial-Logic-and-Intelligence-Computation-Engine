@@ -206,6 +206,12 @@ host = ""
 token = ""
 mac = ""
 
+# Modem (ZTE ZXHN H3600 vb.): bağlı cihazlar ve yeniden başlatma için yönetim girişi.
+# host boşsa ağ geçidi (x.x.x.1). Şifre buraya değil ~/.alice/.env içine: MODEM_PASSWORD=...
+[modem]
+host = ""
+user = "admin"
+
 # Sabah özeti (`alice brief`, kurmak için `alice brief --install 08:00`).
 # days: haftanın günlerine göre program, ör. pazartesi = "okul", salı = "staj".
 [brief]
