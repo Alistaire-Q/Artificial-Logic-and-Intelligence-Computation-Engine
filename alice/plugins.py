@@ -253,7 +253,7 @@ def plugins_cmd(argv: list[str]) -> int:
     if argv[:1] == ["new"]:
         name = argv[1] if len(argv) > 1 else ""
         if not _NAME.match(name):
-            print("kullanım: alice plugins new <ad>   (küçük harf, rakam, _; harfle başlar)")
+            print("kullanım: alice plugins new <ad>   (küçük harf, rakam, - ya da _; harfle başlar)")
             return 2
         d = plugin_dir()
         d.mkdir(parents=True, exist_ok=True)

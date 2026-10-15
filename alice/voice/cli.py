@@ -1,6 +1,6 @@
 """Ses komutları.
 
-  alice voice                         sesli asistanı başlat (bas-konuş + "Hey Alice")
+  alice voice [--ptt <tuş>] [--no-wake]   sesli asistanı başlat (bas-konuş + "Hey Alice")
   alice voice audition [--voices Aoede,Kore] [--local xtts,chatterbox] [--emotions calm,urgent]
                                       dinleme testi: örnekleri üretir, HTML sayfasını açar
   alice voice use <aday>              sesi seç: gemini:Aoede, xtts, chatterbox
@@ -15,7 +15,6 @@
 
 from __future__ import annotations
 
-import argparse
 import importlib.util
 import webbrowser
 
@@ -32,6 +31,13 @@ OPTIONAL = (("sounddevice", "mikrofon ve ses çalma", "voice"), ("pynput", "bas-
             ("openwakeword", "yerel 'Hey Alice'", "voice-local"))
 
 
+def _parser(prog: str):
+    """Yardım ve hata metinleri Türkçe argparse (alice.cli ile aynı)."""
+    from alice.cli import TrArgumentParser
+
+    return TrArgumentParser(prog=prog)
+
+
 def voice_cmd(argv: list[str]) -> int:
     sub = argv[0] if argv and not argv[0].startswith("-") else "run"
     rest = argv[1:] if argv and not argv[0].startswith("-") else argv
@@ -39,7 +45,8 @@ def voice_cmd(argv: list[str]) -> int:
     fn = {"on": _on, "off": _off, "install-local": _install_local, "models": _models, "run": _run, "audition": _audition, "use": _use, "library": _library, "say": _say, "test": _test,
           "status": _status}.get(sub)
     if fn is None:
-        console.print(__doc__)
+        console.print(f"bilinmeyen ses komutu: {sub}", markup=False)
+        console.print(__doc__, markup=False)
         return 2
     return fn(cfg, rest)
 
@@ -165,13 +172,13 @@ def _audition(cfg, argv) -> int:
     from alice.voice.audition import run_audition
     from alice.voice.tts import GEMINI_VOICES, EmotionLibrary, make_cloud, make_local
 
-    ap = argparse.ArgumentParser(prog="alice voice audition")
+    ap = _parser(prog="alice voice audition")
     ap.add_argument("--voices", default="Aoede,Kore,Leda,Sulafat,Despina,Achernar",
                     help=f"Gemini sesleri, virgülle. Hepsi: {','.join(GEMINI_VOICES)}")
     ap.add_argument("--local", default="", help="xtts,chatterbox (kuruluysa)")
     ap.add_argument("--ref", help="yerel motorlar için referans WAV (varsayılan: duygu kütüphanesi ya da ilk Gemini sesi)")
     ap.add_argument("--emotions", default="", help="calm,happy,serious,urgent,playful")
-    ap.add_argument("--no-open", action="store_true")
+    ap.add_argument("--no-open", action="store_true", help="sayfayı tarayıcıda açma, sadece yolunu yaz")
     a = ap.parse_args(argv)
     engines = []
     for name in filter(None, a.voices.split(",")):
@@ -279,10 +286,10 @@ def _say(cfg, argv) -> int:
     from alice.voice.tone import pick
     from alice.voice.tts import TTSError, TTSRouter, make_cloud, make_local, make_tts
 
-    ap = argparse.ArgumentParser(prog="alice voice say")
-    ap.add_argument("text", nargs="+")
-    ap.add_argument("--emotion")
-    ap.add_argument("--engine", choices=["cloud", "local"])
+    ap = _parser(prog="alice voice say")
+    ap.add_argument("text", nargs="+", help="seslendirilecek metin")
+    ap.add_argument("--emotion", help="calm, happy, serious, urgent, playful (varsayılan: metne göre seçilir)")
+    ap.add_argument("--engine", choices=["cloud", "local"], help="sadece bulut ya da sadece yerel motorla dene")
     ap.add_argument("--out", help="çalmak yerine WAV olarak kaydet")
     a = ap.parse_args(argv)
     text = " ".join(a.text)
@@ -305,7 +312,7 @@ def _say(cfg, argv) -> int:
         return 0
     player = Player()
     if not player.available:
-        console.print("[red]ses çalınamıyor[/] (pip install sounddevice)")
+        console.print("[red]ses çalınamıyor[/] (" + escape('pip install "alice-harness[voice]"') + ")")
         return 1
     player.play(audio)
     return 0
@@ -319,8 +326,12 @@ def _test(cfg, argv) -> int:
 
     try:
         mic = Microphone()
+    except ModuleNotFoundError as e:
+        console.print(f"[red]{escape(e.name or 'sounddevice')} kurulu değil.[/] Kur: "
+                      + escape('pip install "alice-harness[voice]"'))
+        return 1
     except Exception as e:
-        console.print(f"[red]mikrofon açılamadı:[/] {e}  [dim](pip install sounddevice)[/]")
+        console.print(f"[red]mikrofon açılamadı:[/] {escape(str(e))}")
         return 1
     console.print("5 saniye konuş...")
     frames = []
@@ -349,7 +360,7 @@ def _run(cfg, argv) -> int:
     from alice.voice.audio import mic_available
     from alice.voice.stt import make_stt
 
-    ap = argparse.ArgumentParser(prog="alice voice")
+    ap = _parser(prog="alice voice")
     ap.add_argument("--ptt", help="bas-konuş tuşu (varsayılan config: voice.ptt_key)")
     ap.add_argument("--no-wake", action="store_true", help="'Hey Alice' kapalı, sadece bas-konuş")
     a = ap.parse_args(argv)

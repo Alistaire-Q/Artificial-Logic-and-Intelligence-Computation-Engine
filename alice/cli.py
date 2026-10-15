@@ -1,24 +1,27 @@
 """ALICE komut satırı.
 
   alice                      etkileşimli oturum (REPL)
+  alice "görev"              REPL'i bu mesajla başlat
   alice -p "görev"           tek seferlik çalıştır, sonucu yaz, çık
-  alice init                 ~/.alice altında config ve .env oluştur
+  alice init [--force]       ~/.alice altında config.toml, .env ve personality.md oluştur
   alice doctor               anahtarları, modelleri ve opsiyonel bağımlılıkları test et
   alice models [--refresh] [--write]  ücretsiz modelleri canlı ölç/sırala; --write rolleri auto yapar
   alice reflex "hedef"       Jev/System One reflex döngüsünü tek başına çalıştır
   alice app                  masaüstü uygulamasını aç
   alice shortcut             masaüstüne ve Başlat menüsüne ALICE kısayolu koy (Windows)
-  alice core run|install|status|mode|stats   arka plan çekirdeği (izleme, kurallar, modlar, görevler)
+  alice core run|install|uninstall|status|mode|stats   arka plan çekirdeği (izleme, modlar, görevler)
   alice rules [add "cümle"]  uyarı kuralları ("GPU uzun süre ısınırsa söyle")
   alice tasks [add "cümle"]  zamanlanmış görevler ("her pazar gece projelerimi yedekle")
-  alice voice [audition|use|library|say|test|status]   sesli asistan ve ses seçimi
+  alice voice [audition|use|library|say|test|status|models|install-local|on|off]   sesli asistan ve ses seçimi
   alice quick [--open]       hızlı bar kısayolları (Ctrl+Alt+A / S / C)
-  alice dcs install|status|kneeboard   DCS bağlantısı
+  alice dcs install|uninstall|status|kneeboard   DCS bağlantısı
   alice watch [status|import <db>]     akıllı saat verisi ve ne sıklıkla geldiği
-  alice phone                telefon köprüsü (telefondan ALICE, canlı nabız)
+  alice phone [--new-token]  telefon köprüsü (telefondan ALICE, canlı nabız)
   alice notes | brief | report         notlar, sabah özeti, haftalık bilgisayar raporu
-"""
+  alice plugins [new <ad>]   eklentileri listele / yeni eklenti şablonu oluştur
 
+Her komutun ayrıntısı için: alice <komut> --help
+"""
 from __future__ import annotations
 
 import argparse
@@ -55,6 +58,8 @@ HELP = """[bold]Komutlar[/]
   /rewind                     önceki bir mesaja geri sar (ALICE'in değiştirdiği dosyalar dahil)
   /init                       bu proje için ALICE.md talimat dosyası oluştur
   /usage                      bugünkü istek/token kullanımı
+  /think [rol] <seviye>       düşünme seviyesi: off | low | medium | high | default, ör. /think brain off
+  /kurul <konu>               konuyu inceleme kuruluna sor (eleştirmen, savunucu, kontrolcü, uzmanlar)
   /tools, /mcp                araçlar / MCP sunucularından gelen araçlar
   /memory                     kalıcı hafızayı göster
   /compact                    context'i şimdi özetle
@@ -236,6 +241,10 @@ def build(cfg: Config, cwd: Path, mode: str, verbose: bool = False) -> tuple[Age
 
 def _check_ready(router: Router) -> bool:
     if router.first_available("brain"):
+        if not any(pc.needs_key and pc.api_key for pc in router.providers_cfg.values()):
+            # Anahtarsız tek seçenek yerel Ollama; çoğu zaman kurulu değil, hata listesi yerine ne yapılacağını söyle.
+            console.print(f"[yellow]Hiç API anahtarı yok, sadece yerel Ollama denenecek.[/] {alice_home() / '.env'} "
+                          "dosyasına en az bir anahtar ekle (en kolayı GEMINI_API_KEY), sonra [bold]alice doctor[/].")
         return True
     console.print("[red]Kullanılabilir beyin modeli yok.[/] Önce [bold]alice init[/] çalıştır ve "
                   f"{alice_home() / '.env'} dosyasına en az bir API anahtarı ekle (en kolayı GEMINI_API_KEY).")
@@ -374,13 +383,16 @@ def handle_slash(text: str, agent: Agent, router: Router, ctx: ToolContext, cfg:
             agent.permissions.mode = "plan"
         elif args and args[0] in MODES:
             agent.permissions.mode = args[0]
+        elif args:
+            console.print(f"[red]bilinmeyen mod: {escape(args[0])}[/] (seçenekler: {' | '.join(MODES)})")
         console.print(f"izin modu: [bold]{agent.permissions.mode}[/]")
     elif cmd == "/rewind":
         return rewind_prompt(agent)
     elif cmd == "/mcp":
         mcp = [t for t in agent.tools.values() if t.name.startswith("mcp__")]
         if not mcp:
-            console.print("[dim]MCP sunucusu yok. config.toml'a [mcp.servers.<isim>] ekle (README'de örnek var).[/]")
+            console.print("[dim]MCP sunucusu yok. config.toml'a " + escape("[mcp.servers.<isim>]")
+                          + " ekle (README'de örnek var).[/]")
         for t in mcp:
             console.print(f"[bold]{t.name}[/] [dim]({t.risk})[/] {t.description[:110]}")
     elif cmd == "/memory":
@@ -519,9 +531,11 @@ def doctor(cfg: Config) -> int:
     console.print("[bold]Opsiyonel bileşenler:[/]")
     for mod, why in (("mss", "ekran görüntüsü"), ("pyautogui", "fare/klavye"), ("pyperclip", "pano, Türkçe yazma"),
                      ("pygetwindow", "pencere yönetimi (Windows/macOS)"), ("pywinauto", "UI Automation (Windows)"),
-                     ("playwright", "tarayıcı")):
+                     ("playwright", "tarayıcı"), ("webview", "uygulama penceresi"), ("pystray", "tepsi simgesi"),
+                     ("sounddevice", "mikrofon ve ses çalma"), ("pynput", "bas-konuş ve hızlı bar kısayolları")):
         ok = importlib.util.find_spec(mod) is not None
-        console.print(f"  {'[green]✓[/]' if ok else '[red]✗[/]'} {mod:<12} {why}")
+        hint = "" if ok else f"  [dim]{escape(install_hint(mod))}[/]"
+        console.print(f"  {'[green]✓[/]' if ok else '[red]✗[/]'} {mod:<12} {why}{hint}")
     return 0
 
 
@@ -583,11 +597,17 @@ def write_roles(chains: dict[str, list[str]]) -> Path:
 def reflex_cmd(cfg: Config, a: argparse.Namespace) -> int:
     from alice.reflex.loop import ReflexLoop, make_text_writer
     from alice.reflex.observers import BrowserObserver, DesktopObserver
+    from alice.tools.base import ToolError
+    from alice.tools.browser import NO_SEPARATE
 
+    bad = [kv for kv in a.input or [] if "=" not in kv]
+    if bad:
+        console.print(f"[red]--input alan=metin biçiminde olmalı:[/] {escape(bad[0])}")
+        return 2
+    inputs = dict(kv.split("=", 1) for kv in a.input or [])
     router = Router(cfg)
     decider = Decider.from_config(cfg, router, on_event=lambda s: console.print(f"[dim]{s}[/]"))
     ctx = ToolContext(cwd=Path.cwd(), config=cfg, router=router, decider=decider)
-    inputs = dict(kv.split("=", 1) for kv in a.input or [])
     try:
         observer = BrowserObserver(ctx, a.url) if a.target == "browser" else DesktopObserver(ctx, a.title)
         loop = ReflexLoop(observer, decider, make_text_writer(router),
@@ -597,6 +617,14 @@ def reflex_cmd(cfg: Config, a: argparse.Namespace) -> int:
         console.print(res.report())
         if a.target == "browser" and not a.close:
             console.input("[dim]tarayıcıyı kapatmak için Enter[/]")
+    except ToolError as e:
+        if str(e) == NO_SEPARATE:  # modele yazılmış metin; komut satırında ne yapılacağını söyle
+            console.print("[red]Açık tarayıcına bağlanılamadı ve ayrı pencere açmak kapalı.[/] Tarayıcını "
+                          "--remote-debugging-port=9222 ile aç ya da config.toml " + escape("[agent]")
+                          + " bölümüne browser_allow_separate = true yaz.")
+        else:
+            console.print(f"[red]{escape(str(e))}[/]")
+        return 1
     finally:
         cleanup(ctx)
     return 0 if res.status == "done" else 1
@@ -631,12 +659,13 @@ def app_cmd(argv: list[str]) -> int:
     from alice.app.server import AppServer, AppState
     from alice.app.window import open_window
 
-    ap = argparse.ArgumentParser(prog="alice app")
-    ap.add_argument("--cwd", type=Path, help="başlangıç çalışma klasörü (varsayılan: ev klasörün)")
+    ap = TrArgumentParser(prog="alice app", description="Masaüstü uygulamasını aç.")
+    ap.add_argument("--cwd", type=Path, help="başlangıç çalışma klasörü (varsayılan: config [app] workspace, "
+                    "son kullanılan klasör ya da Belgeler/ALICE)")
     ap.add_argument("--port", type=int, default=0, help="sabit port (varsayılan: rastgele)")
-    ap.add_argument("--mode", choices=MODES)
+    ap.add_argument("--mode", choices=MODES, help="izin modu (varsayılan: config permission_mode)")
     ap.add_argument("--window", choices=["auto", "webview", "app", "browser", "none"], default="auto",
-                    help="none: pencere açma, sadece adresi yaz")
+                    help="pencere türü: auto (pywebview > Edge/Chrome uygulama modu > tarayıcı); none: pencere açma, sadece adresi yaz")
     a = ap.parse_args(argv)
     cwd = (a.cwd or default_workspace()).resolve()
     cfg = load_config(cwd=cwd)
@@ -677,14 +706,159 @@ def shortcut_cmd() -> int:
     return 0
 
 
+# ------------------------------------------------------------ argparse (Türkçe)
+_ARGPARSE_TR = (
+    ("unrecognized arguments", "tanınmayan argüman"),
+    ("the following arguments are required", "şu argümanlar gerekli"),
+    ("invalid choice", "geçersiz seçim"),
+    ("choose from", "seçenekler:"),
+    ("argument ", "argüman "),
+    ("expected one argument", "bir değer bekleniyor"),
+    ("invalid int value", "geçersiz sayı"),
+    ("invalid float value", "geçersiz sayı"),
+    ("ambiguous option", "belirsiz seçenek"),
+    ("could match", "şunlardan biri olabilir"),
+)
+
+
+class _TrHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    def add_usage(self, usage, actions, groups, prefix=None):
+        return super().add_usage(usage, actions, groups, "kullanım: " if prefix is None else prefix)
+
+
+class TrArgumentParser(argparse.ArgumentParser):
+    """Yardım başlıkları ve hata mesajları Türkçe olan argparse (komut satırının dili tek olsun)."""
+
+    def __init__(self, *args, **kw):
+        kw.setdefault("formatter_class", _TrHelpFormatter)
+        kw["add_help"] = False
+        super().__init__(*args, **kw)
+        self._positionals.title = "argümanlar"
+        self._optionals.title = "seçenekler"
+        self.add_argument("-h", "--help", action="help", help="bu yardımı göster ve çık")
+
+    def error(self, message: str):  # type: ignore[override]
+        for en, tr in _ARGPARSE_TR:
+            message = message.replace(en, tr)
+        self.print_usage(sys.stderr)
+        self.exit(2, f"{self.prog}: hata: {message} (yardım: {self.prog} --help)\n")
+
+
+def package_version() -> str:
+    """Kurulu paketin sürümü; paket kurulu değilse (repo klasöründen çalışırken) koddaki sürüm."""
+    try:
+        from importlib.metadata import version
+
+        return version("alice-harness")
+    except Exception:  # noqa: BLE001 - PackageNotFoundError ya da bozuk metadata
+        return __version__
+
+
+# ------------------------------------------------------------- alt komutlar
+SUBCOMMANDS = ("init", "doctor", "models", "reflex", "app", "shortcut", "core", "rules", "tasks", "voice", "quick",
+               "dcs", "watch", "phone", "notes", "brief", "report", "plugins")
+
+# Kendi argparse'ı olmayan alt komutlar: `alice <komut> --help` çalıştırmak yerine bu metni gösterir
+# (ör. `alice phone --help` köprüyü açıp beklemesin, `alice notes --help` notları listelemesin).
+_SUB_DOCS: dict[str, tuple[str, str | None]] = {
+    "core": ("alice.core.cli", None), "rules": ("alice.core.cli", None), "tasks": ("alice.core.cli", None),
+    "voice": ("alice.voice.cli", None),
+    "notes": ("alice.extras.cli", None), "brief": ("alice.extras.cli", None), "report": ("alice.extras.cli", None),
+    "watch": ("alice.app.phone", "watch_cmd"), "phone": ("alice.app.phone", "phone_cmd"),
+    "dcs": ("alice.sims.dcs", "dcs_cmd"), "plugins": ("alice.plugins", "plugins_cmd"), "quick": ("", None),
+}
+
+_HELP_ARGS = ("-h", "--help", "help")
+
+# Opsiyonel paket -> pyproject.toml'daki extra. Eksikse traceback yerine ne kurulacağı yazılır.
+OPTIONAL_EXTRAS: dict[str, str] = {
+    "mss": "computer", "pyautogui": "computer", "pyperclip": "computer", "pygetwindow": "computer",
+    "pywinauto": "computer", "playwright": "browser", "webview": "app", "pystray": "core",
+    "sounddevice": "voice", "pynput": "voice", "webrtcvad": "voice", "edge_tts": "voice", "av": "voice",
+    "websockets": "voice", "faster_whisper": "voice-local", "openwakeword": "voice-local", "TTS": "voice-xtts",
+}
+
+
+def install_hint(module: str) -> str:
+    """Eksik modül için tek satırlık kurulum önerisi."""
+    root = module.split(".", 1)[0]
+    extra = OPTIONAL_EXTRAS.get(root)
+    if extra:
+        return f'pip install "alice-harness[{extra}]"  (repo klasöründe: pip install -e ".[{extra}]")'
+    return f"pip install {root}"
+
+
+def subcommand_help(name: str) -> str:
+    """`alice <komut> --help` metni: modülün kendi kullanım metni, yoksa ana yardımdaki satırı."""
+    import importlib
+
+    mod, attr = _SUB_DOCS.get(name, ("", None))
+    doc = ""
+    if mod:
+        m = importlib.import_module(mod)
+        doc = (getattr(m, attr).__doc__ if attr else m.__doc__) or ""
+    if not doc.strip():
+        doc = "\n".join(ln for ln in (__doc__ or "").splitlines() if re.match(rf"\s+alice {re.escape(name)}\b", ln))
+    return doc.strip("\n")
+
+
+def unknown_command_hint(argv: list[str]) -> str | None:
+    """Tek kelimelik argüman bir alt komutun yazım hatasına benziyorsa ne denmek istendiğini söyle.
+
+    `alice doctr` REPL'i "doctr" mesajıyla açıp modele gitmesin. Gerçek tek kelimelik mesajlar için `alice -p`."""
+    import difflib
+
+    if len(argv) != 1 or not re.fullmatch(r"[a-z][a-z-]{2,}", argv[0]) or argv[0] in SUBCOMMANDS:
+        return None
+    word = argv[0]
+    if word == "status":
+        return "Bilinmeyen komut: status. Çekirdeğin durumu için alice core status, anahtarlar ve modeller için alice doctor."
+    if word == "version":
+        return f"alice {package_version()} (sürüm için: alice --version)"
+    close = difflib.get_close_matches(word, SUBCOMMANDS, n=1, cutoff=0.8)
+    if not close:
+        return None
+    return (f"Bilinmeyen komut: {word}. Bunu mu demek istedin: alice {close[0]}? "
+            f'(ALICE\'e mesaj olarak göndermek için: alice -p "{word}")')
+
+
+def _main_parser() -> TrArgumentParser:
+    ap = TrArgumentParser(prog="alice", description="ALICE: ücretsiz API modelleriyle çalışan ajan harness.",
+                          epilog="alt komutlar:\n" + "\n".join((__doc__ or "").splitlines()[2:]).rstrip())
+    ap.add_argument("prompt", nargs="*", help="ilk mesaj (verilirse REPL bu mesajla başlar)")
+    ap.add_argument("-p", "--print", dest="oneshot", action="store_true",
+                    help="tek seferlik çalıştır ve çık (mesaj yoksa stdin'den okunur)")
+    ap.add_argument("--mode", choices=MODES, help="izin modu (varsayılan: config permission_mode, genelde auto)")
+    ap.add_argument("--yolo", action="store_true", help="hiçbir izin sorma (tam erişim), --mode yolo ile aynı")
+    ap.add_argument("--cwd", type=Path, help="çalışma klasörü (varsayılan: bulunduğun klasör)")
+    ap.add_argument("--model", help="beyin rolünü tek modele sabitle, ör. gemini:gemini-flash-latest")
+    ap.add_argument("--resume", nargs="?", const="", metavar="ID",
+                    help="son (ya da verilen id'li) oturumu devam ettir")
+    ap.add_argument("-v", "--verbose", action="store_true", help="hangi modelin cevap verdiğini göster")
+    ap.add_argument("--version", action="version", version=f"alice {package_version()}",
+                    help="sürümü göster ve çık")
+    return ap
+
+
+def _reflex_parser() -> TrArgumentParser:
+    rp = TrArgumentParser(prog="alice reflex", description="Jev/System One reflex döngüsünü tek başına çalıştır.")
+    rp.add_argument("goal", help='hedef, ör. "Ayarlar sayfasını açıp Gizlilik sekmesine geç"')
+    rp.add_argument("--target", choices=["browser", "desktop"], default="browser",
+                    help="browser: tarayıcı sayfası (varsayılan), desktop: Windows penceresi (UI Automation)")
+    rp.add_argument("--url", help="browser: önce bu adresi aç")
+    rp.add_argument("--title", help="desktop: pencere başlığı parçası")
+    rp.add_argument("--input", action="append", help="alan=metin (tekrarlanabilir)")
+    rp.add_argument("--max-steps", type=int, default=25, help="en fazla adım (varsayılan 25)")
+    rp.add_argument("--close", action="store_true", help="bitince tarayıcıyı hemen kapat")
+    return rp
+
+
 # --------------------------------------------------------------------- main
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if sys.stdout is None or sys.stderr is None:
         # pythonw.exe (konsolsuz kısayol) altında stdout yok; çıktıyı yut.
         import os
-
-        from alice.config import alice_home
 
         devnull = open(os.devnull, "w", encoding="utf-8")
         try:  # hatalar kaybolmasın: ~/.alice/core.log (2 MB'ı geçince baştan)
@@ -702,17 +876,49 @@ def main(argv: list[str] | None = None) -> int:
             sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
         except (AttributeError, OSError):
             pass
+    try:
+        return _dispatch(argv)
+    except ModuleNotFoundError as e:
+        # Opsiyonel bir paket eksik (ör. ses için sounddevice): traceback yerine ne kurulacağını söyle.
+        name = e.name or ""
+        if name.split(".", 1)[0] not in OPTIONAL_EXTRAS:
+            raise
+        console.print(f"[red]Eksik paket: {escape(name)}.[/] Kur: [bold]{escape(install_hint(name))}[/]")
+        return 1
+    except KeyboardInterrupt:
+        console.print("[dim]durduruldu[/]")
+        return 130
 
-    if argv and argv[0] == "init":
-        for p in init_home(force="--force" in argv):
+
+def _dispatch(argv: list[str]) -> int:
+    cmd = argv[0] if argv else ""
+    if cmd in _SUB_DOCS and argv[1:2] and argv[1] in _HELP_ARGS:
+        console.print(subcommand_help(cmd), markup=False, highlight=False)
+        return 0
+    if cmd == "help":
+        _main_parser().print_help()
+        return 0
+    if cmd == "init":
+        ip = TrArgumentParser(prog="alice init", description="~/.alice altında config.toml, .env ve personality.md "
+                              "oluştur (var olanlara dokunmaz).")
+        ip.add_argument("--force", action="store_true", help="var olan dosyaların üzerine varsayılanı yaz")
+        a = ip.parse_args(argv[1:])
+        for p in init_home(force=a.force):
             console.print(f"[green]oluşturuldu:[/] {p}")
         console.print(f"Şimdi {alice_home() / '.env'} dosyasına API anahtarlarını yaz, sonra [bold]alice doctor[/].")
         return 0
-    if argv and argv[0] == "doctor":
+    if cmd == "doctor":
+        TrArgumentParser(prog="alice doctor", description="Her sağlayıcıya test isteği atar, karar motorunu dener, "
+                         "eksik opsiyonel paketleri gösterir.").parse_args(argv[1:])
         return doctor(load_config())
-    if argv and argv[0] == "models":
-        return models_cmd(load_config(), "--refresh" in argv, "--write" in argv)
-    if argv and argv[0] == "app":
+    if cmd == "models":
+        mp = TrArgumentParser(prog="alice models", description="Ücretsiz modelleri canlı ölç ve sırala "
+                              "(sonuç ~/.alice/models.json).")
+        mp.add_argument("--refresh", action="store_true", help="önbelleği boşver, şimdi yeniden ölç (~1-2 dk)")
+        mp.add_argument("--write", action="store_true", help="config.toml'daki brain/fast/vision zincirlerini auto yap")
+        a = mp.parse_args(argv[1:])
+        return models_cmd(load_config(), a.refresh, a.write)
+    if cmd == "app":
         try:
             return app_cmd(argv[1:])
         except Exception:
@@ -721,71 +927,71 @@ def main(argv: list[str] | None = None) -> int:
 
             log_error()
             raise
-    if argv and argv[0] in ("core", "rules", "tasks"):
+    if cmd in ("core", "rules", "tasks"):
         from alice.core import cli as core_cli
 
-        return {"core": core_cli.core_cmd, "rules": core_cli.rules_cmd, "tasks": core_cli.tasks_cmd}[argv[0]](argv[1:])
-    if argv and argv[0] in ("notes", "brief", "report"):
+        return {"core": core_cli.core_cmd, "rules": core_cli.rules_cmd, "tasks": core_cli.tasks_cmd}[cmd](argv[1:])
+    if cmd in ("notes", "brief", "report"):
         from alice.extras import cli as extras_cli
 
-        return getattr(extras_cli, f"{argv[0]}_cmd")(argv[1:])
-    if argv and argv[0] in ("watch", "phone"):
+        return getattr(extras_cli, f"{cmd}_cmd")(argv[1:])
+    if cmd in ("watch", "phone"):
         from alice.app import phone
 
-        return (phone.watch_cmd if argv[0] == "watch" else phone.phone_cmd)(argv[1:])
-    if argv and argv[0] == "dcs":
+        return (phone.watch_cmd if cmd == "watch" else phone.phone_cmd)(argv[1:])
+    if cmd == "dcs":
         from alice.sims.dcs import dcs_cmd
 
         return dcs_cmd(argv[1:])
-    if argv and argv[0] == "quick":
+    if cmd == "quick":
         from alice.app.quick import quick_cmd
 
         return quick_cmd(argv[1:])
-    if argv and argv[0] == "voice":
+    if cmd == "voice":
         from alice.voice.cli import voice_cmd
 
         return voice_cmd(argv[1:])
-    if argv and argv[0] == "shortcut":
+    if cmd == "shortcut":
+        TrArgumentParser(prog="alice shortcut", description="Masaüstüne ve Başlat menüsüne ALICE kısayolu koy "
+                         "(Windows).").parse_args(argv[1:])
         return shortcut_cmd()
-    if argv and argv[0] == "plugins":
+    if cmd == "plugins":
         from alice.plugins import plugins_cmd
 
         return plugins_cmd(argv[1:])
-    if argv and argv[0] == "reflex":
-        rp = argparse.ArgumentParser(prog="alice reflex")
-        rp.add_argument("goal")
-        rp.add_argument("--target", choices=["browser", "desktop"], default="browser")
-        rp.add_argument("--url")
-        rp.add_argument("--title", help="desktop: pencere başlığı parçası")
-        rp.add_argument("--input", action="append", help="alan=metin (tekrarlanabilir)")
-        rp.add_argument("--max-steps", type=int, default=25)
-        rp.add_argument("--close", action="store_true", help="bitince tarayıcıyı hemen kapat")
-        return reflex_cmd(load_config(), rp.parse_args(argv[1:]))
+    if cmd == "reflex":
+        return reflex_cmd(load_config(), _reflex_parser().parse_args(argv[1:]))
 
-    ap = argparse.ArgumentParser(prog="alice", description="ALICE ajan harness")
-    ap.add_argument("prompt", nargs="*", help="ilk mesaj (verilirse REPL bu mesajla başlar)")
-    ap.add_argument("-p", "--print", dest="oneshot", action="store_true", help="tek seferlik çalıştır ve çık")
-    ap.add_argument("--mode", choices=MODES)
-    ap.add_argument("--yolo", action="store_true", help="hiçbir izin sorma (tam erişim)")
-    ap.add_argument("--cwd", type=Path)
-    ap.add_argument("--model", help="beyin rolünü tek modele sabitle, ör. gemini:gemini-flash-latest")
-    ap.add_argument("--resume", nargs="?", const="", help="son (ya da verilen id'li) oturumu devam ettir")
-    ap.add_argument("-v", "--verbose", action="store_true", help="hangi modelin cevap verdiğini göster")
-    ap.add_argument("--version", action="version", version=f"alice {__version__}")
-    a = ap.parse_args(argv)
+    hint = unknown_command_hint(argv)
+    if hint:
+        console.print(hint, markup=False, highlight=False)
+        return 2
+    a = _main_parser().parse_args(argv)
 
+    if a.model:
+        try:
+            parse_ref(a.model)
+        except ValueError as e:
+            console.print(f"[red]--model geçersiz:[/] {escape(str(e))}, ör. gemini:gemini-flash-latest")
+            return 2
     cwd = (a.cwd or Path.cwd()).resolve()
+    if not cwd.is_dir():
+        console.print(f"[red]klasör yok:[/] {escape(str(cwd))}")
+        return 2
     cfg = load_config(cwd=cwd)
     mode = "yolo" if a.yolo else (a.mode or cfg.agent.get("permission_mode", "auto"))
+    prompt = " ".join(a.prompt).strip()
+    if a.oneshot and not prompt:
+        prompt = sys.stdin.read().strip() if sys.stdin is not None and not sys.stdin.isatty() else ""
+        if not prompt:
+            console.print('[red]-p için görev yok.[/] Kullanım: alice -p "görev" (ya da görevi stdin\'den ver)')
+            return 2
     agent, router, ctx = build(cfg, cwd, mode, a.verbose)
     if a.model:
         router.role_overrides["brain"] = [a.model]
     if not _check_ready(router):
         return 2
-    prompt = " ".join(a.prompt).strip()
     if a.oneshot:
-        if not prompt:
-            prompt = sys.stdin.read().strip()
         try:
             out = agent.run_turn(prompt)
         finally:

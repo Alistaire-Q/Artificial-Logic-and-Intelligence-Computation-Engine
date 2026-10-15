@@ -140,8 +140,8 @@ def watch_cmd(argv: list[str]) -> int:
                           f"  → {c['verdict']}")
         if not st.keys("watch.*"):
             console.print("[yellow]henüz saat verisi yok.[/] Gadgetbridge'de otomatik dışa aktarmayı aç, dosyayı "
-                          "bilgisayara senkronla ve config'te [watch] export_path'i ayarla; ya da "
+                          "bilgisayara senkronla ve config'te \\[watch] export_path'i ayarla; ya da "
                           "alice watch import <Gadgetbridge.db>")
         return 0
-    console.print(watch_cmd.__doc__)
+    console.print(watch_cmd.__doc__, markup=False)
     return 2

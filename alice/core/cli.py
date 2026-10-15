@@ -75,7 +75,7 @@ def core_cmd(argv: list[str]) -> int:
             import importlib.util
 
             if importlib.util.find_spec("pystray") is None:
-                console.print("[dim]Tepsi simgesi için: pip install 'alice-harness[core]'[/]")
+                console.print("[dim]Tepsi simgesi için: " + escape('pip install "alice-harness[core]"') + "[/]")
         return 0
     if sub == "uninstall":
         console.print("[green]kaldırıldı[/]" if service.uninstall_autostart() else "[dim]zaten kurulu değil[/]")
@@ -116,7 +116,8 @@ def core_cmd(argv: list[str]) -> int:
             for e in reversed(evs):
                 console.print("  " + escape(e.line()))
         return 0
-    console.print(__doc__)
+    console.print(f"bilinmeyen çekirdek komutu: {sub}", markup=False)
+    console.print(__doc__, markup=False)
     return 2
 
 
@@ -237,7 +238,7 @@ def rules_cmd(argv: list[str]) -> int:
         ok = rs.remove(argv[1]) if sub == "rm" else rs.set_enabled(argv[1], sub == "on")
         console.print("[green]tamam[/]" if ok else f"[red]kural yok: {escape(argv[1])}[/]")
         return 0 if ok else 1
-    console.print(__doc__)
+    console.print(__doc__, markup=False)
     return 2
 
 
@@ -288,5 +289,5 @@ def tasks_cmd(argv: list[str]) -> int:
             ts.save()
         console.print("[green]tamam[/]" + (" (bir sonraki çekirdek turunda çalışacak)" if sub == "run" else ""))
         return 0
-    console.print(__doc__)
+    console.print(__doc__, markup=False)
     return 2
