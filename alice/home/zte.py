@@ -55,7 +55,9 @@ def tmp_token(page: str) -> str | None:
         return None
     raw = m.group(1)
     if "\\x" in raw:
-        return bytes.fromhex(raw.replace("\\x", "")).decode("utf-8", "replace")
+        # Yalnız \xNN kaçışları çözülür; araya düz karakter karışsa da bytes.fromhex gibi ValueError atmaz.
+        text = re.sub(r"\\x([0-9a-fA-F]{2})", lambda h: chr(int(h.group(1), 16)), raw)
+        return text.encode("latin-1", "replace").decode("utf-8", "replace")
     return raw
 
 
@@ -127,7 +129,10 @@ class ZTE:
 
     @staticmethod
     def _login_error(info: dict) -> None:
-        lock = int(info.get("lockingTime") or 0)
+        try:
+            lock = int(info.get("lockingTime") or 0)
+        except (TypeError, ValueError):
+            lock = 0
         msg = info.get("loginErrMsg") or ""
         if lock:
             raise ModemError(f"modem girişi {lock} sn kilitli (çok fazla yanlış deneme); sonra tekrar dene")
@@ -140,6 +145,8 @@ class ZTE:
             entry = json.loads(self._req("?_type=loginData&_tag=login_entry"))
         except ValueError as e:
             raise ModemError("bu modemin giriş sayfası beklenen ZTE biçiminde değil") from e
+        if not isinstance(entry, dict):
+            raise ModemError("bu modemin giriş sayfası beklenen ZTE biçiminde değil")
         self._login_error(entry)
         self.token = entry.get("sess_token", "")
         m = re.search(r"<ajax_response_xml_root>(.*?)</ajax_response_xml_root>",
@@ -149,7 +156,12 @@ class ZTE:
         hashed = hashlib.sha256((self.password + m.group(1)).encode()).hexdigest()
         body = (f"Password={hashed}&Username={quote(self.user)}&_sessionTOKEN={self.token}"
                 f"&_sessionTOKENByPost={self.token}&action=login")
-        res = json.loads(self._req("?_type=loginData&_tag=login_entry", body))
+        try:
+            res = json.loads(self._req("?_type=loginData&_tag=login_entry", body))
+        except ValueError as e:
+            raise ModemError("modem giriş cevabı beklenen ZTE biçiminde değil") from e
+        if not isinstance(res, dict):
+            raise ModemError("modem giriş cevabı beklenen ZTE biçiminde değil")
         self._login_error(res)
         self.token = res.get("sess_token", self.token)
 
@@ -207,3 +219,6 @@ class ZTE:
             self._req("?_type=loginData&_tag=logout_entry", f"IF_LogOff=1&_sessionTOKEN={self.token}")
         except httpx.HTTPError:
             pass
+
+    def close(self) -> None:
+        self.c.close()

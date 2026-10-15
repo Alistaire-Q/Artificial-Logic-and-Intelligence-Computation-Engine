@@ -125,7 +125,8 @@ def info() -> str:
         for loc in discover():
             try:
                 d = parse_description(c.get(loc).text, loc)
-            except (httpx.HTTPError, ET.ParseError):
+            except (httpx.HTTPError, httpx.InvalidURL, ET.ParseError, ValueError):
+                # LOCATION ağdaki herhangi bir cihazdan gelir; bozuk adres ya da XML raporu düşürmesin.
                 continue
             host = urlparse(loc).hostname
             model = " ".join(x for x in (d["manufacturer"], d["model"], d["model_number"]) if x)
@@ -145,7 +146,8 @@ def info() -> str:
                     link = soap(d["common"], WAN_COMMON, "GetCommonLinkProperties", c)
                     down, up = link.get("NewLayer1DownstreamMaxBitRate"), link.get("NewLayer1UpstreamMaxBitRate")
                     if down and down.isdigit() and int(down):
-                        lines.append(f"Hat hızı: {int(down) / 1e6:.0f} / {int(up or 0) / 1e6:.0f} Mbps")
+                        up_n = int(up) if up and up.isdigit() else 0
+                        lines.append(f"Hat hızı: {int(down) / 1e6:.0f} / {up_n / 1e6:.0f} Mbps")
                     rx = soap(d["common"], WAN_COMMON, "GetTotalBytesReceived", c).get("NewTotalBytesReceived", "")
                     tx = soap(d["common"], WAN_COMMON, "GetTotalBytesSent", c).get("NewTotalBytesSent", "")
                     if rx.isdigit() and tx.isdigit():

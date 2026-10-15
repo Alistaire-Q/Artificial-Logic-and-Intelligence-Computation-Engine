@@ -15,8 +15,9 @@ import io
 import re
 import shlex
 import shutil
+import subprocess
 
-from alice.home.net import run
+from alice.home import net
 
 TV_APPS = {
     "youtube": "com.google.android.youtube.tv", "netflix": "com.netflix.ninja",
@@ -42,6 +43,12 @@ ADB_HINT = "adb bulunamadı: `winget install Google.PlatformTools` ile kur ya da
 
 class AdbError(RuntimeError):
     pass
+
+
+def run(cmd: list[str], timeout: float = 15) -> subprocess.CompletedProcess:
+    """adb çıktısı (cihazdaki bildirimler, uygulama adları) her sistemde UTF-8'dir; Windows'un konsol kod sayfasıyla
+    (cp857/cp1254) çözülürse Türkçe harfler bozuluyordu."""
+    return net.run(cmd, timeout=timeout, encoding="utf-8")
 
 
 def adb_path(configured: str = "") -> str:
@@ -111,9 +118,11 @@ class Device:
     def _run(self, *args: str, timeout: float = 15, binary: bool = False):
         cmd = [self.adb, "-s", self.serial, *args]
         if binary:
-            import subprocess
-
-            return subprocess.run(cmd, capture_output=True, timeout=timeout)
+            try:
+                return subprocess.run(cmd, capture_output=True, timeout=timeout,
+                                      creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            except subprocess.TimeoutExpired as e:
+                raise AdbError(f"{self.kind} ({self.serial}) {timeout:g} sn içinde cevap vermedi") from e
         return run(cmd, timeout=timeout)
 
     def shell(self, command: str, timeout: float = 15) -> str:
@@ -150,7 +159,9 @@ class Device:
     def ensure(self) -> None:
         r = run([self.adb, "devices"], timeout=10)
         for line in r.stdout.splitlines():
-            if line.startswith(self.serial) and line.split()[-1] == "device":
+            parts = line.split()
+            # Tam eşleşme: 192.168.1.5:5555 aranırken 192.168.1.5:55551 satırı "bağlı" sayılmasın.
+            if len(parts) >= 2 and parts[0] == self.serial and parts[-1] == "device":
                 return
         self.connect()
 
@@ -252,9 +263,7 @@ class Device:
 
 
 def check_reachable(host: str) -> None:
-    from alice.home.net import network_mismatch
-
-    if why := network_mismatch(host):
+    if why := net.network_mismatch(host):
         raise AdbError(why)
 
 
@@ -290,9 +299,7 @@ def find_connect_address(ip: str, adb: str = "", skip: int | None = None, tries:
             return addr
         if i < tries - 1:
             sleep(wait)
-    from alice.home.net import open_ports
-
-    for port in [p for p in open_ports(ip, CONNECT_PORTS) if p != skip][:6]:
+    for port in [p for p in net.open_ports(ip, CONNECT_PORTS) if p != skip][:6]:
         try:
             r = run([adb_path(adb), "connect", f"{ip}:{port}"], timeout=6)
         except TimeoutError:

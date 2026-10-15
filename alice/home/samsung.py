@@ -40,12 +40,17 @@ class TVError(RuntimeError):
 
 def info(host: str, timeout: float = 3) -> dict:
     """REST cihaz bilgisi. TV tamamen kapalıysa (ağ uykuda) TVError."""
+    if not host:
+        raise TVError("Samsung TV adresi yok: önce find ya da host ile connect")
     try:
         r = httpx.get(f"http://{host}:8001/api/v2/", timeout=timeout)
         r.raise_for_status()
-        return r.json()
-    except (httpx.HTTPError, ValueError) as e:
+        data = r.json()
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError) as e:
         raise TVError(f"TV'ye ulaşılamadı ({host}): kapalı ya da ağda değil") from e
+    if not isinstance(data, dict):
+        raise TVError(f"{host}:8001 bir Samsung TV gibi cevap vermedi")
+    return data
 
 
 def power_state(data: dict) -> str:
@@ -90,6 +95,14 @@ def find_app(name: str, installed: list[dict]) -> str | None:
         if n.replace(" ", "") in (a.get("name") or "").casefold().replace(" ", ""):
             return a.get("appId")
     return APPS.get(n)
+
+
+def _closed(e: BaseException) -> bool:
+    """websockets'in ConnectionClosed ailesi mi? (paket isteğe bağlı olduğu için sınıf adına bakılıyor)"""
+    return any(c.__name__ == "ConnectionClosed" for c in type(e).__mro__)
+
+
+CLOSED_MSG = "TV uzaktan kumanda bağlantısını kapattı: TV kapanmış ya da izin geri alınmış olabilir, tekrar dene"
 
 
 class Remote:
@@ -145,9 +158,18 @@ class Remote:
             return None
         except (ValueError, TypeError):
             return {}
+        except Exception as e:
+            if _closed(e):
+                raise TVError(CLOSED_MSG) from e
+            raise
 
     def send(self, payload: dict) -> None:
-        self.ws.send(json.dumps(payload))
+        try:
+            self.ws.send(json.dumps(payload))
+        except Exception as e:
+            if _closed(e):
+                raise TVError(CLOSED_MSG) from e
+            raise
 
     def keys(self, key: str, times: int = 1) -> None:
         for i in range(max(1, min(int(times or 1), 50))):

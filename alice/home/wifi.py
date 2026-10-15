@@ -15,6 +15,13 @@ from xml.sax.saxutils import escape
 from alice.home.net import run
 
 KV = re.compile(r"^\s*(.+?)\s*:\s(.*)$")
+# Türkçe Windows yüzdeyi başa yazabiliyor ("%87"); İngilizcede sonda ("87%").
+PERCENT = re.compile(r"(?:(\d{1,3})\s?%|%\s?(\d{1,3}))")
+
+
+def _percent(val: str) -> int | None:
+    m = PERCENT.fullmatch(val.strip())
+    return int(m.group(1) or m.group(2)) if m else None
 
 
 def _windows() -> None:
@@ -35,7 +42,7 @@ def parse_status(text: str) -> dict:
     """`netsh wlan show interfaces` → {connected, ssid, signal, fields}. fields: ham anahtar/değer çiftleri."""
     fields = [(m.group(1).strip(), m.group(2).strip()) for line in text.splitlines() if (m := KV.match(line))]
     ssid = next((v for k, v in fields if k == "SSID"), "")
-    signal = next((int(v[:-1]) for _, v in fields if re.fullmatch(r"\d{1,3}%", v)), None)
+    signal = next((p for _, v in fields if (p := _percent(v)) is not None), None)
     return {"connected": bool(ssid), "ssid": ssid, "signal": signal, "fields": fields}
 
 
@@ -52,8 +59,8 @@ def parse_networks(text: str) -> list[dict]:
         if cur is None or not (kv := KV.match(line)):
             continue
         key, val = kv.group(1).strip().casefold(), kv.group(2).strip()
-        if re.fullmatch(r"\d{1,3}%", val):
-            cur["signal"] = max(cur["signal"], int(val[:-1]))
+        if (pct := _percent(val)) is not None:
+            cur["signal"] = max(cur["signal"], pct)
         elif not cur["auth"] and ("auth" in key or "kimlik" in key):
             cur["auth"] = val
     return sorted(nets, key=lambda n: -n["signal"])

@@ -140,17 +140,30 @@ class Wifi(Tool):
         conf = ctx.config.data.get("modem", {}) or {}
         host = conf.get("host") or modem.gateway_guess()
         router = zte.ZTE(host, conf.get("user", "admin"), os.environ.get("MODEM_PASSWORD", ""))
+        logged_in = False
         try:
             router.login()
+            logged_in = True
             if action == "modem_restart":
                 router.restart()
+                logged_in = False  # modem kapanıyor, çıkış isteği boşuna beklemesin
                 return "modem yeniden başlıyor; internet 2-3 dakika gidip gelecek"
             rows = router.devices()
-            router.logout()
             return "\n".join(f"{r['name'] or '(adsız)'}  {r['ip']}  {r['mac']}  {r['link']}" for r in rows) \
                 or "modem bağlı cihaz bildirmedi"
-        except httpx.HTTPError as e:
-            raise zte.ModemError(f"modeme ulaşılamadı ({host}): {e.__class__.__name__}") from e
+        except httpx.HTTPStatusError as e:
+            raise zte.ModemError(f"modem {host} HTTP {e.response.status_code} döndü: ZTE ZXHN arayüzü değil ya da "
+                                 "bu yazılım sürümü desteklenmiyor") from e
+        except httpx.TimeoutException as e:
+            raise zte.ModemError(f"modem ({host}) zamanında cevap vermedi") from e
+        except (httpx.HTTPError, httpx.InvalidURL) as e:
+            raise zte.ModemError(f"modeme ulaşılamadı ({host}): {e.__class__.__name__}; [modem] host doğru mu?") from e
+        finally:
+            # ZTE modemler aynı anda tek yönetici oturumuna izin veriyor: hata olsa da çıkış yap ki tarayıcıdan
+            # girmek isteyen kullanıcı "başka kullanıcı bağlı" uyarısına takılmasın.
+            if logged_in:
+                router.logout()
+            router.close()
 
 
 class Android(Tool):
@@ -360,9 +373,13 @@ class SamsungTV(Tool):
                 target = host or conf.get("host", "")
                 with samsung.Remote(target, conf.get("token", "") if not host or host == conf.get("host") else "") as r:
                     token = r.token
-                d = samsung.info(target)
-                mac = (d.get("device") or {}).get("wifiMac") or ""
-                self._save(ctx, conf, host=target, token=token, mac=mac)
+                # Kullanıcı TV'de izni verdi: REST bilgisi okunamasa da adres ve token kaybolmasın.
+                self._save(ctx, conf, host=target, token=token)
+                try:
+                    mac = (samsung.info(target).get("device") or {}).get("wifiMac") or ""
+                except samsung.TVError:
+                    mac = ""
+                self._save(ctx, conf, mac=mac)
                 return ToolResult(f"Samsung TV bağlandı ({target})" + ("" if mac else "; MAC okunamadı, kapalıyken "
                                   "açma çalışmayabilir"))
             host = conf.get("host", "")
@@ -419,6 +436,8 @@ class SamsungTV(Tool):
                     return ToolResult("tv: yazıldı")
         except samsung.TVError as e:
             raise ToolError(str(e)) from e
+        except (OSError, ValueError) as e:  # Wake-on-LAN: geçersiz MAC ya da ağ yok
+            raise ToolError(f"tv komutu çalışmadı: {e}") from e
         raise ToolError(f"bilinmeyen action: {action}")
 
     @staticmethod
