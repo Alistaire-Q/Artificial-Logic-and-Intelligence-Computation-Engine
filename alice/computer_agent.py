@@ -203,7 +203,9 @@ class Screen:
 
             from alice.tools.desktop import is_script_target
 
-            target = str(a.get("target", ""))
+            target = str(a.get("target") or "").strip()
+            if not target:  # boş hedef Windows'ta Path("") = "." sayılıp çalışma klasörünü açıyordu
+                raise ValueError("open için target gerekli")
             if is_script_target(target):  # ekrandan okunan bir betiği onaysız çalıştırma
                 raise ValueError("betik/kurulum dosyası ekran görevinden açılmaz; kullanıcıya sor")
             res = open_app(target)
@@ -257,9 +259,10 @@ class Screen:
                     return tuple(e["center"])  # type: ignore[return-value]
             raise ValueError(f"öğe {a['id']} yok")
         p = a.get("point")
-        if not p or len(p) != 2:
+        if not isinstance(p, (list, tuple)) or len(p) != 2:
             raise ValueError("id ya da point gerekli")
-        y, x = float(p[0]), float(p[1])
+        # 0-1000 dışı (modelin piksel sanıp verdiği) noktalar başka monitöre/ekran dışına tıklamasın.
+        y, x = (min(1000.0, max(0.0, float(v))) for v in p)
         return round(shot.left + x / 1000 * shot.width), round(shot.top + y / 1000 * shot.height)
 
 

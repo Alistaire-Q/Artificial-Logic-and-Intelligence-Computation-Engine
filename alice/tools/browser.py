@@ -229,13 +229,28 @@ class BrowserSession:
             raise
 
     def alive(self) -> bool:
-        """Tarayıcı bağlantısı hâlâ çalışıyor mu (Opera yeniden başladı, köprü kapandı...)."""
+        """Tarayıcı bağlantısı hâlâ çalışıyor mu (Opera yeniden başladı, köprü kapandı, ALICE penceresi kapatıldı)."""
         try:
             if self._browser is not None:
                 return bool(self._browser.is_connected())
-            return True  # ALICE'in kendi penceresi: kapanırsa Playwright hatası zaten anlaşılır
+            # ALICE'in kendi penceresi: kullanıcı kapatınca bağlam kapanır; eskiden True dönüyordu ve sonraki her
+            # çağrı "Target page, context or browser has been closed" ile düşüyordu, yeniden açılmıyordu.
+            return not getattr(self, "_ctx_closed", False)
         except Exception:  # noqa: BLE001
             return False
+
+    def _mark_closed(self, *_: Any) -> None:
+        self._ctx_closed = True
+
+    def ensure_page(self):
+        """Etkin sekme kapatıldıysa (kullanıcı kapattı, site kendini kapattı) açık bir sekmeye, o da yoksa yeni
+        sekmeye geç. Yoksa her işlem kapanmış sayfada "Target closed" hatası veriyordu."""
+        page = getattr(self, "page", None)
+        if page is not None and not _is_closed(page):
+            return page
+        open_pages = [p for p in self.ctx.pages if not _is_closed(p)]
+        self.page = open_pages[-1] if open_pages else self.ctx.new_page()
+        return self.page
 
     def _start(self, endpoint, headless: bool, executable: str | None) -> None:
         self.attached = False
@@ -266,6 +281,7 @@ class BrowserSession:
             self.ctx = self._launch(profile, kwargs)
         self.page = self.ctx.pages[0] if self.ctx.pages else self.ctx.new_page()
         self.ctx.on("page", self._on_page)
+        self.ctx.on("close", self._mark_closed)
 
     def _launch(self, profile, kwargs):
         try:
@@ -350,7 +366,9 @@ class BrowserSession:
         return self.evaluate(SNAPSHOT_JS, limit)
 
     def locator(self, element_id: int):
-        loc = self.page.locator(f'[data-alice-id="{int(element_id)}"]')
+        from alice.tools.computer import as_number
+
+        loc = self.page.locator(f'[data-alice-id="{as_number(element_id, "element_id", int)}"]')
         if loc.count() == 0:
             raise ToolError("öğe bulunamadı; sayfa değişmiş olabilir, browser action=snapshot ile yenile")
         return loc.first
@@ -361,6 +379,13 @@ class BrowserSession:
                 self.ctx.close()
         finally:
             self._pw.stop()
+
+
+def _is_closed(page) -> bool:
+    try:
+        return bool(page.is_closed())
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def get_browser(ctx: ToolContext, separate: bool = False) -> BrowserSession:
@@ -379,6 +404,7 @@ def get_browser(ctx: ToolContext, separate: bool = False) -> BrowserSession:
                            cdp=a.get("browser_cdp") or None, allow_launch=allow,
                            bridge_port=int(a.get("browser_bridge_port", 9339) or 0) or None)
         ctx.state["browser"] = b
+    b.ensure_page()
     return b
 
 
@@ -440,6 +466,14 @@ class Browser(Tool):
     def run(self, ctx: ToolContext, action: str, url: str | None = None, element_id: int | None = None,
             text: str | None = None, submit: bool = False, keys: str | None = None, amount: int = 600,
             js: str | None = None, index: int | None = None, separate: bool = False) -> ToolResult:
+        from alice.tools.computer import as_bool, as_number
+
+        # Zayıf modeller sayıları/bayrakları metin gönderiyor: "false" metni Enter'a bastırıyordu (bool("false")).
+        submit, separate = as_bool(submit, "submit"), as_bool(separate, "separate")
+        amount = as_number(600 if amount is None else amount, "amount", int)
+        index = None if index is None else as_number(index, "index", int)
+        if element_id is None and action in ("click", "type", "select"):
+            raise ToolError(f"{action} için element_id gerekli (snapshot çıktısındaki [ID])")
         if action == "close":
             b = ctx.state.get("browser")
             if b is not None and b.attached:
@@ -490,23 +524,26 @@ class Browser(Tool):
         if action == "snapshot":
             return snap("snapshot")
         if action == "click":
-            loc = b.locator(element_id if element_id is not None else -1)
+            loc = b.locator(element_id)
             loc.scroll_into_view_if_needed(timeout=5000)
             loc.click(timeout=8000)
             page.wait_for_timeout(600)
             return snap(f"tıklandı: [{element_id}]")
         if action == "type":
-            loc = b.locator(element_id if element_id is not None else -1)
-            loc.fill(text or "", timeout=8000)
+            loc = b.locator(element_id)
+            loc.fill("" if text is None else str(text), timeout=8000)
             if submit:
                 loc.press("Enter")
                 page.wait_for_timeout(1000)
             return snap(f"yazıldı: [{element_id}]")
         if action == "select":
-            b.locator(element_id if element_id is not None else -1).select_option(label=text, timeout=8000)
+            if text is None or not str(text).strip():
+                raise ToolError("select için text (seçeneğin görünen adı) gerekli")
+            b.locator(element_id).select_option(label=str(text), timeout=8000)
             return snap(f"seçildi: {text}")
         if action == "press":
-            page.keyboard.press(keys or "Enter")
+            keys = str(keys or "Enter")
+            page.keyboard.press(keys)
             page.wait_for_timeout(500)
             return snap(f"tuş: {keys}")
         if action == "scroll":
@@ -514,12 +551,12 @@ class Browser(Tool):
             page.wait_for_timeout(400)
             return snap(f"kaydırıldı: {amount}")
         if action == "back":
-            page.go_back(wait_until="domcontentloaded")
+            page.go_back(wait_until="domcontentloaded", timeout=30000)
             return snap("geri")
         if action == "text":
             return ToolResult(truncate(f"{b.title_of(page)}\n{page.url}\n\n{b.evaluate(TEXT_JS)}", limit))
         if action == "screenshot":
-            png = page.screenshot(type="png")
+            png = page.screenshot(type="png", timeout=15000)  # donmuş sekmede sonsuza dek beklemesin
             from io import BytesIO
 
             from PIL import Image

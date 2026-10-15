@@ -15,6 +15,37 @@ from alice.tools.base import COMPUTER, READ, Tool, ToolContext, ToolError, ToolR
 
 _DPI_SET = False
 
+_TRUE = {"true", "1", "yes", "on", "evet", "e"}
+_FALSE = {"false", "0", "no", "off", "hayır", "hayir", "h", "", "none", "null"}
+
+
+def as_bool(value: Any, name: str = "değer") -> bool:
+    """Modelin gönderdiği bayrağı bool'a çevir: "false" metni True sayılmasın (bool("false") is True)."""
+    if value is None or isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        low = value.strip().lower()
+        if low in _TRUE:
+            return True
+        if low in _FALSE:
+            return False
+    raise ToolError(f"{name} true ya da false olmalı, '{value}' geldi")
+
+
+def as_number(value: Any, name: str, kind: type = float) -> Any:
+    """"120", 120.0 gibi değerleri sayıya çevir; çevrilemezse modelin düzeltebileceği bir ToolError."""
+    if isinstance(value, bool):
+        raise ToolError(f"{name} sayı olmalı, {value} geldi")
+    try:
+        num = float(str(value).strip()) if isinstance(value, str) else float(value)
+    except (TypeError, ValueError):
+        raise ToolError(f"{name} sayı olmalı, '{value}' geldi") from None
+    if num != num or num in (float("inf"), float("-inf")):
+        raise ToolError(f"{name} sonlu bir sayı olmalı, '{value}' geldi")
+    return int(num) if kind is int else num
+
 
 def _dpi_aware() -> None:
     """Windows'ta ölçekleme (%125/%150) varken mss ile pyautogui'nin aynı pikselleri görmesi için."""
@@ -168,11 +199,18 @@ class Computer(Tool):
             to_x: float | None = None, to_y: float | None = None, text: str | None = None,
             keys: str | None = None, amount: int = -5, seconds: float = 1.0, grid: bool = False,
             monitor: int = 1, screenshot_after: bool = False) -> ToolResult:
+        monitor = as_number(1 if monitor is None else monitor, "monitor", int)
+        if monitor < 0:
+            raise ToolError(f"monitor 0 ya da pozitif olmalı, {monitor} geldi")
+        screenshot_after = as_bool(screenshot_after, "screenshot_after")
+        x, y, to_x, to_y = (None if v is None else as_number(v, n) for v, n in
+                            ((x, "x"), (y, "y"), (to_x, "to_x"), (to_y, "to_y")))
         if action == "screenshot":
-            b64, desc = grab_screen(ctx, grid=grid, monitor=monitor)
+            b64, desc = grab_screen(ctx, grid=as_bool(grid, "grid"), monitor=monitor)
             return ToolResult(desc, images=[b64])
         if action == "wait":
-            time.sleep(max(0.0, min(float(seconds), 30.0)))
+            seconds = as_number(1.0 if seconds is None else seconds, "seconds")
+            time.sleep(max(0.0, min(seconds, 30.0)))
             msg = f"{seconds} sn beklendi"
         elif action == "cursor_position":
             pg = _pyautogui()
@@ -182,11 +220,13 @@ class Computer(Tool):
         elif action == "type":
             if text is None:
                 raise ToolError("type için text gerekli")
+            text = str(text)
             type_text(text)
             msg = f"{len(text)} karakter yazıldı"
         elif action == "key":
             if not keys:
                 raise ToolError("key için keys gerekli")
+            keys = str(keys)
             press_keys(keys)
             msg = f"tuş: {keys}"
         else:
@@ -209,7 +249,7 @@ class Computer(Tool):
                 pg.moveTo(rx, ry)
                 # Windows'ta birim wheel delta (120 = bir çentik), X11'de çentik, macOS'ta satır.
                 unit = {"win32": 120, "darwin": 5}.get(sys.platform, 1)
-                pg.scroll(int(amount) * unit)
+                pg.scroll(as_number(-5 if amount is None else amount, "amount", int) * unit)
             msg = f"{action} ({x:.0f},{y:.0f})"
         if screenshot_after:
             time.sleep(0.4)
@@ -253,10 +293,10 @@ class ComputerTask(Tool):
                 ctx.emit(s)
                 log_line(s)
 
-            agent = ComputerAgent(Screen(ctx, monitor=int(monitor or 0)),
+            agent = ComputerAgent(Screen(ctx, monitor=max(0, as_number(monitor or 0, "monitor", int))),
                                   router_asker(ctx.router, str(ctx.config.agent.get("computer_role", "vision"))),
                                   emit=emit, stop=ctx.cancelled)
-            res = agent.run(goal, max_steps=max(1, min(int(max_steps or 30), 60)))
+            res = agent.run(goal, max_steps=max(1, min(as_number(max_steps or 30, "max_steps", int), 60)))
             log_line(f"bitti: {res.status}: {res.summary}")
         finally:
             _RUNNING.release()
