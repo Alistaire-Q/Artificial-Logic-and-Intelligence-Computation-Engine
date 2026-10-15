@@ -52,7 +52,8 @@ def brief_cmd(argv: list[str]) -> int:
         console.print(f"[green]kuruldu:[/] {escape(t.summary())}")
         return 0
     cfg = load_config()
-    console.print(escape(brief.render(brief.gather(cfg.data.get("brief", {}), Store(), TaskStore()))))
+    with Store() as st:
+        console.print(escape(brief.render(brief.gather(cfg.data.get("brief", {}), st, TaskStore()))))
     return 0
 
 
@@ -74,7 +75,8 @@ def report_cmd(argv: list[str]) -> int:
                           markup=False)
             return 2
         days = int(val)
-    r = report.build(Store(), days)
+    with Store() as st:
+        r = report.build(st, days)
     console.print(escape(report.text(r)))
     page = report.save_html(r)
     console.print(f"[dim]{page}[/]")

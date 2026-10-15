@@ -114,6 +114,9 @@ class JevEngine:
         self.api_key = api_key
         self._client = client or httpx.Client(timeout=httpx.Timeout(20.0, connect=5.0))
 
+    def close(self) -> None:
+        self._client.close()
+
     def decide(self, state: str, questions: dict[str, Question]) -> Decision:
         _validate(questions)
         wire: dict[str, Any] = {}
@@ -306,6 +309,16 @@ class Decider:
     @property
     def names(self) -> list[str]:
         return [e.name for e in self.engines]
+
+    def close(self) -> None:
+        """Kendi HTTP istemcisi olan motorları kapat (yönlendirici paylaşımlı; onu sahibi kapatır)."""
+        for e in self.engines:
+            close = getattr(e, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:  # noqa: BLE001
+                    pass
 
     def decide(self, state: str, questions: dict[str, Question]) -> Decision:
         # Geçersiz soru çağıranın hatası: motorlara gitmeden düşsün. Önceden her motor bu yüzden "bozuk" sayılıp

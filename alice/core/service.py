@@ -84,6 +84,8 @@ def make_agent_runner(cfg: Config, cwd: Path | None = None) -> Callable[[str], s
                          "bitince sonucu 1-3 kısa cümleyle Türkçe özetle.)")
         finally:
             cleanup(ctx)
+            decider.close()
+            router.close()  # her görevde yeni yönlendirici: HTTP bağlantıları saatlerce birikmesin
         return text or "(sonuç yok)"
 
     return run

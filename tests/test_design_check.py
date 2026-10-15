@@ -115,6 +115,7 @@ def test_preview_server_declares_utf8(tmp_path):
         assert "utf-8" in r.headers["content-type"] and "ğüşiöç" in r.text
     finally:
         httpd.shutdown()
+        httpd.server_close()
 
 
 def _browser() -> str:

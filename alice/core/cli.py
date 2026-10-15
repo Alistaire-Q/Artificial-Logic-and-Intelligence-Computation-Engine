@@ -93,11 +93,11 @@ def core_cmd(argv: list[str]) -> int:
         if len(argv) < 2:
             console.print("kullanım: alice core stats <anahtar|glob> [süre, ör. 1d]")
             return 2
-        st = Store()
         since = parse_time(argv[2] if len(argv) > 2 else "1d")
-        keys = st.keys(argv[1], since=since) if any(c in argv[1] for c in "*?[") else [argv[1]]
-        for k in keys:
-            console.print(escape(st.stats(k, since).line()))
+        with Store() as st:
+            keys = st.keys(argv[1], since=since) if any(c in argv[1] for c in "*?[") else [argv[1]]
+            for k in keys:
+                console.print(escape(st.stats(k, since).line()))
         return 0
     if sub == "status":
         s = service.read_state()
@@ -110,7 +110,8 @@ def core_cmd(argv: list[str]) -> int:
             console.print("[yellow]çalışmıyor[/]  [dim]başlat: alice core run · kalıcı: alice core install[/]")
         from alice.core.store import Store
 
-        evs = Store().events(limit=10)
+        with Store() as st:
+            evs = st.events(limit=10)
         if evs:
             console.print("[bold]Son olaylar[/]")
             for e in reversed(evs):
@@ -219,8 +220,8 @@ def rules_cmd(argv: list[str]) -> int:
 
         text = " ".join(argv[1:])
         try:
-            with console.status("kurala çevriliyor..."):
-                rule = parse_rule(text, Router(load_config()), Store())
+            with console.status("kurala çevriliyor..."), Store() as st:
+                rule = parse_rule(text, Router(load_config()), st)
         except (ValueError, TypeError, AllProvidersFailed) as e:
             console.print(f"[red]anlaşılamadı:[/] {escape(str(e))}")
             return 1

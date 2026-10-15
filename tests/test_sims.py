@@ -141,8 +141,8 @@ def test_to_state_fuel_fraction_and_kg():
 def test_dcs_listener_udp():
     got, restricted, ended, metrics = [], [], [], []
     lis = DCSListener(got.append, lambda: restricted.append(1), lambda: ended.append(1), metrics.extend, port=0).start()
+    tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         port = lis.bound_port
         for msg in ({"event": "start"}, {"t": 1, "aircraft": "F-16C_50", "ias": 120, "fuel_int": 0.4},
                     {"t": 2, "restricted": True}, b"bozuk", {"event": "stop"}):
@@ -152,6 +152,7 @@ def test_dcs_listener_udp():
                 break
             time.sleep(0.02)
     finally:
+        tx.close()
         lis.stop()
     assert len(got) == 1 and got[0].ias == 120 and restricted and ended
     assert ("dcs.ias_kt", pytest.approx(120 / KT), None) in metrics

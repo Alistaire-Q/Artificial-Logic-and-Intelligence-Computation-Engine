@@ -375,6 +375,17 @@ class Router:
             self._clients[provider] = self._factory(self.providers_cfg[provider])
         return self._clients[provider]
 
+    def close(self) -> None:
+        """Açılan sağlayıcı istemcilerini (HTTP bağlantı havuzlarını) kapat. Sonra kullanılırsa yeniden açılır."""
+        while self._clients:
+            _, c = self._clients.popitem()
+            close = getattr(c, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:  # noqa: BLE001 - kapanışta hata önemsiz
+                    pass
+
     def supports_vision(self, ref: str) -> bool:
         p, m = parse_ref(ref)
         pc = self.providers_cfg.get(p)

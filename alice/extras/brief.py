@@ -27,6 +27,9 @@ def weather(city: str, client: httpx.Client | None = None, auto: bool = False) -
         d = c.get(f"https://wttr.in/{city}", params={"format": "j1", "lang": "tr"}).json()
     except (httpx.HTTPError, ValueError) as e:
         return f"hava durumu alınamadı ({e.__class__.__name__})"
+    finally:
+        if client is None:  # kendi açtığımız istemcinin soketleri çekirdekte birikmesin
+            c.close()
     try:
         cur = d["current_condition"][0]
         desc = (cur.get("lang_tr") or cur.get("weatherDesc") or [{"value": ""}])[0]["value"]

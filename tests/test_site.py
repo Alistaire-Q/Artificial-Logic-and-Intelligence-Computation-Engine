@@ -88,5 +88,6 @@ def test_screenshot_server_hides_secrets_even_when_escaped(tmp_path):
             assert "gizli" not in r.text
     finally:
         httpd.shutdown()
+        httpd.server_close()
     if (tmp_path / "link.txt").is_symlink():
         assert safe_path(tmp_path, "link.txt") is None

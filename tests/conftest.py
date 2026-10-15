@@ -20,6 +20,28 @@ def isolated_home(tmp_path, monkeypatch):
     return home
 
 
+@pytest.fixture(autouse=True)
+def close_sqlite_stores(monkeypatch):
+    """Testlerin açtığı SQLite depolarını test sonunda kapat (ResourceWarning: unclosed database)."""
+    from alice import memory
+    from alice.core.store import Store
+
+    opened: list[Any] = []
+    for cls in (Store, memory.LongMemory):
+        def init(self, *a, _orig=cls.__init__, **kw):
+            _orig(self, *a, **kw)
+            opened.append(self)
+        monkeypatch.setattr(cls, "__init__", init)
+    yield
+    for k in [k for k, m in memory._shared.items() if m in opened]:
+        memory._shared.pop(k, None)
+    for s in opened:
+        try:
+            s.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def rm_rf(name: str) -> str:
     """Özyinelemeli silme komutu: Windows'ta PowerShell, diğerlerinde bash."""
     import sys

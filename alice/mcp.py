@@ -64,12 +64,12 @@ class MCPServer:
 
     def start(self) -> None:
         alice_home().mkdir(parents=True, exist_ok=True)
-        err_log = open(alice_home() / f"mcp-{self.name}.log", "ab")
         kwargs: dict[str, Any] = {}
         if sys.platform == "win32":
             kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
-        self.proc = subprocess.Popen(self._argv(), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err_log,
-                                     env={**os.environ, **self.env}, **kwargs)
+        with open(alice_home() / f"mcp-{self.name}.log", "ab") as err_log:  # çocuk kendi kopyasını alır
+            self.proc = subprocess.Popen(self._argv(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                         stderr=err_log, env={**os.environ, **self.env}, **kwargs)
         threading.Thread(target=self._reader, daemon=True, name=f"mcp-{self.name}").start()
         res = self.request("initialize", {"protocolVersion": PROTOCOL_VERSION, "capabilities": {},
                                           "clientInfo": {"name": "alice", "version": __version__}})
@@ -119,6 +119,7 @@ class MCPServer:
                     log.debug("MCP mesajı işlenemedi", exc_info=True)
                     continue
         finally:
+            self.proc.stdout.close()  # süreç bitti: boru tanıtıcısı sızmasın
             for ev, box in list(self._pending.values()):  # süreç öldü
                 box.setdefault("error", {"message": "sunucu kapandı"})
                 ev.set()
