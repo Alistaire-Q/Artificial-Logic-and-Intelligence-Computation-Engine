@@ -51,7 +51,7 @@ def test_server_retry_after_extends_cooldown():
     r = Router(cfg, provider_factory=lambda pc: {"a": a, "b": b}[pc.name], sleep=lambda s: None, auto_cache={})
     r.chat("brain", [{"role": "user", "content": "x"}])
     left = r.cooldown_until["a:m1"] - time.monotonic()
-    assert 100 < left <= 120  # önceden sabit 30 sn
+    assert 100 < left <= 120.5  # önceden sabit 30 sn (Windows monotonic saati kaba, küçük pay)
 
 
 def test_server_short_retry_after_keeps_base_cooldown():
