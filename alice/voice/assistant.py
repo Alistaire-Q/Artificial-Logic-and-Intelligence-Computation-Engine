@@ -565,61 +565,105 @@ class VoiceAssistant:
         ptt = PushToTalk(self.ptt_key) if self.ptt_key else None
         wake = WakeWord(self.wake_model) if self.wake_model else None
         self.wake_phrase = self.wake_phrase and wake is None
-        with self.mic_factory() as mic:
-            mic_down: list[float] = []
+        try:
+            opened = self._open_mic()
+            if opened is not None:
+                cm, mic = opened
+                try:
+                    self._listen(mic, ptt, wake)
+                finally:
+                    cm.__exit__(None, None, None)
+        finally:
+            if ptt is not None:
+                ptt.stop()
 
-            def frames():
-                while not self.stop_event.is_set():
-                    if ptt is not None and ptt.pressed.is_set():
-                        self._interrupt()
-                        audio = ptt.record(mic)
-                        threading.Thread(target=self.handle_audio, args=(audio, True), daemon=True).start()
-                        continue
+    def _open_mic(self, retry: float = 5.0):
+        """Mikrofonu aç. Aygıt yoksa/meşgulse yığın dökümüyle ölmek yerine (çekirdekte ses iş parçacığı sessizce
+        bitiyordu) bir kez anlaşılır mesaj ver ve aralıklarla yeniden dene; takılınca dinlemeye başlar.
+        Paket eksikse (sounddevice) denemenin anlamı yok: None."""
+        warned = False
+        while not self.stop_event.is_set():
+            try:
+                cm = self.mic_factory()
+                mic = cm.__enter__()
+            except ImportError as e:
+                voice_log(f"mikrofon kullanılamıyor: {e}")
+                self.emit(f"mikrofon kullanılamıyor ({getattr(e, 'name', None) or e} kurulu değil): "
+                          "pip install 'alice-harness[voice]'")
+                return None
+            except Exception as e:  # noqa: BLE001 - PortAudioError, OSError: aygıt yok/meşgul
+                if not warned:
+                    warned = True
+                    voice_log(f"mikrofon açılamadı, {retry:.0f} sn'de bir yeniden denenecek: {e}")
+                    self.emit(f"mikrofon açılamadı: {e}; takılınca dinlemeye başlayacağım")
+                self.stop_event.wait(retry)
+                continue
+            if warned:
+                voice_log(f"mikrofon açıldı: {getattr(mic, 'name', '')}")
+            return cm, mic
+        return None
+
+    def _listen(self, mic, ptt, wake) -> None:
+        mic_down: list[float] = []
+
+        def mic_failed(e: Exception) -> None:
+            """Kulaklık çıkarıldı/kapandı: dinlemeyi öldürme, bekle ve yeniden açmayı dene."""
+            if not mic_down:
+                voice_log(f"mikrofon okunamadı, yeniden deneniyor: {e}")
+                self.emit("mikrofon okunamıyor; tekrar deniyorum")
+            mic_down.append(time.monotonic())
+            self.stop_event.wait(1.0)
+            if hasattr(mic, "reopen"):
+                try:
+                    mic.reopen()
+                    voice_log(f"mikrofon yeniden açıldı: {getattr(mic, 'name', '')}")
+                    mic_down.clear()
+                except Exception:  # noqa: BLE001
+                    pass
+
+        def frames():
+            while not self.stop_event.is_set():
+                if ptt is not None and ptt.pressed.is_set():
+                    self._interrupt()
                     try:
-                        frame = mic.read()
-                    except Exception as e:  # noqa: BLE001 - kulaklık çıkarıldı/kapandı: dinlemeyi öldürme, yeniden dene
-                        if not mic_down:
-                            voice_log(f"mikrofon okunamadı, yeniden deneniyor: {e}")
-                            self.emit("mikrofon okunamıyor; tekrar deniyorum")
-                        mic_down.append(time.monotonic())
-                        self.stop_event.wait(1.0)
-                        if hasattr(mic, "reopen"):
-                            try:
-                                mic.reopen()
-                                voice_log(f"mikrofon yeniden açıldı: {getattr(mic, 'name', '')}")
-                                mic_down.clear()
-                            except Exception:  # noqa: BLE001
-                                pass
+                        audio = ptt.record(mic)
+                    except Exception as e:  # noqa: BLE001 - bas-konuş sırasında mikrofon düştü: döngü ölmesin
+                        mic_failed(e)
                         continue
-                    if self._mic_health(frame) and hasattr(mic, "reopen"):
-                        try:
-                            mic.reopen()
-                            voice_log(f"mikrofon yeniden açıldı: {getattr(mic, 'name', '')}")
-                        except Exception as e:  # noqa: BLE001
-                            voice_log(f"mikrofon yeniden açılamadı: {e}")
-                    if self._live_q is not None:  # canlı konuşmada mikrofon (gürültü süzülerek) Live'a
-                        for f in (self.live_gate.feed(frame) if self.live_gate is not None else [frame]):
-                            self._live_q.put(f)
-                        continue
-                    if wake is not None and wake.detect(frame):
-                        self._interrupt()
-                        self.muted = False
-                        self.armed_until = time.monotonic() + self.follow_up
-                        self.emit("uyandım")
-                    # ALICE konuşurken kendi sesini konuşma sanmasın.
-                    self.vad.boost = 2.5 if self.speaker.speaking else 1.0
-                    yield frame
+                    threading.Thread(target=self.handle_audio, args=(audio, True), daemon=True).start()
+                    continue
+                try:
+                    frame = mic.read()
+                except Exception as e:  # noqa: BLE001
+                    mic_failed(e)
+                    continue
+                if self._mic_health(frame) and hasattr(mic, "reopen"):
+                    try:
+                        mic.reopen()
+                        voice_log(f"mikrofon yeniden açıldı: {getattr(mic, 'name', '')}")
+                    except Exception as e:  # noqa: BLE001
+                        voice_log(f"mikrofon yeniden açılamadı: {e}")
+                if self._live_q is not None:  # canlı konuşmada mikrofon (gürültü süzülerek) Live'a
+                    for f in (self.live_gate.feed(frame) if self.live_gate is not None else [frame]):
+                        self._live_q.put(f)
+                    continue
+                if wake is not None and wake.detect(frame):
+                    self._interrupt()
+                    self.muted = False
+                    self.armed_until = time.monotonic() + self.follow_up
+                    self.emit("uyandım")
+                # ALICE konuşurken kendi sesini konuşma sanmasın.
+                self.vad.boost = 2.5 if self.speaker.speaking else 1.0
+                yield frame
 
-            gate = getattr(self.stt, "wake_gate", None)
-            if gate is not None and hasattr(gate, "warm_up"):
-                gate.warm_up()
-            for audio in utterances(frames(), self.vad, stop=self.stop_event.is_set, end_silence=self.end_silence,
-                                    on_start=self._on_speech_start):
-                started = self._speech_at or None
-                direct = self._armed(started)
-                threading.Thread(target=self.handle_audio, args=(audio, direct, started), daemon=True).start()
-        if ptt is not None:
-            ptt.stop()
+        gate = getattr(self.stt, "wake_gate", None)
+        if gate is not None and hasattr(gate, "warm_up"):
+            gate.warm_up()
+        for audio in utterances(frames(), self.vad, stop=self.stop_event.is_set, end_silence=self.end_silence,
+                                on_start=self._on_speech_start):
+            started = self._speech_at or None
+            direct = self._armed(started)
+            threading.Thread(target=self.handle_audio, args=(audio, direct, started), daemon=True).start()
 
     def _mic_health(self, frame: bytes) -> bool:
         """Mikrofon tamamen sessizse (sessize alınmış, kapalı kulaklık) ALICE hiçbir şey duymaz ve kimse nedenini
