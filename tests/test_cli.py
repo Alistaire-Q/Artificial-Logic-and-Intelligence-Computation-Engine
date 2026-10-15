@@ -20,7 +20,8 @@ def test_init_creates_home(isolated_home, capsys):
     # main() içindeki yerel import alice_home'u gölgeliyordu: `alice init` UnboundLocalError veriyordu.
     assert cli.main(["init"]) == 0
     assert (isolated_home / "config.toml").exists() and (isolated_home / ".env").exists()
-    assert "alice doctor" in capsys.readouterr().out
+    # Rich uzun yolu satırlara böler (Windows'ta geçici klasör yolu uzun): boşlukları tekleştirip bak.
+    assert "alice doctor" in " ".join(capsys.readouterr().out.split())
 
 
 def test_version_flag_uses_package_metadata(capsys):
