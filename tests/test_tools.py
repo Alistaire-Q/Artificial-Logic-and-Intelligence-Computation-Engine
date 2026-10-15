@@ -389,3 +389,22 @@ def test_start_apps_match_store_apps(monkeypatch):
     assert desktop.match_start_app("whatsapp") == ("WhatsApp", "5319275A.WhatsAppDesktop_x!App")
     assert desktop.match_start_app("medya") == ("Medya Oynatıcı", "Microsoft.ZuneMusic_x!Microsoft.ZuneMusic")
     assert desktop.match_start_app("matlab") is None
+
+
+@pytest.mark.parametrize("js, want", [
+    ("() => document.title", "() => document.title"),
+    ("(limit) => limit * 2", "(limit) => limit * 2"),
+    ("x => x + 1", "x => x + 1"),
+    ("async () => 1", "async () => 1"),
+    ("function () { return 1 }", "function () { return 1 }"),
+    # eskiden "async" ile başlayıp "=>" içermeyen fonksiyon sarılıyor, hiç çağrılmıyordu
+    ("async function () { return 1 }", "async function () { return 1 }"),
+    # eskiden "(" ile başlayıp içinde "=>" geçen ifade fonksiyon sanılıyor, sonucu çağrılınca "not a function" oluyordu
+    ("(() => document.title)()", "() => ((() => document.title)())"),
+    ("([1, 2].map(x => x * 2))", "() => (([1, 2].map(x => x * 2)))"),
+    ("document.title;", "() => (document.title)"),
+])
+def test_browser_js_function_wrapping(js, want):
+    from alice.tools.browser import js_function
+
+    assert js_function(js) == want

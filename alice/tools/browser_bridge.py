@@ -37,6 +37,7 @@ class Bridge:
         self.log = log
         self._connect = connect
         self.up = None  # tarayıcı bağlantısı
+        self._pump: asyncio.Task | None = None  # olay döngüsü görevleri zayıf tutar: referans burada kalsın
         self.client = None
         self.gen = 0
         self.next_id = 1
@@ -57,7 +58,7 @@ class Bridge:
         # Tarayıcı burada kullanıcıya bir kez izin sorar: cevaplaması için zaman tanı.
         self.up = await connect(url, open_timeout=120, max_size=None, ping_interval=None)
         self.log(f"tarayıcıya bağlanıldı: {url}")
-        asyncio.get_running_loop().create_task(self._pump_up(self.up))
+        self._pump = asyncio.get_running_loop().create_task(self._pump_up(self.up))
         return self.up
 
     async def _pump_up(self, up) -> None:

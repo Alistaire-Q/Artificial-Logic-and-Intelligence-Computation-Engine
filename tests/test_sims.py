@@ -78,8 +78,8 @@ def test_full_flight():
 
     # yaklaşma: önce hızlı, sonra on speed, sonra teker koyma
     r.said.clear()
-    for i, (agl, aoa) in enumerate([(500, 7), (450, 7), (400, 13), (350, 13), (250, 13), (150, 13), (80, 13),
-                                    (40, 12.5), (10, 13), (2, 13), (0.3, 13)]):
+    for agl, aoa in [(500, 7), (450, 7), (400, 13), (350, 13), (250, 13), (150, 13), (80, 13),
+                     (40, 12.5), (10, 13), (2, 13), (0.3, 13)]:
         t += 2
         tr.feed(st(t, gear=1.0, ias=88 if aoa < 10 else 75, agl=agl, aoa=aoa, vv=-3.5 if agl > 2 else -1.2,
                    fuel_kg=fuel, x=0, flare=0))

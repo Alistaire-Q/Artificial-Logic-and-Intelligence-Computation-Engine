@@ -76,3 +76,31 @@ def test_user_endpoint_prefers_bridge(monkeypatch):
     monkeypatch.setattr(browser, "ensure_bridge", lambda port, wait=8.0: False)
     assert browser.user_browser_endpoint(None, 9339) == "ws://127.0.0.1:9333/devtools/browser/x"
     assert browser.user_browser_endpoint(None, None) == "ws://127.0.0.1:9333/devtools/browser/x"
+
+
+def test_bridge_keeps_reference_to_upstream_pump_task():
+    # Olay döngüsü görevleri zayıf referansla tutar: referanssız pompa görevi çöp toplayıcıya gidebilir.
+    class FakeUp:
+        def __init__(self):
+            self.gate = asyncio.Event()
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await self.gate.wait()
+            raise StopAsyncIteration
+
+    async def fake_connect(url, **kw):
+        return FakeUp()
+
+    async def main():
+        bridge = bb.Bridge(find_upstream=lambda: "ws://x", connect=fake_connect)
+        up = await bridge._upstream()
+        task = bridge._pump
+        assert isinstance(task, asyncio.Task) and not task.done()
+        up.gate.set()
+        await asyncio.wait_for(bridge.closed.wait(), 2)
+        return task
+
+    assert asyncio.run(main()).done()

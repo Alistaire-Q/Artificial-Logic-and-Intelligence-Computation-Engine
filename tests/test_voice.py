@@ -1114,7 +1114,7 @@ def test_live_wake_passes_trusted_local_text():
         live = HintLive()
         va = VoiceAssistant(FakeAgent(), FakeSpeaker(), stt=STT(conf), live=live)
         va.handle_audio(Audio(b"\1\0" * 16000, 16000), direct=False)
-        assert wait_for(lambda: live.texts == [want])
+        assert wait_for(lambda live=live, want=want: live.texts == [want])
 
 
 def test_vocab_names_from_bookmarks_and_start_menu(tmp_path):

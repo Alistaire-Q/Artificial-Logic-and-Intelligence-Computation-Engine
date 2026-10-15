@@ -16,6 +16,7 @@ Her şey yerelde, ~/.alice/memory.db (SQLite) içinde durur; ücretli bir API ya
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import sqlite3
@@ -27,6 +28,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from alice.config import alice_home
+
+# Yutulan hatalar için iz: varsayılan olarak sessiz, `logging.basicConfig(level=logging.DEBUG)` ile görünür.
+log = logging.getLogger(__name__)
 
 KINDS = {"preference": "tercih", "fact": "bilgi", "person": "kişi", "routine": "alışkanlık", "note": "not"}
 _KIND_ORDER = ["preference", "person", "fact", "routine", "note"]
@@ -439,7 +443,7 @@ class LongMemory:
             raw = self.extractor(prompt) if self.extractor else ""
             self.apply(parse_json(raw))
         except Exception:  # noqa: BLE001 - öğrenme hatası konuşmayı etkilemesin
-            pass
+            log.debug("konuşmadan bilgi çıkarılamadı", exc_info=True)
         finally:
             self._learn_lock.release()
 

@@ -56,6 +56,18 @@ SNAPSHOT_JS = r"""
 
 TEXT_JS = "() => document.body ? document.body.innerText : ''"
 
+# Fonksiyon başı: "function", "async function", "(a, b) =>", "x =>", "async () =>". "(() => 1)()" gibi
+# hemen çağrılan ifadeler ya da içinde ok fonksiyonu geçen ifadeler bu kalıba uymaz, ifade olarak sarılır.
+_JS_FN_HEAD = re.compile(r"^(?:async\b\s*)?(?:function\b|(?:\([^()]*\)|[A-Za-z_$][\w$]*)\s*=>)")
+
+
+def js_function(js: str) -> str:
+    """Modelin yazdığı JS'i çağrılabilir fonksiyon metnine çevir: zaten fonksiyonsa olduğu gibi, değilse ifade olarak sar."""
+    body = js.strip()
+    if _JS_FN_HEAD.match(body):
+        return body
+    return f"() => ({body.rstrip(';').rstrip()})"
+
 
 CHROMIUM_FAMILY = ("opera", "chrome", "msedge", "brave", "vivaldi", "chromium", "yandex", "arc")
 
@@ -313,9 +325,7 @@ class BrowserSession:
                 page.bring_to_front()  # uyutulmuş sekmeyi uyandır
             except Exception:  # noqa: BLE001
                 pass
-        body = js.strip()
-        fn = body if (body.startswith(("(", "function", "async")) and "=>" in body or body.startswith("function")) \
-            else f"() => ({body})"
+        fn = js_function(js)
         try:
             return page.locator("html").evaluate(f"(_el, arg) => ({fn})(arg)", arg, timeout=timeout)
         except Exception as e:  # noqa: BLE001

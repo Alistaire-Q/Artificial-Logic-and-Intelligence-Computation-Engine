@@ -7,6 +7,7 @@ sonuçları geri ver -> model artık araç çağırmayınca tur biter.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -20,6 +21,9 @@ from alice.prompts import COMPACT_PROMPT, build_system_prompt
 from alice.providers.openai_compat import ChatResult, StreamCancelled
 from alice.providers.router import AllProvidersFailed, Router, estimate_tokens, strip_images
 from alice.tools.base import Tool, ToolContext, ToolError, ToolResult, check_args, truncate, unknown_params
+
+# Yutulan hatalar için iz: varsayılan olarak sessiz, `logging.basicConfig(level=logging.DEBUG)` ile görünür.
+log = logging.getLogger(__name__)
 
 
 class UI(Protocol):
@@ -262,7 +266,7 @@ class Agent:
                 self.messages[0]["content"] = with_memory(self.messages[0]["content"], mem.profile())
                 self._memory_version = version
         except Exception:  # noqa: BLE001 - hafıza hatası konuşmayı durdurmasın
-            pass
+            log.debug("hafıza profili yenilenemedi", exc_info=True)
 
     def _recall(self, user_text: str) -> str:
         if self.memory is None or self.is_child:
@@ -270,6 +274,7 @@ class Agent:
         try:
             return self.memory.recall(user_text)
         except Exception:  # noqa: BLE001
+            log.debug("hafızadan hatırlama başarısız", exc_info=True)
             return ""
 
     def _remember_turn(self, user_text: str, reply: str) -> None:
@@ -279,7 +284,7 @@ class Agent:
             self.memory.record(user_text, reply, self.memory_channel)
             self.memory.learn(user_text, reply)
         except Exception:  # noqa: BLE001
-            pass
+            log.debug("tur hafızaya yazılamadı", exc_info=True)
 
     def run_turn(self, user_text: str, max_steps: int | None = None, images: list[str] | None = None) -> str:
         self.refresh_memory()
@@ -348,7 +353,7 @@ class Agent:
                     try:
                         self.on_usage(res.usage or {})
                     except Exception:  # noqa: BLE001 - sayaç hatası turu bozmasın
-                        pass
+                        log.debug("on_usage hata verdi", exc_info=True)
                 pt = int((res.usage or {}).get("prompt_tokens") or 0)
                 self._last_prompt = (pt, sent, self.messages[sent - 1]) if pt else None
                 if not self.stream and msg.get("content"):
@@ -364,7 +369,7 @@ class Agent:
                     try:
                         self.on_step()
                     except Exception:  # noqa: BLE001 - kayıt hatası işi durdurmasın
-                        pass
+                        log.debug("on_step hata verdi", exc_info=True)
             self.ui.info(f"adım limiti ({steps}) doldu; devam etmek için yeni mesaj yaz")
             return final
         except (KeyboardInterrupt, Cancelled, StreamCancelled):
