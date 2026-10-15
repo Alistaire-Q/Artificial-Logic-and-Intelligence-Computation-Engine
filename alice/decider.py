@@ -308,6 +308,9 @@ class Decider:
         return [e.name for e in self.engines]
 
     def decide(self, state: str, questions: dict[str, Question]) -> Decision:
+        # Geçersiz soru çağıranın hatası: motorlara gitmeden düşsün. Önceden her motor bu yüzden "bozuk" sayılıp
+        # soğumaya alınıyordu ve sonraki geçerli sorular da bir dakika boyunca cevapsız kalıyordu.
+        _validate(questions)
         errors = []
         for e in self.engines:
             if self._broken.get(e.name, 0) > time.monotonic():

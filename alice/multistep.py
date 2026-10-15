@@ -102,9 +102,12 @@ def _first_json(text: str) -> dict[str, Any]:
 def parse_plan(goal: str, text: str, max_steps: int = 8) -> Plan:
     data = _first_json(text)
     steps = []
-    for s in data.get("steps") or []:
+    raw = data.get("steps") or []
+    for s in raw if isinstance(raw, list) else [raw]:  # tek adım metin olarak gelebilir: harf harf adım olmasın
         if isinstance(s, str):
             s = {"goal": s}
+        if not isinstance(s, dict):
+            continue
         g = str(s.get("goal") or "").strip()
         if not g:
             continue

@@ -30,18 +30,23 @@ def expand_mentions(text: str, cwd: Path) -> str:
             continue
         seen.add(p)
         if p.is_dir():
-            names = sorted(e.name + ("/" if e.is_dir() else "") for e in p.iterdir() if e.name not in SKIP_DIRS)[:200]
+            try:
+                names = sorted(e.name + ("/" if e.is_dir() else "") for e in p.iterdir() if e.name not in SKIP_DIRS)[:200]
+            except OSError:  # izin yok: önceden bütün tur çöküyordu
+                continue
             blocks.append(f'<folder path="{p}">\n' + "\n".join(names) + "\n</folder>")
             continue
         try:
-            data = p.read_bytes()
+            size = p.stat().st_size
+            with p.open("rb") as fh:  # dev dosyanın (ISO, video) tamamı belleğe okunmasın
+                data = fh.read(MAX_FILE)
         except OSError:
             continue
         if b"\0" in data[:4096]:
-            blocks.append(f'<file path="{p}">(binary dosya, {len(data)} byte)</file>')
+            blocks.append(f'<file path="{p}">(binary dosya, {size} byte)</file>')
             continue
-        body = data[:MAX_FILE].decode("utf-8", errors="replace")
-        more = f"\n... ({len(data) - MAX_FILE} byte kesildi)" if len(data) > MAX_FILE else ""
+        body = data.decode("utf-8", errors="replace")
+        more = f"\n... ({size - MAX_FILE} byte kesildi)" if size > MAX_FILE else ""
         blocks.append(f'<file path="{p}">\n{body}{more}\n</file>')
     if not blocks:
         return text

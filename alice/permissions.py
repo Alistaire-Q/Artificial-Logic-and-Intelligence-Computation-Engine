@@ -52,10 +52,28 @@ class Permissions:
         # auto
         if risk == DANGER:
             return "ask"
-        if risk == WRITE and "path" in args:
+        if risk == WRITE:
             try:
-                if is_system_path(ctx.resolve(str(args["path"]))):
+                if any(is_system_path(ctx.resolve(p)) for p in _write_targets(args)):
                     return "ask"
             except (OSError, ValueError):
                 return "ask"
         return "allow"
+
+
+def _write_targets(args: dict[str, Any]) -> list[str]:
+    """Yazma aracının dokunacağı yollar: "path" ve yama metnindeki dosyalar (apply_patch sistem klasörüne
+    yazarken önceden hiç sorulmuyordu)."""
+    out = [str(args["path"])] if "path" in args else []
+    patch = args.get("patch")
+    if isinstance(patch, str) and patch:
+        from alice.tools.base import ToolError
+        from alice.tools.patch import parse_patch
+
+        try:
+            ops = parse_patch(patch)
+        except ToolError:
+            return out  # bozuk yama: araç zaten hata verip hiçbir şey yazmaz
+        for op in ops:
+            out += [p for p in (op.path, op.move_to) if p]
+    return out

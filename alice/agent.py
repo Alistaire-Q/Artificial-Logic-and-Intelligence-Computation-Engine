@@ -159,6 +159,9 @@ def fits_after_compact(errors: list[str]) -> int:
 def parse_args(raw: str | dict | None) -> dict[str, Any]:
     if isinstance(raw, dict):
         return raw
+    if raw is not None and not isinstance(raw, str):
+        # Bazı sağlayıcılar argümanı liste/sayı olarak gönderiyor: çökmesin, modele hata olarak dönsün.
+        raise json.JSONDecodeError("argümanlar obje değil", str(raw), 0)
     if not raw or not raw.strip():
         return {}
     try:
@@ -173,6 +176,20 @@ def parse_args(raw: str | dict | None) -> dict[str, Any]:
     if not isinstance(val, dict):
         raise json.JSONDecodeError("argümanlar obje değil", str(raw), 0)
     return val
+
+
+def _sanitize_calls(msg: dict[str, Any]) -> None:
+    """Modelin tool_call'larında ad ya da argüman metin değilse (null, liste, sayı) metne çevir: yoksa döngü
+    çöküyor ve geçmişe giden bozuk çağrı sonraki her isteği 400 ile düşürüyordu."""
+    for tc in msg.get("tool_calls") or []:
+        fn = tc.get("function")
+        if not isinstance(fn, dict):
+            fn = tc["function"] = {}
+        if not isinstance(fn.get("name"), str):
+            fn["name"] = "" if fn.get("name") is None else str(fn["name"])
+        args = fn.get("arguments")
+        if not isinstance(args, str):
+            fn["arguments"] = "{}" if args is None else json.dumps(args, ensure_ascii=False)
 
 
 # Eski sabit özetleme sınırı. Eski config.toml'larda yazılı kaldığı için "auto" sayılır (modelin penceresine göre).
@@ -347,6 +364,7 @@ class Agent:
                     res = self._interruptible(self.router.chat, self.role, list(self.messages), tools=self._specs(),
                                               stream=sink if self.stream else None)
                 msg = res.message
+                _sanitize_calls(msg)
                 if getattr(self, "_lean", False) and self._roomy(res):
                     self._lean = False  # geniş bağlamlı model geri geldi: tam araç tanımlarına dön
                 if self.on_usage is not None:
@@ -359,6 +377,7 @@ class Agent:
                 if not self.stream and msg.get("content"):
                     self.ui.stream_delta(msg["content"])
                 self.messages.append(msg)
+                sink.parts.clear()  # metin artık geçmişte: kesilirse bir daha "[durduruldu]" diye eklenmesin
                 self.ui.stream_end(msg.get("content") or "", f"{res.provider}:{res.model}")
                 if msg.get("content"):
                     final = msg["content"]
@@ -743,10 +762,15 @@ class Agent:
             m = self.messages[i]
             if m["role"] == "assistant" and m.get("tool_calls"):
                 answered = {x.get("tool_call_id") for x in self.messages[i + 1:] if x["role"] == "tool"}
-                for tc in m["tool_calls"]:
-                    if tc["id"] not in answered:
-                        self.messages.append({"role": "tool", "tool_call_id": tc["id"], "name": tc["function"]["name"],
-                                              "content": "durduruldu (kullanıcı kesti)"})
+                # Sonuçlar çağrının hemen ardındaki tool bloğuna girmeli: araya yarım metin ya da görüntü mesajı
+                # girdiyse sona eklenen sonuç sahipsiz kalıyor ve sağlayıcı bütün konuşmayı reddediyordu.
+                at = i + 1
+                while at < len(self.messages) and self.messages[at]["role"] == "tool":
+                    at += 1
+                missing = [{"role": "tool", "tool_call_id": tc["id"], "name": tc["function"]["name"],
+                            "content": "durduruldu (kullanıcı kesti)"}
+                           for tc in m["tool_calls"] if tc["id"] not in answered]
+                self.messages[at:at] = missing
                 break
 
     def reset(self) -> None:
