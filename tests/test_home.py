@@ -410,3 +410,114 @@ def test_modem_description_and_soap_parse():
     assert modem.fmt_uptime(183900) == "2 gün 3 sa 5 dk"
     assert modem.fmt_bytes(5 * 1024 ** 3) == "5.0 GB"
     assert modem.page_title("<html><TITLE>\n ZXHN H298A </TITLE>") == "ZXHN H298A"
+
+
+# ---------- ZTE modem ----------
+
+import hashlib  # noqa: E402
+
+import httpx  # noqa: E402
+
+from alice.home import zte  # noqa: E402
+
+LAN_XML = """<ajax_response_xml_root><IF_ERRORSTR>SUCC</IF_ERRORSTR><OBJ_ACCESSDEV_ID>
+<Instance><ParaName>_InstID</ParaName><ParaValue>DEV.1</ParaValue><ParaName>HostName</ParaName>
+<ParaValue>HAYAT-PC</ParaValue><ParaName>IPAddress</ParaName><ParaValue>192.168.1.34</ParaValue>
+<ParaName>MACAddress</ParaName><ParaValue>D8:BB:C1:00:11:22</ParaValue></Instance>
+</OBJ_ACCESSDEV_ID></ajax_response_xml_root>"""
+
+WIFI_XML = """<ajax_response_xml_root><IF_ERRORSTR>SUCC</IF_ERRORSTR><OBJ_ACCESSDEV_ID>
+<Instance><ParaName>MACAddress</ParaName><ParaValue>3c:2a:f4:aa:bb:cc</ParaValue><ParaName>IPAddress</ParaName>
+<ParaValue>192.168.1.50</ParaValue><ParaName>HostName</ParaName><ParaValue>Galaxy-A54</ParaValue>
+<ParaName>ESSID</ParaName><ParaValue>SUPERONLINE_5G</ParaValue></Instance>
+</OBJ_ACCESSDEV_ID></ajax_response_xml_root>"""
+
+
+class FakeZTE:
+    """Modemin web arayüzünü taklit eder: giriş, menü anahtarı, oturum zaman aşımı, yeniden başlatma."""
+
+    def __init__(self, password="sifre123"):
+        self.password = password
+        self.logged_in = False
+        self.posts: list[tuple[str, str, dict]] = []
+        self.expire_once = False
+
+    def __call__(self, req: httpx.Request) -> httpx.Response:
+        q = dict(req.url.params)
+        tag = q.get("_tag", "")
+        body = req.content.decode()
+        if req.method == "POST":
+            self.posts.append((tag, body, dict(req.headers)))
+        if tag == "login_entry" and req.method == "GET":
+            return httpx.Response(200, json={"lockingTime": 0, "loginErrMsg": "", "sess_token": "S0"})
+        if tag == "login_token":
+            return httpx.Response(200, text="<ajax_response_xml_root>4242</ajax_response_xml_root>")
+        if tag == "login_entry":
+            fields = dict(p.split("=", 1) for p in body.split("&"))
+            ok = fields["Password"] == hashlib.sha256((self.password + "4242").encode()).hexdigest()
+            self.logged_in = ok
+            return httpx.Response(200, json={"sess_token": "S1"} if ok else
+                                  {"lockingTime": 0, "loginErrMsg": "pwd error", "sess_token": "S0"})
+        if not self.logged_in or (self.expire_once and tag.endswith(".lua")):
+            self.expire_once = False
+            self.logged_in = False
+            return httpx.Response(200, text="<ajax_response_xml_root><IF_ERRORSTR>SessionTimeout</IF_ERRORSTR>"
+                                            "</ajax_response_xml_root>")
+        if q.get("_type") == "menuView":
+            return httpx.Response(200, text='<script>\n_sessionTmpToken = "\\x54\\x4b\\x31";\n</script>')
+        if tag == "accessdev_landevs_lua.lua":
+            return httpx.Response(200, text=LAN_XML)
+        if tag == "accessdev_ssiddev_lua.lua":
+            return httpx.Response(200, text=WIFI_XML)
+        if tag in ("devmgr_statusmgr_lua.lua", "devmgr_restartmgr_lua.lua"):
+            return httpx.Response(200, text="<ajax_response_xml_root><IF_ERRORSTR>SUCC</IF_ERRORSTR>"
+                                            "<_sessionTmpTokenByPost>P9</_sessionTmpTokenByPost>"
+                                            "</ajax_response_xml_root>")
+        return httpx.Response(404)
+
+
+def _router(fake, password="sifre123"):
+    return zte.ZTE("192.168.1.1", "admin", password, httpx.Client(transport=httpx.MockTransport(fake)))
+
+
+def test_zte_tmp_token_and_instances():
+    assert zte.tmp_token('var a=1;\n_sessionTmpToken = "\\x61\\x62\\x63";') == "abc"
+    assert zte.tmp_token("yok") is None
+    rows = zte.device_rows(LAN_XML, WIFI_XML)
+    assert rows == [
+        {"mac": "d8:bb:c1:00:11:22", "ip": "192.168.1.34", "name": "HAYAT-PC", "link": "kablo"},
+        {"mac": "3c:2a:f4:aa:bb:cc", "ip": "192.168.1.50", "name": "Galaxy-A54", "link": "Wi-Fi (SUPERONLINE_5G)"}]
+
+
+def test_zte_login_devices_and_session_timeout_relogin():
+    fake = FakeZTE()
+    r = _router(fake)
+    r.login()
+    assert r.token == "S1"
+    fake.expire_once = True  # ilk veri isteğinde oturum düşsün: tekrar giriş yapıp devam etmeli
+    rows = r.devices()
+    assert {x["name"] for x in rows} == {"HAYAT-PC", "Galaxy-A54"}
+    assert r.token == "TK1"
+
+
+def test_zte_wrong_password_and_missing_password():
+    with pytest.raises(zte.ModemError, match="şifre yanlış"):
+        _router(FakeZTE(), "yanlis").login()
+    with pytest.raises(zte.ModemError, match="MODEM_PASSWORD"):
+        zte.ZTE("192.168.1.1", "admin", "")
+
+
+def test_zte_restart_posts_tokens():
+    fake = FakeZTE()
+    r = _router(fake)
+    r.login()
+    r.restart()
+    tag, body, headers = fake.posts[-1]
+    assert tag == "devmgr_restartmgr_lua.lua"
+    assert "IF_ACTION=Restart" in body and "_sessionTOKEN=TK1" in body and "_sessionTOKENByPost=P9" in body
+    assert "check" in {k.lower() for k in headers} or zte.check_header("x") is None
+
+
+def test_modem_restart_needs_confirmation():
+    assert Wifi().risk_for({"action": "modem_restart"}) == "danger"
+    assert Wifi().risk_for({"action": "modem_devices"}) == "read"

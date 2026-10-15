@@ -68,13 +68,15 @@ class Wifi(Tool):
     name = "wifi"
     description = ("Wi-Fi ve ev ağı: bağlantı durumu ve sinyal, çevredeki ağlar, kayıtlı ağlar, bir ağa bağlan "
                    "(kayıtlı değilse şifreyle) ya da bağlantıyı kes, ağdaki cihazları listele (IP, MAC, ad), bir "
-                   "cihazı Wake-on-LAN ile uyandır, modem bilgisi (marka/model, dış IP, bağlantı, açık kalma süresi, trafik).")
+                   "cihazı Wake-on-LAN ile uyandır, modem bilgisi (marka/model, dış IP, bağlantı, açık kalma süresi, trafik); ZTE "
+                   "modemde bağlı cihaz listesi ve modemi yeniden başlatma.")
     parameters = obj({
         "action": {"type": "string", "enum": ["status", "scan", "saved", "connect", "disconnect", "devices", "wake",
-                                              "modem"],
+                                              "modem", "modem_devices", "modem_restart"],
                    "description": "status | scan: çevredeki ağlar | saved: kayıtlı ağlar | connect: ssid'e bağlan | "
                    "disconnect | devices: ağdaki cihazlar (birkaç saniye sürer) | wake: mac'teki cihaza WoL paketi | "
-                   "modem: modem modeli ve internet bağlantısı (UPnP)."},
+                   "modem: modem modeli ve internet bağlantısı (UPnP) | modem_devices: modemin bildiği bağlı cihazlar "
+                   "(kablo/Wi-Fi, ad) | modem_restart: modemi yeniden başlat (internet 2-3 dk gider)."},
         "ssid": {"type": "string", "description": "connect için ağ adı, tam yazımıyla."},
         "password": {"type": "string", "description": "connect için şifre; ağ zaten kayıtlıysa gerekmez."},
         "mac": {"type": "string", "description": "wake için cihazın MAC adresi, ör. 'aa:bb:cc:dd:ee:ff'."},
@@ -82,7 +84,10 @@ class Wifi(Tool):
     risk = COMPUTER
 
     def risk_for(self, args: dict[str, Any]) -> str:
-        return COMPUTER if args.get("action") in ("connect", "disconnect", "wake") else READ
+        a = args.get("action")
+        if a == "modem_restart":
+            return DANGER
+        return COMPUTER if a in ("connect", "disconnect", "wake") else READ
 
     def run(self, ctx: ToolContext, action: str, ssid: str = "", password: str = "", mac: str = "") -> ToolResult:
         from alice.home import net, wifi
@@ -92,6 +97,8 @@ class Wifi(Tool):
                 from alice.home import modem
 
                 return ToolResult(modem.info())
+            if action in ("modem_devices", "modem_restart"):
+                return ToolResult(self._zte(ctx, action))
             if action == "status":
                 return ToolResult(wifi.status())
             if action == "scan":
@@ -121,6 +128,29 @@ class Wifi(Tool):
         except (RuntimeError, OSError) as e:
             raise ToolError(str(e)) from e
         raise ToolError(f"bilinmeyen action: {action}")
+
+    @staticmethod
+    def _zte(ctx: ToolContext, action: str) -> str:
+        import os
+
+        import httpx
+
+        from alice.home import modem, zte
+
+        conf = ctx.config.data.get("modem", {}) or {}
+        host = conf.get("host") or modem.gateway_guess()
+        router = zte.ZTE(host, conf.get("user", "admin"), os.environ.get("MODEM_PASSWORD", ""))
+        try:
+            router.login()
+            if action == "modem_restart":
+                router.restart()
+                return "modem yeniden başlıyor; internet 2-3 dakika gidip gelecek"
+            rows = router.devices()
+            router.logout()
+            return "\n".join(f"{r['name'] or '(adsız)'}  {r['ip']}  {r['mac']}  {r['link']}" for r in rows) \
+                or "modem bağlı cihaz bildirmedi"
+        except httpx.HTTPError as e:
+            raise zte.ModemError(f"modeme ulaşılamadı ({host}): {e.__class__.__name__}") from e
 
 
 class Android(Tool):
