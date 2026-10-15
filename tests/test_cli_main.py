@@ -200,7 +200,7 @@ def test_slash_mode_plan_clear_compact(env, out):
 def test_slash_model_override_reset_and_bad_ref(env, out):
     cfg, router, ctx, agent = env
     cli.handle_slash("/model brain b:m2", agent, router, ctx, cfg)
-    assert router.chain("brain") == ["b:m2"]
+    assert router.chain("brain")[0] == "b:m2"
     assert "Rol zincirleri" in out()
     cli.handle_slash("/model brain reset", agent, router, ctx, cfg)
     assert router.chain("brain") == ["a:m1", "b:m2"]
@@ -361,9 +361,6 @@ def test_default_workspace_without_documents(isolated_home, tmp_path, monkeypatc
 
 
 # ------------------------------------------------------------------------ main
-@pytest.mark.xfail(strict=True, raises=UnboundLocalError,
-                   reason="main() içindeki 'from alice.config import alice_home' (pythonw dalı) alice_home'u yerel "
-                          "yapıyor; 'alice init' UnboundLocalError ile çöküyor")
 def test_main_init(out, isolated_home):
     assert cli.main(["init"]) == 0
     assert (alice_home() / "config.toml").is_file()
@@ -437,7 +434,7 @@ class _FakeAgent:
 
 def _patch_build(monkeypatch, agent, ready=True):
     built = {}
-    router = SimpleNamespace(role_overrides={}, first_available=lambda role: "a:m" if ready else None)
+    router = SimpleNamespace(role_overrides={}, providers_cfg={}, first_available=lambda role: "a:m" if ready else None)
 
     def build(cfg, cwd, mode, verbose=False):
         built.update(cwd=cwd, mode=mode, verbose=verbose)

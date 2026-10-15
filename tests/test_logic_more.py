@@ -61,9 +61,6 @@ def test_new_session_id_format():
     assert len(sid) == 15 and sid[8] == "-" and sid.replace("-", "").isdigit()
 
 
-@pytest.mark.xfail(strict=True, raises=json.JSONDecodeError,
-                   reason="session.load bozuk en son oturum dosyasında JSONDecodeError fırlatıyor (list_sessions "
-                          "aynı dosyayı atlıyor); 'alice --resume' ve /resume çöküyor")
 def test_session_load_skips_corrupt_latest_file():
     session.save("20260101-000000", [{"role": "system"}, {"role": "user", "content": "a"}], Path("."))
     (session.sessions_dir() / "20260102-000000.json").write_text("{yarım", encoding="utf-8")
@@ -703,6 +700,9 @@ class _FakeClient:
             on_first()
         return item
 
+    def close(self):
+        pass
+
 
 def _call(name, args):
     return {"id": "c", "type": "function", "function": {"name": name, "arguments": args}}
@@ -980,8 +980,6 @@ def test_screenshots_serve_local_site(monkeypatch, tmp_path):
     assert site.cli_screenshots(tmp_path, entry="public/index.html")["url"].endswith("/public/index.html")
 
 
-@pytest.mark.xfail(strict=True, reason="site.screenshots/cli_screenshots sunucuyu sadece shutdown() ile durduruyor, "
-                                       "server_close() çağrılmıyor: her çağrıda dinleyen soket açık kalıyor")
 def test_screenshots_close_preview_server_socket(monkeypatch, tmp_path):
     (tmp_path / "index.html").write_text("x", encoding="utf-8")
     servers = []
