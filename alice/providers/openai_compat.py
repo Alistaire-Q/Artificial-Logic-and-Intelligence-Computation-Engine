@@ -9,8 +9,11 @@ buna göre karar veriyor.
 from __future__ import annotations
 
 import json
+import math
 import re
 import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -19,12 +22,34 @@ import httpx
 from alice.config import ProviderConfig
 
 
+# Hata metinlerinde (sağlayıcının yankıladığı gövde, httpx istisnası) görünebilecek anahtar kalıpları. Bunlar
+# kullanıcıya gösterilen hataya ve ~/.alice/logs/providers.log'a gitmeden önce maskelenir.
+_SECRET_PATTERNS = [
+    re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]{8,}"),
+    re.compile(r"(?i)([?&](?:key|api_key|apikey|access_token|token)=)[^&\s\"']+"),
+    re.compile(r"\b(?:sk-(?:or-v1-|proj-)?|gsk_|nvapi-|csk-|xai-|ghp_|github_pat_|hf_)[A-Za-z0-9_-]{12,}"),
+    re.compile(r"\bAIza[0-9A-Za-z_-]{30,}"),
+]
+
+
+def redact(text: str, *secrets: str | None) -> str:
+    """Metindeki API anahtarlarını maskele: verilen gerçek anahtarlar ve bilinen anahtar biçimleri."""
+    if not text:
+        return text
+    for sec in secrets:
+        if sec and len(sec) >= 6:
+            text = text.replace(sec, "***")
+    for rx in _SECRET_PATTERNS:
+        text = rx.sub(lambda m: (m.group(1) if m.re.groups else "") + "***", text)
+    return text
+
+
 class ProviderError(Exception):
     """kind: rate_limit | quota | auth | not_found | too_large | bad_request | server | network | unreachable"""
 
     def __init__(self, kind: str, message: str, status: int | None = None, retry_after: float | None = None,
                  daily: bool = False):
-        super().__init__(f"[{kind}] {message}")
+        super().__init__(f"[{kind}] {redact(message)}")
         self.kind = kind
         self.status = status
         self.retry_after = retry_after
@@ -72,17 +97,57 @@ def _quota_window(low: str) -> tuple[str, float | None]:
     return window, (float(m.group(1)) if m else None)
 
 
+def parse_retry_after(value: str | None, now: datetime | None = None) -> float | None:
+    """Retry-After başlığı: saniye ("7") ya da HTTP tarihi ("Wed, 21 Oct 2026 07:28:00 GMT"). Tarih biçimi
+    önceden sessizce yok sayılıyor, sunucunun istediği bekleme yerine varsayılan süre kullanılıyordu."""
+    if not value:
+        return None
+    value = value.strip()
+    try:
+        secs = float(value)
+    except ValueError:
+        try:
+            when = parsedate_to_datetime(value)
+        except (TypeError, ValueError, IndexError):
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        secs = (when - (now or datetime.now(timezone.utc))).total_seconds()
+    if not math.isfinite(secs):
+        return None
+    return max(0.0, secs)
+
+
+_HTML_RX = re.compile(r"^\s*(<!doctype|<html|<head|<body|<\?xml)", re.I)
+
+
+def summarize_body(body: str, limit: int = 400) -> str:
+    """Hata gövdesini kullanıcıya gösterilebilir kısa metne çevir. Cloudflare/nginx gibi ara katmanların HTML
+    hata sayfaları önceden olduğu gibi (etiketler, stil, betik) hata mesajına dökülüyordu."""
+    body = body or ""
+    if _HTML_RX.match(body) or "<html" in body[:500].lower():
+        title = re.search(r"<title[^>]*>(.*?)</title>", body, re.I | re.S)
+        text = re.sub(r"<(script|style)\b.*?</\1\s*>", " ", body, flags=re.I | re.S)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = " ".join(text.split())
+        head = " ".join(title.group(1).split()) if title else ""
+        if head and text.startswith(head):
+            text = text[len(head):].strip()
+        if head:
+            out = f"HTML hata sayfası: {head}" + (f" - {text}" if text else "")
+        else:
+            out = f"HTML hata sayfası: {text}"
+        return out[:limit]
+    return " ".join(body.split())[:limit] if body.strip() else "(boş gövde)"
+
+
 def classify_error(status: int, body: str, headers: dict[str, str] | None = None) -> ProviderError:
+    body = body or ""
     low = body.lower()
     retry_after = None
     if headers:
-        ra = headers.get("retry-after") or headers.get("Retry-After")
-        if ra:
-            try:
-                retry_after = float(ra)
-            except ValueError:
-                retry_after = None
-    short = body[:400]
+        retry_after = parse_retry_after(headers.get("retry-after") or headers.get("Retry-After"))
+    short = summarize_body(body)
     if status in (401, 403):
         # OpenRouter bazı moderasyon/quota hatalarında da 403 döner.
         if any(h in low for h in _QUOTA_HINTS):
@@ -90,6 +155,10 @@ def classify_error(status: int, body: str, headers: dict[str, str] | None = None
         return ProviderError("auth", short, status)
     if status in (404, 410):  # 410: model kullanımdan kaldırıldı
         return ProviderError("not_found", short, status)
+    if status == 402:  # OpenRouter: kredi yetersiz. Önceden bad_request sayılıp 60 sn sonra yine deneniyordu.
+        return ProviderError("quota", short, status, retry_after)
+    if status == 408:  # sunucu tarafı istek zaman aşımı: geçici
+        return ProviderError("network", short, status, retry_after)
     if status == 413:
         return ProviderError("too_large", short, status)
     if status == 429:
@@ -116,6 +185,42 @@ def classify_error(status: int, body: str, headers: dict[str, str] | None = None
     return ProviderError("bad_request", short, status)
 
 
+def _inline_error(err: Any) -> ProviderError:
+    """200 cevabın (ya da SSE parçasının) içindeki {"error": ...} nesnesini sınıflandır. code bazen "429" gibi
+    metin geliyor; önceden bu durumda hata 500 (server) sayılıp günlük kota 30 sn sonra yeniden deneniyordu."""
+    code = err.get("code") if isinstance(err, dict) else None
+    if isinstance(code, str) and code.strip().isdigit():
+        code = int(code.strip())
+    status = code if isinstance(code, int) and 100 <= code <= 599 else 500
+    try:
+        msg = json.dumps(err, ensure_ascii=False)[:400]
+    except (TypeError, ValueError):
+        msg = str(err)[:400]
+    return classify_error(status, msg)
+
+
+def _transport_error(e: Exception) -> ProviderError:
+    """httpx istisnasını sınıflandır. ReadTimeout gibi istisnaların metni çoğu zaman boş: önceden kullanıcı
+    sadece "timeout: " görüyordu."""
+    detail = str(e).strip()
+    label = type(e).__name__ + (f": {detail}" if detail else "")
+    if isinstance(e, httpx.ConnectTimeout):
+        return ProviderError("network", f"bağlantı zaman aşımı ({label})")
+    if isinstance(e, httpx.TimeoutException):
+        return ProviderError("network", f"zaman aşımı ({label})")
+    if isinstance(e, httpx.ConnectError):
+        return ProviderError("unreachable", f"bağlanılamadı ({label})")
+    if isinstance(e, httpx.RemoteProtocolError):
+        return ProviderError("network", f"sunucu bağlantıyı yarıda kesti ({label})")
+    if isinstance(e, httpx.InvalidURL):
+        return ProviderError("unreachable", f"geçersiz sağlayıcı adresi ({label})")
+    return ProviderError("network", label)
+
+
+# httpx.InvalidURL ve StreamError HTTPError'dan türemiyor: önceden router'ı ProviderError dışı istisnayla düşürüyordu.
+_TRANSPORT_ERRORS = (httpx.HTTPError, httpx.InvalidURL, httpx.StreamError)
+
+
 class OpenAICompatProvider:
     # Akış bu kadar saniye gerçek veri (metin, düşünme, araç parçası) göndermezse kesilir. Bazı sağlayıcılar
     # beklerken ": PROCESSING" gibi canlı tutma satırları yollar; bunlar okuma zaman aşımını sıfırladığı için
@@ -126,6 +231,17 @@ class OpenAICompatProvider:
         self.cfg = cfg
         self.name = cfg.name
         self._client = client or httpx.Client(timeout=httpx.Timeout(timeout, connect=15.0))
+
+    def close(self) -> None:
+        try:
+            self._client.close()
+        except Exception:  # noqa: BLE001 - kapanışta hata önemsiz
+            pass
+
+    def _scrub(self, e: ProviderError) -> ProviderError:
+        """Hata metninde bu sağlayıcının gerçek anahtarı geçiyorsa (sağlayıcı yankılamış) maskele."""
+        e.args = tuple(redact(a, self.cfg.api_key) if isinstance(a, str) else a for a in e.args)
+        return e
 
     def _headers(self) -> dict[str, str]:
         h = {"Content-Type": "application/json", **self.cfg.headers}
@@ -159,40 +275,42 @@ class OpenAICompatProvider:
         response_format: dict[str, Any] | None = None,
         extra: dict[str, Any] | None = None,
     ) -> ChatResult:
+        try:
+            return self._chat(model, messages, tools, temperature, max_tokens, response_format, extra)
+        except ProviderError as e:
+            raise self._scrub(e) from e.__cause__
+
+    def _chat(self, model, messages, tools, temperature, max_tokens, response_format, extra) -> ChatResult:
         body = self._body(model, messages, tools, temperature, max_tokens, response_format, extra)
         if "openrouter.ai" in self.cfg.base_url:
             body.setdefault("usage", {"include": True})
         t0 = time.monotonic()
         try:
             r = self._client.post(f"{self.cfg.base_url}/chat/completions", headers=self._headers(), json=body)
-        except httpx.TimeoutException as e:
-            raise ProviderError("network", f"timeout: {e}") from e
-        except httpx.ConnectError as e:
-            # Sunucu hiç yok (ör. Ollama kapalı): uzun süre tekrar deneme.
-            raise ProviderError("unreachable", str(e)) from e
-        except httpx.HTTPError as e:
-            raise ProviderError("network", str(e)) from e
+        except _TRANSPORT_ERRORS as e:
+            # ConnectError: sunucu hiç yok (ör. Ollama kapalı), uzun süre tekrar deneme.
+            raise _transport_error(e) from e
         latency = time.monotonic() - t0
 
         if r.status_code != 200:
             raise classify_error(r.status_code, r.text, dict(r.headers))
         try:
             data = r.json()
-        except json.JSONDecodeError as e:
-            raise ProviderError("server", f"geçersiz JSON: {r.text[:200]}") from e
+        except ValueError as e:  # JSONDecodeError ya da bozuk kodlama
+            raise ProviderError("server", f"geçersiz JSON: {summarize_body(r.text, 200)}", 200) from e
 
         # Bazı sağlayıcılar (OpenRouter) hatayı 200 içinde döndürür.
         if isinstance(data, dict) and data.get("error") and not data.get("choices"):
-            err = data["error"]
-            code = err.get("code") if isinstance(err, dict) else None
-            msg = json.dumps(err)[:400]
-            status = code if isinstance(code, int) else 500
-            raise classify_error(status, msg)
+            raise _inline_error(data["error"])
+        if not isinstance(data, dict):
+            raise ProviderError("server", f"beklenmeyen cevap biçimi: {str(data)[:200]}", 200)
 
         choices = data.get("choices") or []
-        if not choices:
-            raise ProviderError("server", f"boş cevap: {str(data)[:200]}")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise ProviderError("server", f"boş cevap: {str(data)[:200]}", 200)
         msg = choices[0].get("message") or {}
+        if not isinstance(msg, dict):
+            raise ProviderError("server", f"beklenmeyen mesaj biçimi: {str(msg)[:200]}", 200)
         if not msg.get("content") and not msg.get("tool_calls"):
             if choices[0].get("finish_reason") == "length":
                 raise ProviderError("too_large", "cevap max_tokens'a takıldı, içerik yok")
@@ -200,7 +318,7 @@ class OpenAICompatProvider:
             message=normalize_message(msg),
             provider=self.name,
             model=data.get("model") or model,
-            usage=data.get("usage") or {},
+            usage=data.get("usage") if isinstance(data.get("usage"), dict) else {},
             latency=latency,
         )
 
@@ -221,6 +339,14 @@ class OpenAICompatProvider:
     ) -> ChatResult:
         """SSE ile akışlı cevap. Metin parçaları on_delta'ya gider, tool_call parçaları birleştirilir (yazıldıkça
         on_tool'a araç adı ve argümanların o ana kadarki uzunluğu bildirilir)."""
+        try:
+            return self._chat_stream(model, messages, on_delta, tools, temperature, max_tokens, response_format,
+                                     extra, cancel, on_reasoning, on_first, on_tool)
+        except ProviderError as e:
+            raise self._scrub(e) from e.__cause__
+
+    def _chat_stream(self, model, messages, on_delta, tools, temperature, max_tokens, response_format, extra,
+                     cancel, on_reasoning, on_first, on_tool) -> ChatResult:
         body = self._body(model, messages, tools, temperature, max_tokens, response_format, extra)
         body["stream"] = True
         if "openrouter.ai" in self.cfg.base_url:  # kullanım ve ücret son parçada gelsin (proje maliyet takibi)
@@ -233,6 +359,8 @@ class OpenAICompatProvider:
         finish = None
         think = ThinkFilter()
         last_data = time.monotonic()
+        chunks = 0  # çözülebilen SSE parçası sayısı
+        done = False
         try:
             with self._client.stream("POST", f"{self.cfg.base_url}/chat/completions",
                                      headers=self._headers(), json=body) as r:
@@ -248,6 +376,7 @@ class OpenAICompatProvider:
                         continue
                     payload = line[5:].strip()
                     if payload == "[DONE]":
+                        done = True
                         break
                     try:
                         chunk = json.loads(payload)
@@ -255,15 +384,20 @@ class OpenAICompatProvider:
                         continue
                     if not isinstance(chunk, dict):  # "data: null" gibi: oturumu AttributeError ile düşürmesin
                         continue
+                    chunks += 1
                     if chunk.get("error"):
-                        err = chunk["error"]
-                        code = err.get("code") if isinstance(err, dict) else None
-                        raise classify_error(code if isinstance(code, int) else 500, json.dumps(err)[:400])
-                    served_model = chunk.get("model") or served_model
-                    if chunk.get("usage"):
+                        raise _inline_error(chunk["error"])
+                    if isinstance(chunk.get("model"), str) and chunk["model"]:
+                        served_model = chunk["model"]
+                    if isinstance(chunk.get("usage"), dict) and chunk["usage"]:
                         usage = chunk["usage"]
-                    for ch in chunk.get("choices") or []:
-                        delta = ch.get("delta") or {}
+                    choices = chunk.get("choices")
+                    for ch in choices if isinstance(choices, list) else []:
+                        if not isinstance(ch, dict):  # bozuk parça: AttributeError ile oturumu düşürmesin
+                            continue
+                        delta = ch.get("delta")
+                        if not isinstance(delta, dict):
+                            delta = {}
                         if delta.get("content") or delta.get("tool_calls") or delta.get("reasoning_content") \
                                 or delta.get("reasoning"):
                             last_data = time.monotonic()
@@ -275,6 +409,8 @@ class OpenAICompatProvider:
                         if thought and on_reasoning and isinstance(thought, str):
                             on_reasoning(thought)
                         piece = delta.get("content")
+                        if not isinstance(piece, str):  # bazı sağlayıcılar liste biçiminde yolluyor
+                            piece = _text_of(piece)
                         if piece:
                             piece, thought = think.feed(piece)
                             if thought and on_reasoning:
@@ -282,19 +418,21 @@ class OpenAICompatProvider:
                         if piece:
                             text_parts.append(piece)
                             on_delta(piece)
-                        for tc in delta.get("tool_calls") or []:
-                            _merge_tool_delta(calls, tc)
-                        if delta.get("tool_calls") and on_tool is not None:
+                        tcs = delta.get("tool_calls")
+                        for tc in tcs if isinstance(tcs, list) else []:
+                            if isinstance(tc, dict):
+                                _merge_tool_delta(calls, tc)
+                        if calls and delta.get("tool_calls") and on_tool is not None:
                             cur = calls[max(calls)] if calls else {}
                             fn = cur.get("function") or {}
                             on_tool(fn.get("name") or "", len(fn.get("arguments") or ""))
                         finish = ch.get("finish_reason") or finish
-        except httpx.TimeoutException as e:
-            raise ProviderError("network", f"timeout: {e}") from e
-        except httpx.ConnectError as e:
-            raise ProviderError("unreachable", str(e)) from e
-        except httpx.HTTPError as e:
-            raise ProviderError("network", str(e)) from e
+        except _TRANSPORT_ERRORS as e:
+            raise _transport_error(e) from e
+        if not chunks and not done:
+            # 200 geldi ama tek bir SSE parçası yok (HTML ara sayfa, boş gövde, akış açılır açılmaz kapandı):
+            # önceden boş cevap başarılı sayılıp kullanıcıya hiçbir şey gösterilmiyordu.
+            raise ProviderError("server", "akış veri göndermeden kapandı (geçerli SSE parçası yok)", 200)
 
         text = "".join(text_parts)
         msg: dict[str, Any] = {"content": text}
@@ -305,11 +443,30 @@ class OpenAICompatProvider:
         return ChatResult(normalize_message(msg), self.name, served_model, usage, time.monotonic() - t0)
 
     def list_models(self) -> list[dict[str, Any]]:
-        r = self._client.get(f"{self.cfg.base_url}/models", headers=self._headers())
-        if r.status_code != 200:
-            raise classify_error(r.status_code, r.text, dict(r.headers))
-        data = r.json()
-        return data.get("data", data if isinstance(data, list) else [])
+        try:
+            try:
+                r = self._client.get(f"{self.cfg.base_url}/models", headers=self._headers())
+            except _TRANSPORT_ERRORS as e:
+                raise _transport_error(e) from e
+            if r.status_code != 200:
+                raise classify_error(r.status_code, r.text, dict(r.headers))
+            try:
+                data = r.json()
+            except ValueError as e:
+                raise ProviderError("server", f"geçersiz JSON: {summarize_body(r.text, 200)}", 200) from e
+        except ProviderError as e:
+            raise self._scrub(e) from e.__cause__
+        # Bazı sağlayıcılar listeyi doğrudan döndürüyor: önceden list.get AttributeError ile düşüyordu.
+        items = data if isinstance(data, list) else (data.get("data") if isinstance(data, dict) else None)
+        return [m for m in items if isinstance(m, dict)] if isinstance(items, list) else []
+
+
+def _text_of(content: Any) -> str:
+    """Akışta liste biçiminde gelen içerik parçalarından metni çıkar ([{"type": "text", "text": "..."}])."""
+    if isinstance(content, list):
+        return "".join(p.get("text", "") for p in content
+                       if isinstance(p, dict) and isinstance(p.get("text"), str))
+    return ""
 
 
 def _merge_tool_delta(calls: dict[int, dict[str, Any]], tc: dict[str, Any]) -> None:
@@ -324,13 +481,15 @@ def _merge_tool_delta(calls: dict[int, dict[str, Any]], tc: dict[str, Any]) -> N
         cur["id"] = tc["id"]
     if tc.get("extra_content"):  # Gemini: thought_signature geri gönderilmezse sonraki istek 400 alıyor
         cur["extra_content"] = tc["extra_content"]
-    fn = tc.get("function") or {}
-    if fn.get("name") and not cur["function"]["name"]:
+    fn = tc.get("function")
+    if not isinstance(fn, dict):
+        fn = {}
+    if isinstance(fn.get("name"), str) and fn["name"] and not cur["function"]["name"]:
         cur["function"]["name"] = fn["name"]
     args = fn.get("arguments")
     if isinstance(args, dict):
         cur["function"]["arguments"] = json.dumps(args, ensure_ascii=False)
-    elif args:
+    elif isinstance(args, str) and args:
         cur["function"]["arguments"] += args
 
 

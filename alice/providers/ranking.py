@@ -171,7 +171,7 @@ def _probe_specs() -> list[dict[str, Any]]:
 
 def probe(router, ref: str, specs: list[dict[str, Any]] | None = None, timeout: float = PROBE_TIMEOUT) -> Probe:
     """Tek bir modeli gerçek bir araç çağrısı isteğiyle dene. Router'ın ceza mekanizmasına dokunmaz."""
-    from alice.providers.openai_compat import OpenAICompatProvider, ProviderError
+    from alice.providers.openai_compat import OpenAICompatProvider, ProviderError, redact
     from alice.providers.router import clean_messages, is_gemini, parse_ref
 
     p, model = parse_ref(ref)
@@ -194,9 +194,13 @@ def probe(router, ref: str, specs: list[dict[str, Any]] | None = None, timeout: 
         return res
     except Exception as e:  # noqa: BLE001 - ölçümde hiçbir hata ölümcül değil
         res.latency = round(time.monotonic() - t0, 2)
-        res.error_kind, res.error = "network", f"{type(e).__name__}: {e}"[:300]
+        res.error_kind, res.error = "network", redact(f"{type(e).__name__}: {e}", pc.api_key)[:300]
         return res
-    total = time.monotonic() - t0
+    finally:
+        # Her ölçüm kendi httpx istemcisini açıyor (günde ~50 model): önceden hiç kapatılmıyor, bağlantılar ve
+        # dosya tanıtıcıları arka plan iş parçacığında birikiyordu.
+        client.close()
+    total =time.monotonic() - t0
     calls = r.message.get("tool_calls") or []
     res.latency = round(total, 2)
     res.ttft = round((first[0] - t0) if first else total, 2)
