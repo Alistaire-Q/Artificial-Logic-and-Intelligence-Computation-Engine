@@ -489,6 +489,26 @@ Saat verisi geldiğinde:
 
 **Telefondan ALICE:** `alice phone` bir adres ve QR kod gösterir (`pip install qrcode` kuruluysa). Aynı Wi-Fi'deyken telefonun tarayıcısında açınca hızlı bar gelir. Adresteki uzun anahtar olmadan erişilemez, anahtar `~/.alice/phone-token` dosyasında durur (`--new-token` ile değişir). Bağlantı yerel ağda düz HTTP olduğu için sadece güvendiğin ağda aç. Telefonda mikrofon çalışmaz, yazarak sorarsın.
 
+## Ev: bilgisayar, Wi-Fi, TV ve telefon
+
+ALICE bilgisayarın dışındaki şeyleri de yönetiyor. Hepsi sohbetle ya da sesle: "ekranı kapat", "performans moduna geç", "parlaklığı yüzde 40 yap", "ağda kimler var", "televizyonda Netflix'i aç", "telefonumun şarjı kaç".
+
+**Bilgisayar (`pc`):** kilitleme, ekranı kapatma, uyku, hazırda bekletme, yeniden başlatma, güç planı (dengeli, yüksek performans, tasarruf) ve monitör parlaklığı. Harici monitörde parlaklık DDC/CI ile ayarlanıyor, monitörün kendi menüsünde DDC/CI açık olmalı. Dizüstü ekranında WMI kullanılıyor. Uyku, hazırda bekletme ve yeniden başlatma onay istiyor.
+
+**Wi-Fi ve ev ağı (`wifi`):** bağlantı durumu ve sinyal, çevredeki ağlar, kayıtlı ağlar, bir ağa bağlanma (kayıtlı değilse şifreyle) ve bağlantıyı kesme. "Ağda kimler var" sorusunda alt ağdaki cihazları IP, MAC ve varsa adlarıyla listeliyor. `netsh` çıktısı Türkçe ya da İngilizce Windows'ta aynı şekilde okunuyor.
+
+**Bilgisayarı uzaktan açma (Wake-on-LAN):** Bilgisayar kapalıyken ALICE de kapalı olduğu için uyandırma paketini başka bir cihaz göndermeli, pratikte telefonundaki bir WoL uygulaması. `pc wol_info` bunun için gereken MAC'i, yayın adresini ve ağ kartının uyandırmaya hazır olup olmadığını gösteriyor. Kabloyla bağlı bilgisayarda güvenilir çalışıyor. BIOS'ta "Wake on LAN / Power On By PCI-E" ve ağ kartının Güç Yönetimi sekmesinde "Magic Packet ile uyandır" açık, Windows Hızlı Başlatma kapalı olmalı. ALICE'in kendisi de `wifi wake` ile ağdaki başka bir cihazı uyandırabiliyor.
+
+**Android TV ve telefon (`android`, ADB):**
+* Bilgisayara adb kur: `winget install Google.PlatformTools`
+* **TV:** Ayarlar > Cihaz tercihleri > Hakkında > Yapı numarasına 7 kez bas, Geliştirici seçeneklerinde ağ (ya da USB) hata ayıklamayı aç. Sonra "Alice, televizyonu bul" de (`find` ağda 5555 portunu tarıyor) ya da IP'sini ver. İlk bağlanışta TV'de çıkan pencerede "Her zaman izin ver"i seç. Adres `[android] tv` olarak kaydediliyor.
+* **Telefon (Android 11+):** Geliştirici seçenekleri > Kablosuz hata ayıklama > "Eşleme koduyla cihaz eşle". Ekrandaki IP:port ve kodla bir kere `pair`, sonra Kablosuz hata ayıklama ana ekranındaki IP:port ile `connect`. Port her açılışta değişiyor, ALICE aynı IP'nin yeni portunu mDNS'ten kendisi buluyor.
+* İkisinde de yapabildikleri: aç/kapa, tuşlar (ses, oynat/duraklat, yön, ana ekran), uygulama açma (adıyla, ör. "exxen"), YouTube'da video açma, yazı yazma, ekran görüntüsü. Telefonda ayrıca pil durumu, bildirimleri okuma ve bilgisayardan İndirilenler klasörüne dosya gönderme var.
+
+**Samsung TV (`tv`):** Samsung'un yerel uzaktan kumanda API'si kullanılıyor, TV'de bir şey kurmak gerekmiyor (`pip install websockets` ya da `alice-harness[home]`). TV açıkken "Alice, televizyonu bul" de, sonra bağlan. TV ekranında çıkan izin sorusunda "İzin ver"i seç. Token, IP ve MAC adresi `[samsung_tv]` altına kaydediliyor. Yapabildikleri: aç/kapa, ses, kanal, yön tuşları, kaynak/HDMI, uygulama açma (TV'de kurulu her uygulama adıyla), YouTube'da video açma, açık klavyeye yazı yazma. TV kapalıyken ağ kartı da uyuduğu için açma işi Wake-on-LAN ile yapılıyor. Bunun için TV'de Ayarlar > Genel > Ağ > Uzman Ayarları > "Mobil ile aç" açık olmalı.
+
+**Modem (`wifi modem`):** Modelini bilmesen de olur. Modem UPnP ile kendini tanıtıyor (çoğu ev modeminde varsayılan olarak açık), ALICE de marka ve modeli, dış IP'yi, bağlantı durumunu, modemin ne kadardır açık olduğunu, hat hızını ve trafiği okuyor. UPnP kapalıysa yönetim sayfasının başlığından tahmin ediyor. Yeniden başlatma ve bağlı cihaz listesi gibi işler modele özel; model belli olunca eklenecek. O zamana kadar ağdaki cihazlar için `wifi devices` var.
+
 ## Küçük eklemeler
 
 ```powershell

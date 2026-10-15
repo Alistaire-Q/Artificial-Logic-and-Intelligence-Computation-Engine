@@ -1,0 +1,412 @@
+"""Ev kontrolü: netsh/powercfg/adb çıktılarının ayrıştırılması ve araçların komut kurulumu (gerçek cihaz yok)."""
+
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from alice.home import android, net, pc, wifi
+from alice.tools.base import ToolContext, ToolError
+from alice.tools.home import PC, Android, Wifi
+
+POWERCFG_TR = """
+Mevcut Güç Düzenleri
+-----------------------------------
+Güç Düzeni GUID'si: 381b4222-f694-41f0-9685-ff5bb260df2e  (Dengeli) *
+Güç Düzeni GUID'si: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c  (Yüksek performans)
+Güç Düzeni GUID'si: a1841308-3bc4-4ac8-ba48-0d6b2e1bf3f2  (Güç tasarrufu)
+"""
+
+IFACE_EN = """
+There is 1 interface on the system:
+
+    Name                   : Wi-Fi
+    Description            : Intel(R) Wi-Fi 6 AX201 160MHz
+    State                  : connected
+    SSID                   : EvAgi 5G
+    BSSID                  : aa:bb:cc:dd:ee:ff
+    Radio type             : 802.11ax
+    Channel                : 36
+    Receive rate (Mbps)    : 1201
+    Signal                 : 87%
+    Profile                : EvAgi 5G
+"""
+
+IFACE_TR_DISCONNECTED = """
+Sistemde 1 arabirim var:
+
+    Ad                     : Wi-Fi
+    Durum                  : bağlantı kesildi
+    Radyo durumu           : Donanım Açık
+"""
+
+NETWORKS = """
+Interface name : Wi-Fi
+There are 2 networks currently visible.
+
+SSID 1 : Komsu
+    Network type            : Infrastructure
+    Authentication          : WPA2-Personal
+    Encryption              : CCMP
+    BSSID 1                 : 11:22:33:44:55:66
+         Signal             : 40%
+SSID 2 : EvAgi 5G
+    Ağ türü                 : Altyapı
+    Kimlik doğrulama        : WPA3-Personal
+    Şifreleme               : CCMP
+    BSSID 1                 : aa:bb:cc:dd:ee:ff
+         Sinyal             : 60%
+    BSSID 2                 : aa:bb:cc:dd:ee:00
+         Sinyal             : 91%
+"""
+
+PROFILES_TR = """
+Wi-Fi arabirimindeki profiller:
+
+Grup ilkesi profilleri (salt okunur)
+---------------------------------
+    <Yok>
+
+Kullanıcı profilleri
+-------------
+    Tüm Kullanıcı Profili     : EvAgi 5G
+    Tüm Kullanıcı Profili     : Okul Misafir
+"""
+
+
+def test_power_plans_parse_and_find_in_turkish():
+    plans = pc.parse_plans(POWERCFG_TR)
+    assert [p["name"] for p in plans] == ["Dengeli", "Yüksek performans", "Güç tasarrufu"]
+    assert plans[0]["active"] and not plans[1]["active"]
+    assert pc.find_plan(plans, "performans")["guid"].startswith("8c5e7fda")
+    assert pc.find_plan(plans, "high performance")["guid"].startswith("8c5e7fda")
+    assert pc.find_plan(plans, "tasarruf")["name"] == "Güç tasarrufu"
+    assert pc.find_plan(plans, "balanced")["name"] == "Dengeli"
+    assert pc.find_plan(plans, "oyun") is None
+
+
+def test_wifi_status_parse_language_independent():
+    s = wifi.parse_status(IFACE_EN)
+    assert s["connected"] and s["ssid"] == "EvAgi 5G" and s["signal"] == 87
+    d = wifi.parse_status(IFACE_TR_DISCONNECTED)
+    assert not d["connected"] and d["signal"] is None
+
+
+def test_wifi_networks_take_best_bssid_and_sort():
+    nets = wifi.parse_networks(NETWORKS)
+    assert [n["ssid"] for n in nets] == ["EvAgi 5G", "Komsu"]
+    assert nets[0]["signal"] == 91 and nets[0]["auth"] == "WPA3-Personal"
+    assert nets[1]["auth"] == "WPA2-Personal"
+
+
+def test_wifi_profiles_parse_skips_none_marker():
+    assert wifi.parse_profiles(PROFILES_TR) == ["EvAgi 5G", "Okul Misafir"]
+
+
+def test_profile_xml_escapes_and_open_network():
+    x = wifi.profile_xml("Ali & Veli", "p<ss")
+    assert "<name>Ali &amp; Veli</name>" in x and "<keyMaterial>p&lt;ss</keyMaterial>" in x and "WPA2PSK" in x
+    assert "<authentication>open</authentication>" in wifi.profile_xml("Kafe", "")
+
+
+def test_wifi_connect_refuses_unknown_secured_network_without_password(monkeypatch):
+    monkeypatch.setattr(wifi, "profiles", lambda: [])
+    monkeypatch.setattr(wifi, "scan", lambda: [{"ssid": "Komsu", "signal": 40, "auth": "WPA2-Personal"}])
+    with pytest.raises(RuntimeError, match="şifre"):
+        wifi.connect("Komsu")
+
+
+def test_arp_parse_windows_and_linux():
+    win = """
+Interface: 192.168.1.34 --- 0x7
+  Internet Address      Physical Address      Type
+  192.168.1.1           a4-2b-b0-11-22-33     dynamic
+  192.168.1.50          3c-2a-f4-aa-bb-cc     dynamic
+  192.168.1.255         ff-ff-ff-ff-ff-ff     static
+  224.0.0.22            01-00-5e-00-00-16     static
+"""
+    lin = "? (192.168.1.1) at a4:2b:b0:11:22:33 [ether] on wlan0\nrouter (10.0.0.1) at <incomplete> on eth0\n"
+    assert net.parse_arp(win) == [("192.168.1.1", "a4:2b:b0:11:22:33"), ("192.168.1.50", "3c:2a:f4:aa:bb:cc")]
+    assert net.parse_arp(lin) == [("192.168.1.1", "a4:2b:b0:11:22:33")]
+
+
+def test_magic_packet():
+    p = net.magic_packet("AA-BB-CC-DD-EE-FF")
+    assert len(p) == 102 and p[:6] == b"\xff" * 6 and p[6:12] == bytes.fromhex("aabbccddeeff")
+    with pytest.raises(ValueError):
+        net.magic_packet("aa:bb")
+
+
+def test_subnet_hosts_excludes_self():
+    hosts = net.subnet_hosts("192.168.1.34")
+    assert len(hosts) == 253 and "192.168.1.34" not in hosts and hosts[0] == "192.168.1.1"
+
+
+def test_android_parsers():
+    assert android.serial("192.168.1.50") == "192.168.1.50:5555"
+    assert android.serial("192.168.1.9:41233") == "192.168.1.9:41233"
+    assert android.youtube_id("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=3") == "dQw4w9WgXcQ"
+    assert android.youtube_id("https://youtu.be/dQw4w9WgXcQ") == "dQw4w9WgXcQ"
+    assert android.youtube_id("lofi") is None
+    assert android.parse_wakefulness("  mWakefulness=Asleep\n") == "Asleep"
+    b = android.parse_battery("Current Battery Service state:\n  AC powered: false\n  USB powered: true\n"
+                              "  level: 83\n  scale: 100\n  temperature: 312\n")
+    assert b == {"percent": 83, "charging": True, "temp_c": 31.2}
+    assert android.input_text_arg("merhaba dünya; rm") == "'merhaba%sdünya;%srm'"
+    mdns = "List of discovered mdns services\nadb-R58N-abc\t_adb-tls-connect._tcp\t192.168.1.9:41233\n"
+    assert android.parse_mdns(mdns) == [("_adb-tls-connect._tcp", "192.168.1.9:41233")]
+
+
+def test_android_notifications_parse():
+    dump = """
+  NotificationRecord(0x1 pkg=com.whatsapp user=UserHandle{0} id=1 importance=4)
+      extras={
+        android.title=String (Abla)
+        android.text=String (Eve gelirken ekmek al)
+      }
+  NotificationRecord(0x2 pkg=com.android.systemui user=UserHandle{0} id=2)
+        android.title=String (USB hata ayıklama bağlı)
+  NotificationRecord(0x3 pkg=com.google.android.gm user=UserHandle{0} id=3)
+        android.title=String (Staj programı)
+"""
+    assert android.parse_notifications(dump) == [
+        {"app": "com.whatsapp", "title": "Abla", "text": "Eve gelirken ekmek al"},
+        {"app": "com.google.android.gm", "title": "Staj programı", "text": ""}]
+
+
+class FakeAdb:
+    """subprocess.run yerine: komutları kaydeder, adb'nin vereceği çıktıları döner."""
+
+    def __init__(self, replies=None):
+        self.calls: list[list[str]] = []
+        self.replies = replies or {}
+
+    def __call__(self, cmd, timeout=15):
+        self.calls.append(cmd)
+        joined = " ".join(cmd)
+        out = next((v for k, v in self.replies.items() if k in joined), "")
+        return subprocess.CompletedProcess(cmd, 0, out, "")
+
+
+@pytest.fixture
+def fake_adb(monkeypatch):
+    f = FakeAdb({"devices": "List of devices attached\n192.168.1.50:5555\tdevice\n",
+                 "mWakefulness": "mWakefulness=Asleep",
+                 "pm list packages": "package:com.netflix.ninja\npackage:tr.com.exxen.tv\n",
+                 "monkey": "Events injected: 1"})
+    monkeypatch.setattr(android, "run", f)
+    monkeypatch.setattr(android.shutil, "which", lambda n: "/usr/bin/adb")
+    return f
+
+
+def _ctx(tmp_path, android_conf):
+    from alice.config import load_config
+
+    cfg = load_config()
+    cfg.data["android"] = android_conf
+    return ToolContext(cwd=Path(tmp_path), config=cfg)
+
+
+def test_android_tool_power_on_and_open_app(fake_adb, tmp_path):
+    ctx = _ctx(tmp_path, {"tv": "192.168.1.50:5555"})
+    tool = Android()
+    assert tool.run(ctx, device="tv", action="power", state="on").text == "tv: on"
+    assert ["/usr/bin/adb", "-s", "192.168.1.50:5555", "shell", "input keyevent KEYCODE_WAKEUP"] in fake_adb.calls
+    tool.run(ctx, device="tv", action="open_app", app="exxen")
+    assert any("monkey -p tr.com.exxen.tv -c android.intent.category.LEANBACK_LAUNCHER 1" in c for c in
+               map(" ".join, fake_adb.calls))
+    tool.run(ctx, device="tv", action="key", key="volume_up", times=3)
+    assert fake_adb.calls[-1][-1] == "input keyevent " + " ".join(["KEYCODE_VOLUME_UP"] * 3)
+
+
+def test_android_tool_youtube_url_opens_tv_app(fake_adb, tmp_path):
+    ctx = _ctx(tmp_path, {"tv": "192.168.1.50:5555"})
+    Android().run(ctx, device="tv", action="youtube", url="https://youtu.be/dQw4w9WgXcQ")
+    last = fake_adb.calls[-1][-1]
+    assert "watch?v=dQw4w9WgXcQ" in last and last.endswith("com.google.android.youtube.tv")
+
+
+def test_android_tool_without_address_explains(fake_adb, tmp_path):
+    with pytest.raises(ToolError, match="connect"):
+        Android().run(_ctx(tmp_path, {}), device="phone", action="battery")
+
+
+def test_android_unauthorized_is_explained(monkeypatch, tmp_path):
+    def fake(cmd, timeout=15):
+        if "connect" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, "failed to authenticate to 192.168.1.50:5555", "")
+        return subprocess.CompletedProcess(cmd, 0, "List of devices attached\n", "")
+
+    monkeypatch.setattr(android, "run", fake)
+    monkeypatch.setattr(android.shutil, "which", lambda n: "/usr/bin/adb")
+    with pytest.raises(ToolError, match="Her zaman izin ver"):
+        Android().run(_ctx(tmp_path, {"tv": "192.168.1.50"}), device="tv", action="key", key="home")
+
+
+def test_missing_adb_gives_install_hint(monkeypatch, tmp_path):
+    monkeypatch.setattr(android.shutil, "which", lambda n: None)
+    with pytest.raises(ToolError, match="winget install Google.PlatformTools"):
+        Android().run(_ctx(tmp_path, {"tv": "192.168.1.50"}), device="tv", action="key", key="home")
+
+
+def test_risk_levels():
+    assert PC().risk_for({"action": "sleep"}) == "danger"
+    assert PC().risk_for({"action": "brightness"}) == "read"
+    assert PC().risk_for({"action": "brightness", "level": 40}) == "computer"
+    assert Wifi().risk_for({"action": "scan"}) == "read"
+    assert Wifi().risk_for({"action": "connect"}) == "computer"
+    assert Android().risk_for({"action": "power", "state": "status"}) == "read"
+    assert Android().risk_for({"action": "power", "state": "off"}) == "computer"
+
+
+@pytest.mark.skipif(__import__("sys").platform == "win32", reason="Windows dışı davranış")
+def test_windows_only_actions_fail_clearly_elsewhere(tmp_path):
+    with pytest.raises(ToolError, match="Windows"):
+        PC().run(_ctx(tmp_path, {}), action="plans")
+    with pytest.raises(ToolError, match="Windows"):
+        Wifi().run(_ctx(tmp_path, {}), action="status")
+
+
+# ---------- Samsung TV ----------
+
+from alice.home import samsung  # noqa: E402
+from alice.tools.home import SamsungTV  # noqa: E402
+
+
+def test_samsung_messages_and_app_lookup():
+    assert samsung.key_message("KEY_VOLUP")["params"]["DataOfCmd"] == "KEY_VOLUP"
+    assert samsung.text_message("ğ")["params"]["Cmd"] == "xJ8="
+    m = samsung.launch_message("111299001912", "v=dQw4w9WgXcQ")["params"]["data"]
+    assert m == {"appId": "111299001912", "action_type": "DEEP_LINK", "metaTag": "v=dQw4w9WgXcQ"}
+    assert samsung.launch_message("3201907018807")["params"]["data"]["action_type"] == "NATIVE_LAUNCH"
+    installed = [{"name": "YouTube", "appId": "111299001912"}, {"name": "Exxen", "appId": "3202001019999"}]
+    assert samsung.find_app("exxen", installed) == "3202001019999"
+    assert samsung.find_app("netflix", installed) == "3201907018807"
+    assert samsung.find_app("3201606009684", []) == "3201606009684"
+    assert samsung.find_app("bilinmeyen", installed) is None
+    assert samsung.power_state({"device": {"PowerState": "standby"}}) == "standby"
+    assert samsung.power_state({"device": {}}) == "on"
+
+
+class FakeWS:
+    def __init__(self, incoming):
+        self.incoming = list(incoming)
+        self.sent: list[dict] = []
+
+    def recv(self, timeout=None):
+        if not self.incoming:
+            raise TimeoutError
+        import json
+
+        return json.dumps(self.incoming.pop(0))
+
+    def send(self, data):
+        import json
+
+        self.sent.append(json.loads(data))
+
+    def close(self):
+        pass
+
+
+def _fake_connect(monkeypatch, ws):
+    import types
+
+    mod = types.ModuleType("websockets.sync.client")
+    mod.connect = lambda *a, **k: ws
+    monkeypatch.setitem(__import__("sys").modules, "websockets.sync.client", mod)
+
+
+def test_samsung_remote_takes_token_and_sends_keys(monkeypatch):
+    ws = FakeWS([{"event": "ms.channel.connect", "data": {"token": "12345678"}}])
+    _fake_connect(monkeypatch, ws)
+    monkeypatch.setattr(samsung.time, "sleep", lambda s: None)
+    with samsung.Remote("192.168.1.60") as r:
+        r.keys("KEY_VOLUP", 2)
+    assert r.token == "12345678"
+    assert [m["params"]["DataOfCmd"] for m in ws.sent] == ["KEY_VOLUP", "KEY_VOLUP"]
+
+
+def test_samsung_remote_denied_is_explained(monkeypatch):
+    _fake_connect(monkeypatch, FakeWS([{"event": "ms.channel.unauthorized"}]))
+    with pytest.raises(samsung.TVError, match="İzin ver"):
+        with samsung.Remote("192.168.1.60"):
+            pass
+
+
+def test_samsung_power_on_when_off_sends_wake_on_lan(monkeypatch, tmp_path):
+    def off(host, timeout=3):
+        raise samsung.TVError("kapalı")
+
+    sent = []
+    monkeypatch.setattr(samsung, "info", off)
+    monkeypatch.setattr(net, "wake_on_lan", lambda mac, bc: sent.append((mac, bc)))
+    ctx = _ctx(tmp_path, {})
+    ctx.config.data["samsung_tv"] = {"host": "192.168.1.60", "mac": "aa:bb:cc:dd:ee:ff"}
+    out = SamsungTV().run(ctx, action="power", state="on").text
+    assert "açılma paketi" in out and sent == [("aa:bb:cc:dd:ee:ff", "192.168.1.255")]
+    assert SamsungTV().run(ctx, action="power", state="off").text == "TV zaten kapalı"
+    ctx.config.data["samsung_tv"] = {"host": "192.168.1.60"}
+    with pytest.raises(ToolError, match="MAC"):
+        SamsungTV().run(ctx, action="power", state="on")
+
+
+def test_samsung_youtube_deep_link(monkeypatch, tmp_path):
+    ws = FakeWS([{"event": "ms.channel.connect", "data": {}}])
+    _fake_connect(monkeypatch, ws)
+    monkeypatch.setattr(samsung.time, "sleep", lambda s: None)
+    ctx = _ctx(tmp_path, {})
+    ctx.config.data["samsung_tv"] = {"host": "192.168.1.60", "token": "1"}
+    SamsungTV().run(ctx, action="youtube", url="https://youtu.be/dQw4w9WgXcQ")
+    assert ws.sent[-1]["params"]["data"] == {"appId": "111299001912", "action_type": "DEEP_LINK",
+                                             "metaTag": "v=dQw4w9WgXcQ"}
+
+
+# ---------- modem (UPnP) ----------
+
+from alice.home import modem  # noqa: E402
+
+IGD_XML = """<?xml version="1.0"?>
+<root xmlns="urn:schemas-upnp-org:device-1-0">
+ <device>
+  <deviceType>urn:schemas-upnp-org:device:InternetGatewayDevice:1</deviceType>
+  <friendlyName>Superonline Fiber</friendlyName>
+  <manufacturer>Huawei</manufacturer>
+  <modelName>HG8245Q2</modelName>
+  <modelNumber>V5</modelNumber>
+  <deviceList><device>
+   <deviceType>urn:schemas-upnp-org:device:WANDevice:1</deviceType>
+   <serviceList><service>
+    <serviceType>urn:schemas-upnp-org:service:WANCommonInterfaceConfig:1</serviceType>
+    <controlURL>/upnp/control/WANCommonIFC1</controlURL>
+   </service></serviceList>
+   <deviceList><device>
+    <serviceList><service>
+     <serviceType>urn:schemas-upnp-org:service:WANPPPConnection:1</serviceType>
+     <controlURL>/upnp/control/WANPPPConn1</controlURL>
+    </service></serviceList>
+   </device></deviceList>
+  </device></deviceList>
+ </device>
+</root>"""
+
+SOAP_REPLY = """<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>
+<u:GetStatusInfoResponse xmlns:u="urn:schemas-upnp-org:service:WANPPPConnection:1">
+<NewConnectionStatus>Connected</NewConnectionStatus><NewLastConnectionError>ERROR_NONE</NewLastConnectionError>
+<NewUptime>183900</NewUptime></u:GetStatusInfoResponse></s:Body></s:Envelope>"""
+
+
+def test_modem_description_and_soap_parse():
+    d = modem.parse_description(IGD_XML, "http://192.168.1.1:37215/desc.xml")
+    assert (d["manufacturer"], d["model"], d["model_number"]) == ("Huawei", "HG8245Q2", "V5")
+    assert d["wan"] == ("urn:schemas-upnp-org:service:WANPPPConnection:1",
+                        "http://192.168.1.1:37215/upnp/control/WANPPPConn1")
+    assert d["common"] == "http://192.168.1.1:37215/upnp/control/WANCommonIFC1"
+    r = modem.parse_soap(SOAP_REPLY)
+    assert r["NewConnectionStatus"] == "Connected" and r["NewUptime"] == "183900"
+    assert modem.fmt_uptime(183900) == "2 gün 3 sa 5 dk"
+    assert modem.fmt_bytes(5 * 1024 ** 3) == "5.0 GB"
+    assert modem.page_title("<html><TITLE>\n ZXHN H298A </TITLE>") == "ZXHN H298A"

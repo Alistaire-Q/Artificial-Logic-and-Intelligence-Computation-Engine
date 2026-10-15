@@ -193,6 +193,19 @@ export_path = ""
 enabled = false
 port = 8765
 
+# Android TV ve telefon (ADB). tv / phone: "IP:port", ALICE connect'te kendisi yazar.
+# adb: boşsa PATH'teki adb (kurmak için: winget install Google.PlatformTools).
+[android]
+adb = ""
+tv = ""
+phone = ""
+
+# Samsung (Tizen) TV. host, token (TV'deki izinden sonra) ve mac (kapalıyken açmak için) connect'te yazılır.
+[samsung_tv]
+host = ""
+token = ""
+mac = ""
+
 # Sabah özeti (`alice brief`, kurmak için `alice brief --install 08:00`).
 # days: haftanın günlerine göre program, ör. pazartesi = "okul", salı = "staj".
 [brief]
