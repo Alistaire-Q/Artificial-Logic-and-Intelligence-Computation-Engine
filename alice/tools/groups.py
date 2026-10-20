@@ -20,10 +20,11 @@ CORE = {"read_file", "write_file", "edit_file", "multi_edit", "apply_patch", "fi
 
 # grup -> (araçlar, kısa açıklama, anahtar kelime regex'i)
 GROUPS: dict[str, tuple[set[str], str, str]] = {
-    "desktop": ({"computer", "computer_task", "ui_elements", "ui_act", "clipboard", "reflex"},
+    "desktop": ({"computer", "computer_task", "ui_elements", "ui_act", "clipboard", "reflex", "app"},
                 "ekran görüntüsü, fare/klavye, masaüstü uygulamalarında tıklama, pano",
                 r"tıkla|ekran|pencere|fare|mouse|klavye|screenshot|buton|düğme|menü|click|screen|pano|kopyala|"
-                r"yapıştır|clipboard|oyun|ayarlar|uygulamada|arayüz|simge|ikon"),
+                r"yapıştır|clipboard|oyun|ayarlar|uygulamada|arayüz|simge|ikon|whatsapp|instagram|insta\b|"
+                r"tiktok|dm at|mesaj at|uygulama aç"),
     "browser": ({"browser"}, "kullanıcının tarayıcısında web sayfası okuma, tıklama, form doldurma",
                 r"site|tarayıcı|browser|chrome|edge|firefox|opera|youtube|google|sayfa|link|https?://|www\.|\.com|"
                 r"giriş yap|login|online|internetten|instagram|twitter|github|e-?posta|mail"),
@@ -41,6 +42,10 @@ GROUPS: dict[str, tuple[set[str], str, str]] = {
                 r"blender|3d|3b|üç boyut|modelle|sahne|render|mesh"),
     "flight": ({"flight"}, "DCS / War Thunder uçuş verisi ve kneeboard",
                r"dcs|war ?thunder|uçuş|uçak|kneeboard|pist|iniş|kalkış|simülasyon|sim\b"),
+    "connect": (set(),  # araçlar çalışma anında tanımlardan gelir (alice/connect)
+                "bağlı servisler: Spotify, Steam, Discord, YouTube, eklediğin API'lar",
+                r"spotify|müzik|şark[ıi]|parça|çal\b|duraklat|steam|oyun kütüphanesi|discord|sunucu|kanal|"
+                r"abone|izlenme|playlist|çalma listesi"),
     "net": ({"http_request"}, "REST API çağırma, webhook, JSON gönderme, URL'den dosya indirme",
             r"\bapi\b|endpoint|webhook|\bjson\b|\brest\b|http isteği|post isteği|istek at|indir|download|curl"),
     "team": ({"team", "council"}, "büyük işleri otonom ajan projesine bölme ve inceleme kurulu (uzmanlar "
@@ -57,6 +62,15 @@ GROUPS: dict[str, tuple[set[str], str, str]] = {
 }
 
 TOOL_TO_GROUP = {name: g for g, (names, _, _) in GROUPS.items() for name in names}
+
+# Bağlantı araçları (alice/connect) çalışma anında tanımlardan geliyor; adları burada tutulur ve
+# "connect" grubuna sayılır. Böylece her isteğe 4-5 servisin şeması eklenmez, gerekince açılır.
+CONNECT: set[str] = set()
+
+
+def register_connect(names) -> None:
+    CONNECT.clear()
+    CONNECT.update(names)
 _RX = {g: re.compile(rx, re.I) for g, (_, _, rx) in GROUPS.items()}
 
 
@@ -73,6 +87,8 @@ def all_groups() -> dict[str, tuple[set[str], str, str]]:
 def group_of(name: str) -> str | None:
     if name in TOOL_TO_GROUP:
         return TOOL_TO_GROUP[name]
+    if name in CONNECT:
+        return "connect"
     for g, (names, _, _) in plugins.groups().items():
         if name in names:
             return g
@@ -107,15 +123,26 @@ def visible_tools(tools: dict[str, Tool], enabled: set[str]) -> list[Tool]:
     return out
 
 
+def _clip(desc: str, n: int = 62) -> str:
+    """Grup açıklamasını kısalt: ilk virgüle kadar olan kısım çoğu zaman yeterli."""
+    desc = " ".join(desc.split())
+    if len(desc) <= n:
+        return desc
+    head = desc[:n]
+    cut = max(head.rfind(", "), head.rfind(" ve "))
+    return (head[:cut] if cut > n // 2 else head.rstrip()) + "…"
+
+
 class LoadTools(Tool):
     name = "load_tools"
     parallel_safe = True
 
     @property
     def description(self) -> str:  # eklenti grupları sonradan yüklendiği için her seferinde kurulur
+        # Gemini Live açıklamayı 1000 karakterde kesiyor; grup sayısı arttıkça açıklamalar kısaltılır.
         return ("Şu an listede olmayan bir araç grubunu açar; araçlar bir sonraki adımdan itibaren kullanılabilir. "
                 "İş için gereken araç listede yoksa ('yapamam' demeden önce) bunu çağır. Gruplar: "
-                + "; ".join(f"{g}: {desc}" for g, (_, desc, _) in all_groups().items())
+                + "; ".join(f"{g}: {_clip(desc)}" for g, (_, desc, _) in all_groups().items())
                 + "; MCP sunucuları için 'mcp:<sunucu>' (ör. mcp:github). Hepsi için 'all'.")
 
     parameters = obj({"groups": {"type": "array", "items": {"type": "string"},

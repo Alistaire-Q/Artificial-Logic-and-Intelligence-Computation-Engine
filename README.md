@@ -14,6 +14,10 @@ Neler yapabiliyor:
 * **Reflex modu:** net bir arayüz hedefini System One kararlarıyla adım başına ~100-500 ms'de yürütme
 * **Projeler:** büyük işleri kendi yöneticisi olan, paralel çalışan, birbirine mesaj atan, biten işi inceleyip onaylayan otonom ajan takımlarıyla yürütme
 * Alt ajan, todo planı, oturumlar arası hafıza, oturum kaydetme/devam ettirme, otomatik context özetleme
+* **Akışlar:** bağlı servislerde yeni bir şey olunca (Discord mesajı, yeni video) kendi haber verir
+* **Uygulama tarifleri:** WhatsApp, Instagram, TikTok, YouTube, Gmail, Steam için hangi işin hangi yoldan yapılacağı yazılı
+* **Bağlantılar:** Spotify, Steam, Discord, YouTube ve TOML tanımıyla eklediğin her API tek araç olarak
+* **Otomatik güncelleme:** `main`'e bir şey birleşince açılışta kendini günceller ve en son sürümle açılır
 * **İki arayüz:** masaüstü uygulaması (Claude Code / Codex masaüstü gibi) ve terminal. İkisinde de akışlı cevap, renkli diff, durum çubuğu ve çok satırlı yazma var
 
 ![ALICE uygulaması](docs/app-koyu.png)
@@ -110,6 +114,103 @@ Sonra:
 alice doctor          # her sağlayıcıya test isteği atar, karar motorunu dener, eksik paketleri gösterir
 alice models --write  # canlı ücretsiz katalogdan rol zincirlerini günceller (opsiyonel)
 ```
+
+## Bağlantılar: servisleri ALICE'e öğretmek
+
+Bir siteyi ALICE'e bağlamak için kod yazmak gerekmiyor: bir TOML tanımı yazıyorsun, ALICE onu şemalı bir araca çeviriyor (eylemler, parametreler, kimlik, cevabın okunur hali). Ayrıntı: [docs/CONNECT.md](docs/CONNECT.md).
+
+```powershell
+alice connect                       # bağlantılar ve durumları
+alice connect spotify               # OAuth: tarayıcıda izin ver, token saklanır
+alice connect steam --test library --arg steamid=7656119...
+alice connect benimsite --new       # ~/.alice/connect/benimsite.toml şablonu
+```
+
+Kutudan çıkanlar:
+
+| ad | kimlik | ne yapar |
+|---|---|---|
+| `steam` | `STEAM_API_KEY` | kütüphane, oynama süreleri, arkadaşlar, kim ne oynuyor, oyun haberleri |
+| `youtube_api` | `YOUTUBE_API_KEY` | video/kanal arama, izlenme-beğeni, yorumlar |
+| `discord` | `DISCORD_BOT_TOKEN` | sunucular, kanallar, son mesajlar, mesaj gönderme (bot hesabıyla) |
+| `spotify` | OAuth2 + `SPOTIFY_CLIENT_ID` | çalan parça, çal/duraklat/sonraki, arama, cihaz seçimi, çalma listeleri |
+
+Uygulamada **Ayarlar → Bağlantılar**: her servisin durumu, OAuth olanlar için "Bağlan"/"Çıkış" düğmesi, anahtarla çalışanlar için hangi `.env` değişkeninin eksik olduğu ve altta tanımlı akışlar. Terminalde aynı özet `alice doctor` çıktısında bir satır.
+
+Kimlik tarafı: API anahtarları `.env`'den okunuyor, OAuth2 token'ları `~/.alice/connect.json` içinde (chmod 600) duruyor ve süresi dolunca kendiliğinden yenileniyor. OAuth akışı PKCE ile çalıştığı için client secret gerekmiyor.
+
+Araçlar `connect` grubunda: her isteğe eklenmiyorlar, mesajda servis adı geçince ya da model `load_tools` deyince açılıyorlar. Böylece 4 servis bağlıyken de istek küçük kalıyor.
+
+**WhatsApp, Instagram, TikTok:** bunların kişisel hesap için kullanılabilir resmî API'si yok (WhatsApp Cloud API işletme numarası istiyor, Instagram/TikTok API'leri işletme hesabı + onay süreci). Onlar bağlantı tanımıyla değil, ALICE'in kalıcı profille açtığı gerçek tarayıcı ve reflex moduyla kullanılıyor: bir kere giriş yapıyorsun, oturum açık kalıyor.
+
+## Akışlar: ALICE'in kendi haber vermesi
+
+Asistan sorulunca cevap verir, Jarvis olanı söyler. Çekirdek servis zaten bilgisayarı izliyordu (kurallar: "GPU uzun süre ısınırsa söyle"); artık bağlı servisleri de izliyor. `~/.alice/feeds.toml`:
+
+```toml
+[[feed]]
+name = "discord_genel"
+connector = "discord"        # alice connect ile listelenen bağlantı
+action = "messages"
+args = { channel_id = "123456" }
+every_minutes = 5
+id_field = "id"              # yeni öğeyi bununla ayırt eder
+title = "Discord · {author.username}"
+body = "{content}"
+metric = "feed.discord.yeni" # opsiyonel: sayı metrik olur, kurallar kullanabilir
+# agent = "Yeni mesajları özetle, önemliyse bana söyle"   # dolu olursa ALICE uyanıp bu işi yapar
+```
+
+```powershell
+alice feeds            # tanımlı akışlar
+alice feeds --new      # örnek dosya
+alice feeds --test discord_genel   # şimdi yokla, ne geldiğini göster
+```
+
+İlk turda hiçbir şey bildirilmiyor (o anki öğeler "görüldü" işaretleniyor), yoksa akışı kurduğun anda son 15 mesaj peş peşe düşerdi. Bir turda en fazla 5 bildirim gidiyor, gerisi "3 yeni öğe daha" diye toplanıyor. Bildirimler mod politikasından geçiyor: uçuş ya da sessiz moddayken susturulup kaydediliyor, sonra "ben oyundayken ne oldu?" diye sorabiliyorsun.
+
+## Uygulama tarifleri: hangi işi hangi yoldan
+
+Aynı işi üç yoldan yapabiliyor: resmî API (hızlı, güvenilir), uygulamanın derin bağlantısı (`steam://rungameid/...`) ve tarayıcı/arayüz otomasyonu (her yerde çalışır ama yavaş). Hangisinin doğru olduğunu her seferinde modelin tahmin etmesi yerine `alice/apps.toml` içine yazdım:
+
+```
+app(action="list")                                  # tanımlı uygulamalar, akışlar, resmî API'si var mı
+app(action="open", name="wp")                       # WhatsApp Web'i kullanıcının kendi tarayıcısında aç
+app(action="flow", name="whatsapp", flow="send",
+    args={"kime": "Ahmet", "mesaj": "geliyorum"})   # tarifteki akışı reflex ile yürüt
+app(action="open", name="steam_game", target="238960")   # oyunu doğrudan başlat
+```
+
+Kutudan çıkan tarifler: WhatsApp (gönder/oku/ara), Instagram (DM, profil, akış), TikTok (arama, profil), YouTube (video aç/oynat), Gmail (yaz, gelen kutusu), Discord (web ve uygulama), Spotify, Steam ve Steam oyunu başlatma. Kendi tariflerin için `~/.alice/apps.toml` — aynı adı kullanırsan sadece değiştirdiğin alan üstüne yazılır.
+
+Akışlarda CSS seçici yok, "sol listeden {kime} sohbetini aç, mesaj kutusuna {mesaj} yaz" gibi hedef cümleleri var; bunları reflex yürütüyor. Site arayüzü değişince tarif bozulmuyor. Resmî API'si olan uygulamalarda tarif bunu söylüyor, model önce oraya gidiyor.
+
+## Otomatik güncelleme
+
+ALICE kendini GitHub'daki depodan günceller. Ölçü basit: yerel HEAD ile `main`'in ucu aynı mı? Kontrol `git ls-remote` ile yapılıyor, tek ağ turu, fetch yok; o yüzden açılışı bekletmiyor.
+
+* **Açılışta:** `alice app` açılırken `main`'e bakar. Yeni commit varsa fast-forward çeker, `pyproject.toml` değişmişse bağımlılıkları kurar ve kendini yeniden başlatıp **en son sürümü açar**.
+* **Uygulama açıkken:** arka planda saatte bir bakar. Yeni sürüm çıkınca sohbetin üstünde "Yeni sürüm hazır · Güncelle ve yeniden başlat" çubuğu çıkar. Düğmeye basınca çeker ve uygulamayı yeniden açar (ajan bir iş yapıyorsa önce onu durdurman gerekir, yarım kalmasın diye).
+* **Terminalde:** `alice update --check` neler değiştiğini ve CI'ın yeşil olup olmadığını yazar, `alice update` çeker, `alice update --restart` çekip uygulamayı açar. REPL içinde `/update` ve `/update apply` aynı işi yapar.
+
+Otomatik güncellemenin durduğu iki durum var, ikisi de bilerek:
+
+* **Depoda kendi değişikliklerin varsa** (kirli çalışma ağacı) hiçbir şey çekilmez, sadece haber verilir. Kodun kaybolmaz.
+* **Yeni commit'in CI'ı kırmızıysa ya da hâlâ sürüyorsa** otomatik çekilmez. CI durumu anahtarsız GitHub API'siyle okunur; API'ye ulaşılamazsa "bilinmiyor" sayılır ve güncelleme yapılır. Beklemek istemezsen: `alice update --force`, ya da çubuktaki "Yine de güncelle".
+
+Ayarlar → Genel → Güncelleme'den (ya da `config.toml`) davranışı seçersin:
+
+```toml
+[update]
+mode = "auto"               # auto | notify (sadece haber ver) | off
+branch = "main"
+check_every_minutes = 60
+require_green_ci = true
+startup_timeout = 12        # açılıştaki kontrol en fazla bu kadar bekletir
+startup_check = true
+```
+
+Tek seferlik kapatmak için `ALICE_UPDATE_MODE=off` ya da `ALICE_NO_UPDATE=1` ortam değişkeni yeter. Güncelleme yalnızca `git clone` ile kurulmuş bir ALICE'te çalışır (zip indirdiysen git deposu yok, `alice update` bunu söyler).
 
 ## Masaüstü uygulaması
 
@@ -347,6 +448,9 @@ alice -p "RAM'i en çok yiyen 5 süreci listele"   # tek seferlik, sonucu yazıp
 alice --yolo                            # hiçbir şey sormadan tam erişim
 alice --resume                          # son oturuma devam
 alice -v                                # hangi modelin cevap verdiğini göster
+alice update --check                    # main'de yeni commit var mı, CI yeşil mi
+alice update --restart                  # son sürümü çek ve uygulamayı aç
+alice connect                           # servis bağlantıları (Spotify, Steam, Discord, YouTube)
 ```
 
 Reflex'i tek başına denemek için:
@@ -359,7 +463,7 @@ alice reflex "hava durumunu ara" --target browser --url https://duckduckgo.com -
 
 Terminalde cevap akarak geliyor, dosya düzenlemeleri renkli diff olarak görünüyor, altta model, izin modu, context doluluğu ve bugünkü istek sayısını gösteren bir durum çubuğu var. Çok satırlı yazmak için **Alt+Enter** ya da satırı `\` ile bitirip Enter (her terminalde çalışır); Enter tek başına gönderir.
 
-REPL komutları: `/help`, `/plan`, `/mode plan|ask|auto|yolo` (Shift+Tab ile de döner), `/model` (zincir durumları), `/model brain groq:openai/gpt-oss-120b` (sabitle), `/rewind`, `/init`, `/usage`, `/compact`, `/clear`, `/sessions`, `/resume`, `/cwd`, `/tools`, `/mcp`, `/memory`, `/exit`. Özel komutlar ve `@dosya` terminalde de çalışıyor.
+REPL komutları: `/help`, `/plan`, `/mode plan|ask|auto|yolo` (Shift+Tab ile de döner), `/model` (zincir durumları), `/model brain groq:openai/gpt-oss-120b` (sabitle), `/rewind`, `/init`, `/usage`, `/compact`, `/clear`, `/sessions`, `/resume`, `/cwd`, `/tools`, `/mcp`, `/memory`, `/update`, `/exit`. Özel komutlar ve `@dosya` terminalde de çalışıyor.
 
 ## Arka plan çekirdeği
 
