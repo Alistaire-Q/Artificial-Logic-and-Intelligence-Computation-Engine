@@ -352,7 +352,7 @@ class AppState:
             "user": _user_name(),
             "checkpoints": sorted(self.agent.checkpoints),
             "team": self.team_snapshot(),
-            "update": self.update.as_dict() if (self.update is not None and self.update.available) else None,
+            "update": self.update.as_dict() if self._update_shown() else None,
             "update_mode": self._update_mode(),
         }
 
@@ -376,10 +376,14 @@ class AppState:
         except (OSError, ValueError):
             fstate = {}
         frows = [{"name": f.name, "connector": f.connector, "action": f.action, "every_minutes": f.every_minutes,
-                  "enabled": f.enabled, "agent": bool(f.agent),
+                  "enabled": f.enabled, "agent": bool(f.agent), "describe": f.describe(),
+                  "held": len((fstate.get(f.name) or {}).get("held") or []),
                   "last": float((fstate.get(f.name) or {}).get("last") or 0),
                   "error": str((fstate.get(f.name) or {}).get("error") or "")} for f in feeds]
-        return {"connectors": rows, "feeds": frows, "errors": errors + feed_errors}
+        from alice import actionlog
+
+        sent = [{"text": actionlog.format_row(r), "outcome": r.get("outcome", "")} for r in actionlog.recent(10)]
+        return {"connectors": rows, "feeds": frows, "errors": errors + feed_errors, "actions": sent}
 
     def connect_auth(self, name: str) -> dict[str, Any]:
         """OAuth akışını arka planda başlat: tarayıcıda izin sayfası açılır, biten iş olay olarak duyurulur."""
@@ -432,6 +436,10 @@ class AppState:
         set_config_value("update", "mode", mode)
         return True
 
+    def _update_shown(self) -> bool:
+        u = self.update
+        return u is not None and (u.available or u.stale)
+
     def check_update(self, details: bool = True) -> dict[str, Any]:
         """GitHub'daki dalda yeni commit var mı? Sonucu durumda tutar ve arayüze duyurur."""
         from alice import updater
@@ -440,7 +448,7 @@ class AppState:
             info = updater.check(self.cfg, details=details)
         self.update = info
         data = info.as_dict()
-        if info.available:
+        if info.available or info.stale:
             self.bus.publish({"type": "update", **data})
         return data
 
@@ -451,9 +459,13 @@ class AppState:
         if self.agent.busy or self._queued:
             return {"ok": False, "error": "önce mevcut işi durdur"}
         with self._update_lock:
-            info = self.update if (self.update is not None and self.update.available) else updater.check(self.cfg)
-            ok, msg = updater.apply_update(info, self.cfg, force=force,
-                                           emit=lambda s: self.bus.publish({"type": "info", "text": "güncelleme: " + s}))
+            info = self.update if self._update_shown() else updater.check(self.cfg)
+            if info.stale and not info.available:
+                # Kod zaten indirilmiş (çekirdek ya da elle git pull): çekecek bir şey yok, yeniden başlamak yeter.
+                ok, msg = True, f"yeni sürüm zaten indirilmiş ({info.local[:7]})"
+            else:
+                ok, msg = updater.apply_update(info, self.cfg, force=force,
+                                               emit=lambda s: self.bus.publish({"type": "info", "text": "güncelleme: " + s}))
         if ok:
             self.update = None
             self.bus.publish({"type": "info", "text": msg + " — ALICE yeniden başlatılıyor"})
@@ -483,7 +495,7 @@ class AppState:
             return
         self.update = first
         def loop() -> None:
-            if first is not None and getattr(first, "available", False):
+            if first is not None and (getattr(first, "available", False) or getattr(first, "stale", False)):
                 time.sleep(2.0)  # arayüz bağlanana kadar bekle
                 self.bus.publish({"type": "update", **first.as_dict()})
             wait = 10.0  # ilk bakış açılıştan hemen sonra, sonrası dakikalık tur

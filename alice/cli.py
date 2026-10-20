@@ -10,6 +10,7 @@
   alice update [--check]     GitHub'daki son sürüme güncelle (main'e merge olanı çeker)
   alice connect [ad]         servis bağlantıları (Spotify, Steam, Discord, YouTube, kendi API'ların)
   alice feeds                bağlı servisleri izleyip yeni bir şey olunca haber veren akışlar
+  alice log [n]              ALICE'in senin adına gönderdikleri (mesaj, DM, e-posta) ve reddettiklerin
   alice shortcut             masaüstüne ve Başlat menüsüne ALICE kısayolu koy (Windows)
   alice core run|install|status|mode|stats   arka plan çekirdeği (izleme, kurallar, modlar, görevler)
   alice rules [add "cümle"]  uyarı kuralları ("GPU uzun süre ısınırsa söyle")
@@ -190,7 +191,7 @@ class RichUI:
     def ask_permission(self, name: str, summary: str, risk: str) -> str:
         self._spin_stop()
         self._live_stop()
-        color = "red" if risk == "danger" else "yellow"
+        color = "red" if risk == "danger" else ("magenta" if risk == "send" else "yellow")
         console.print(f"[{color}]? İzin gerekiyor[/] [bold]{name}[/] ({risk})\n  {escape(summary)}")
         while True:
             ans = console.input("  [bold][y][/]evet  [bold][n][/]hayır  [bold][a][/]bu araca hep izin ver > ").strip().lower()
@@ -742,8 +743,16 @@ def app_cmd(argv: list[str]) -> int:
     from alice import updater
 
     pending = updater.startup_update(cfg, emit=lambda s: console.print(f"[dim]güncelleme: {s}[/]"))
+    updater.mark_running()  # bundan sonra diske yeni kod gelirse "yeniden başlat" deriz
+    updater.mark_app()      # çekirdek, uygulama açıkken kendi başına çekmesin
     state = AppState(cfg, cwd, a.mode or cfg.agent.get("permission_mode", "auto"))
     state.watch_updates(pending)
+    ann = updater.consume_announcement("app")
+    if ann and ann.get("changes"):
+        lines = "\n".join(f"- {c}" for c in ann["changes"][:8])
+        more = len(ann["changes"]) - 8
+        state.ui.info(f"ALICE güncellendi ({ann['from'][:7]} → {ann['to'][:7]}). Neler değişti:\n{lines}"
+                      + (f"\n… ve {more} değişiklik daha" if more > 0 else ""))
     server = AppServer(state, a.port).start()
     if cfg.data.get("voice", {}).get("enabled"):
         # "Hey Alice" çekirdekte dinlenir; uygulama açılınca çekirdek kapalıysa onu da başlat.
@@ -768,6 +777,7 @@ def app_cmd(argv: list[str]) -> int:
         pass
     finally:
         server.stop()
+        updater.clear_app()
     return 0
 
 
@@ -810,6 +820,15 @@ def main(argv: list[str] | None = None) -> int:
         for p in init_home(force="--force" in argv):
             console.print(f"[green]oluşturuldu:[/] {p}")
         console.print(f"Şimdi {alice_home() / '.env'} dosyasına API anahtarlarını yaz, sonra [bold]alice doctor[/].")
+        return 0
+    if argv and argv[0] == "log":
+        from alice import actionlog
+
+        rows = actionlog.recent(int(argv[1]) if len(argv) > 1 and argv[1].isdigit() else 30)
+        for r in reversed(rows):
+            console.print(escape(actionlog.format_row(r)))
+        if not rows:
+            console.print("[dim]kayıt yok: ALICE kimseye bir şey göndermedi[/]")
         return 0
     if argv and argv[0] == "connect":
         from alice.connect.cli import connect_cmd

@@ -578,11 +578,15 @@ function connectPane(pane, data) {
   for (const f of d.feeds || []) {
     const row = el("div", "list-row");
     const l = el("span", "l");
-    l.append(el("b", "", f.name), el("small", "", `${f.connector}.${f.action} · ${f.every_minutes} dk`
-      + (f.agent ? " · ALICE'i uyandırır" : "")));
-    row.append(l, el("span", "r" + (f.error ? "" : " ok"), f.error ? f.error : (f.enabled ? "açık" : "kapalı")));
+    l.append(el("b", "", f.name), el("small", "", f.describe || `${f.connector}.${f.action}`));
+    const st = f.error ? f.error : !f.enabled ? "kapalı" : f.held ? `${f.held} öğe özeti bekliyor` : "açık";
+    row.append(l, el("span", "r" + (f.error ? "" : " ok"), st));
     pane.appendChild(row);
   }
+  pane.appendChild(el("div", "sec", "Senin adına gönderilenler"));
+  pane.appendChild(el("p", "", "Başkasına giden her mesaj, reddettiklerin dahil (terminalde: alice log)."));
+  if (!(d.actions || []).length) pane.appendChild(el("div", "list-row", "Henüz bir şey gönderilmedi."));
+  for (const a of d.actions || []) pane.appendChild(el("div", "list-row" + (a.outcome === "sent" ? "" : " warn"), a.text));
 }
 
 const SETTINGS_TABS = [

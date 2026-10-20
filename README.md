@@ -137,6 +137,8 @@ Kutudan çıkanlar:
 
 Uygulamada **Ayarlar → Bağlantılar**: her servisin durumu, OAuth olanlar için "Bağlan"/"Çıkış" düğmesi, anahtarla çalışanlar için hangi `.env` değişkeninin eksik olduğu ve altta tanımlı akışlar. Terminalde aynı özet `alice doctor` çıktısında bir satır.
 
+Yavaş değişen veriler (Steam kütüphanesi, YouTube video bilgisi) birkaç dakika hatırlanıyor, ajan aynı şeyi tekrar sorunca istek ağa çıkmıyor; hız sınırına (429) takılınca kısa bir bekleyip bir kez tekrar deneniyor. Mesaj gönderen istekler ağ hatasında tekrar denenmiyor, aynı mesaj iki kez gitmesin diye.
+
 Kimlik tarafı: API anahtarları `.env`'den okunuyor, OAuth2 token'ları `~/.alice/connect.json` içinde (chmod 600) duruyor ve süresi dolunca kendiliğinden yenileniyor. OAuth akışı PKCE ile çalıştığı için client secret gerekmiyor.
 
 Araçlar `connect` grubunda: her isteğe eklenmiyorlar, mesajda servis adı geçince ya da model `load_tools` deyince açılıyorlar. Böylece 4 servis bağlıyken de istek küçük kalıyor.
@@ -145,29 +147,62 @@ Araçlar `connect` grubunda: her isteğe eklenmiyorlar, mesajda servis adı geç
 
 ## Akışlar: ALICE'in kendi haber vermesi
 
-Asistan sorulunca cevap verir, Jarvis olanı söyler. Çekirdek servis zaten bilgisayarı izliyordu (kurallar: "GPU uzun süre ısınırsa söyle"); artık bağlı servisleri de izliyor. `~/.alice/feeds.toml`:
+Asistan sorulunca cevap verir, Jarvis olanı söyler. Çekirdek servis zaten bilgisayarı izliyordu (kurallar: "GPU uzun süre ısınırsa söyle"); artık bağlı servisleri de izliyor. Ama her yeni mesajı söyleyen bir asistan beş dakikada susturulur, o yüzden asıl iş **neyin söylenmeye değer olduğu**. `~/.alice/feeds.toml`:
 
 ```toml
 [[feed]]
 name = "discord_genel"
-connector = "discord"        # alice connect ile listelenen bağlantı
+connector = "discord"
 action = "messages"
 args = { channel_id = "123456" }
 every_minutes = 5
-id_field = "id"              # yeni öğeyi bununla ayırt eder
 title = "Discord · {author.username}"
 body = "{content}"
-metric = "feed.discord.yeni" # opsiyonel: sayı metrik olur, kurallar kullanabilir
-# agent = "Yeni mesajları özetle, önemliyse bana söyle"   # dolu olursa ALICE uyanıp bu işi yapar
+quiet = "23:00-08:00"          # gece biriktir, sabah özet olarak gelsin
+agent = "Önemli bir şey varsa bana kısaca söyle"   # opsiyonel: ALICE uyanıp bu işi yapar
+
+[feed.when]                     # hangi mesaj bildirime değer
+any  = ["hayat", "@everyone"]   # en az biri geçsin
+none = ["bot"]                  # bunlar geçmesin
+ask  = "Bu mesaj bana bir şey soruyor ya da acil bir şey mi?"   # anlamına göre karar
+
+[feed.escalate]                 # bu tutarsa önem kritik: sessiz saatte de hemen söylenir
+regex = '\b(acil|hemen)\b'
 ```
+
+**Koşul dili** (`[feed.when]`, `[feed.escalate]`), ucuzdan pahalıya sırayla bakılıyor ve ilk tutmayan öğeyi eliyor:
+
+| alan | ne yapar |
+|---|---|
+| `any` / `all` / `none` | metinde en az biri / hepsi / hiçbiri geçmeli (başlık, gövde ve öğenin bütün metin alanları; Türkçe büyük/küçük harf doğru: "ACİL" = "acil") |
+| `regex` | düzenli ifade |
+| `fields` | alan eşitliği: `{ "author.username" = ["ahmet", "ayşe"] }`, `"*"` = boş değil |
+| `min` / `max` | sayısal sınır: `{ "statistics.viewCount" = 1000 }` |
+| `ask` | anlamına göre evet/hayır: Jev ya da hızlı model karar veriyor. Model çağrısı olduğu için en sona bırakıldı, sadece diğer koşulları geçen öğe için soruluyor |
+
+**İki çalışma şekli:**
+
+* `mode = "new"` (varsayılan): listeye yeni giren öğe (yeni mesaj, yeni video).
+* `mode = "change"` + `watch = ["alan"]`: aynı öğenin bir alanı değişince. Örnek: Steam arkadaş listesini izle, `gameextrainfo` değişip boş olmayınca "Ahmet DCS World'e girdi" de. Şablonda `{prev.alan}` eski değer, `{changed}` değişen alanlar.
+
+**Teslim zamanlaması:**
+
+* `quiet = "23:00-08:00"`: bu saatlerde biriktiriliyor, saat bitince tek bir özet geliyor. Gece yarısını geçen aralık doğru çalışıyor.
+* `digest_minutes = 60`: tek tek değil, saatte bir özet.
+* `cooldown_minutes = 10`: bir bildirimden sonra 10 dakika içinde gelenler toplanıp sonra özet olarak geliyor; sohbet patlayınca telefon titremekten durmuyor.
+* `[feed.escalate]` tutan öğe `critical` oluyor ve bunların hiçbirini beklemiyor.
 
 ```powershell
-alice feeds            # tanımlı akışlar
-alice feeds --new      # örnek dosya
-alice feeds --test discord_genel   # şimdi yokla, ne geldiğini göster
+alice feeds                         # akışlar ve ne yaptıkları, okunur dille
+alice feeds --new                   # örnek dosya (Discord ve Steam "oyuna girdi" örnekleriyle)
+alice feeds --test discord_genel    # şimdi yokla: her öğe için ✓/✗ ve nedeni ("istenmeyen kelime: bot")
 ```
 
-İlk turda hiçbir şey bildirilmiyor (o anki öğeler "görüldü" işaretleniyor), yoksa akışı kurduğun anda son 15 mesaj peş peşe düşerdi. Bir turda en fazla 5 bildirim gidiyor, gerisi "3 yeni öğe daha" diye toplanıyor. Bildirimler mod politikasından geçiyor: uçuş ya da sessiz moddayken susturulup kaydediliyor, sonra "ben oyundayken ne oldu?" diye sorabiliyorsun.
+**Akışı sohbetten de kurabiliyorsun.** "Ahmet Steam'de oyuna girince haber ver, gece rahatsız etme" dediğinde ALICE `feeds` aracıyla önce hangi bağlantının hazır olduğuna ve örnek öğelerin alan adlarına bakıyor, sonra akışı kurup `feeds.toml`'a yazıyor. Dosyayı baştan yazmıyor: senin yorumların ve elle eklediklerin olduğu gibi kalıyor, yeni akış sona ekleniyor. Akış kaydedilmeden önce doğrulanıyor (yanlış eylem adı, eksik parametre, bozuk koşul modele geri dönüyor, o da düzeltiyor). Çekirdek dosyanın değiştiğini kendisi görüyor, yeniden başlatmak gerekmiyor. Bildirim gidince ALICE'i uyandıran (`agent`) akış gözetimsiz çalışacağı için kurulurken onay istiyor.
+
+`--test` koşulları kurarken en çok işine yarayacak şey: hiçbir şey bildirmeden, hangi mesajın neden geçtiğini ya da elendiğini gösteriyor.
+
+İlk turda hiçbir şey bildirilmiyor (o anki öğeler "görüldü" işaretleniyor), yoksa akışı kurduğun anda son 15 mesaj peş peşe düşerdi. Bir turda en fazla 5 bildirim gidiyor, gerisi "3 yeni öğe daha" diye toplanıyor. Bildirimler mod politikasından geçiyor: uçuş ya da sessiz moddayken susturulup kaydediliyor. Sesli mod açıksa bildirim sesle de söyleniyor. Ayarlar → Bağlantılar'ın altında akışlar ve özet bekleyen öğe sayısı görünüyor.
 
 ## Uygulama tarifleri: hangi işi hangi yoldan
 
@@ -181,7 +216,9 @@ app(action="flow", name="whatsapp", flow="send",
 app(action="open", name="steam_game", target="238960")   # oyunu doğrudan başlat
 ```
 
-Kutudan çıkan tarifler: WhatsApp (gönder/oku/ara), Instagram (DM, profil, akış), TikTok (arama, profil), YouTube (video aç/oynat), Gmail (yaz, gelen kutusu), Discord (web ve uygulama), Spotify, Steam ve Steam oyunu başlatma. Kendi tariflerin için `~/.alice/apps.toml` — aynı adı kullanırsan sadece değiştirdiğin alan üstüne yazılır.
+Kutudan çıkan tarifler: WhatsApp (gönder/oku/ara), Instagram (DM, profil, akış), TikTok (arama, profil), YouTube (video aç/oynat), Gmail (yaz, gelen kutusu), Discord, Spotify, Steam ve Steam oyunu başlatma.
+
+**Masaüstü uygulamalarında da akış var.** Spotify (çal, duraklat, sonraki, çalma listesi), Discord (sunucu kanalına mesaj, DM, ses kanalına katıl, mikrofonu kapat) ve Steam (kütüphane, mağaza araması, arkadaşlar) uygulamanın kendi penceresinde yürüyor: pencere yoksa ALICE uygulamayı açıyor, penceresinin gelmesini bekliyor, öne alıyor, sonra reflex Windows UI Automation ile düğmeleri ID'leriyle görüp tıklıyor. Kendi tarifinde `target = "desktop"` ve `window = "pencere başlığından parça"` yazman yeterli. Kendi tariflerin için `~/.alice/apps.toml` — aynı adı kullanırsan sadece değiştirdiğin alan üstüne yazılır.
 
 Akışlarda CSS seçici yok, "sol listeden {kime} sohbetini aç, mesaj kutusuna {mesaj} yaz" gibi hedef cümleleri var; bunları reflex yürütüyor. Site arayüzü değişince tarif bozulmuyor. Resmî API'si olan uygulamalarda tarif bunu söylüyor, model önce oraya gidiyor.
 
@@ -192,6 +229,11 @@ ALICE kendini GitHub'daki depodan günceller. Ölçü basit: yerel HEAD ile `mai
 * **Açılışta:** `alice app` açılırken `main`'e bakar. Yeni commit varsa fast-forward çeker, `pyproject.toml` değişmişse bağımlılıkları kurar ve kendini yeniden başlatıp **en son sürümü açar**.
 * **Uygulama açıkken:** arka planda saatte bir bakar. Yeni sürüm çıkınca sohbetin üstünde "Yeni sürüm hazır · Güncelle ve yeniden başlat" çubuğu çıkar. Düğmeye basınca çeker ve uygulamayı yeniden açar (ajan bir iş yapıyorsa önce onu durdurman gerekir, yarım kalmasın diye).
 * **Terminalde:** `alice update --check` neler değiştiğini ve CI'ın yeşil olup olmadığını yazar, `alice update` çeker, `alice update --restart` çekip uygulamayı açar. REPL içinde `/update` ve `/update apply` aynı işi yapar.
+
+* **Arka plan çekirdeği de güncel kalıyor.** Çekirdek günlerce açık kalabildiği için o da saatte bir bakıyor. Uygulama açıksa çekmiyor (işi arayüzü olana bırakıyor); uygulama kapalıysa kendisi çekiyor ve çalışan bir görev yokken sessizce yeniden başlıyor. Yarım kalan yedekleme olmuyor.
+* **Bayat süreç fark ediliyor.** Diskteki kod çalışan süreçten yeniyse (çekirdek çekti ya da sen elle `git pull` yaptın) uygulama "Yeni sürüm indirildi · yeniden başlatınca açılır" diyor, çekirdek boşta kalınca kendini yeniden başlatıyor. Eski süreç yeni dosyaları yarı yarıya yükleyip karışık sürümle çalışmasın diye.
+* **Aynı anda tek süreç güncelliyor.** Uygulama ve çekirdek aynı anda `git`'e girerse kilit çakışırdı; `~/.alice/update.lock` bunu önlüyor, kilidi bekleyen süreç diğeri zaten çektiyse tekrar çekmiyor.
+* **Neler değiştiği bir kez söyleniyor.** Güncellemeden sonraki ilk açılışta sohbetin başında "ALICE güncellendi, neler değişti" notu ve commit başlıkları çıkıyor (uygulama kapalıysa çekirdek masaüstü bildirimiyle söylüyor).
 
 Otomatik güncellemenin durduğu iki durum var, ikisi de bilerek:
 
@@ -534,7 +576,7 @@ alice voice test      # mikrofonu dene
 * **Bas-konuş:** tuşu basılı tut, konuş, bırak. Tuş `config.toml` içinde `[voice] ptt_key`.
 * **"Hey Alice":** el gerektirmez. [openWakeWord](https://github.com/dscripka/openWakeWord) ile kendi eğittiğin bir model (`wake_model`) verirsen tamamen yerelde dinler. Vermezsen konuşma algılanınca cümlenin başı bilgisayardaki küçük Whisper modeliyle (faster-whisper, `[voice] wake_local = "base"`) yazıya çevrilip "Hey Alice" ile başlayıp başlamadığına bakılır; sadece uyandırma duyulursa ses Groq'a gider. faster-whisper kurulu değilse her cümle Groq'a gönderilir. `alice voice on` sesi açar ve arka plandaki çekirdeği başlatır.
 * ALICE cevap verdikten sonra en fazla 5 saniye "Hey Alice" demeden devam edebilirsin. Süre ALICE sustuğu andan sayılır ve konuşmanın başladığı ana bakılır: 5. saniyede başlayan cümle alınır, 6. saniyede başlayan alınmaz (yanındakilerle konuşurken söylenenler komut sanılmasın). Canlı konuşmada (Live) da aynı: 5 saniye sessizlikte oturum kapanır.
-* **"Alice sus"** (ya da "sus", "sessiz ol", "kapa çeneni" ...): konuşmayı keser, takip penceresini kapatır ve sen yeniden "Alice" diyene kadar hiçbir şeyi komut saymaz. Bu sırada isim cümlenin başında olmalı ("bak şimdi Alice ..." uyandırmaz). Bas-konuş tuşu her zaman çalışır.
+* **"Alice sus"**: konuşmayı keser, takip penceresini kapatır ve sen yeniden "Alice" diyene kadar hiçbir şeyi komut saymaz. Bu sırada isim cümlenin başında olmalı ("bak şimdi Alice ..." uyandırmaz). Bas-konuş tuşu her zaman çalışır. Türkçenin doğal halleri tanınıyor: "sus be", "sus dedim", "susar mısın", "sussana", "sus sus", "şşt", "yeter", "kes", "sesini kes", "dur", "konuşma", "sessiz ol", "kapa çeneni"; konuşmayı bitiren "tamam teşekkürler", "sağ ol", "iyi geceler" de pencereyi kapatıyor. Whisper'ın "Alice"i "Ali" diye yazması ve büyük harf "SESSİZ" sorun değil. Cümlenin tamamı susturma olmalı: "pastayı ikiye kes", "orada dur", "bu kadar yeter mi?" ya da "sus diye bağırdı" susturmaz. Canlı konuşmada "... sus" gibi güçlü bir sözcük cümlenin sonunda da susturuyor; "yeter", "kes", "dur" gibi gündelik sözcükler ise ancak tek başına ya da isimle ("Alice yeter") söylenince.
 * ALICE konuşurken araya girersen susar ve yarım kalan işi durdurur. Hoparlör yerine kulaklık kullanırsan yankı yüzünden yanlışlıkla susmaz.
 * Cevabın tamamını beklemez, ilk cümle hazır olunca söyler. Bir araç çalışacaksa önce "hemen bakıyorum" der. Kod ve uzun yolları okumaz, ekrana yazdığını söyler.
 * Onay gereken bir işte sesli sorar, "evet" dersen yapar.
@@ -645,6 +687,10 @@ Eklenti araçları kendi grubunda durur, mesajdaki anahtar kelimelerle ya da `lo
 * **ask:** okuma dışındaki her şey onay ister
 * **auto** (varsayılan): dosya düzenleme, komut çalıştırma, fare/klavye serbest; `rm -r`, `Remove-Item -Recurse`, format, registry, shutdown, `git push --force`, `curl | sh` gibi tehlikeli kalıplar ve `C:\Windows`, `Program Files` gibi sistem klasörlerine yazma onay ister
 * **yolo:** hiçbir şey sormaz
+
+**Başkasına giden mesajlar her modda (yolo hariç) sorulur.** Discord'a mesaj, WhatsApp'tan yazı, Instagram DM, Gmail'den e-posta gibi eylemler ayrı bir risk sınıfında (`send`): dosya düzenlemenin tersine gönderilen mesaj geri alınamıyor, bu yüzden `auto` modda da onay istiyor, `plan` modda hiç yapılmıyor, arka plan görevlerinde (kullanıcı başında değilken) reddediliyor. Onay kartı "Bu mesaj başkasına gidecek" diyor. Spotify'da çal/duraklat gibi kendi cihazını kontrol eden eylemler bu sınıfta değil. Bağlantı tanımında `sends = true`, uygulama tarifinde `sends = ["akış"]` ile işaretleniyor; topluca kapatmak için `[agent] confirm_outward = false`.
+
+**Senin adına gönderilen her şeyin kaydı tutuluyor.** Başkasına giden her eylem `~/.alice/actions.jsonl`'a yazılıyor: gönderilen, senin reddettiğin, plan modunda engellenen ve başarısız olan, mesajın kendisiyle birlikte. `alice log` terminalde, Ayarlar → Bağlantılar'ın altında "Senin adına gönderilenler" arayüzde gösteriyor; sohbette "bugün kime ne yazdın?" diye sorabiliyorsun. Kayıt bilgisayarından çıkmıyor.
 
 Onay sorusunda `a` dersen o araca oturum boyunca izin veriyorsun (tehlikeli kalıplar hariç).
 
