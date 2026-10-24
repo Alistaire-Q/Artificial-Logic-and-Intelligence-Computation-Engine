@@ -29,12 +29,13 @@ def test_part_of_day():
 
 def test_greets_after_long_absence_with_followups():
     mem = LongMemory(":memory:", {})
-    fid = mem.add_followup("Matematik sınavının nasıl geçtiğini sor.", time.time() - 3600, "ask")
+    now = datetime(2026, 10, 22, 17, 30)  # takip saati de sabit saatten: test günün tarihine bağlı kalmasın
+    fid = mem.add_followup("Matematik sınavının nasıl geçtiğini sor.", now.timestamp() - 3600, "ask")
     sent = []
     idle = iter([6000.0, 6100.0, 3.0, 2.0])
     voice = SimpleNamespace(speaker=SimpleNamespace(wait=lambda t: True), follow_up=5.0, armed_until=0.0)
     g = Greeter(cfg(), lambda n: sent.append(n) or True, memory=lambda: mem, idle=lambda: next(idle),
-                clock=lambda: datetime(2026, 10, 22, 17, 30))
+                clock=lambda: now)
     g.voice = voice
     assert not g.tick() and not g.tick()  # uzakta
     assert g.tick()  # döndü

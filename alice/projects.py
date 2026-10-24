@@ -211,7 +211,7 @@ def commits(path: Path, n: int = 5) -> list[tuple[float, str]]:
 def languages(path: Path, cap: int = 3000) -> list[str]:
     counts: dict[str, int] = {}
     seen = 0
-    for dirpath, dirnames, files in os.walk(path):
+    for _dirpath, dirnames, files in os.walk(path):
         dirnames[:] = [d for d in dirnames if d.lower() not in SKIP and not d.startswith(".")]
         for f in files:
             lang = LANG.get(os.path.splitext(f)[1].lower())

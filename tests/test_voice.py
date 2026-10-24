@@ -1467,7 +1467,7 @@ def test_follow_up_window_her_kelimeye_cevap_vermez():
         agent, sp = FakeAgent(), FakeSpeaker()
         va = VoiceAssistant(agent, sp, stt=None, follow_up=5)
         va.handle_text("Hey Alice, GPU kaç derece?", direct=False)
-        assert wait_for(lambda: va.armed_until > time.monotonic())
+        assert wait_for(lambda va=va: va.armed_until > time.monotonic())
         va.handle_text(hush, direct=False)
         assert va.muted and va.armed_until == 0, hush
         for said in ("peki", "ya dün", "hmm bilmem", "sonra bakarız"):  # odadaki konuşma artık komut değil
