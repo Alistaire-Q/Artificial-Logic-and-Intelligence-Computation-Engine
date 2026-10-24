@@ -11,6 +11,8 @@ takılır; Host kontrolü de DNS rebinding'i keser.
 from __future__ import annotations
 
 import json
+import os
+import re
 import queue
 import secrets
 import threading
@@ -122,7 +124,33 @@ class AppUI:
         ev = self._events.get(pid)
         if ev is None:
             return False
-        self._answers[pid] = ans if ans in ("y", "n", "a") else "n"
+        self._answers[pid] = ans if ans in ("y", "n", "a", "p") else "n"
+        ev.set()
+        return True
+
+    def ask_choice(self, question: str, options: list[str], multi: bool = False) -> str:
+        """Seçenekli soru kartı; cevap /api/choice ile gelir (boş = vazgeçildi)."""
+        pid = secrets.token_hex(6)
+        ev = threading.Event()
+        self._events[pid] = ev
+        self.pending[pid] = {"type": "ask_choice", "id": pid, "question": question, "options": options,
+                             "multi": multi}
+        self.bus.publish(self.pending[pid])
+        while not ev.wait(0.25):
+            if self.agent is not None and self.agent.cancel.is_set():
+                self._answers[pid] = ""
+                break
+        self.pending.pop(pid, None)
+        self._events.pop(pid, None)
+        ans = self._answers.pop(pid, "")
+        self.bus.publish({"type": "ask_choice_done", "id": pid, "answer": ans})
+        return ans
+
+    def answer_choice(self, pid: str, ans: str) -> bool:
+        ev = self._events.get(pid)
+        if ev is None:
+            return False
+        self._answers[pid] = str(ans)[:2000]
         ev.set()
         return True
 
@@ -160,7 +188,7 @@ def display_history(messages: list[dict[str, Any]], tools: dict[str, Any] | None
         role = m.get("role")
         content = m.get("content")
         if role == "user":
-            if m.get("_image"):
+            if m.get("_image") or m.get("_nudge"):
                 continue
             text = _user_text(m)
             if text.startswith("[Önceki konuşmanın özeti]"):
@@ -426,6 +454,81 @@ class AppState:
 
         return str(updater.settings(self.cfg).get("mode", "auto"))
 
+    # ------------------------------------------------------------------ Asistan sekmesi
+    ASSISTANT_SETTINGS = {  # (bölüm, anahtar) -> geçerli değerler; arayüzden sadece bunlar değiştirilebilir
+        ("agent", "sandbox"): ("off", "auto", "on"),
+        ("agent", "taint_guard"): (True, False),
+        ("agent", "search_grounding"): (True, False),
+        ("greeting", "enabled"): (True, False),
+        ("greeting", "away_minutes"): (60, 90, 120, 180),
+        ("memory", "digest"): (True, False),
+        ("gmail", "notify"): (True, False),
+    }
+
+    def assistant(self) -> dict[str, Any]:
+        from alice.connect import store
+        from alice.doctor import run_all
+        from alice.permissions import project_rules
+        from alice.skills import load_agents, load_skills
+        from alice.tools import gmail
+
+        cfg_rules = self.cfg.data.get("permissions") or {}
+        proj = project_rules(self.ctx.cwd)
+        rules = [{"kind": k, "rule": r, "source": "config"} for k in ("allow", "ask", "deny")
+                 for r in cfg_rules.get(k, []) or []]
+        rules += [{"kind": k, "rule": r, "source": "project"} for k in ("allow", "ask", "deny") for r in proj.get(k, [])]
+        values = {f"{sec}.{key}": (self.cfg.data.get(sec) or {}).get(key) for sec, key in self.ASSISTANT_SETTINGS}
+        return {
+            "checks": [c.__dict__ for c in run_all(self.cfg, self.ctx.cwd, network=False)],
+            "settings": values,
+            "rules": rules,
+            "project": str(self.ctx.cwd),
+            "gmail": [{"account": a, "email": store.get(gmail.PREFIX + a).get("email", "")} for a in gmail.accounts()],
+            "google_ready": bool(os.environ.get("GOOGLE_CLIENT_ID", "").strip()),
+            "skills": [{"name": k.name, "description": k.description, "path": str(k.path.parent)}
+                       for k in load_skills(self.ctx.cwd).values()],
+            "agents": [{"name": a.name, "description": a.description, "path": str(a.path)}
+                       for a in load_agents(self.ctx.cwd).values()],
+        }
+
+    def assistant_set(self, section: str, key: str, value: Any) -> bool:
+        from alice.config import set_config_value
+
+        allowed = self.ASSISTANT_SETTINGS.get((section, key))
+        if allowed is None or value not in allowed or isinstance(value, bool) != isinstance(allowed[0], bool):
+            return False
+        self.cfg.data.setdefault(section, {})[key] = value
+        set_config_value(section, key, value)
+        return True
+
+    def assistant_action(self, action: str, d: dict[str, Any]) -> dict[str, Any]:
+        from alice.connect import store
+        from alice.tools import gmail
+
+        if action == "rule_delete":
+            from alice.permissions import remove_project_rule
+
+            return {"ok": remove_project_rule(self.ctx.cwd, str(d.get("kind")), str(d.get("rule")))}
+        if action == "gmail_logout":
+            return {"ok": store.forget(gmail.PREFIX + str(d.get("account", "")))}
+        if action == "gmail_connect":
+            acc = str(d.get("account", "")).strip().lower()
+            if not re.fullmatch(r"[a-z0-9_-]{1,30}", acc):
+                return {"ok": False, "error": "ad sadece harf, rakam, - ve _ olsun (ör. okul)"}
+            if not os.environ.get("GOOGLE_CLIENT_ID", "").strip():
+                return {"ok": False, "error": "önce Google kurulumu: terminalde alice setup google"}
+
+            def run() -> None:
+                try:
+                    email = gmail.connect(acc, emit=lambda s: None)
+                    self.ui.info(f"Gmail bağlandı: {acc}" + (f" ({email})" if email else ""))
+                except Exception as e:  # noqa: BLE001
+                    self.ui.info(f"Gmail bağlanamadı ({acc}): {e}")
+
+            threading.Thread(target=run, daemon=True, name="alice-gmail-connect").start()
+            return {"ok": True, "started": True}
+        return {"ok": False, "error": f"bilinmeyen işlem: {action}"}
+
     def set_update_mode(self, mode: str) -> bool:
         """Güncelleme davranışını kalıcı yaz (config.toml [update] mode)."""
         from alice.config import set_config_value
@@ -678,14 +781,11 @@ class AppState:
             return False, "ALICE şu an çalışıyor"
         prompt = text
         if text.startswith("/"):
-            from alice.commands import INIT_PROMPT, council_prompt, expand_custom
+            from alice.commands import builtin_prompt, expand_custom
 
-            if text.split()[0] == "/init":
-                prompt = INIT_PROMPT
-            elif text.split()[0] == "/kurul":
-                prompt = council_prompt(text[len("/kurul"):])
-            else:
-                prompt = expand_custom(text, self.ctx.cwd)
+            prompt = expand_custom(text, self.ctx.cwd)  # kullanıcının komutu önce (yerleşikler zaten hariç tutulur)
+            if prompt is None:
+                prompt = builtin_prompt(text)
                 if prompt is None:
                     return False, f"bilinmeyen komut: {text.split()[0]}"
         self._queued = True
@@ -952,6 +1052,8 @@ def make_handler(state: AppState):
                     return self._json({"ok": False, "error": str(e)})
             if u.path == "/api/connect":
                 return self._json(state.connections())
+            if u.path == "/api/assistant":
+                return self._json(state.assistant())
             if u.path == "/api/update":
                 return self._json(state.check_update() if (q.get("refresh") or [""])[0] == "1"
                                   else (state.update.as_dict() if state.update is not None else {"available": False}))
@@ -1031,6 +1133,11 @@ def make_handler(state: AppState):
                     return self._json(r, 200 if r.get("ok") else 400)
                 if p == "/api/connect/logout":
                     return self._json(state.connect_logout(str(d.get("name", ""))))
+                if p == "/api/assistant/set":
+                    ok = state.assistant_set(str(d.get("section", "")), str(d.get("key", "")), d.get("value"))
+                    return self._json({"ok": ok}, 200 if ok else 400)
+                if p == "/api/assistant/action":
+                    return self._json(state.assistant_action(str(d.get("action", "")), d))
                 if p == "/api/update/mode":
                     mode = str(d.get("mode", ""))
                     ok = state.set_update_mode(mode)
@@ -1045,6 +1152,8 @@ def make_handler(state: AppState):
                     return self._json({"ok": True})
                 if p == "/api/permission":
                     return self._json({"ok": state.ui.answer(str(d.get("id")), str(d.get("answer")))})
+                if p == "/api/choice":
+                    return self._json({"ok": state.ui.answer_choice(str(d.get("id")), str(d.get("answer") or ""))})
                 if p == "/api/open":
                     url = str(d.get("url", ""))
                     if url.startswith(("http://", "https://")):

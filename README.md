@@ -64,6 +64,7 @@ Ekim 2026 itibarıyla ücretsiz katmanları taradım. Rakamlar sık değişiyor,
 | **SambaNova** | Ücretsiz katman, hızlı büyük açık modeller | yedek |
 | **Z.ai** | `glm-4.7-flash`, `glm-4.5-flash`, `glm-4.6v-flash` (görsel) ücretsiz. ALICE sadece bu üçünü sıraya koyuyor, ücretli GLM'lere kendiliğinden geçmiyor | brain/vision yedeği |
 | **Cohere** | Trial anahtarı ücretsiz (ayda sınırlı istek, ticari kullanım yok). Command A ailesi, araç çağırma destekli | brain yedeği |
+| **Cloudflare Workers AI** | Günde 10.000 "neuron" ücretsiz: Kimi K2.5, GLM 4.7 Flash, Llama 3.3 70B, Gemma 4. Büyük modelde günde ~150-300 bin token. Adreste hesap kimliği var, `CLOUDFLARE_ACCOUNT_ID` de gerekiyor | brain yedeği |
 | **Vercel AI Gateway** | Hesap başına 30 günde 5$ kredi; Claude, GPT, Gemini aynı anahtarla. Kredi harcadığı için otomatik sıraya **girmiyor**, sadece elle: `/model brain vercel:anthropic/claude-sonnet-5.5` | elle seçilen güçlü model |
 | **Ollama (yerel)** | Limitsiz, offline, GPU'na bağlı | her zincirin sonunda son çare |
 
@@ -71,7 +72,7 @@ Ekim 2026 itibarıyla ücretsiz katmanları taradım. Rakamlar sık değişiyor,
 
 **Gemini "You have reached a rate limit. Set up billing..." hatası:** bu ücretsiz katmanın dolduğu anlamına geliyor. ALICE bunu artık 20 saniyelik hız sınırı değil kota sayıyor: Gemini bir saat atlanıyor, istekler sıradaki sağlayıcıya gidiyor. Canlı sesli konuşma (Gemini Live) da aynı hatayı alınca bir saat normal sesli yola (STT + model + TTS) geçiyor ve bunu bir kez Türkçe söylüyor. Bu yüzden Gemini dışında en az iki anahtar daha doldurmak (Groq, Z.ai, Mistral, Cerebras) gerçekten fark ediyor.
 
-GitHub Models 30 Temmuz 2026'da kapatıldı, bu yüzden listede yok.
+GitHub Models 30 Temmuz 2026'da kapatıldı, bu yüzden listede yok. Hugging Face Inference Providers da eklenmedi: ücretsiz hesaba ayda 0,10$ kredi veriyor, birkaç düzine istekte bitiyor.
 
 Katalog değiştiğinde `alice models --write` canlı `/models` uçlarını tarayıp zincirleri güncelliyor.
 
@@ -119,6 +120,7 @@ Linux/macOS'ta aynısı, `pip install -e ".[all]"` sonrası `alice init`. Linux'
 * `SAMBANOVA_API_KEY`: https://cloud.sambanova.ai/apis
 * `ZAI_API_KEY`: https://z.ai/manage-apikey/apikey-list
 * `COHERE_API_KEY`: https://dashboard.cohere.com/api-keys
+* `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`: https://dash.cloudflare.com/profile/api-tokens ("Workers AI" izinli token; hesap kimliği panelin sağında)
 * `AI_GATEWAY_API_KEY`: https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai%2Fapi-keys (Vercel, 5$ kredi, sadece elle seçilir)
 * `TYPESAFE_API_KEY`: Jev erişimi alırsan
 
@@ -148,6 +150,7 @@ Kutudan çıkanlar:
 | `youtube_api` | `YOUTUBE_API_KEY` | video/kanal arama, izlenme-beğeni, yorumlar |
 | `discord` | `DISCORD_BOT_TOKEN` | sunucular, kanallar, son mesajlar, mesaj gönderme (bot hesabıyla) |
 | `spotify` | OAuth2 + `SPOTIFY_CLIENT_ID` | çalan parça, çal/duraklat/sonraki, arama, cihaz seçimi, çalma listeleri |
+| `google_calendar` | OAuth2 + `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | yaklaşan etkinlikler, arama, doğal dille ekleme ("Cuma 15:00 dişçi"), silme. Bağlıysa çekirdek sınav, maç, randevu gibi etkinlikleri takibe çevirir: ertesi gün ALICE nasıl geçtiğini sorar |
 
 Uygulamada **Ayarlar → Bağlantılar**: her servisin durumu, OAuth olanlar için "Bağlan"/"Çıkış" düğmesi, anahtarla çalışanlar için hangi `.env` değişkeninin eksik olduğu ve altta tanımlı akışlar. Terminalde aynı özet `alice doctor` çıktısında bir satır.
 
@@ -290,7 +293,7 @@ Tek seferlik kapatmak için `ALICE_UPDATE_MODE=off` ya da `ALICE_NO_UPDATE=1` or
 * Dosya düzenlemeleri satır numaralı, renklendirilmiş diff olarak açılıyor. Komutlar terminal görünümünde, çıkış koduyla gösteriliyor.
 * Kod blokları sözdizimine göre renkleniyor (Python, JS/TS, PowerShell, bash, JSON, CSS, Lua, SQL, C ailesi...).
 * ALICE plan tuttuğunda görev listesi ilerleme çubuğuyla çiziliyor. İş sürerken mesaj kutusunun üstünde o anki görev duruyor.
-* Tehlikeli işlemde sohbetin içinde "İzin ver / Bu oturumda hep izin ver / Reddet" kartı çıkıyor. 1, 2, 3 tuşlarıyla da cevaplanıyor.
+* Onay gereken işlemde sohbetin içinde "İzin ver / Bu oturumda hep izin ver / Bu projede hep izin ver / Reddet" kartı çıkıyor, 1-4 tuşlarıyla da cevaplanıyor. "Bu projede hep" kalıcı bir kural yazar (`.alice/permissions.toml`, ör. `run_command(git status*)`); tehlikeli ve başkasına giden işlerde bu seçenek yok.
 * Her işin sonunda süre, araç sayısı ve değişen dosyalarla tek satırlık bir özet çıkıyor.
 * Kod bloklarında ve cevaplarda Kopyala butonu var.
 
@@ -446,13 +449,93 @@ Büyük bir iş (büyük bir kod tabanında birden çok modül, backend + fronte
 | Grep modları | `grep`: `output_mode` (content, files_with_matches, count), `context` satırları, `multiline`, `offset` ile sayfalama |
 | PDF ve Jupyter okuma | `read_file` PDF'i (`pages` ile) metin, `.ipynb`'yi hücre ve çıktılarıyla okur |
 | WebFetch | `web_fetch`: asıl içerik (`<main>`/`<article>`), JSON düzenleme, PDF; `prompt` ile sayfayı küçük model özetler, `start` ile devamı |
-| WebSearch | `web_search`: DuckDuckGo, düşerse Bing; `BRAVE_SEARCH_API_KEY` varsa Brave; `allowed_domains`/`blocked_domains` |
+| WebSearch | `web_search`: önce Google (Gemini grounding, `GEMINI_API_KEY`): kaynaklı, güncel özet. Kota dolar ya da hata verirse DuckDuckGo, Bing; `BRAVE_SEARCH_API_KEY` varsa Brave; `allowed_domains`/`blocked_domains` |
 | HTTP istekleri | `http_request` (net grubu): REST API, webhook, dosya indirme; başlıkta `${env:AD}` ile anahtar modele görünmez |
 | Paralel araç çağrıları | Model tek cevapta birkaç okuma/arama isterse (`read_file`, `grep`, `glob`, `list_dir`, `web_search`, `web_fetch`, salt okuma MCP araçları) aynı anda çalışır; sonuçlar sırayla modele döner |
 | Araç gruplama | Art arda gelen okumalar uygulamada "2 dosya okundu, 1 arama yapıldı" diye tek açılır satır olur, terminalde her biri tek satır |
-| Hook'lar | yok |
+| Hook'lar | `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`; komut kabukta çalışır, olay stdin'e JSON gelir, çıkış kodu 2 engeller ya da modele geri bildirim verir. Ayrıntı aşağıda |
+| İzin kuralları | `[permissions] allow / ask / deny` desenleri (`run_command(git status*)`), projede `.alice/permissions.toml`; deny her modda geçerli |
+| Skills | `~/.alice/skills/<ad>/SKILL.md` (ve projede `.alice/skills`, `.claude/skills`): istemde sadece açıklaması durur, iş gelince `skill` aracıyla tamamı ve dosyaları okunur |
+| Özel alt ajanlar | `~/.alice/agents/<ad>.md` (ve projede): kendi istemi, araç listesi, modeli ve adım sınırı; `task` aracında `agent=<ad>` |
+| Seçenekli soru | `ask_user`: uygulamada tıklanabilir kart (1-6 tuşları), terminalde numaralı liste, hızlı barda düğmeler; seste düz soruya döner |
+| Headless | `alice -p "..."` (stdin'den de okur), `--output-format json` ya da `stream-json` |
+| Notebook düzenleme | `notebook_edit`: .ipynb'de hücre değiştir, ekle, sil (diğer hücrelere ve çıktılara dokunmaz) |
+| `/review`, `/security-review` | Değişikliği (ya da verilen PR/dalı) hata ya da güvenlik açısından inceler, değişiklik yapmaz; aynı adlı kendi komutun varsa o geçerli |
+| Eval | `alice eval`: gerçek konuşmalardan test seti (aşağıda) |
 | İnceleme kurulu | `/kurul <konu>` ve projelerde: eleştirmen, savunucu, kontrolcü ve uzmanlar tartışıp gerekçeli ağırlıklı oylamayla karar verir |
 | git ve GitHub | `git` (status, diff, log, dal, commit, pull, push) ve `github` (depolar, klonlama, PR aç/incele/birleştir, yorum, issue, CI durumu) araçları; ayrıntı aşağıda |
+
+**Hook örneği**, her düzenlemeden sonra formatla, `git push --force`'u engelle, iş bitince testleri kontrol et
+(`config.toml` ya da `~/.alice/hooks.toml`):
+
+```toml
+[[hooks.PostToolUse]]
+matcher = "edit_file|write_file|multi_edit"
+command = "ruff format \"$ALICE_TOOL_PATH\""
+
+[[hooks.PreToolUse]]
+matcher = "run_command"
+command = "python C:/Users/hayat/.alice/no_force_push.py"   # komutu stdin'deki JSON'dan okur, yasaksa exit 2
+
+[[hooks.Stop]]
+command = "pytest -q -x || (echo testler kırık 1>&2 && exit 2)"
+```
+
+Çıkış kodu 2 olunca `PreToolUse` aracı engeller, `PostToolUse` ve `Stop` stderr'i modele geri bildirim olarak verir
+(Stop'ta ajan işe devam eder, en fazla 3 kez). `UserPromptSubmit` ve `SessionStart`'ın stdout'u mesaja bağlam olarak
+eklenir. Hook'lar sadece senin config'inden okunur; klonladığın bir depodaki dosya komut çalıştıramaz.
+
+**İzin kuralları örneği**:
+
+```toml
+[permissions]
+allow = ["run_command(git status*)", "run_command(git diff*)", "run_command(npm test*)", "edit_file(src/*)"]
+ask = ["run_command(git push*)"]
+deny = ["run_command(*rm -rf*)", "write_file(*.env)", "mcp__github__delete_*"]
+```
+
+Desen aracın asıl argümanına bakar (komut, yol, url...). `allow` plan modunu delmez; tehlikeli bir komutu ancak
+desenli bir kural serbest bırakır (`"run_command"` tek başına `rm -r`'yi açmaz).
+
+**Skill örneği**, `~/.alice/skills/unity-build/SKILL.md` (yanına `build.ps1` gibi dosyalar koyabilirsin):
+
+```markdown
+---
+name: unity-build
+description: Unity projesinden editörü açmadan Windows build almak
+---
+1. projects aracıyla projenin yolunu ve Unity sürümünü bul.
+2. Unity.exe'yi `-batchmode -quit -projectPath <yol> -buildWindows64Player <çıktı>` ile çalıştır...
+```
+
+**Özel alt ajan örneği**, `~/.alice/agents/inceleyici.md`:
+
+```markdown
+---
+name: inceleyici
+description: Kod değişikliklerini hata ve risk açısından inceler, değişiklik yapmaz
+tools: read_file, grep, glob, list_dir, git
+model: brain
+max_steps: 30
+---
+Sen titiz bir kod inceleyicisin. Sadece gerçek hataları raporla...
+```
+
+**Eval.** ALICE'in saçmaladığı cümleleri test vakası yap, her güncellemeden sonra tekrar oynat:
+
+```powershell
+alice eval --from-log 20          # voice.log'daki son 20 cümleyi ~/.alice/evals.toml'a taslak olarak ekle
+alice eval --add "F-16 ile F-15'in farkı ne"
+alice eval                        # hepsini çalıştır: geçti/kaldı, öncekine göre düzelenler ve bozulanlar
+```
+
+Her vakada `expect` (cevapta geçmeli), `forbid`, `expect_tools`, `forbid_tools` ve `role` yazılabilir. Vakalar onay
+soruları otomatik reddedilerek çalışır: ALICE okur ve araştırır ama değişiklik yapan ya da ekrana dokunan araçlar
+çalışmaz; hangi aracı seçtiği yine kaydedilir. Test konuşmaları hafızaya yazılmaz.
+
+**Otomasyon:** `alice -p "son commit'leri özetle" --output-format json` sonunda tek JSON nesnesi
+(`result`, `is_error`, `models`, `tools`, `duration_s`) yazar; `stream-json` her olayı (metin, araç çağrısı, sonuç)
+ayrı satırda verir. Onay gereken araç sorulmadan reddedilir (`--yolo` hariç).
 
 **Özel komut örneği**, `~/.alice/commands/incele.md`:
 
@@ -596,7 +679,110 @@ alice voice test      # mikrofonu dene
 * Onay gereken bir işte sesli sorar, "evet" dersen yapar.
 * Konuşma tanıma: Groq'taki `whisper-large-v3-turbo` (GROQ_API_KEY), yedek olarak bilgisayarda `faster-whisper`.
 
+**Sesli konuşmada zekâ.** Canlı ses modeli (Gemini Live, flash sınıfı) çok hızlı ama bilgi ve akıl yürütmede zayıf. Bu yüzden:
+
+* Live'ın bir `think` aracı var. Bilgi, açıklama, tavsiye, hesap, kod, plan ya da güncel bir şey sorulunca Live soruyu ALICE'in beyin modeline (brain zinciri) devreder. Beyin gerekirse webde arar, hafızaya ve projelere bakar, kısa bir sesli cevap döndürür; Live bunu kendi sesiyle söyler. Selamlaşma, saat ve "aç/kapat/çal" gibi komutlar hızlı yolda kalır. Kapatmak için `[voice] live_think = false`.
+* Live oturumu her "Hey Alice"te sıfırdan açılıyordu, az önce konuşulanı bilmiyordu. Artık son 30 dakikanın konuşması (sesli, canlı ya da yazılı) yeni oturuma "Az önceki konuşma" olarak giriyor (`live_history_minutes`). "Onu aç", "devam et" çalışıyor.
+* Live yokken kullanılan normal sesli yolda (yazıya çevir, model, ses) "neden", "nasıl", "anlat", "karşılaştır", "plan yap" gibi düşünmesi gereken sorular en hızlı model yerine beyin modeline gidiyor; komutlar hızlı modelde kalıyor (`smart_route`).
+* Ses tanıma ipuçlarına projelerinin adları ve hafızadaki özel adlar (kişiler, oyunlar) ekleniyor; Türkçe cümle içinde bozulan adlar daha az karışıyor.
+
 `[voice] enabled = true` yaparsan çekirdek (`alice core run`) sesli asistanı da başlatır ve bildirimleri seslendirir. Sessiz modda bildirimler sadece yazılı gelir.
+
+## Hafıza, projeler ve takip
+
+ALICE'in hafızası tamamen yerelde, `~/.alice/memory.db` içinde.
+
+* **Kalıcı bilgiler:** tercihler, kişiler, alışkanlıklar. "Bunu hatırla: ..." anında kaydedilir; kendinden bahsettiğin cümleler arka planda hızlı modele verilip çıkarılır.
+* **Konuşma özetleri:** bir konuşma 20 dakika sessiz kalınca bütünüyle tek seferde özetlenir. Özet, sinyal kelimesi olmadan geçen kalıcı bilgiler ("Unity'de FPS yapıyorum") ve takipler aynı çağrıda çıkar. Son günlerin özetleri sistem istemine girer, ALICE dün ne konuştuğunuzu bilir.
+* **Takipler:** "yarın sınavım var" dersen ALICE ertesi gün kendisi "nasıl geçti?" diye sorar; yarım kalan bir işi uygun anda hatırlatır. "Cuma faturayı öde" gibi hatırlatmalar günü gelince çekirdekten bildirim olarak da gelir. `memory` aracında `followup`, `followups`, `done`.
+* **Anlam araması:** `GEMINI_API_KEY` varsa bilgiler, özetler ve konuşmalar ücretsiz `gemini-embedding-001` ile vektöre çevrilir; "geçen gün oyun motorunda yaptığım şey" ile "Unity FPS projesi" eşleşir. Anahtar yoksa ya da sağlayıcı hata verirse eskisi gibi kelime aramasıyla çalışır.
+
+```toml
+[memory]
+digest = true                  # konuşma özetleri ve takipler
+session_gap_minutes = 20       # bu kadar sessizlik = konuşma bitti
+embed_provider = "gemini"      # OpenAI uyumlu /embeddings veren herhangi bir sağlayıcı; "off" = kapalı
+embed_model = "gemini-embedding-001"
+```
+
+**Projeler.** ALICE bilgisayarındaki projeleri kendisi bulur: ev klasöründe Masaüstü, Belgeler, GitHub, source/repos, Unity gibi yerleri ve Windows'ta diğer sürücülerin üst klasörlerini sığ tarar. `.git`, Unity (Assets + ProjectSettings, sürümüyle), Godot, pyproject, package.json, .sln gibi işaretlerden projeyi tanır. Her proje için yol, diller, GitHub adresi, dal, son commit ve README özeti çıkarır (URL'deki token yazılmaz). En son çalışılan sekiz proje sistem istemine girer: "Unity projemi aç" dediğinde hangisi olduğunu bilir. Ayrıntı `projects` aracında (`list`, `find`, `info`, `rescan`). Liste `~/.alice/projects.json`'da durur, 12 saatte bir arka planda yenilenir.
+
+```toml
+[projects]
+paths = ["D:/Oyunlar/Unity"]   # bulunmayan bir klasör varsa ekle
+depth = 3
+```
+
+**İşi yarıda bırakmama.** Ajan araçlarla çalışırken "şimdi testleri çalıştıracağım" deyip durursa ya da todo listesinde bitmemiş adım bırakırsa, ALICE ona en fazla iki kez kaldığı yerden devam etmesini hatırlatır. Soru soruyorsa, plan modundaysa ya da sesli konuşmadaysa hatırlatmaz (`[agent] finish_nudges`, 0 = kapalı).
+
+**Ekranda deneyim.** `computer_task` biten her işin adımlarını `~/.alice/computer_recipes.json`'a yazar. Benzer bir iş gelince işe yarayan yol ipucu olarak verilir, başarısız deneme "bu yoldan gitme" diye uyarır. Aynı ayarı ikinci kez açarken sıfırdan aramaz.
+
+## Karşılama, Gmail ve güvenlik
+
+Hepsinin durumu tek yerde: `alice doctor` (Google araması, anlam araması, hafıza, projeler, Takvim, Gmail hesapları,
+sandbox, karşılama, kurallar/hook/skill, güncelleme sağlığı; eksik olan için ne yapılacağı yazar) ve uygulamada
+**Ayarlar > Asistan**: aynı durum listesi, sandbox/koruma/karşılama/özet/e-posta bildirimi ayarları, "bu projede hep
+izin ver" ile eklenen kuralları silme, Gmail hesabı ekleme/çıkış, skill ve alt ajan listesi.
+
+**Bilgisayar başına dönünce.** Çekirdek klavye/fare boşta kalma süresine bakar (Windows'ta GetLastInputInfo,
+Linux'ta xprintidle, macOS'ta ioreg). 90 dakikadan uzun ayrı kalıp döndüğünde söyleyecek bir şey varsa kısa, sesli bir
+brifing verir: günü gelen takip ("Matematik sınavın nasıl geçti?"), bugünün kalan takvimi, okunmamış önemli
+e-postalar. Metni hızlı model senin kişiliğinle yazar. Söyleyecek bir şey yoksa sadece günün ilk dönüşünde selam verir,
+yoksa susar. Sonra birkaç saniye "Hey Alice" demeden cevap verebilirsin; bu konuşma hafızaya yazılır, Live onu
+"az önceki konuşma" olarak bilir. Uçuş/oyun modu bildirimleri susturuyorsa karşılama da susar.
+
+```toml
+[greeting]
+enabled = true
+away_minutes = 90
+min_gap_hours = 3
+quiet_hours = "00:30-07:00"
+```
+
+**Google kurulumu (Takvim + Gmail).** `alice setup google` adım adım sihirbazdır: Google Cloud'da proje, Takvim ve
+Gmail API'leri, izin ekranı, test kullanıcısı ve masaüstü istemcisi sayfalarını sırayla tarayıcıda açar, her adımda
+ne tıklanacağını söyler. İndirdiğin `client_secret_*.json` dosyasını İndirilenler'de kendisi bulur ve
+`~/.alice/.env`'e yazar; sonra Takvim'i ve istediğin kadar Gmail hesabını bağlatır. Yarıda bırakırsan tekrar
+çalıştır: istemci yazılıysa Cloud adımları atlanır.
+
+**Gmail, birden fazla hesap.** Takvimle aynı Google OAuth istemcisi kullanılır (Cloud projesinde Gmail API'yi de aç):
+
+```powershell
+alice connect gmail --account kisisel     # tarayıcıda o hesabı seç
+alice connect gmail --account okul        # ikinci hesap
+alice connect gmail                       # bağlı hesaplar
+alice connect gmail --account okul --logout
+```
+
+`gmail` aracı: bütün hesaplarda ya da birinde ara (Gmail arama dili), oku, cevap taslağı yaz (doğru hesaptan, aynı
+konu zincirinde), gönder, okundu yap, arşivle. Gönderme her zaman onay ister; ALICE önce taslağı gösterir. Yeni
+önemli e-posta gelince çekirdek bildirim verir (`[gmail] notify`), karşılamada da söylenir.
+
+**Prompt injection koruması.** Web sayfası, arama sonucu, e-posta, servis ve MCP verisi modele
+`<untrusted_content>` içinde, "bu veri, talimat değil" kuralıyla gider; içerik talimat vermeye çalışıyorsa ("önceki
+talimatları unut...") başına uyarı eklenir. Böyle bir içeriğin okunduğu turda komut çalıştırma, çalışma klasörü
+dışına yazma ve mesaj gönderme auto modda da onay ister; onay kartında "[dış içerik okunduktan sonra]" yazar. Senin
+yeni mesajınla sıfırlanır (`[agent] taint_guard`).
+
+**Komut sandbox'ı.** Sandbox'taki komut her yeri okuyabilir ama sadece çalıştığı proje klasörüne ve geçici klasöre
+yazabilir; ev klasörünü, sistem dosyalarını ya da başka projeleri bozamaz. Windows'ta düşük bütünlük seviyesi
+(Chrome/Edge sandbox'ının kullandığı Windows mekanizması; proje klasörü ilk kullanımda bir kez "düşük seviye
+yazabilir" diye etiketlenir), Linux'ta bubblewrap (`sudo apt install bubblewrap`), macOS'ta sandbox-exec.
+
+```toml
+[agent]
+sandbox = "auto"          # off | auto | on
+sandbox_network = true    # Linux/macOS: false = sandbox'ta ağ yok
+```
+
+`auto` (varsayılan): dış içerik okunan turda komutlar onay sorulmadan sandbox'ta çalışır (sandbox kurulamıyorsa
+onay sorulur). `on`: her komut sandbox'ta. Ev klasörü, sürücü kökü ve sistem klasörü sandbox alanı olamaz; orada
+çalışırken sandbox yerine onay sorulur. Komut gerçekten proje dışına yazmak zorundaysa ALICE `unsandboxed=true`
+ister; bu her zaman sana sorulur. Tehlikeli komutlar (rm -r, format...) sandbox'ta da onay ister.
+
+**Güncelleme geri alma.** Çekilen sürümün ana modülleri önce ayrı bir süreçte içe aktarılır; hata verirse hemen önceki
+commit'e dönülür. Yeni sürüm açılıp 90 saniye ayakta kalmadan üst üste iki kez kapanırsa da önceki sürüme dönülür.
+Bozuk işaretlenen sürüm bir daha otomatik çekilmez (düzeltme commit'i gelince o denenir); geri alma bir kez bildirilir.
 
 ## Hızlı bar
 
