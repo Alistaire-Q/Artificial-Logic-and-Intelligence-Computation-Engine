@@ -7,6 +7,7 @@ sonuçları geri ver -> model artık araç çağırmayınca tur biter.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -20,6 +21,9 @@ from alice.prompts import COMPACT_PROMPT, build_system_prompt
 from alice.providers.openai_compat import ChatResult, StreamCancelled
 from alice.providers.router import AllProvidersFailed, Router, estimate_tokens, strip_images
 from alice.tools.base import DANGER, SEND, Tool, ToolContext, ToolError, ToolResult, check_args, truncate, unknown_params
+
+# Yutulan hatalar için iz: varsayılan olarak sessiz, `logging.basicConfig(level=logging.DEBUG)` ile görünür.
+log = logging.getLogger(__name__)
 
 
 class UI(Protocol):
@@ -155,6 +159,9 @@ def fits_after_compact(errors: list[str]) -> int:
 def parse_args(raw: str | dict | None) -> dict[str, Any]:
     if isinstance(raw, dict):
         return raw
+    if raw is not None and not isinstance(raw, str):
+        # Bazı sağlayıcılar argümanı liste/sayı olarak gönderiyor: çökmesin, modele hata olarak dönsün.
+        raise json.JSONDecodeError("argümanlar obje değil", str(raw), 0)
     if not raw or not raw.strip():
         return {}
     try:
@@ -169,6 +176,20 @@ def parse_args(raw: str | dict | None) -> dict[str, Any]:
     if not isinstance(val, dict):
         raise json.JSONDecodeError("argümanlar obje değil", str(raw), 0)
     return val
+
+
+def _sanitize_calls(msg: dict[str, Any]) -> None:
+    """Modelin tool_call'larında ad ya da argüman metin değilse (null, liste, sayı) metne çevir: yoksa döngü
+    çöküyor ve geçmişe giden bozuk çağrı sonraki her isteği 400 ile düşürüyordu."""
+    for tc in msg.get("tool_calls") or []:
+        fn = tc.get("function")
+        if not isinstance(fn, dict):
+            fn = tc["function"] = {}
+        if not isinstance(fn.get("name"), str):
+            fn["name"] = "" if fn.get("name") is None else str(fn["name"])
+        args = fn.get("arguments")
+        if not isinstance(args, str):
+            fn["arguments"] = "{}" if args is None else json.dumps(args, ensure_ascii=False)
 
 
 # Eski sabit özetleme sınırı. Eski config.toml'larda yazılı kaldığı için "auto" sayılır (modelin penceresine göre).
@@ -285,7 +306,7 @@ class Agent:
                 self.messages[0]["content"] = with_memory(self.messages[0]["content"], profile)
                 self._memory_version = version
         except Exception:  # noqa: BLE001 - hafıza hatası konuşmayı durdurmasın
-            pass
+            log.debug("hafıza profili yenilenemedi", exc_info=True)
 
     def _recall(self, user_text: str) -> str:
         if self.memory is None or self.is_child:
@@ -293,6 +314,7 @@ class Agent:
         try:
             return self.memory.recall(user_text)
         except Exception:  # noqa: BLE001
+            log.debug("hafızadan hatırlama başarısız", exc_info=True)
             return ""
 
     def _remember_turn(self, user_text: str, reply: str) -> None:
@@ -302,7 +324,7 @@ class Agent:
             self.memory.record(user_text, reply, self.memory_channel)
             self.memory.learn(user_text, reply)
         except Exception:  # noqa: BLE001
-            pass
+            log.debug("tur hafızaya yazılamadı", exc_info=True)
 
     def run_turn(self, user_text: str, max_steps: int | None = None, images: list[str] | None = None) -> str:
         self.refresh_memory()
@@ -388,18 +410,20 @@ class Agent:
                     res = self._interruptible(self.router.chat, self.role, list(self.messages), tools=self._specs(),
                                               stream=sink if self.stream else None)
                 msg = res.message
+                _sanitize_calls(msg)
                 if getattr(self, "_lean", False) and self._roomy(res):
                     self._lean = False  # geniş bağlamlı model geri geldi: tam araç tanımlarına dön
                 if self.on_usage is not None:
                     try:
                         self.on_usage(res.usage or {})
                     except Exception:  # noqa: BLE001 - sayaç hatası turu bozmasın
-                        pass
+                        log.debug("on_usage hata verdi", exc_info=True)
                 pt = int((res.usage or {}).get("prompt_tokens") or 0)
                 self._last_prompt = (pt, sent, self.messages[sent - 1]) if pt else None
                 if not self.stream and msg.get("content"):
                     self.ui.stream_delta(msg["content"])
                 self.messages.append(msg)
+                sink.parts.clear()  # metin artık geçmişte: kesilirse bir daha "[durduruldu]" diye eklenmesin
                 self.ui.stream_end(msg.get("content") or "", f"{res.provider}:{res.model}")
                 if msg.get("content"):
                     final = msg["content"]
@@ -425,7 +449,7 @@ class Agent:
                     try:
                         self.on_step()
                     except Exception:  # noqa: BLE001 - kayıt hatası işi durdurmasın
-                        pass
+                        log.debug("on_step hata verdi", exc_info=True)
             self.ui.info(f"adım limiti ({steps}) doldu; devam etmek için yeni mesaj yaz")
             return final
         except (KeyboardInterrupt, Cancelled, StreamCancelled):
@@ -890,10 +914,15 @@ class Agent:
             m = self.messages[i]
             if m["role"] == "assistant" and m.get("tool_calls"):
                 answered = {x.get("tool_call_id") for x in self.messages[i + 1:] if x["role"] == "tool"}
-                for tc in m["tool_calls"]:
-                    if tc["id"] not in answered:
-                        self.messages.append({"role": "tool", "tool_call_id": tc["id"], "name": tc["function"]["name"],
-                                              "content": "durduruldu (kullanıcı kesti)"})
+                # Sonuçlar çağrının hemen ardındaki tool bloğuna girmeli: araya yarım metin ya da görüntü mesajı
+                # girdiyse sona eklenen sonuç sahipsiz kalıyor ve sağlayıcı bütün konuşmayı reddediyordu.
+                at = i + 1
+                while at < len(self.messages) and self.messages[at]["role"] == "tool":
+                    at += 1
+                missing = [{"role": "tool", "tool_call_id": tc["id"], "name": tc["function"]["name"],
+                            "content": "durduruldu (kullanıcı kesti)"}
+                           for tc in m["tool_calls"] if tc["id"] not in answered]
+                self.messages[at:at] = missing
                 break
 
     def reset(self) -> None:

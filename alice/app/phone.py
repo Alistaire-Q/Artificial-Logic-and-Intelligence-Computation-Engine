@@ -54,6 +54,7 @@ class PhoneServer:
         self.state = state or AppState(cfg, Path.home(), cfg.agent.get("permission_mode", "auto"))
         self.state.token = token(new_token)
         self.state.allowed_hosts = {"127.0.0.1", "localhost", self.ip}
+        self._own_store = store is None  # kendi açtığımız depoyu stop() kapatır
         self.state.watch_store = store or Store()
         self.port = int(port if port is not None else cfg.data.get("phone", {}).get("port", 8765))
         self.server = AppServer(self.state, self.port, host="0.0.0.0").start()
@@ -72,6 +73,9 @@ class PhoneServer:
 
     def stop(self) -> None:
         self.server.stop()
+        if self._own_store and self.state.watch_store is not None:
+            self.state.watch_store.close()
+            self.state.watch_store = None
 
 
 def print_qr(console, text: str) -> None:
@@ -121,27 +125,27 @@ def watch_cmd(argv: list[str]) -> int:
 
     console = Console(highlight=False)
     sub = argv[0] if argv else "status"
-    st = Store()
-    if sub == "import" and len(argv) > 1:
-        added = import_gadgetbridge(Path(argv[1]).expanduser(), st)
-        console.print("[green]içe alındı:[/] " + (", ".join(f"{k} {v}" for k, v in added.items()) or "yeni veri yok"))
-        sub = "status"
-    if sub == "status":
-        for key in ("watch.hr", "watch.steps", "watch.stress", "watch.spo2"):
-            c = cadence(st, key)
-            if not c["count"] and c["last_age_s"] is None:
-                continue
-            age = c["last_age_s"]
-            age_s = "hiç" if age is None else (f"{age:.0f} sn önce" if age < 120 else f"{age / 60:.0f} dk önce"
-                                               if age < 7200 else f"{age / 3600:.1f} sa önce")
-            gap = c.get("median_gap_s")
-            gap_s = f", tipik aralık {gap:.0f} sn" if gap is not None else ""
-            console.print(f"[bold]{key}[/]: son 24 saatte {c['count']} örnek, son örnek {age_s}{gap_s}\n"
-                          f"  → {c['verdict']}")
-        if not st.keys("watch.*"):
-            console.print("[yellow]henüz saat verisi yok.[/] Gadgetbridge'de otomatik dışa aktarmayı aç, dosyayı "
-                          "bilgisayara senkronla ve config'te [watch] export_path'i ayarla; ya da "
-                          "alice watch import <Gadgetbridge.db>")
-        return 0
-    console.print(watch_cmd.__doc__)
-    return 2
+    with Store() as st:
+        if sub == "import" and len(argv) > 1:
+            added = import_gadgetbridge(Path(argv[1]).expanduser(), st)
+            console.print("[green]içe alındı:[/] " + (", ".join(f"{k} {v}" for k, v in added.items()) or "yeni veri yok"))
+            sub = "status"
+        if sub == "status":
+            for key in ("watch.hr", "watch.steps", "watch.stress", "watch.spo2"):
+                c = cadence(st, key)
+                if not c["count"] and c["last_age_s"] is None:
+                    continue
+                age = c["last_age_s"]
+                age_s = "hiç" if age is None else (f"{age:.0f} sn önce" if age < 120 else f"{age / 60:.0f} dk önce"
+                                                   if age < 7200 else f"{age / 3600:.1f} sa önce")
+                gap = c.get("median_gap_s")
+                gap_s = f", tipik aralık {gap:.0f} sn" if gap is not None else ""
+                console.print(f"[bold]{key}[/]: son 24 saatte {c['count']} örnek, son örnek {age_s}{gap_s}\n"
+                              f"  → {c['verdict']}")
+            if not st.keys("watch.*"):
+                console.print("[yellow]henüz saat verisi yok.[/] Gadgetbridge'de otomatik dışa aktarmayı aç, dosyayı "
+                              "bilgisayara senkronla ve config'te \\[watch] export_path'i ayarla; ya da "
+                              "alice watch import <Gadgetbridge.db>")
+            return 0
+        console.print(watch_cmd.__doc__, markup=False)
+        return 2

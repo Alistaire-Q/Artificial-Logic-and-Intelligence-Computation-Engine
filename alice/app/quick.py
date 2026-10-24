@@ -220,6 +220,7 @@ class QuickBar:
 
 def quick_cmd(argv: list[str]) -> int:
     from rich.console import Console
+    from rich.markup import escape
 
     from alice.config import load_config
 
@@ -230,8 +231,8 @@ def quick_cmd(argv: list[str]) -> int:
         qb.open()
     ok = qb.start_hotkeys()
     if not ok:
-        console.print("[yellow]pynput yok;[/] kısayollar çalışmaz (pip install 'alice-harness[voice]'). "
-                      f"Hızlı bar adresi: {qb.url}")
+        console.print("[yellow]pynput yok;[/] kısayollar çalışmaz (" + escape('pip install "alice-harness[voice]"')
+                      + f"). Hızlı bar adresi: {qb.url}")
     else:
         hk = qb.hotkeys
         console.print(f"[bold magenta]ALICE hızlı bar[/] hazır: {hk['open']} aç · {hk['region']} alan seç · "

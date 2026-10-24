@@ -31,7 +31,8 @@ from typing import Any, Callable, Protocol
 
 from alice.config import Config, ProviderConfig, alice_home
 from alice.providers import context, ranking, thinking
-from alice.providers.openai_compat import ChatResult, OpenAICompatProvider, ProviderError, StreamCancelled
+from alice.providers.openai_compat import (ChatResult, OpenAICompatProvider, ProviderError, StreamCancelled,
+                                            redact)
 
 COOLDOWNS = {"rate_limit": 20.0, "quota": 3600.0, "server": 30.0, "network": 30.0, "unreachable": 600.0}
 
@@ -363,7 +364,9 @@ class Router:
             if self.log_path.exists() and self.log_path.stat().st_size > 1_000_000:
                 self.log_path.replace(self.log_path.with_suffix(".log.1"))
             with open(self.log_path, "a", encoding="utf-8") as f:
-                f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {' '.join(line.split())}\n")
+                # Sağlayıcıların anahtarları log dosyasına asla düşmesin (hata metni yankılamış olabilir).
+                keys = [pc.api_key for pc in self.providers_cfg.values() if getattr(pc, "api_key", None)]
+                f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {' '.join(redact(line, *keys).split())}\n")
         except OSError:
             pass
 
@@ -371,6 +374,17 @@ class Router:
         if provider not in self._clients:
             self._clients[provider] = self._factory(self.providers_cfg[provider])
         return self._clients[provider]
+
+    def close(self) -> None:
+        """Açılan sağlayıcı istemcilerini (HTTP bağlantı havuzlarını) kapat. Sonra kullanılırsa yeniden açılır."""
+        while self._clients:
+            _, c = self._clients.popitem()
+            close = getattr(c, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:  # noqa: BLE001 - kapanışta hata önemsiz
+                    pass
 
     def supports_vision(self, ref: str) -> bool:
         p, m = parse_ref(ref)
@@ -565,7 +579,13 @@ class Router:
                 self.cooldown_until[ref] = now + 60
         else:
             base = COOLDOWNS.get(e.kind, 30.0)
-            wait = e.retry_after if (e.retry_after and e.kind == "rate_limit") else base
+            wait = base
+            if e.retry_after and e.kind == "rate_limit":
+                wait = e.retry_after
+            elif e.retry_after:
+                # 503 + Retry-After: sunucu ne zaman açılacağını söylüyor. Önceden yok sayılıp 30 sn sonra yine
+                # aynı modele gidiliyor, her seferinde boşuna bir istek ve bekleme harcanıyordu.
+                wait = max(base, e.retry_after)
             self.cooldown_until[ref] = now + min(max(wait, 1.0), 6 * 3600)
             self.cooldown_kind[ref] = e.kind
 

@@ -8,6 +8,11 @@ izin penceresi çıkarır. ALICE çekirdeği her yeniden başladığında yenide
 Aynı anda tek istemci (Playwright) hizmet alır. İstemcinin mesaj kimlikleri köprüde yeniden numaralanır (eski
 istemcinin geç gelen cevabı yenisine karışmasın); istemci gidince açtığı oturumlar tarayıcıda kapatılır, böylece
 sonraki istemci temiz bir bağlantı görür. Tarayıcı kapanınca köprü de kapanır.
+
+Tarayıcı bağlantısı kapanmadan da ölebilir (Opera uyku/hazırda bekletmeden döndü, sekme süreci çöktü, bağlantı yarı
+açık kaldı): soket açık görünür ama hiçbir komuta cevap gelmez, ALICE'in her tarayıcı çağrısı orada asılı kalırdı.
+Köprü bu yüzden düzenli aralıklarla tarayıcıya küçük bir komut (Browser.getVersion) gönderir; cevap gelmezse
+bağlantıyı ölü sayar ve kapanır. İstemci (Playwright) kopmayı görür, ALICE sonraki çağrıda yeniden bağlanır.
 """
 
 from __future__ import annotations
@@ -21,6 +26,9 @@ from typing import Any
 DEFAULT_PORT = 9339
 PATH = "/devtools/browser/alice-bridge"
 CLEANUP_BASE = 2_000_000_000  # köprünün kendi komutlarının kimlikleri
+HEARTBEAT_ID = CLEANUP_BASE - 1  # kalp atışı komutunun kimliği (istemci kimlikleri 1'den sayar, çakışmaz)
+HEARTBEAT_EVERY = 15.0  # saniye
+HEARTBEAT_TIMEOUT = 20.0  # bu kadar cevap yoksa tarayıcı bağlantısı ölü sayılır
 
 
 def endpoint(port: int = DEFAULT_PORT) -> str:
@@ -28,7 +36,8 @@ def endpoint(port: int = DEFAULT_PORT) -> str:
 
 
 class Bridge:
-    def __init__(self, find_upstream=None, log=lambda s: None, connect=None):
+    def __init__(self, find_upstream=None, log=lambda s: None, connect=None, heartbeat: float = HEARTBEAT_EVERY,
+                 heartbeat_timeout: float = HEARTBEAT_TIMEOUT):
         if find_upstream is None:
             from alice.tools.browser import devtools_active_endpoint
 
@@ -37,6 +46,10 @@ class Bridge:
         self.log = log
         self._connect = connect
         self.up = None  # tarayıcı bağlantısı
+        self._pump: asyncio.Task | None = None  # olay döngüsü görevleri zayıf tutar: referans burada kalsın
+        self._beat: asyncio.Task | None = None
+        self.heartbeat, self.heartbeat_timeout = heartbeat, heartbeat_timeout
+        self._pong = asyncio.Event()
         self.client = None
         self.gen = 0
         self.next_id = 1
@@ -57,8 +70,43 @@ class Bridge:
         # Tarayıcı burada kullanıcıya bir kez izin sorar: cevaplaması için zaman tanı.
         self.up = await connect(url, open_timeout=120, max_size=None, ping_interval=None)
         self.log(f"tarayıcıya bağlanıldı: {url}")
-        asyncio.get_running_loop().create_task(self._pump_up(self.up))
+        loop = asyncio.get_running_loop()
+        self._pump = loop.create_task(self._pump_up(self.up))
+        if self.heartbeat > 0:
+            self._beat = loop.create_task(self._heartbeat(self.up))
         return self.up
+
+    async def _heartbeat(self, up) -> None:
+        """Tarayıcı hâlâ cevap veriyor mu? Vermiyorsa bağlantıyı kapat (yoksa istemci sonsuza dek bekler)."""
+        while self.up is up:
+            await asyncio.sleep(self.heartbeat)
+            if self.up is not up:
+                return
+            self._pong.clear()
+            try:
+                await asyncio.wait_for(up.send(json.dumps({"id": HEARTBEAT_ID, "method": "Browser.getVersion"})),
+                                       self.heartbeat_timeout)
+                await asyncio.wait_for(self._pong.wait(), self.heartbeat_timeout)
+            except Exception:  # noqa: BLE001 - zaman aşımı ya da kopuk soket: ikisi de ölü bağlantı
+                self.log(f"tarayıcı {self.heartbeat_timeout:.0f} sn cevap vermedi; bağlantı ölü sayılıyor")
+                await self._shutdown(up)
+                return
+
+    async def _shutdown(self, up) -> None:
+        """Ölü tarayıcı bağlantısını bırak, istemciyi kopar, köprüyü kapat. Kapanış el sıkışması da asılı kalabilir:
+        her adım süreyle sınırlı."""
+        if self.up is up:
+            self.up = None
+        for ws in (up, self.client):
+            if ws is None:
+                continue
+            try:
+                await asyncio.wait_for(ws.close(), 3)
+            except Exception:  # noqa: BLE001
+                transport = getattr(ws, "transport", None)
+                if transport is not None:
+                    transport.abort()
+        self.closed.set()
 
     async def _pump_up(self, up) -> None:
         try:
@@ -67,16 +115,15 @@ class Bridge:
         except Exception as e:  # noqa: BLE001
             self.log(f"tarayıcı bağlantısı koptu: {e}")
         finally:
-            self.up = None
             self.log("tarayıcı kapandı; köprü kapanıyor")
-            client = self.client
-            if client is not None:
-                await client.close()
-            self.closed.set()
+            await self._shutdown(up)
 
     async def _from_browser(self, raw) -> None:
         msg = json.loads(raw)
         if "id" in msg:
+            if msg["id"] == HEARTBEAT_ID:
+                self._pong.set()
+                return
             ref = self.pending.pop(msg["id"], None)
             if ref is None or ref[0] != self.gen:
                 return  # köprünün kendi komutu ya da eski istemcinin cevabı
@@ -126,6 +173,11 @@ class Bridge:
             old = self.client
             if old is not None:
                 await old.close()
+            if self.closed.is_set():
+                # Tarayıcı bağlantısı öldü, köprü kapanıyor: yeniden bağlanıp bir daha izin sordurmasın; istemci
+                # yeni bir köprü başlatır.
+                await ws.close(1011, "köprü kapanıyor")
+                return
             try:
                 up = await self._upstream()
             except Exception as e:  # noqa: BLE001
@@ -158,8 +210,10 @@ class Bridge:
             self.log("istemci ayrıldı")
 
 
-def _health(connection, request):
+def _health(connection, request, bridge: Bridge | None = None):
     if request.path == "/alice-bridge":
+        if bridge is not None and bridge.closed.is_set():
+            return connection.respond(503, "closing\n")  # kapanan köprüye bağlanılmasın, yenisi başlatılsın
         return connection.respond(200, "alice-bridge\n")
     return None
 
@@ -169,7 +223,7 @@ async def serve(port: int, log=print, bridge: Bridge | None = None) -> None:
 
     bridge = bridge or Bridge(log=log)
     async with ws_serve(bridge.handle, "127.0.0.1", port, max_size=None, ping_interval=None,
-                        process_request=_health):
+                        process_request=lambda c, r: _health(c, r, bridge)):
         log(f"köprü dinliyor: {endpoint(port)}")
         await bridge.closed.wait()
 

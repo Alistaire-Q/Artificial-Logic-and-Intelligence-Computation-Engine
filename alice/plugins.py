@@ -16,6 +16,7 @@ Bozuk bir eklenti ALICE'i durdurmaz; hatası `errors()` ile görülür ve emit'e
 from __future__ import annotations
 
 import importlib.util
+import logging
 import re
 import sys
 from dataclasses import dataclass, field
@@ -25,6 +26,9 @@ from typing import TYPE_CHECKING, Any, Callable
 if TYPE_CHECKING:
     from alice.config import Config
     from alice.tools.base import Tool, ToolContext
+
+# Yutulan hatalar için iz: varsayılan olarak sessiz, `logging.basicConfig(level=logging.DEBUG)` ile görünür.
+log = logging.getLogger(__name__)
 
 _NAME = re.compile(r"^[a-z][a-z0-9_-]{0,39}$")
 
@@ -213,7 +217,7 @@ def cleanup(ctx: "ToolContext") -> None:
             try:
                 p.cleanup(ctx)
             except Exception:  # noqa: BLE001
-                pass
+                log.debug("eklenti temizliği hata verdi: %s", p.name, exc_info=True)
 
 
 TEMPLATE = '''"""ALICE eklentisi: {name}. Ayrıntı: docs/PLUGINS.md"""
@@ -249,7 +253,7 @@ def plugins_cmd(argv: list[str]) -> int:
     if argv[:1] == ["new"]:
         name = argv[1] if len(argv) > 1 else ""
         if not _NAME.match(name):
-            print("kullanım: alice plugins new <ad>   (küçük harf, rakam, _; harfle başlar)")
+            print("kullanım: alice plugins new <ad>   (küçük harf, rakam, - ya da _; harfle başlar)")
             return 2
         d = plugin_dir()
         d.mkdir(parents=True, exist_ok=True)

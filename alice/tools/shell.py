@@ -128,14 +128,14 @@ class RunCommand(Tool):
         limit = int(ctx.config.agent.get("tool_output_chars", 12000))
         if background:
             log = Path(tempfile.gettempdir()) / f"alice-bg-{int(time.time() * 1000)}.log"
-            fh = open(log, "wb")
             kwargs: dict[str, Any] = {}
             if IS_WIN:
                 kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | NO_WINDOW  # type: ignore[attr-defined]
             else:
                 kwargs["start_new_session"] = True
-            pop = subprocess.Popen(argv, cwd=wd, stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                   env=env, **kwargs)
+            with open(log, "wb") as fh:  # çocuk süreç kendi kopyasını alır; bizdeki tanıtıcı sızmasın
+                pop = subprocess.Popen(argv, cwd=wd, stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                       env=env, **kwargs)
             procs: dict[int, BgProc] = ctx.state.setdefault("bg_procs", {})
             procs[pop.pid] = BgProc(pop.pid, command, pop, log, time.time())
             time.sleep(1.5)
@@ -217,6 +217,7 @@ class ProcessStop(Tool):
         if not p:
             raise ToolError(f"pid {pid} ALICE tarafından başlatılmamış; başka süreçler için process_kill kullan")
         kill_tree(pid)
+        _reap(p.popen)
         return ToolResult(f"durduruldu: {pid}")
 
 
@@ -258,10 +259,19 @@ def kill_tree(pid: int) -> None:
         pass
 
 
+def _reap(pop: subprocess.Popen) -> None:
+    """Öldürülen süreci bekle: uzun oturumda zombi süreç birikmesin."""
+    try:
+        pop.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+
+
 def cleanup(ctx: ToolContext) -> None:
     for p in ctx.state.get("bg_procs", {}).values():
         if p.popen.poll() is None:
             kill_tree(p.pid)
+            _reap(p.popen)
 
 
 TOOLS = [RunCommand(), ProcessOutput(), ProcessStop()]

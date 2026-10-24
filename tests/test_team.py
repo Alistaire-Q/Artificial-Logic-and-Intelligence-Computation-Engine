@@ -348,3 +348,29 @@ def test_saved_project_read_retries_while_file_is_being_replaced(tmp_path, monke
     monkeypatch.setattr(Path, "read_text", flaky)
     monkeypatch.setattr(team_mod.time, "sleep", lambda s: None)
     assert team_mod._read_saved(f) == '{"id": "p"}' and len(calls) == 3
+
+
+def test_save_survives_brief_windows_file_lock(tmp_path, monkeypatch):
+    # Windows'ta virüs tarayıcı yeni dosyayı bir an kilitler: replace birkaç kez PermissionError verse de kayıt düşmesin.
+    from pathlib import Path
+
+    from alice import team as team_mod
+
+    src, dst = tmp_path / "p.json.tmp", tmp_path / "p.json"
+    src.write_text("{}", encoding="utf-8")
+    real, fails = Path.replace, [2]
+
+    def flaky(self, target):
+        if fails[0]:
+            fails[0] -= 1
+            raise PermissionError("kilitli")
+        return real(self, target)
+
+    monkeypatch.setattr(Path, "replace", flaky)
+    monkeypatch.setattr(team_mod.time, "sleep", lambda s: None)
+    team_mod._replace(src, dst)
+    assert dst.read_text(encoding="utf-8") == "{}" and not src.exists()
+    fails[0] = 99
+    src.write_text("{}", encoding="utf-8")
+    with pytest.raises(PermissionError):
+        team_mod._replace(src, dst, tries=3)

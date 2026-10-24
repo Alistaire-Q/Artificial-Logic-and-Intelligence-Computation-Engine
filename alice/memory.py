@@ -22,6 +22,7 @@ Her şey yerelde, ~/.alice/memory.db (SQLite) içinde durur.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import sqlite3
@@ -33,6 +34,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from alice.config import alice_home
+
+# Yutulan hatalar için iz: varsayılan olarak sessiz, `logging.basicConfig(level=logging.DEBUG)` ile görünür.
+log = logging.getLogger(__name__)
 
 KINDS = {"preference": "tercih", "fact": "bilgi", "person": "kişi", "routine": "alışkanlık", "note": "not"}
 _KIND_ORDER = ["preference", "person", "fact", "routine", "note"]
@@ -87,6 +91,13 @@ _SIGNALS = ("benim", "bana ", "beni ", "seviyor", "sevmiyor", "sevmem", "severim
             "sevgilim", "esim", "kizim", "oglum", "favori", "en sevdig", "aliskanl", "hatirla", "unutma",
             "bundan sonra", "artik ", "diye hitap", "diye cagir", "olarak cagir", "aklinda tut",
             "i like", "i love", "i hate", "i prefer", "my ", "remember", "call me")
+
+
+RECALL_ITEM_CHARS, RECALL_TOTAL_CHARS = 400, 2000
+
+
+def _clip(text: str, n: int) -> str:
+    return text if len(text) <= n else text[:n - 1] + "…"
 
 
 def fold(text: str) -> str:
@@ -514,7 +525,10 @@ class LongMemory:
                 self.db.executemany("UPDATE facts SET hits = hits + 1, last_used = ? WHERE id = ?",
                                     [(time.time(), i) for i in ids])
                 self.db.commit()
-        lines = "\n".join(f"- {h.item.text if isinstance(h.item, Fact) else h.item.line()}" for h in hits)
+        # Her kullanıcı mesajına eklenir: elle kaydedilmiş dev bir bilgi (yapıştırılmış metin) bağlamı şişirmesin.
+        lines = "\n".join(f"- {_clip(h.item.text, RECALL_ITEM_CHARS) if isinstance(h.item, Fact) else h.item.line()}"
+                          for h in hits)
+        lines = _clip(lines, RECALL_TOTAL_CHARS)
         return ("[hafızadan, bu konuşmayla ilgili olabilir; işine yararsa kullan, hafızadan okuduğunu söyleme:\n"
                 f"{lines}]")
 
@@ -697,7 +711,7 @@ class LongMemory:
         for f in facts:
             line = f"- ({KINDS.get(f.kind, f.kind)}) {f.text}"
             if used + len(line) > chars:
-                break
+                continue  # tek uzun bilgi sıradaki kısa bilgileri profilden atmasın
             out.append(line)
             used += len(line) + 1
         eps = self.recent(recent)
@@ -763,7 +777,7 @@ class LongMemory:
             raw = self.extractor(prompt) if self.extractor else ""
             self.apply(parse_json(raw))
         except Exception:  # noqa: BLE001 - öğrenme hatası konuşmayı etkilemesin
-            pass
+            log.debug("konuşmadan bilgi çıkarılamadı", exc_info=True)
         finally:
             self._learn_lock.release()
 

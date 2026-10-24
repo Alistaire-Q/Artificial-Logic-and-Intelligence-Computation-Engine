@@ -48,7 +48,11 @@ def load(session_id: str | None = None) -> tuple[str, list[dict[str, Any]]] | No
     files = sorted(sessions_dir().glob("*.json"), reverse=True)
     if session_id:
         files = [f for f in files if f.stem == session_id]
-    if not files:
-        return None
-    data = json.loads(files[0].read_text(encoding="utf-8"))
-    return files[0].stem, data.get("messages", [])
+    # Bozuk ya da yarım kalmış bir dosya (list_sessions'ın da atladığı) devam etmeyi çökertmesin: sıradakine geç.
+    for f in files:
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        return f.stem, data.get("messages", [])
+    return None

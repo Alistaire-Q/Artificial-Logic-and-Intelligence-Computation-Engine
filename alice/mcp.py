@@ -15,6 +15,7 @@ Her sunucunun araçları ajana `mcp__<sunucu>__<araç>` adıyla eklenir.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -26,6 +27,9 @@ from typing import Any, Callable
 from alice import __version__
 from alice.config import Config, alice_home
 from alice.tools.base import DANGER, EXEC, READ, Tool, ToolContext, ToolError, ToolResult
+
+# Yutulan hatalar için iz: varsayılan olarak sessiz, `logging.basicConfig(level=logging.DEBUG)` ile görünür.
+log = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = "2025-06-18"
 # Geri alınamaz işler (PR birleştirme, dosya/dal/depo silme, kapatma): auto modda da onay ister.
@@ -60,12 +64,12 @@ class MCPServer:
 
     def start(self) -> None:
         alice_home().mkdir(parents=True, exist_ok=True)
-        log = open(alice_home() / f"mcp-{self.name}.log", "ab")
         kwargs: dict[str, Any] = {}
         if sys.platform == "win32":
             kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
-        self.proc = subprocess.Popen(self._argv(), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log,
-                                     env={**os.environ, **self.env}, **kwargs)
+        with open(alice_home() / f"mcp-{self.name}.log", "ab") as err_log:  # çocuk kendi kopyasını alır
+            self.proc = subprocess.Popen(self._argv(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                         stderr=err_log, env={**os.environ, **self.env}, **kwargs)
         threading.Thread(target=self._reader, daemon=True, name=f"mcp-{self.name}").start()
         res = self.request("initialize", {"protocolVersion": PROTOCOL_VERSION, "capabilities": {},
                                           "clientInfo": {"name": "alice", "version": __version__}})
@@ -112,8 +116,10 @@ class MCPServer:
                         pending[1].update(msg)
                         pending[0].set()
                 except Exception:  # noqa: BLE001 - tek bozuk mesaj okuyucuyu öldürmesin
+                    log.debug("MCP mesajı işlenemedi", exc_info=True)
                     continue
         finally:
+            self.proc.stdout.close()  # süreç bitti: boru tanıtıcısı sızmasın
             for ev, box in list(self._pending.values()):  # süreç öldü
                 box.setdefault("error", {"message": "sunucu kapandı"})
                 ev.set()

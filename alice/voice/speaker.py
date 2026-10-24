@@ -11,7 +11,7 @@ import threading
 from typing import Callable
 
 from alice.voice.audio import Audio, Player
-from alice.voice.tone import for_speech, pick
+from alice.voice.tone import drop_emoji, for_speech, pick
 
 
 class Speaker:
@@ -34,12 +34,14 @@ class Speaker:
     def say(self, text: str, emotion: str | None = None, severity: str = "", topic: str = "") -> bool:
         """Kuyruğa ekle. Ses kapalıysa (ör. sessiz mod) False."""
         text = for_speech(text)
+        emotion = emotion or pick(text, severity, topic)  # emoji (😄) tonu belirler, sonra atılır
+        text = drop_emoji(text)
         if not text or not self.enabled():
             return False
         with self._cv:
             self._pending += 1
             gen = self._gen
-        self._synth_q.put((gen, text, emotion or pick(text, severity, topic)))
+        self._synth_q.put((gen, text, emotion))
         return True
 
     def stop(self) -> None:

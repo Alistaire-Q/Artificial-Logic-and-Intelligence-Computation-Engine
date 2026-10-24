@@ -78,8 +78,8 @@ def test_full_flight():
 
     # yaklaşma: önce hızlı, sonra on speed, sonra teker koyma
     r.said.clear()
-    for i, (agl, aoa) in enumerate([(500, 7), (450, 7), (400, 13), (350, 13), (250, 13), (150, 13), (80, 13),
-                                    (40, 12.5), (10, 13), (2, 13), (0.3, 13)]):
+    for agl, aoa in [(500, 7), (450, 7), (400, 13), (350, 13), (250, 13), (150, 13), (80, 13),
+                     (40, 12.5), (10, 13), (2, 13), (0.3, 13)]:
         t += 2
         tr.feed(st(t, gear=1.0, ias=88 if aoa < 10 else 75, agl=agl, aoa=aoa, vv=-3.5 if agl > 2 else -1.2,
                    fuel_kg=fuel, x=0, flare=0))
@@ -141,8 +141,8 @@ def test_to_state_fuel_fraction_and_kg():
 def test_dcs_listener_udp():
     got, restricted, ended, metrics = [], [], [], []
     lis = DCSListener(got.append, lambda: restricted.append(1), lambda: ended.append(1), metrics.extend, port=0).start()
+    tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         port = lis.bound_port
         for msg in ({"event": "start"}, {"t": 1, "aircraft": "F-16C_50", "ias": 120, "fuel_int": 0.4},
                     {"t": 2, "restricted": True}, b"bozuk", {"event": "stop"}):
@@ -152,6 +152,7 @@ def test_dcs_listener_udp():
                 break
             time.sleep(0.02)
     finally:
+        tx.close()
         lis.stop()
     assert len(got) == 1 and got[0].ias == 120 and restricted and ended
     assert ("dcs.ias_kt", pytest.approx(120 / KT), None) in metrics

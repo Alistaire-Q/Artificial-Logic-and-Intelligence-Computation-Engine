@@ -202,7 +202,7 @@ class ApplyPatch(Tool):
                     report.append(f"M {op.path}")
                 diffs.append(make_diff(op.move_to or op.path, before.replace("\r\n", "\n"),
                                        after.replace("\r\n", "\n")))
-        for p, body, _ in writes:
+        for p, _body, _ in writes:
             snapshot(ctx, p)
         for p, body, _ in writes:
             if body is None:

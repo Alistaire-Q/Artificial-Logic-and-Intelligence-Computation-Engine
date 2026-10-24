@@ -294,6 +294,48 @@ def synth_one(d: dict) -> tuple:
     return buf.getvalue(), headers
 
 
+MAX_BODY = 256 * 1024  # bayt: istek gövdesi
+MAX_TEXT = 4000  # harf: daha uzun metin dakikalarca ekran kartını kilitler
+NUMERIC = ("exaggeration", "cfg_weight", "temperature", "repetition_penalty", "min_p", "top_p")
+
+
+class BadRequest(ValueError):
+    pass
+
+
+def validate(data) -> dict:
+    """/synth isteğini denetle; bozuk istek 500 (yığın dökümü) yerine anlaşılır 400 alsın."""
+    if not isinstance(data, dict):
+        raise BadRequest("JSON nesnesi bekleniyor")
+    text = data.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise BadRequest("text bos")
+    if len(text) > MAX_TEXT:
+        raise BadRequest(f"text cok uzun ({len(text)} > {MAX_TEXT})")
+    out = dict(data)
+    for k in NUMERIC:
+        v = data.get(k)
+        if v is None:
+            continue
+        if isinstance(v, bool):
+            raise BadRequest(f"{k} sayi olmali")
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            raise BadRequest(f"{k} sayi olmali") from None
+        if f != f or f in (float("inf"), float("-inf")):
+            raise BadRequest(f"{k} sonlu olmali")
+        out[k] = f
+    device = data.get("device") or "cuda"
+    if device not in ("cuda", "cpu"):
+        raise BadRequest("device cuda ya da cpu olmali")
+    out["device"] = device
+    for k in ("ref", "language", "whisper_model"):
+        if data.get(k) is not None and not isinstance(data[k], str):
+            raise BadRequest(f"{k} metin olmali")
+    return out
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
@@ -325,9 +367,19 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(404, b"{}", "application/json")
         try:
             n = int(self.headers.get("Content-Length") or 0)
-            data = json.loads(self.rfile.read(n) or b"{}")
-            if not str(data.get("text", "")).strip():
-                return self._send(400, b'{"error": "text bos"}', "application/json")
+        except ValueError:
+            n = -1
+        # Negatif uzunlukla read(-1) bağlantı kapanana kadar bekliyordu; çok büyük gövde belleği doldurur.
+        if n < 0 or n > MAX_BODY:
+            self.close_connection = True
+            return self._send(413 if n > MAX_BODY else 400, b'{"error": "gecersiz Content-Length"}',
+                              "application/json")
+        try:
+            data = validate(json.loads(self.rfile.read(n) or b"{}"))
+        except (ValueError, UnicodeDecodeError) as e:  # bozuk JSON da ValueError
+            msg = str(e) if isinstance(e, BadRequest) else "gecersiz JSON"
+            return self._send(400, json.dumps({"error": msg}).encode(), "application/json")
+        try:
             wav, headers = synth(data)
             self._send(200, wav, "audio/wav", headers)
         except Exception as e:  # noqa: BLE001

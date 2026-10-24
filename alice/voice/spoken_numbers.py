@@ -7,6 +7,9 @@ saçmalayabiliyor; söylenecek her şey önce düz Türkçe kelimelere çevrilir
   "1.200 kg", "9,843 ft"-> "bin iki yüz kilo", "dokuz bin sekiz yüz kırk üç feet"
   "14:05"               -> "on dört sıfır beş"
   "3'te", "-5"          -> "üçte", "eksi beş"
+  "15.10.2026"          -> "on beş ekim iki bin yirmi altı"
+  "15. yüzyıl"          -> "on beşinci yüzyıl"
+  "3.12.1", "1.234,56"  -> "üç nokta on iki nokta bir", "bin iki yüz otuz dört virgül elli altı"
 """
 
 from __future__ import annotations
@@ -47,6 +50,24 @@ def say_int(n: int) -> str:
     return " ".join(w for w in words if w)
 
 
+# Sıra sayısı: son kelimenin sıra hâli ("on beş" -> "on beşinci").
+_ORD = {"sıfır": "sıfırıncı", "bir": "birinci", "iki": "ikinci", "üç": "üçüncü", "dört": "dördüncü",
+        "beş": "beşinci", "altı": "altıncı", "yedi": "yedinci", "sekiz": "sekizinci", "dokuz": "dokuzuncu",
+        "on": "onuncu", "yirmi": "yirminci", "otuz": "otuzuncu", "kırk": "kırkıncı", "elli": "ellinci",
+        "altmış": "altmışıncı", "yetmiş": "yetmişinci", "seksen": "sekseninci", "doksan": "doksanıncı",
+        "yüz": "yüzüncü", "bin": "bininci", "milyon": "milyonuncu", "milyar": "milyarıncı",
+        "trilyon": "trilyonuncu"}
+
+MONTHS = ["ocak", "şubat", "mart", "nisan", "mayıs", "haziran", "temmuz", "ağustos", "eylül", "ekim", "kasım",
+          "aralık"]
+
+
+def say_ordinal(n: int) -> str:
+    words = say_int(n).split()
+    words[-1] = _ORD.get(words[-1], words[-1])
+    return " ".join(words)
+
+
 def say_digits(s: str) -> str:
     """Ondalık kısım: "05" -> "sıfır beş", "5" -> "beş", "25" -> "yirmi beş"."""
     if s.startswith("0"):
@@ -61,6 +82,12 @@ def _number(raw: str) -> str:
     if re.fullmatch(r"\d{1,3}([.,]\d{3})+", s) and not s.startswith("0"):
         # Binlik ayracı: 1.200 / 1.200.000 / 9,843 (tam 3 haneli gruplar)
         out = say_int(int(re.sub(r"[.,]", "", s)))
+    elif m := (re.fullmatch(r"(\d{1,3}(?:\.\d{3})+),(\d+)", s) or re.fullmatch(r"(\d{1,3}(?:,\d{3})+)\.(\d+)", s)):
+        # Binlik + ondalık: 1.234,56 (Türkçe) / 1,234.56 (İngilizce). Eskiden "yüz yirmi üç bin..." okunuyordu.
+        out = f"{say_int(int(re.sub(r'[.,]', '', m.group(1))))} virgül {say_digits(m.group(2))}"
+    elif re.fullmatch(r"\d+(?:\.\d+){2,}", s):
+        # Sürüm/IP gibi çok noktalı: 3.12.1 -> "üç nokta on iki nokta bir" (eskiden tek büyük sayı)
+        out = " nokta ".join(say_int(int(x)) for x in s.split("."))
     elif re.fullmatch(r"\d+[.,]\d+", s):
         whole, frac = re.split(r"[.,]", s)
         out = f"{say_int(int(whole))} virgül {say_digits(frac)}"
@@ -72,7 +99,13 @@ def _number(raw: str) -> str:
 _UNIT_RE = "|".join(sorted((re.escape(u) for u in UNITS), key=len, reverse=True))
 _NUM = r"[-+]?\d+(?:[.,]\d+)*"
 
+def _date(m: re.Match) -> str:
+    return f"{say_int(int(m.group(1)))} {MONTHS[int(m.group(2)) - 1]} {say_int(int(m.group(3)))}"
+
+
 _PATTERNS = [
+    # tarih: 15.10.2026 / 5.1.2025 (eskiden "on beş milyon yüz iki bin..." okunuyordu)
+    (re.compile(r"(?<![\w.,])(0?[1-9]|[12]\d|3[01])[./](0?[1-9]|1[0-2])[./](\d{4})(?![\w.,]\d)"), _date),
     # saat: 14:05
     (re.compile(r"\b([01]?\d|2[0-3]):([0-5]\d)\b"),
      lambda m: f"{say_int(int(m.group(1)))} {'sıfır ' + say_int(int(m.group(2))) if m.group(2).startswith('0') and m.group(2) != '00' else ('' if m.group(2) == '00' else say_int(int(m.group(2))))}".strip()),
@@ -84,6 +117,8 @@ _PATTERNS = [
      lambda m: f"{_number(m.group(1))} {UNITS[m.group(2).lower()]}"),
     # sayı + kesme işaretli ek: 3'te, 1990'larda
     (re.compile(r"(?<![\w.,])(" + _NUM + r")['’](\w+)"), lambda m: f"{_number(m.group(1))}{m.group(2)}"),
+    # sıra sayısı: "15. yüzyıl", "3. kez" (noktadan sonra küçük harfle devam: cümle sonu değil)
+    (re.compile(r"(?<![\w.,])(\d{1,9})\.(?=[ \t]+[a-zçğıöşü])"), lambda m: say_ordinal(int(m.group(1)))),
     # çıplak sayı
     (re.compile(r"(?<![\w.,])(" + _NUM + r")(?![\w])"), lambda m: _number(m.group(1))),
 ]

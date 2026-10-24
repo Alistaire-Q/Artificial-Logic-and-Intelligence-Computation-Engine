@@ -43,6 +43,21 @@ CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline';
        "frame-src 'self'")
 # Önizlenen site korumalı çerçevede (ayrı köken) çalışır: ALICE'in sayfasına ve API'sine dokunamaz.
 PREVIEW_CSP = "sandbox allow-scripts allow-forms allow-popups allow-modals"
+# İstek gövdesi sınırı: 6 ekran görüntüsü (1600 px PNG, base64) ya da uzun bir ses kaydı sığsın.
+MAX_BODY = 32_000_000
+# Yanıt vermeyen bağlantı thread tutmasın (yerel ağdaki biri boş bağlantılarla sunucuyu tıkayamasın).
+REQUEST_TIMEOUT = 60
+
+
+def _same(given: str, expected: str) -> bool:
+    """Sabit zamanlı anahtar karşılaştırması. compare_digest ASCII dışı str'de TypeError atar; baytla karşılaştır."""
+    return secrets.compare_digest(given.encode("utf-8", "surrogateescape"), expected.encode("utf-8"))
+
+
+class BadRequest(Exception):
+    def __init__(self, code: int, msg: str):
+        super().__init__(msg)
+        self.code = code
 
 
 # ----------------------------------------------------------------------- olaylar
@@ -901,6 +916,7 @@ def log_error() -> None:
 def make_handler(state: AppState):
     class Handler(BaseHTTPRequestHandler):
         server_version = "ALICE"
+        timeout = REQUEST_TIMEOUT
 
         def log_message(self, *args: Any) -> None:  # sessiz
             pass
@@ -910,9 +926,17 @@ def make_handler(state: AppState):
             host = (self.headers.get("Host") or "").split(":")[0]
             return host in state.allowed_hosts
 
+        def _origin_ok(self) -> bool:
+            """Tarayıcı Origin gönderiyorsa izinli bir adresten gelmeli (Host kontrolünün eşi; token sızsa bile
+            başka bir sitenin sayfası API'yi kullanamasın). Origin'siz istemciler (saat otomasyonu) etkilenmez."""
+            origin = self.headers.get("Origin")
+            if origin is None:
+                return True
+            return (urlparse(origin).hostname or "") in state.allowed_hosts
+
         def _token_ok(self, query: dict[str, list[str]]) -> bool:
             tok = self.headers.get("X-Alice-Token") or (query.get("t") or [""])[0]
-            return secrets.compare_digest(tok, state.token)
+            return _same(tok, state.token)
 
         def _send(self, code: int, body: bytes, ctype: str, extra: dict[str, str] | None = None) -> None:
             self.send_response(code)
@@ -920,6 +944,7 @@ def make_handler(state: AppState):
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")  # adreste anahtar var, dış bağlantılara gitmesin
             for k, v in (extra or {}).items():
                 self.send_header(k, v)
             self.end_headers()
@@ -929,13 +954,18 @@ def make_handler(state: AppState):
             self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
 
         def _body(self) -> dict[str, Any]:
-            n = int(self.headers.get("Content-Length") or 0)
-            if n <= 0 or n > 2_000_000:
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                raise BadRequest(400, "geçersiz Content-Length") from None
+            if n <= 0:
                 return {}
+            if n > MAX_BODY:  # sessizce boş gövdeyle devam etmek ekli görselleri kaybettiriyordu
+                raise BadRequest(413, "istek çok büyük")
             try:
                 data = json.loads(self.rfile.read(n))
-            except json.JSONDecodeError:
-                return {}
+            except ValueError:  # JSONDecodeError ve UTF-8 olmayan gövde (UnicodeDecodeError)
+                raise BadRequest(400, "geçersiz JSON") from None
             return data if isinstance(data, dict) else {}
 
         def _deny(self) -> None:
@@ -949,7 +979,7 @@ def make_handler(state: AppState):
             from alice.tools.base import ToolError
 
             parts = path.split("/", 4)  # "", "preview", anahtar, proje, yol
-            if len(parts) < 4 or not secrets.compare_digest(parts[2], state.preview_token):
+            if len(parts) < 4 or not _same(parts[2], state.preview_token):
                 return self._deny()
             try:
                 team = state.get_team(parts[3])
@@ -958,15 +988,37 @@ def make_handler(state: AppState):
             f = safe_path(team.cwd, unquote(parts[4] if len(parts) > 4 else ""))
             if f is None:
                 return self._send(404, b"not found", "text/plain")
-            self._send(200, f.read_bytes(), content_type(f),
+            try:
+                body = f.read_bytes()
+            except OSError:
+                return self._send(404, b"not found", "text/plain")
+            self._send(200, body, content_type(f),
                        {"Content-Security-Policy": PREVIEW_CSP, "Access-Control-Allow-Origin": "*"})
+
+        def _fail(self) -> None:
+            """Beklenmeyen hata: ayrıntı app.log'a, istemciye iz (traceback) değil kısa bir mesaj."""
+            log_error()
+            try:
+                self._json({"ok": False, "error": "sunucu hatası (ayrıntı app.log'da)"}, 500)
+            except OSError:
+                pass
 
         # --------------------------------------------------------------- GET
         def do_GET(self) -> None:  # noqa: N802
+            try:
+                self._get()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except Exception:  # noqa: BLE001 - bağlantı yanıtsız kopmasın
+                self._fail()
+
+        def _get(self) -> None:
             u = urlparse(self.path)
             q = parse_qs(u.query)
             if not self._host_ok():
                 return self._deny()
+            if not u.path.startswith(("/preview/", "/static/")) and not self._origin_ok():
+                return self._deny()  # önizleme korumalı çerçeveden (Origin: null) kaynak ister
             if u.path == "/":
                 if not self._token_ok(q):
                     return self._deny()
@@ -1099,9 +1151,12 @@ def make_handler(state: AppState):
         # -------------------------------------------------------------- POST
         def do_POST(self) -> None:  # noqa: N802
             u = urlparse(self.path)
-            if not self._host_ok() or not self._token_ok({}):
+            if not self._host_ok() or not self._origin_ok() or not self._token_ok({}):
                 return self._deny()
-            d = self._body()
+            try:
+                d = self._body()
+            except BadRequest as e:
+                return self._json({"ok": False, "error": str(e)}, e.code)
             p = u.path
             try:
                 if p == "/api/send":

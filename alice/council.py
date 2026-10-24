@@ -218,6 +218,16 @@ def parse_block(text: str) -> dict[str, Any]:
     return {}
 
 
+def as_list(value: Any) -> list[Any]:
+    """Modelin liste yerine tek değer yazdığı alanlar ("conditions": "şunu düzelt", "findings": {...}): tek
+    elemanlı listeye çevrilir. Önceden metin harf harf şart oluyor, sözlük de dilimlenirken kurulu çökertiyordu."""
+    if isinstance(value, list):
+        return value
+    if value is None or value == "" or isinstance(value, bool):
+        return []
+    return [value]
+
+
 _JSON_START = re.compile(r'\{\s*"(?:vote|checks|stances|findings|reason|conditions)"')
 
 
@@ -596,11 +606,11 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
             v = self.votes.setdefault(role, Vote(role, "?", 1.0))
             v.first = v.last = norm_vote(data.get("vote"))
             v.reason = str(data.get("reason") or "")[:600] or (text.strip()[-300:] if not data else "")
-            v.conditions = [str(c)[:300] for c in data.get("conditions") or [] if str(c).strip()][:8]
+            v.conditions = [str(c)[:300] for c in as_list(data.get("conditions")) if str(c).strip()][:8]
             plan = self.kind == "plan"
             if plan:
                 v.scores = norm_scores(data.get("scores"))
-            for f in (data.get("findings") or [])[:PLAN_MAX_FINDINGS if plan else 12]:
+            for f in as_list(data.get("findings"))[:PLAN_MAX_FINDINGS if plan else 12]:
                 if not isinstance(f, dict) or not str(f.get("title") or "").strip():
                     continue
                 n += 1
@@ -650,7 +660,7 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
         v.first = v.last = norm_vote(data.get("vote"))
         v.reason = str(data.get("reason") or "")[:600]
         n = len(self.findings)
-        for f in (data.get("findings") or [])[:6]:
+        for f in as_list(data.get("findings"))[:6]:
             if isinstance(f, dict) and str(f.get("title") or "").strip():
                 n += 1
                 if self.kind == "plan":  # kontrolcünün kendi bulguları da plan kurallarına uyar
@@ -669,7 +679,7 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
 
     def _apply_checks(self, data: dict[str, Any]) -> None:
         by_id = {f.id: f for f in self.findings}
-        for c in data.get("checks") or []:
+        for c in as_list(data.get("checks")):
             if not isinstance(c, dict):
                 continue
             f = by_id.get(str(c.get("id") or "").strip().upper())
@@ -713,8 +723,8 @@ Son mesajının sonuna mutlaka istenen JSON bloğunu ```json ... ``` içinde koy
             if data.get("reason"):
                 v.reason = str(data["reason"])[:600]
             if data.get("conditions"):
-                v.conditions = [str(c)[:300] for c in data["conditions"] if str(c).strip()][:8]
-            for s in data.get("stances") or []:
+                v.conditions = [str(c)[:300] for c in as_list(data["conditions"]) if str(c).strip()][:8]
+            for s in as_list(data.get("stances")):
                 f = by_id.get(str((s or {}).get("id") or "").strip().upper()) if isinstance(s, dict) else None
                 if f is not None and str(s.get("note") or "").strip():
                     note = {"by": role, "stance": str(s.get("stance") or ""), "note": str(s["note"])[:400]}

@@ -68,6 +68,8 @@ Ekim 2026 itibarıyla ücretsiz katmanları taradım. Rakamlar sık değişiyor,
 | **Vercel AI Gateway** | Hesap başına 30 günde 5$ kredi; Claude, GPT, Gemini aynı anahtarla. Kredi harcadığı için otomatik sıraya **girmiyor**, sadece elle: `/model brain vercel:anthropic/claude-sonnet-5.5` | elle seçilen güçlü model |
 | **Ollama (yerel)** | Limitsiz, offline, GPU'na bağlı | her zincirin sonunda son çare |
 
+Bu tablodakilere ek olarak `.env`'e anahtar yazarsan **Mistral** ve **SambaNova** da otomatik ölçülüp zincire girer. Varsayılan `config.toml`'da brain zincirinin başında NVIDIA'daki GLM 5.3 (1M bağlam) duruyor, ardından `auto` (ölçülen en iyi ücretsiz modeller), en sonda yerel Ollama.
+
 **Tek sağlayıcıya güvenmiyorum.** Router her rol için bir zincir tutuyor. 429 gelince o model soğumaya alınıyor ve sıradakine geçiliyor, günlük kota dolunca 1 saat, anahtar yanlışsa sağlayıcı oturum boyunca, model katalogdan kalkmışsa o model kapatılıyor. İstek bir sağlayıcının token sınırını aşıyorsa (Groq'un 8K TPM'i gibi) o sağlayıcı o istek için atlanıyor. Yani bir sağlayıcı düşse de ALICE çalışmaya devam ediyor.
 
 **Gemini "You have reached a rate limit. Set up billing..." hatası:** bu ücretsiz katmanın dolduğu anlamına geliyor. ALICE bunu artık 20 saniyelik hız sınırı değil kota sayıyor: Gemini bir saat atlanıyor, istekler sıradaki sağlayıcıya gidiyor. Canlı sesli konuşma (Gemini Live) da aynı hatayı alınca bir saat normal sesli yola (STT + model + TTS) geçiyor ve bunu bir kez Türkçe söylüyor. Bu yüzden Gemini dışında en az iki anahtar daha doldurmak (Groq, Z.ai, Mistral, Cerebras) gerçekten fark ediyor.
@@ -96,7 +98,7 @@ cd Artificial-Logic-and-Intelligence-Computation-Engine
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-Script `.venv` açıyor, her şeyi kuruyor, Chrome/Edge yoksa Playwright Chromium indiriyor ve `alice init` çalıştırıyor. Elle yapmak istersen:
+Script Python 3.10+ bulamazsa winget ile Python 3.11 kuruyor, `.venv` açıyor, `computer`, `browser`, `app`, `core` ve `voice` paketlerini ve yerel Whisper'ı (faster-whisper) kuruyor, Chrome/Edge yoksa Playwright Chromium indiriyor, sonra `alice init` ve `alice shortcut` çalıştırıyor. Uygulama penceresi ya da ses paketleri kurulamazsa uyarı verip devam ediyor (yazılı kullanım yine çalışır). Elle yapmak istersen:
 
 ```powershell
 python -m venv .venv
@@ -106,6 +108,20 @@ alice init
 ```
 
 Linux/macOS'ta aynısı, `pip install -e ".[all]"` sonrası `alice init`. Linux'ta pencere listesi için `wmctrl` lazım; UI Automation şimdilik sadece Windows'ta.
+
+Opsiyonel paket grupları (`pip install -e ".[grup]"`, birden fazlası virgülle):
+
+* `computer`: ekran görüntüsü, fare/klavye, pano, pencere yönetimi, UI Automation
+* `browser`: Playwright ile tarayıcı kontrolü
+* `app`: masaüstü uygulamasının kendi penceresi (pywebview); yoksa Edge/Chrome uygulama modu kullanılır
+* `core`: arka plan çekirdeğinin tepsi simgesi
+* `voice`: mikrofon, ses çalma, bas-konuş, konuşma algılama, Edge sesi, Gemini Live
+* `voice-local`: bilgisayarda Whisper ve openWakeWord ("Hey Alice")
+* `voice-xtts`: yerel XTTS v2 sesi
+* `all`: `computer`, `browser`, `app`, `core` ve `voice` birlikte
+* `dev`: pytest ve ruff
+
+Eksik bir paket gereken bir komutu çalıştırırsan ALICE traceback yerine hangi grubu kuracağını tek satırla söyler (ör. `Eksik paket: sounddevice. Kur: pip install "alice-harness[voice]"`). `alice doctor` da eksikleri listeler.
 
 ### API anahtarları
 
@@ -123,6 +139,10 @@ Linux/macOS'ta aynısı, `pip install -e ".[all]"` sonrası `alice init`. Linux'
 * `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`: https://dash.cloudflare.com/profile/api-tokens ("Workers AI" izinli token; hesap kimliği panelin sağında)
 * `AI_GATEWAY_API_KEY`: https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai%2Fapi-keys (Vercel, 5$ kredi, sadece elle seçilir)
 * `TYPESAFE_API_KEY`: Jev erişimi alırsan
+* `GITHUB_TOKEN`: git ve GitHub araçları için (opsiyonel, ayrıntı aşağıda)
+* `BRAVE_SEARCH_API_KEY`: web aramada Brave kullanmak için (opsiyonel)
+
+Hiç anahtar yoksa ALICE sadece yerel Ollama'yı dener ve bunu açılışta söyler.
 
 Sonra:
 
@@ -273,7 +293,7 @@ Tek seferlik kapatmak için `ALICE_UPDATE_MODE=off` ya da `ALICE_NO_UPDATE=1` or
 
 ## Masaüstü uygulaması
 
-`install.ps1` masaüstüne ve Başlat menüsüne **ALICE** kısayolu koyuyor (Windows tuşuna basıp "ALICE" yazarak da bulunur), çift tıklayınca konsol penceresi olmadan uygulama açılıyor. Elle açmak için `alice app`, kısayolu yeniden oluşturmak için `alice shortcut`.
+`install.ps1` masaüstüne ve Başlat menüsüne **ALICE** kısayolu koyuyor (Windows tuşuna basıp "ALICE" yazarak da bulunur), çift tıklayınca konsol penceresi olmadan uygulama açılıyor. Elle açmak için `alice app`, kısayolu yeniden oluşturmak için `alice shortcut`. `alice app --cwd <klasör>` başlangıç klasörünü, `--mode` izin modunu, `--window none` pencere açmadan sadece adresi yazmayı seçer. Klasör verilmezse sırayla `config.toml` `[app] workspace`, son kullanılan klasör ya da `Belgeler\ALICE` açılır.
 
 ![Başlangıç](docs/app-baslangic.png)
 
@@ -587,10 +607,16 @@ alice -p "RAM'i en çok yiyen 5 süreci listele"   # tek seferlik, sonucu yazıp
 alice --yolo                            # hiçbir şey sormadan tam erişim
 alice --resume                          # son oturuma devam
 alice -v                                # hangi modelin cevap verdiğini göster
+alice --mode plan --cwd D:\Projeler\oyun  # izin modu ve çalışma klasörü
+alice --model gemini:gemini-flash-latest # beyin rolünü tek modele sabitle
+alice --version                         # sürüm
+alice <komut> --help                    # her alt komutun kullanımı (alice voice --help, alice core --help...)
 alice update --check                    # main'de yeni commit var mı, CI yeşil mi
 alice update --restart                  # son sürümü çek ve uygulamayı aç
 alice connect                           # servis bağlantıları (Spotify, Steam, Discord, YouTube)
 ```
+
+Alt komut adını yanlış yazarsan (`alice doctr`) ALICE bunu modele göndermez, doğrusunu önerir. Tek kelimelik bir mesajı gerçekten göndermek için `alice -p "kelime"`.
 
 Reflex'i tek başına denemek için:
 
@@ -600,9 +626,11 @@ alice reflex "Kaydet butonuna bas" --target desktop --title "Not Defteri"
 alice reflex "hava durumunu ara" --target browser --url https://duckduckgo.com --input "ara=ankara hava durumu"
 ```
 
+`--target browser` önce açık tarayıcına bağlanır (tarayıcı `--remote-debugging-port=9222` ile açık olmalı). Bağlanamazsa ayrı pencere açmak varsayılan olarak kapalı; açmak için `config.toml` `[agent]` bölümüne `browser_allow_separate = true` yaz. `--max-steps` adım sınırı (varsayılan 25), `--close` bitince tarayıcıyı kapatır.
+
 Terminalde cevap akarak geliyor, dosya düzenlemeleri renkli diff olarak görünüyor, altta model, izin modu, context doluluğu ve bugünkü istek sayısını gösteren bir durum çubuğu var. Çok satırlı yazmak için **Alt+Enter** ya da satırı `\` ile bitirip Enter (her terminalde çalışır); Enter tek başına gönderir.
 
-REPL komutları: `/help`, `/plan`, `/mode plan|ask|auto|yolo` (Shift+Tab ile de döner), `/model` (zincir durumları), `/model brain groq:openai/gpt-oss-120b` (sabitle), `/rewind`, `/init`, `/usage`, `/compact`, `/clear`, `/sessions`, `/resume`, `/cwd`, `/tools`, `/mcp`, `/memory`, `/update`, `/exit`. Özel komutlar ve `@dosya` terminalde de çalışıyor.
+REPL komutları: `/help`, `/plan`, `/mode plan|ask|auto|yolo` (Shift+Tab ile de döner), `/model` (zincir durumları), `/model brain groq:openai/gpt-oss-120b` (sabitle), `/model brain reset`, `/think [rol] off|low|medium|high|default` (düşünme seviyesi), `/kurul <konu>` (inceleme kurulu), `/rewind`, `/init`, `/usage`, `/compact`, `/clear`, `/sessions`, `/resume`, `/cwd`, `/tools`, `/mcp`, `/memory`, `/update`, `/exit`. Özel komutlar ve `@dosya` terminalde de çalışıyor.
 
 ## Arka plan çekirdeği
 
@@ -610,8 +638,8 @@ ALICE'in altında, sen yazmasan da çalışan küçük bir servis var. Bilgisaya
 
 ```powershell
 pip install -e ".[core]"     # sistem tepsisi simgesi için (opsiyonel)
-alice core install           # Windows açılınca tepside sessizce başlasın
-alice core run --tray        # şimdi başlat (ya da sadece: alice core run)
+alice core install           # Windows açılınca tepside sessizce başlasın (geri almak: alice core uninstall)
+alice core run --tray        # şimdi başlat (ya da sadece: alice core run; --once: bir tur ölçüp çık)
 alice core status            # çalışıyor mu, hangi mod, son bildirimler
 alice core mode flight       # modu elle sabitle; alice core mode auto ile otomatiğe dön
 alice core stats "pc.gpu.*" 1d
@@ -655,10 +683,12 @@ alice voice status                 # neyin hazır olduğunu gösterir
 
 ```powershell
 alice voice audition                                   # Gemini sesleri (GEMINI_API_KEY gerekir)
-alice voice audition --local xtts,chatterbox           # yerel motorlar da (önce: pip install coqui-tts / chatterbox-tts)
+alice voice audition --local xtts,chatterbox           # yerel motorlar da (XTTS: pip install -e ".[voice-xtts]", Chatterbox: alice voice install-local)
 alice voice use gemini:Aoede                           # beğendiğini seç
 alice voice library                                    # bu sesle duygu kütüphanesini oluştur
 alice voice say "Bingo yakıt, eve dön." --emotion urgent
+alice voice models                                     # hesabındaki Gemini ses modelleri (kota harcamaz)
+alice voice install-local                              # Chatterbox'ı ayrı bir ortama (~/.alice/tts-venv) kurar
 ```
 
 Yerel motorlar sesi duygu kütüphanesindeki kayıtlardan klonlar. Bu yüzden DCS açıkken buluttan, kapalıyken bilgisayardan konuşsa da aynı ALICE duyulur. Uçuş modunda ALICE ekran kartına dokunmaz: önce bulut, yerel motor ancak son çare olarak işlemcide.
@@ -666,8 +696,9 @@ Yerel motorlar sesi duygu kütüphanesindeki kayıtlardan klonlar. Bu yüzden DC
 **2. Konuş.**
 
 ```powershell
-alice voice           # sesli asistan: bas-konuş (Scroll Lock) ve "Hey Alice"
+alice voice           # sesli asistan: bas-konuş (Scroll Lock) ve "Hey Alice"  (--ptt <tuş>, --no-wake)
 alice voice test      # mikrofonu dene
+alice voice on        # çekirdekle birlikte açılsın (kapatmak: alice voice off)
 ```
 
 * **Bas-konuş:** tuşu basılı tut, konuş, bırak. Tuş `config.toml` içinde `[voice] ptt_key`.
@@ -860,6 +891,7 @@ ALICE bilgisayarın dışındaki şeyleri de yönetiyor. Hepsi sohbetle ya da se
 ```powershell
 alice notes add "Unity'de zıplama hatasına bak"     # ya da: "Alice, not al…"
 alice notes search zıplama 30d                        # ya da: "geçen hafta ne not almıştım?"
+alice notes undo                                      # son notu sil
 alice brief                                           # sabah özeti şimdi
 alice brief --install 07:45 --weekdays                # her hafta içi sabahı söylesin
 alice report --open                                   # haftalık bilgisayar raporu
@@ -900,7 +932,7 @@ Varsayılanı `auto` yaptım çünkü tam erişim istedin ama bir free modelin y
 
 ## Config
 
-`~/.alice/config.toml` (Windows'ta `%USERPROFILE%\.alice\config.toml`). Önemli kısımlar:
+`~/.alice/config.toml` (Windows'ta `%USERPROFILE%\.alice\config.toml`). Bütün ALICE dosyaları (config, `.env`, oturumlar, hafıza, projeler) bu klasörde; başka bir yer istersen `ALICE_HOME` ortam değişkenini ayarla. `alice init --force` dosyaları varsayılanla yeniden yazar. Önemli kısımlar:
 
 ```toml
 [agent]
@@ -910,12 +942,17 @@ keep_images = 2             # geçmişte tutulan ekran görüntüsü sayısı
 browser_headless = false
 
 [roles]
-brain = ["gemini:gemini-flash-latest", "openrouter:openai/gpt-oss-120b:free", "..."]
-fast  = ["groq:openai/gpt-oss-20b", "..."]
-vision = ["gemini:gemini-flash-latest", "..."]
+# "auto": anahtarı olan sağlayıcılardaki ücretsiz modeller ölçülüp sıralanır (alice models)
+brain = ["nvidia:z-ai/glm-5.3", "auto", "ollama:qwen3:8b"]
+voice = ["auto", "ollama:qwen3:8b"]
+fast  = ["auto", "ollama:qwen3:8b"]
+vision = ["auto", "gemini:gemini-flash-lite-latest"]
+
+[thinking]
+default = "low"             # off | low | medium | high | default, rol başına da yazılır
 
 [decider]
-chain = ["jev", "llm:fast"]
+chain = ["jev", "jev-openrouter", "llm:fast"]
 min_confidence = 0.55       # altındaki reflex kararları brain'e devredilir
 
 [models."groq:openai/gpt-oss-20b"]
@@ -941,7 +978,8 @@ Ekran görüntüsü alındığında, o an kullanılacak brain modeli görsel des
 
 ```bash
 pip install -e ".[dev]"
-pytest
+ruff check alice tests
+python -m pytest -q
 ```
 
 Testler sahte sağlayıcılarla router geçişlerini, ajan döngüsünü (araç çağırma, izin reddi, görsel yönlendirme, context özetleme, kesinti onarımı, alt ajan), Jev istek/cevap formatını ve reflex döngüsünü kapsıyor.

@@ -85,7 +85,7 @@ def core_cmd(argv: list[str]) -> int:
             import importlib.util
 
             if importlib.util.find_spec("pystray") is None:
-                console.print("[dim]Tepsi simgesi için: pip install 'alice-harness[core]'[/]")
+                console.print("[dim]Tepsi simgesi için: " + escape('pip install "alice-harness[core]"') + "[/]")
         return 0
     if sub == "uninstall":
         console.print("[green]kaldırıldı[/]" if service.uninstall_autostart() else "[dim]zaten kurulu değil[/]")
@@ -103,11 +103,11 @@ def core_cmd(argv: list[str]) -> int:
         if len(argv) < 2:
             console.print("kullanım: alice core stats <anahtar|glob> [süre, ör. 1d]")
             return 2
-        st = Store()
         since = parse_time(argv[2] if len(argv) > 2 else "1d")
-        keys = st.keys(argv[1], since=since) if any(c in argv[1] for c in "*?[") else [argv[1]]
-        for k in keys:
-            console.print(escape(st.stats(k, since).line()))
+        with Store() as st:
+            keys = st.keys(argv[1], since=since) if any(c in argv[1] for c in "*?[") else [argv[1]]
+            for k in keys:
+                console.print(escape(st.stats(k, since).line()))
         return 0
     if sub == "status":
         s = service.read_state()
@@ -120,13 +120,15 @@ def core_cmd(argv: list[str]) -> int:
             console.print("[yellow]çalışmıyor[/]  [dim]başlat: alice core run · kalıcı: alice core install[/]")
         from alice.core.store import Store
 
-        evs = Store().events(limit=10)
+        with Store() as st:
+            evs = st.events(limit=10)
         if evs:
             console.print("[bold]Son olaylar[/]")
             for e in reversed(evs):
                 console.print("  " + escape(e.line()))
         return 0
-    console.print(__doc__)
+    console.print(f"bilinmeyen çekirdek komutu: {sub}", markup=False)
+    console.print(__doc__, markup=False)
     return 2
 
 
@@ -349,8 +351,8 @@ def rules_cmd(argv: list[str]) -> int:
 
         text = " ".join(argv[1:])
         try:
-            with console.status("kurala çevriliyor..."):
-                rule = parse_rule(text, Router(load_config()), Store())
+            with console.status("kurala çevriliyor..."), Store() as st:
+                rule = parse_rule(text, Router(load_config()), st)
         except (ValueError, TypeError, AllProvidersFailed) as e:
             console.print(f"[red]anlaşılamadı:[/] {escape(str(e))}")
             return 1
@@ -368,7 +370,7 @@ def rules_cmd(argv: list[str]) -> int:
         ok = rs.remove(argv[1]) if sub == "rm" else rs.set_enabled(argv[1], sub == "on")
         console.print("[green]tamam[/]" if ok else f"[red]kural yok: {escape(argv[1])}[/]")
         return 0 if ok else 1
-    console.print(__doc__)
+    console.print(__doc__, markup=False)
     return 2
 
 
@@ -419,5 +421,5 @@ def tasks_cmd(argv: list[str]) -> int:
             ts.save()
         console.print("[green]tamam[/]" + (" (bir sonraki çekirdek turunda çalışacak)" if sub == "run" else ""))
         return 0
-    console.print(__doc__)
+    console.print(__doc__, markup=False)
     return 2

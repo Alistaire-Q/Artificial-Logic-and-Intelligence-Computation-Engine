@@ -520,10 +520,10 @@ class Chatterbox:
             log.parent.mkdir(parents=True, exist_ok=True)
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
             device = "cuda" if self.allow_gpu() else "cpu"
-            self._proc = subprocess.Popen(
-                [self.python, str(Path(__file__).with_name("tts_server.py")), "--port", str(self.port),
-                 "--device", device, "--preload"],
-                stdout=open(log, "a", encoding="utf-8"), stderr=subprocess.STDOUT, creationflags=flags)
+            with open(log, "a", encoding="utf-8") as out:  # çocuk kendi kopyasını alır; bizdeki sızmasın
+                self._proc = subprocess.Popen(
+                    [self.python, str(Path(__file__).with_name("tts_server.py")), "--port", str(self.port),
+                     "--device", device, "--preload"], stdout=out, stderr=subprocess.STDOUT, creationflags=flags)
             end = time.monotonic() + 30
             while time.monotonic() < end:
                 if self._proc.poll() is not None:

@@ -47,7 +47,7 @@ PLUGIN = Plugin(
 
 | alan | anlamı |
 |---|---|
-| `name` | Küçük harf, rakam, `-`, `_`. Grup adıdır. |
+| `name` | Küçük harf, rakam, `-`, `_`; harfle başlar, en çok 40 karakter. Grup adıdır. |
 | `tools` | `Tool` nesneleri. |
 | `description`, `keywords` | Araçlar varsayılan olarak bir grupta durur ve modele sadece gerekince gider; bu, isteği küçük ve modeli odaklı tutar. |
 | `always` | `True`: araçlar her istekte gider (grup yok). Az ve sık kullanılan araçlar için. |

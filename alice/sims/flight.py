@@ -129,8 +129,9 @@ class Debrief:
 class FlightCompanion:
     """FlightState akışını izler, söylenecekleri say(text, severity, emotion) ile iletir."""
 
-    def __init__(self, say: Callable[[str, str, str], None], hr_stats: Callable[[float, float], dict | None] = None,
-                 hr_now: Callable[[], float | None] = None, on_debrief: Callable[[Debrief], None] = None,
+    def __init__(self, say: Callable[[str, str, str], None], hr_stats: Callable[[float, float], dict | None] | None = None,
+                 hr_now: Callable[[], float | None] | None = None,
+                 on_debrief: Callable[[Debrief], None] | None = None,
                  approach_every: float = 4.0):
         self.say = say
         self.hr_stats = hr_stats or (lambda a, b: None)

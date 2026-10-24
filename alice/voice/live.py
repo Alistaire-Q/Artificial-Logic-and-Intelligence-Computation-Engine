@@ -283,7 +283,9 @@ class AudioOut:
 
     def __init__(self, rate: int = 24000):
         self.rate = rate
-        self.q: queue.Queue[bytes | None] = queue.Queue()
+        # (nesil, pcm): araya girilince (clear) eski nesilden kalan parça çalınmaz. Çalma iş parçacığı bir parçayı
+        # kuyruktan almışken clear() gelirse o parça eskiden yine de sonuna kadar çalıyordu (~0,5 sn eski cevap).
+        self.q: queue.Queue[tuple[int, bytes] | None] = queue.Queue()
         self._gen = 0
         self.busy_until = 0.0
         self.underruns = 0
@@ -292,7 +294,7 @@ class AudioOut:
 
     def put(self, pcm: bytes) -> None:
         if self.dead is None:
-            self.q.put(pcm)
+            self.q.put((self._gen, pcm))
 
     def clear(self) -> None:
         self._gen += 1
@@ -317,14 +319,14 @@ class AudioOut:
 
     PREBUFFER = 0.4  # sn: konuşma başında/boşluktan sonra bu kadar ses birikmeden çalmaya başlama
 
-    def _gather(self, pcm: bytes) -> bytes | None:
+    def _gather(self, pcm: bytes, gen: int | None = None) -> bytes:
         """Sessizlikten sonra ilk parçayı PREBUFFER kadar biriktir: ağdan parçalar düzensiz gelir, beklemeden
         çalınca aradaki boşluklarda ses takılır."""
         if time.monotonic() < self.busy_until:
             return pcm
         need = int(self.rate * self.PREBUFFER) * 2
         deadline = time.monotonic() + self.PREBUFFER + 0.1
-        gen = self._gen
+        gen = self._gen if gen is None else gen
         while len(pcm) < need and gen == self._gen:
             try:
                 more = self.q.get(timeout=max(0.0, deadline - time.monotonic()))
@@ -333,7 +335,8 @@ class AudioOut:
             if more is None:
                 self.q.put(None)
                 break
-            pcm += more
+            if more[0] == gen:
+                pcm += more[1]
         return pcm
 
     def _run(self) -> None:
@@ -348,11 +351,13 @@ class AudioOut:
 
         with sd.RawOutputStream(samplerate=self.rate, channels=1, dtype="int16", latency="high") as out:
             while True:
-                pcm = self.q.get()
-                if pcm is None:
+                item = self.q.get()
+                if item is None:
                     return
-                pcm = self._gather(pcm)
-                gen = self._gen
+                gen, pcm = item
+                if gen != self._gen:
+                    continue  # araya girilmeden önceki cevaptan kalan parça
+                pcm = self._gather(pcm, gen)
                 step = self.rate // 20 * 2  # 50 ms
                 for i in range(0, len(pcm), step):
                     if gen != self._gen:
@@ -363,7 +368,16 @@ class AudioOut:
                         self.underruns += 1
 
 
+def _close(ws) -> None:
+    try:
+        ws.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 class LiveSession:
+    _bg_lock = threading.Lock()  # __new__ ile kurulan (test) nesneler için; __init__ kendi kilidini verir
+
     def __init__(self, cfg, agent, log: Callable[[str], None] = lambda s: None,
                  connect: Callable[..., Any] | None = None, out_factory: Callable[[], Any] = AudioOut):
         v = cfg.data.get("voice", {})
@@ -393,6 +407,7 @@ class LiveSession:
         self._pre_lock = threading.Lock()
         self._tools_q: queue.Queue | None = None  # araç iş parçacığının kuyruğu
         self._bg = 0  # arka planda süren uzun işler (computer_task): bitene kadar konuşma kapanmasın
+        self._bg_lock = threading.Lock()  # _bg iki iş parçacığından değişiyor (+= atomik değil)
         # Tek istekte en fazla bu kadar araç: model bazen kullanıcıya hiç dönmeden 40 run_command art arda çağırıp
         # iki dakika sessiz kalıyordu. Sınırda elindekini söyleyip devam edeyim mi diye sormaya yönlendirilir.
         self.tool_budget = int(v.get("live_tool_budget", 10))
@@ -514,13 +529,33 @@ class LiveSession:
 
             def run() -> None:
                 try:
-                    pre["ws"] = self._open()
+                    ws = self._open()
                 except Exception as e:  # noqa: BLE001
-                    pre["error"] = e
+                    with self._pre_lock:
+                        pre["error"] = e
+                    return
+                with self._pre_lock:
+                    abandoned = pre.get("abandoned", False)
+                    if not abandoned:
+                        pre["ws"] = ws
+                if abandoned:  # bekleyen vazgeçti (bağlantı geç açıldı): açık oturum sunucuda asılı kalmasın
+                    _close(ws)
 
             pre["thread"] = threading.Thread(target=run, daemon=True, name="alice-live-pre")
             self._pre = pre
             pre["thread"].start()
+
+    PREFETCH_WAIT = 15.0  # sn: önceden açılan bağlantıyı en fazla bu kadar bekle
+
+    def _settle(self, pre: dict[str, Any]) -> tuple[Any, Exception | None]:
+        """Önceden açılan bağlantının sonucunu bekle: (ws, hata). Süre dolduğunda hâlâ açılıyorsa vazgeçildi
+        işaretlenir, geç açılan bağlantıyı açan iş parçacığı kendisi kapatır. Eskiden bu bağlantı hiç kapanmıyordu."""
+        pre["thread"].join(self.PREFETCH_WAIT)
+        with self._pre_lock:
+            ws, err = pre.get("ws"), pre.get("error")
+            if ws is None and err is None:
+                pre["abandoned"] = True
+        return ws, err
 
     def discard(self) -> None:
         with self._pre_lock:
@@ -529,13 +564,9 @@ class LiveSession:
             return
 
         def close() -> None:
-            pre["thread"].join(15)
-            ws = pre.get("ws")
+            ws, _ = self._settle(pre)
             if ws is not None:
-                try:
-                    ws.close()
-                except Exception:  # noqa: BLE001
-                    pass
+                _close(ws)
 
         threading.Thread(target=close, daemon=True).start()
 
@@ -543,11 +574,11 @@ class LiveSession:
         with self._pre_lock:
             pre, self._pre = self._pre, {}
         if pre:
-            pre["thread"].join(15)
-            if pre.get("ws") is not None:
-                return pre["ws"]
-            if isinstance(pre.get("error"), LiveError):
-                raise pre["error"]
+            ws, err = self._settle(pre)
+            if ws is not None:
+                return ws
+            if isinstance(err, LiveError):
+                raise err
         return self._open()
 
     def converse(self, first_text: str, frames: "queue.Queue[bytes]", stop: threading.Event,
@@ -763,7 +794,8 @@ class LiveSession:
                           "başladığını söyle, sonucu uydurma."}}]}}))
         except Exception:  # noqa: BLE001
             return
-        self._bg += 1
+        with self._bg_lock:
+            self._bg += 1
         self.log(f"live arka plan işi başladı: {name} {json.dumps(args, ensure_ascii=False)[:160]}")
 
         def run() -> None:
@@ -786,7 +818,8 @@ class LiveSession:
             except Exception:  # noqa: BLE001 - konuşma kapanmış
                 pass
             finally:
-                self._bg -= 1
+                with self._bg_lock:
+                    self._bg -= 1
 
         threading.Thread(target=run, daemon=True, name=f"alice-live-bg-{name}").start()
 
@@ -974,7 +1007,10 @@ class LiveSession:
         call = {"id": fc.get("id") or fc.get("name"), "type": "function",
                 "function": {"name": fc.get("name", ""), "arguments": json.dumps(fc.get("args") or {})}}
         if fc.get("name") == "task_control":  # anında: araç iş parçacığı görevin bir adımıyla meşgul olabilir
-            res = self.agent._execute_calls([call])[0]
+            try:
+                res = self.agent._execute_calls([call])[0]
+            except Exception as e:  # noqa: BLE001 - hata converse'ten çıkarsa çağıran ilk cümleyi eski yolla TEKRAR çalıştırıyordu
+                res = ToolResult(f"HATA {type(e).__name__}: {e}", is_error=True)
             self.log(f"live görev kontrolü {json.dumps(fc.get('args') or {}, ensure_ascii=False)}: {res.text[:120]}")
             try:
                 ws.send(json.dumps({"toolResponse": {"functionResponses": [

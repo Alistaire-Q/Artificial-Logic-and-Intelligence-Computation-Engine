@@ -26,6 +26,34 @@ INTERACTIVE = {"Button", "Edit", "ComboBox", "CheckBox", "RadioButton", "MenuIte
 
 
 # ------------------------------------------------------------------ pencereler
+def fold(s: str) -> str:
+    """Büyük/küçük harf ve Türkçe i/ı farkını yok sayan karşılaştırma anahtarı. "İ".lower() "i̇" (i + birleşen
+    nokta) verdiği için "indirilenler", "İndirilenler" başlığında bulunamıyordu; ı/i de birbirine eşlenir."""
+    return (s or "").casefold().replace("\u0307", "").replace("ı", "i")
+
+
+def pick_window(wins: list[Any], title: str, text_of=lambda w: w.title or "", strict: bool = False) -> Any:
+    """Başlığa göre pencere seç: önce tam eşleşme, sonra başlığı o parçayla başlayan, sonra içeren.
+    strict=True (kapatma gibi geri alınamaz işler) iken birden çok farklı pencere eşleşirse yanlışını
+    kapatmamak için hata verir ve adayları listeler."""
+    want = fold(title.strip())
+    if not want:
+        raise ToolError("pencere başlığı boş olamaz")
+    hits = [w for w in wins if want in fold(text_of(w))]
+    if not hits:
+        raise ToolError(f"'{title}' başlıklı pencere yok")
+    for test in (lambda t: t == want, lambda t: t.startswith(want)):
+        best = [w for w in hits if test(fold(text_of(w)).strip())]
+        if best:
+            hits = best
+            break
+    names = list(dict.fromkeys(text_of(w) for w in hits))
+    if strict and len(names) > 1:
+        raise ToolError(f"'{title}' birden çok pencereyle eşleşiyor: " + " | ".join(names[:8])
+                        + ". Hangisi olduğunu tam başlıkla belirt.")
+    return hits[0]
+
+
 def list_windows() -> list[str]:
     if IS_WIN or IS_MAC:
         try:
@@ -43,10 +71,7 @@ def focus_window(title: str) -> str:
     if IS_WIN or IS_MAC:
         import pygetwindow as gw
 
-        wins = [w for w in gw.getAllWindows() if title.lower() in (w.title or "").lower()]
-        if not wins:
-            raise ToolError(f"'{title}' başlıklı pencere yok")
-        w = wins[0]
+        w = pick_window(gw.getAllWindows(), title)
         try:
             if getattr(w, "isMinimized", False):
                 w.restore()
@@ -57,8 +82,21 @@ def focus_window(title: str) -> str:
         if IS_WIN and not force_foreground(getattr(w, "_hWnd", 0)):
             raise ToolError(f"'{w.title}' öne alınamadı (Windows izin vermedi; tam ekran oyun açık olabilir)")
         return w.title
-    subprocess.run(["wmctrl", "-a", title], check=False)
+    if not title.strip():
+        raise ToolError("pencere başlığı boş olamaz")
+    _wmctrl(["-a", title], title)
     return title
+
+
+def _wmctrl(args: list[str], title: str) -> None:
+    try:
+        r = subprocess.run(["wmctrl", *args], check=False, capture_output=True, timeout=10)
+    except FileNotFoundError as e:
+        raise ToolError("Linux'ta pencere işlemleri için wmctrl gerekli (sudo apt install wmctrl)") from e
+    except subprocess.TimeoutExpired as e:
+        raise ToolError("wmctrl 10 sn içinde cevap vermedi") from e
+    if r.returncode != 0:  # eşleşen pencere yok: sessizce "öne alındı" demesin
+        raise ToolError(f"'{title}' başlıklı pencere yok")
 
 
 def force_foreground(hwnd: int) -> bool:
@@ -93,21 +131,22 @@ def force_foreground(hwnd: int) -> bool:
 
 
 def window_op(title: str, op: str) -> str:
+    ops = ("minimize", "maximize", "restore", "close")
+    if op not in ops:
+        raise ToolError(f"bilinmeyen pencere işlemi: {op}. Geçerli: {', '.join(ops)}")
+    if not title.strip():
+        raise ToolError("pencere başlığı boş olamaz")
     if not (IS_WIN or IS_MAC):
-        flags = {"close": ["-c"], "maximize": ["-r", title, "-b", "add,maximized_vert,maximized_horz"]}
         if op == "close":
-            subprocess.run(["wmctrl", "-c", title], check=False)
+            _wmctrl(["-c", title], title)
         elif op == "maximize":
-            subprocess.run(["wmctrl", *flags["maximize"]], check=False)
+            _wmctrl(["-r", title, "-b", "add,maximized_vert,maximized_horz"], title)
         else:
             raise ToolError(f"Linux'ta {op} desteklenmiyor")
         return title
     import pygetwindow as gw
 
-    wins = [w for w in gw.getAllWindows() if title.lower() in (w.title or "").lower()]
-    if not wins:
-        raise ToolError(f"'{title}' başlıklı pencere yok")
-    w = wins[0]
+    w = pick_window(gw.getAllWindows(), title, strict=op == "close")
     {"minimize": w.minimize, "maximize": w.maximize, "restore": w.restore, "close": w.close}[op]()
     return w.title
 
@@ -120,7 +159,9 @@ def _shortcut_roots() -> list[Path]:
 
 def _start_menu_lookup(name: str) -> Path | None:
     roots = _shortcut_roots()
-    needle = name.lower()
+    needle = fold(name.strip())
+    if not needle:
+        return None
     best: Path | None = None
     for root in roots:
         if not root.is_dir():
@@ -128,7 +169,7 @@ def _start_menu_lookup(name: str) -> Path | None:
         for p in root.rglob("*"):
             if p.suffix.lower() not in (".lnk", ".url", ".appref-ms"):
                 continue
-            stem = p.stem.lower()
+            stem = fold(p.stem)
             if stem == needle:
                 return p
             if needle in stem and (best is None or len(stem) < len(best.stem)):
@@ -137,7 +178,7 @@ def _start_menu_lookup(name: str) -> Path | None:
 
 
 def _norm(s: str) -> str:
-    return "".join(ch for ch in s.lower() if ch.isalnum())
+    return "".join(ch for ch in fold(s) if ch.isalnum())
 
 
 def _resolve_lnks(lnks: list[Path]) -> dict[Path, str]:
@@ -353,17 +394,26 @@ def find_installed_apps(name: str, limit: int = 15) -> list[str]:
     return out[:limit]
 
 
-SCRIPT_EXT = (".bat", ".cmd", ".ps1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".msi", ".scr", ".hta", ".com")
+SCRIPT_EXT = (".bat", ".cmd", ".ps1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".msi", ".scr", ".hta", ".com",
+              ".reg", ".pif", ".cpl", ".jar", ".msp")
 CMD_META = set('&|<>^%"')
 
 
 def is_script_target(target: str) -> bool:
     t = target.strip().strip('"').lower()
-    return "://" not in t and t.endswith(SCRIPT_EXT)
+    if re.match(r"^https?://", t):  # web adresi tarayıcıda açılır, çalıştırılmaz
+        return False
+    # Windows dosya adının sonundaki nokta/boşluğu ve ::$DATA akışını yok sayar: "x.bat." de x.bat'i çalıştırır.
+    # file:///C:/x.bat de ShellExecute ile çalışır.
+    t = re.sub(r"::\$data$", "", t.split("?", 1)[0] if t.startswith("file:") else t).rstrip(". ")
+    return t.endswith(SCRIPT_EXT)
 
 
 def open_app(target: str) -> str:
     """Uygulama adı, exe yolu, dosya ya da URL aç."""
+    target = (target or "").strip()
+    if not target:  # Windows'ta Path("") "." olur: boş hedef çalışma klasörünü açıyordu
+        raise ToolError("açılacak hedef boş")
     if IS_WIN:
         p = Path(os.path.expandvars(target)).expanduser()
         if p.exists() or "://" in target or shutil.which(target):
@@ -463,17 +513,19 @@ def switch_tab(want: str, title: str | None = None, max_tabs: int = 40) -> str |
     Bulursa sekme başlığını, bulamazsa None döner (başladığı sekmeye geri döner)."""
     from alice.tools.computer import press_keys
 
+    want = fold(want.strip())
+    if not want:
+        raise ToolError("sekme başlığı boş olamaz")
     focus_window(title or browser_window_title())
     time.sleep(0.2)
-    want = want.lower()
     start = active_title()
-    if want in start.lower():
+    if want in fold(start):
         return start
     for _ in range(max_tabs):
         press_keys("ctrl+tab")
         time.sleep(0.12)
         cur = active_title()
-        if want in cur.lower():
+        if want in fold(cur):
             return cur
         if cur == start:
             break
@@ -547,11 +599,8 @@ def _foreground_uia(title: str | None):
     except ImportError as e:
         raise ToolError("pywinauto kurulu değil: pip install 'alice-harness[computer]'") from e
     desk = Desktop(backend="uia")
-    if title:
-        wins = [w for w in desk.windows() if title.lower() in (w.window_text() or "").lower()]
-        if not wins:
-            raise ToolError(f"'{title}' başlıklı pencere yok")
-        return wins[0]
+    if title and title.strip():
+        return pick_window(desk.windows(), title, text_of=lambda w: w.window_text() or "")
     import ctypes
 
     hwnd = ctypes.windll.user32.GetForegroundWindow()
@@ -628,8 +677,12 @@ def format_ui(title: str, items: list[dict[str, Any]]) -> str:
 
 
 def ui_act(ctx: ToolContext, element_id: int, action: str, text: str | None = None) -> str:
+    from alice.tools.computer import as_number
+
+    element_id = as_number(element_id, "element_id", int)
+    text = None if text is None else str(text)
     wrappers = ctx.state.get("ui_elems") or {}
-    el = wrappers.get(int(element_id))
+    el = wrappers.get(element_id)
     if el is None:
         raise ToolError("öğe bulunamadı; önce ui_elements çağır (liste her çağrıda yenilenir)")
     if action == "click":
@@ -664,7 +717,7 @@ def ui_act(ctx: ToolContext, element_id: int, action: str, text: str | None = No
     else:
         raise ToolError(f"bilinmeyen aksiyon: {action}")
     time.sleep(0.2)
-    item = (ctx.state.get("ui_items") or {}).get(int(element_id), {})
+    item = (ctx.state.get("ui_items") or {}).get(element_id, {})
     return f"{action} -> [{element_id}] {item.get('role', '')} '{item.get('name', '')}'"
 
 
@@ -707,6 +760,11 @@ class Windows(Tool):
 
     def run(self, ctx: ToolContext, action: str, title: str | None = None, target: str | None = None,
             new_tab: bool | None = None) -> ToolResult:
+        from alice.tools.computer import as_bool
+
+        title = str(title).strip() if title is not None else None
+        target = str(target).strip() if target is not None else None
+        new_tab = None if new_tab is None else as_bool(new_tab, "new_tab")
         if action == "list":
             return ToolResult("\n".join(list_windows()) or "pencere yok")
         if action == "find":
@@ -751,6 +809,9 @@ class UIElements(Tool):
     })
 
     def run(self, ctx: ToolContext, title: str | None = None, limit: int = 150) -> ToolResult:
+        from alice.tools.computer import as_number
+
+        limit = max(1, min(as_number(150 if limit is None else limit, "limit", int), 500))
         t, items = collect_ui_elements(ctx, title, limit)
         return ToolResult(format_ui(t, items))
 
@@ -793,7 +854,11 @@ class Clipboard(Tool):
             raise ToolError("pyperclip kurulu değil") from e
         if action == "get":
             return ToolResult(pyperclip.paste() or "(pano boş)")
-        pyperclip.copy(text or "")
+        if action != "set":
+            raise ToolError(f"bilinmeyen action: {action}. Geçerli: get, set")
+        if text is None:  # eksik text panoyu sessizce boşaltıyordu (kullanıcının kopyaladığı şey gidiyordu)
+            raise ToolError("set için text gerekli")
+        pyperclip.copy(str(text))
         return ToolResult("panoya kopyalandı")
 
 

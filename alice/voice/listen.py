@@ -218,7 +218,7 @@ _HUSH_WEAK = {("yeter",), ("kes",), ("dur",), ("konuşma",), ("uyu",), ("bu", "k
               ("iyi", "geceler"), ("kes", "artık"), ("bırak",)}
 _HUSH_FILLERS = {"tamam", "lütfen", "artık", "bi", "bir", "biraz", "hadi", "şimdi", "ya", "lan", "ok", "okey", "bakayım",
                  "bakim", "bakım", "oke", "ama", "be", "dedim", "diyorum", "sana", "yahu", "canım", "aşkım", "kızım",
-                 "bebeğim", "artik", "hemen", "hele", "bakalım", "şu", "an", "biraz", "mısın", "misin", "musun",
+                 "bebeğim", "artik", "hemen", "hele", "bakalım", "şu", "an", "mısın", "misin", "musun",
                  "müsün", "mi", "mı", "mu", "mü", "misiniz", "mısınız", "istiyorum", "rica", "ederim", "et",
                  "edebilir", "olur"}
 

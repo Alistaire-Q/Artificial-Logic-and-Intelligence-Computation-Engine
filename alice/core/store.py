@@ -119,6 +119,12 @@ class Store:
         with self._lock:
             self._db.close()
 
+    def __enter__(self) -> Store:
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
     # ------------------------------------------------------------------ yazma
     def add(self, key: str, value: float | None = None, text: str | None = None, ts: float | None = None) -> None:
         self.add_many([(key, value, text)], ts)

@@ -145,8 +145,12 @@ def youtube_search(query: str, limit: int = 5, client: httpx.Client | None = Non
     if hit and time.monotonic() - hit[0] < 600 and client is None:
         return hit[1][:limit]
     c = client or httpx.Client(timeout=8, follow_redirects=True, cookies={"CONSENT": "YES+1", "SOCS": "CAI"})
-    r = c.get("https://www.youtube.com/results", params={"search_query": query, "hl": "tr", "gl": "TR"},
-              headers=YT_HEADERS)
+    try:
+        r = c.get("https://www.youtube.com/results", params={"search_query": query, "hl": "tr", "gl": "TR"},
+                  headers=YT_HEADERS)
+    finally:
+        if client is None:  # her aramada yeni istemci: soketi açık bırakma
+            c.close()
     out: list[tuple[str, str]] = []
     for vid, title in YT_VIDEO.findall(r.text):
         if vid not in (v for _, v in out):

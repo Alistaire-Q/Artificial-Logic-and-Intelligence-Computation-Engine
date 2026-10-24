@@ -2,7 +2,7 @@
 
   alice notes [add "metin" | search "kelime" [süre] | undo]
   alice brief [--install 08:00] [--weekdays]     sabah özeti (şimdi göster ya da her sabah kur)
-  alice report [--days 7] [--install 20:00]       haftalık bilgisayar raporu (pazar akşamı kurulur)
+  alice report [--days 7] [--open] [--install 20:00]   haftalık bilgisayar raporu (pazar akşamı kurulur)
 """
 
 from __future__ import annotations
@@ -52,7 +52,8 @@ def brief_cmd(argv: list[str]) -> int:
         console.print(f"[green]kuruldu:[/] {escape(t.summary())}")
         return 0
     cfg = load_config()
-    console.print(escape(brief.render(brief.gather(cfg.data.get("brief", {}), Store(), TaskStore()))))
+    with Store() as st:
+        console.print(escape(brief.render(brief.gather(cfg.data.get("brief", {}), st, TaskStore()))))
     return 0
 
 
@@ -66,8 +67,16 @@ def report_cmd(argv: list[str]) -> int:
         t = report.install(at)
         console.print(f"[green]kuruldu:[/] {escape(t.summary())}")
         return 0
-    days = int(argv[argv.index("--days") + 1]) if "--days" in argv else 7
-    r = report.build(Store(), days)
+    days = 7
+    if "--days" in argv:
+        val = argv[argv.index("--days") + 1] if argv.index("--days") + 1 < len(argv) else ""
+        if not val.isdigit() or int(val) < 1:
+            console.print(f"--days bir gün sayısı olmalı, ör. alice report --days 7 (verilen: {val or 'yok'})",
+                          markup=False)
+            return 2
+        days = int(val)
+    with Store() as st:
+        r = report.build(st, days)
     console.print(escape(report.text(r)))
     page = report.save_html(r)
     console.print(f"[dim]{page}[/]")

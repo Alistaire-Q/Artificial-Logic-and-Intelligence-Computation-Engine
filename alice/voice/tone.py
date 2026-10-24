@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 
 from alice.voice.spoken_numbers import normalize as normalize_numbers
+from alice.voice.spoken_numbers import say_ordinal
 
 EMOTIONS = ("calm", "happy", "serious", "urgent", "playful")
 
@@ -48,6 +49,14 @@ def pick(text: str, severity: str = "", topic: str = "") -> str:
     return "calm"
 
 
+# Emoji ve süslemeler: ses motorları bunları "gülen yüz" diye okuyor ya da cızırtı üretiyor.
+_EMOJI = re.compile("[\U0001F000-\U0001FAFF\U0001F1E6-\U0001F1FF\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u200D\u20E3]+")
+
+
+def drop_emoji(text: str) -> str:
+    return re.sub(r"[ \t]{2,}", " ", _EMOJI.sub("", text)).strip()
+
+
 def for_speech(text: str) -> str:
     """Markdown'ı sesli okunacak düz metne çevir."""
     text = re.sub(r"```.*?```", " Kodu ekrana yazdım. ", text, flags=re.S)
@@ -56,6 +65,8 @@ def for_speech(text: str) -> str:
     text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)
     text = re.sub(r"^\s{0,3}#{1,6}\s*", "", text, flags=re.M)
     text = re.sub(r"^\s*[-*+]\s+", "", text, flags=re.M)
+    # Numaralı liste "1. Elma" -> "birinci, Elma" (eskiden "bir. Elma": rakam cümle sonu gibi okunuyordu)
+    text = re.sub(r"^\s*(\d{1,3})[.)]\s+", lambda m: f"{say_ordinal(int(m.group(1)))}, ", text, flags=re.M)
     text = re.sub(r"^\s*\|.*\|\s*$", "", text, flags=re.M)  # tablolar okunmaz
     text = re.sub(r"(\*\*|__|\*|_|~~)(.+?)\1", r"\2", text)
     text = re.sub(r"https?://\S+", "bağlantı", text)
@@ -65,6 +76,28 @@ def for_speech(text: str) -> str:
 
 # Cümle sonu: noktalama + boşluk (ör. "3.5" bölünmez) ya da satır sonu.
 _END = re.compile(r"[.!?…]+\s+|\n+")
+# Noktasıyla biten ama cümleyi bitirmeyen kısaltmalar: "Dr. Ahmet", "vb. şeyler" ikiye bölünüp ayrı cümle gibi
+# (araya duraklama, düşen tonlama) okunuyordu.
+ABBREV = {"dr", "prof", "doç", "doc", "yrd", "uzm", "av", "op", "müh", "sn", "bkz", "bknz", "vb", "vs", "vd", "örn",
+          "ör", "yy", "no", "nr", "tel", "mah", "cad", "sok", "sk", "apt", "blv", "bul", "st", "mr", "mrs", "ms",
+          "ltd", "şti", "inc", "co", "alb", "gen", "org", "kur", "yzb", "tğm", "ing", "fr", "sf", "s"}
+
+
+def _holds(buf: str, m: re.Match) -> bool:
+    """Bu nokta cümle sonu değil mi (kısaltma, sıra sayısı, baş harf)? Akışta sonraki harf henüz gelmediyse
+    sıra sayısı mı belli değil: beklenir."""
+    if m.group(0).rstrip() != "." or "\n" in m.group(0):
+        return False
+    word = re.search(r"(\S+)$", buf[: m.start()])
+    if word is None:
+        return False
+    w = word.group(1).lstrip("([\"'").lower()
+    if w in ABBREV or (len(w) == 1 and w.isalpha()):
+        return True
+    if w.isdigit():  # "15. yüzyıl" sıra sayısı; "Toplam 15. Sonra" cümle sonu
+        nxt = buf[m.end(): m.end() + 1]
+        return not nxt or nxt.islower()
+    return False
 
 
 class SentenceSplitter:
@@ -80,7 +113,7 @@ class SentenceSplitter:
         while self.buf.count("```") % 2 == 0:  # kod bloğu kapanmadan bölme
             self.buf = re.sub(r"```.*?```", "Kodu ekrana yazdım.\n", self.buf, flags=re.S)
             cut = next((m.end() for m in _END.finditer(self.buf)
-                        if m.end() >= self.min_chars or "\n" in m.group(0)), None)
+                        if (m.end() >= self.min_chars or "\n" in m.group(0)) and not _holds(self.buf, m)), None)
             if cut is None:
                 break
             piece, self.buf = for_speech(self.buf[:cut]), self.buf[cut:]

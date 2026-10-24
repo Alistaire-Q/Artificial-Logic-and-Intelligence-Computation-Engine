@@ -11,9 +11,10 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
-def run(cmd: list[str], timeout: float = 15) -> subprocess.CompletedProcess:
-    """Komutu çalıştır; Windows'ta konsol kod sayfasıyla (Türkçe netsh/powercfg çıktısı bozulmasın) çöz."""
-    enc = "oem" if sys.platform == "win32" else "utf-8"
+def run(cmd: list[str], timeout: float = 15, encoding: str | None = None) -> subprocess.CompletedProcess:
+    """Komutu çalıştır; Windows'ta konsol kod sayfasıyla (Türkçe netsh/powercfg çıktısı bozulmasın) çöz.
+    encoding: çıktısını konsol kod sayfasında değil hep aynı kodlamada veren araçlar için (ör. adb: UTF-8)."""
+    enc = encoding or ("oem" if sys.platform == "win32" else "utf-8")
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         return subprocess.run(cmd, capture_output=True, text=True, encoding=enc, errors="replace", timeout=timeout,
@@ -84,7 +85,8 @@ def open_ports(host: str, ports, timeout: float = 0.25, workers: int = 256) -> l
     return [p for p in hits if p]
 
 
-ARP_LINE = re.compile(r"(\d{1,3}(?:\.\d{1,3}){3})\)?\s+(?:at\s+)?([0-9a-fA-F]{2}(?:[-:][0-9a-fA-F]{2}){5})\b")
+# macOS baştaki sıfırları yazmıyor (0:1a:2b:...), o yüzden her bayt 1-2 hane olabilir.
+ARP_LINE = re.compile(r"(\d{1,3}(?:\.\d{1,3}){3})\)?\s+(?:at\s+)?([0-9a-fA-F]{1,2}(?:[-:][0-9a-fA-F]{1,2}){5})(?![\w:-])")
 
 
 def parse_arp(text: str) -> list[tuple[str, str]]:
@@ -94,7 +96,8 @@ def parse_arp(text: str) -> list[tuple[str, str]]:
         m = ARP_LINE.search(line)
         if not m:
             continue
-        ip, mac = m.group(1), m.group(2).lower().replace("-", ":")
+        ip = m.group(1)
+        mac = ":".join(b.zfill(2) for b in re.split(r"[-:]", m.group(2).lower()))
         last = int(ip.rsplit(".", 1)[1])
         if mac in ("ff:ff:ff:ff:ff:ff",) or mac.startswith("01:00:5e") or last in (0, 255) or ip.startswith("224."):
             continue

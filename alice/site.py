@@ -122,6 +122,7 @@ def screenshots(root: Path, entry: str = "", timeout: float = 20.0) -> dict[str,
         return capture(base + entry, timeout)
     finally:
         httpd.shutdown()
+        httpd.server_close()
 
 
 def reachable(url: str, timeout: float = 12.0) -> tuple[bool, str]:
@@ -208,6 +209,7 @@ def cli_screenshots(root: Path, entry: str = "", timeout: float = 20.0) -> dict[
         return _cli_capture(base + entry, timeout)
     finally:
         httpd.shutdown()
+        httpd.server_close()
 
 
 def _cli_capture(url: str, timeout: float = 20.0, settle: int = 600,
