@@ -29,6 +29,7 @@ ajan hiç yazamaz. İzin soruları ajanın adıyla kullanıcıya gider.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import secrets
 import subprocess
@@ -278,6 +279,23 @@ def _read_saved(f: Path, tries: int = 10) -> str:
                 raise
             time.sleep(0.05)
     return ""
+
+
+log = logging.getLogger(__name__)
+
+
+def _replace(src: Path, dst: Path, tries: int = 6) -> None:
+    """Atomik yer değiştirme. Windows'ta virüs tarayıcı/dizinleyici yeni yazılan dosyayı bir an kilitliyor ve
+    replace PermissionError veriyor; bir anlık beklemeyle tekrar dene (yoksa kayıt sessizce düşüyordu)."""
+    for i in range(tries):
+        try:
+            src.replace(dst)
+            return
+        except PermissionError:
+            if i == tries - 1:
+                raise
+            time.sleep(0.05 * (i + 1))
+
 
 class Team:
     """Bir proje: hedef, yönetici ve ajanlar."""
@@ -1642,9 +1660,9 @@ Nasıl yapılır:
                 body = self._body()
                 tmp = self.path().with_suffix(".json.tmp")
                 tmp.write_text(json.dumps(body, ensure_ascii=False, indent=1), encoding="utf-8")
-                tmp.replace(self.path())
+                _replace(tmp, self.path())
         except (OSError, TypeError, ValueError, RuntimeError):
-            pass
+            log.debug("proje kaydedilemedi: %s", self.id, exc_info=True)
 
     def _body(self) -> dict[str, Any]:
         members = []
