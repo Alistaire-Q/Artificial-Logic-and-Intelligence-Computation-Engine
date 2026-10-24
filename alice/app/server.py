@@ -439,10 +439,10 @@ class AppState:
         if m is None:
             return {"ok": False, "error": f"bağlantı yok: {name}"}
         if m.auth.kind != "oauth2":
-            return {"ok": False, "error": f"{m.label} anahtarla çalışıyor: ~/.alice/.env içine {m.auth.env} yaz"}
+            return {"ok": False, "error": f"{m.label} anahtarla çalışıyor: Ayarlar → Anahtarlar'dan {m.auth.env} gir"}
         cid = os.environ.get(m.auth.client_id_env, "").strip()
         if not cid:
-            return {"ok": False, "error": f"{m.auth.client_id_env} yok; ~/.alice/.env dosyasına ekle"}
+            return {"ok": False, "error": f"{m.auth.client_id_env} yok; Ayarlar → Anahtarlar'dan gir"}
         secret = os.environ.get(m.auth.client_secret_env, "").strip() if m.auth.client_secret_env else ""
 
         def run() -> None:
@@ -543,6 +543,129 @@ class AppState:
             threading.Thread(target=run, daemon=True, name="alice-gmail-connect").start()
             return {"ok": True, "started": True}
         return {"ok": False, "error": f"bilinmeyen işlem: {action}"}
+
+    # ------------------------------------------------------------------ Ses sekmesi
+    PREVIEW_TEXT = "Selam, ben Alice. Bugün ne yapıyoruz? İstersen önce şu indirmeleri bir toparlayayım."
+
+    def voice_view(self) -> dict[str, Any]:
+        from alice.voice.tts import ALL_GEMINI_VOICES
+
+        v = self.cfg.data.get("voice", {})
+        key_env = self.cfg.data.get("providers", {}).get("gemini", {}).get("api_key_env", "GEMINI_API_KEY")
+        return {"live": str(v.get("live_voice", "Kore")), "tts": str(v.get("tts_cloud", "gemini:Aoede")),
+                "can_preview": bool(os.environ.get(key_env, "").strip()),
+                "voices": [{"name": n, "desc": d} for n, d in ALL_GEMINI_VOICES.items()]}
+
+    def voice_preview(self, name: str) -> dict[str, Any]:
+        """Bu sesle kısa bir Türkçe örnek (wav, base64). Bir kez üretilir, ~/.alice/voice/previews'da saklanır."""
+        import base64
+
+        from alice.voice.tts import ALL_GEMINI_VOICES, TTSError, make_cloud
+
+        if name not in ALL_GEMINI_VOICES:
+            return {"ok": False, "error": f"bilinmeyen ses: {name}"}
+        path = alice_home() / "voice" / "previews" / f"{name}.wav"
+        if not path.is_file():
+            tts = make_cloud(self.cfg, f"gemini:{name}")
+            if tts is None:
+                return {"ok": False, "error": "örnek için Gemini anahtarı gerekli (Ayarlar → Anahtarlar)"}
+            try:
+                audio = tts.synth(self.PREVIEW_TEXT, "happy")
+            except TTSError as e:
+                return {"ok": False, "error": f"örnek üretilemedi: {e}"}
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(audio.to_wav())
+        return {"ok": True, "audio": base64.b64encode(path.read_bytes()).decode()}
+
+    def set_voice(self, name: str) -> dict[str, Any]:
+        """Live ve normal sesli cevap aynı sesle konuşsun."""
+        from alice.config import set_config_value
+        from alice.voice.tts import ALL_GEMINI_VOICES
+
+        if name not in ALL_GEMINI_VOICES:
+            return {"ok": False, "error": f"bilinmeyen ses: {name}"}
+        v = self.cfg.data.setdefault("voice", {})
+        v["live_voice"], v["tts_cloud"] = name, f"gemini:{name}"
+        set_config_value("voice", "live_voice", name)
+        set_config_value("voice", "tts_cloud", f"gemini:{name}")
+        return {"ok": True}
+
+    # ------------------------------------------------------------------ Hafıza sekmesi
+    def memory_view(self) -> dict[str, Any]:
+        """Hafızadaki bilgiler (tek tek silinebilir), açık takipler ve eski rolden kalan izler."""
+        from alice.memory import KINDS, OLD_ROLE_RX
+
+        mem = self.agent.memory
+        if mem is None:
+            return {"enabled": False, "facts": [], "followups": [], "old_role": {}, "text": ""}
+        old = mem.old_role()
+        return {
+            "enabled": True,
+            "facts": [{"id": f.id, "kind": KINDS.get(f.kind, f.kind), "text": f.text,
+                       "old": bool(OLD_ROLE_RX.search(f.text))} for f in mem.facts()],
+            "followups": [{"id": f.id, "text": f.line()} for f in mem.followups()],
+            "old_role": {"facts": len(old["facts"]), "summaries": len(old["summaries"]),
+                         "episodes": len(old["episodes"]),
+                         "examples": [e.reply[:140] for e in old["episodes"][-3:]] + [s.text[:140] for s in old["summaries"][-2:]]},
+            "text": mem.export_markdown(),
+        }
+
+    def memory_action(self, action: str, d: dict[str, Any]) -> dict[str, Any]:
+        mem = self.agent.memory
+        if mem is None:
+            return {"ok": False, "error": "hafıza kapalı"}
+        if action == "forget":
+            try:
+                gone = mem.forget(int(d.get("id", -1)))
+            except (TypeError, ValueError):
+                gone = None
+            return {"ok": gone is not None}
+        if action == "done":
+            try:
+                return {"ok": mem.done_followup(int(d.get("id", -1))) is not None}
+            except (TypeError, ValueError):
+                return {"ok": False}
+        if action == "purge_old_role":
+            return {"ok": True, "removed": mem.purge_old_role()}
+        return {"ok": False, "error": f"bilinmeyen işlem: {action}"}
+
+    # ------------------------------------------------------------------ Anahtarlar sekmesi
+    def keys(self) -> dict[str, Any]:
+        """API anahtarları: hangisi dolu, nereden alınır. Değerlerin tamamı tarayıcıya hiç gönderilmez."""
+        from alice.config import env_catalog, env_path, mask_secret, read_env
+
+        in_file = read_env()
+        providers = {pc.api_key_env: name for name, pc in self.router.providers_cfg.items() if pc.api_key_env}
+        rows = []
+        for e in env_catalog():
+            key = e["key"]
+            val = in_file.get(key) or ""
+            env_val = os.environ.get(key, "").strip()
+            source = "file" if val else ("env" if env_val else "")
+            rows.append({**e, "set": bool(source), "source": source, "preview": mask_secret(val or env_val),
+                         "provider": providers.get(key, "")})
+        return {"path": str(env_path()), "keys": rows}
+
+    def set_key(self, key: str, value: str) -> dict[str, Any]:
+        """.env'e yaz ve hemen kullan: yeni anahtarla sağlayıcı bu oturumda açılır, model sırası yeniden ölçülür."""
+        from alice.config import env_catalog, set_env_value
+
+        if key not in {e["key"] for e in env_catalog()}:
+            return {"ok": False, "error": f"bilinmeyen anahtar: {key}"}
+        try:
+            set_env_value(key, value)
+        except (ValueError, OSError) as e:
+            return {"ok": False, "error": str(e)}
+        for name, pc in self.router.providers_cfg.items():
+            if pc.api_key_env == key or (key in pc.base_url):
+                # Önceki yanlış anahtar sağlayıcıyı "auth" ile kapatmış olabilir: yeni anahtarla tekrar denensin.
+                self.router.dead_providers.discard(name)
+        if value.strip():
+            from alice.providers import ranking
+
+            # Yeni sağlayıcı "auto" zincirine girsin: ölçüm arka planda, bitince sıra güncellenir.
+            ranking.refresh_in_background(self.router, emit=self.router.on_event, max_age=0)
+        return {"ok": True}
 
     def set_update_mode(self, mode: str) -> bool:
         """Güncelleme davranışını kalıcı yaz (config.toml [update] mode)."""
@@ -1106,6 +1229,10 @@ def make_handler(state: AppState):
                 return self._json(state.connections())
             if u.path == "/api/assistant":
                 return self._json(state.assistant())
+            if u.path == "/api/voice":
+                return self._json(state.voice_view())
+            if u.path == "/api/keys":
+                return self._json(state.keys())
             if u.path == "/api/update":
                 return self._json(state.check_update() if (q.get("refresh") or [""])[0] == "1"
                                   else (state.update.as_dict() if state.update is not None else {"available": False}))
@@ -1115,8 +1242,7 @@ def make_handler(state: AppState):
                 return self._json([{"name": t.name, "risk": t.risk, "description": t.description.split("\n")[0][:160]}
                                    for t in state.agent.tools.values()])
             if u.path == "/api/memory":
-                mem = state.agent.memory
-                return self._json({"text": mem.export_markdown() if mem is not None else ""})
+                return self._json(state.memory_view())
             if u.path == "/api/models/all":
                 return self._json({"providers": state.router.catalog_view(),
                                    "brain": state.router.chain("brain"),
@@ -1191,6 +1317,24 @@ def make_handler(state: AppState):
                 if p == "/api/assistant/set":
                     ok = state.assistant_set(str(d.get("section", "")), str(d.get("key", "")), d.get("value"))
                     return self._json({"ok": ok}, 200 if ok else 400)
+                if p == "/api/voice/preview":
+                    r = state.voice_preview(str(d.get("voice", "")))
+                    return self._json(r, 200 if r.get("ok") else 400)
+                if p == "/api/voice/set":
+                    r = state.set_voice(str(d.get("voice", "")))
+                    return self._json(r, 200 if r.get("ok") else 400)
+                if p == "/api/memory/action":
+                    r = state.memory_action(str(d.get("action", "")), d)
+                    return self._json(r, 200 if r.get("ok") else 400)
+                if p == "/api/feedback":
+                    from alice.evals import record_feedback
+
+                    new = record_feedback(str(d.get("say", ""))[:4000], str(d.get("reply", ""))[:4000],
+                                          str(d.get("note", ""))[:1000], source="uygulama")
+                    return self._json({"ok": True, "added": new})
+                if p == "/api/keys/set":
+                    r = state.set_key(str(d.get("key", "")), str(d.get("value", "")))
+                    return self._json(r, 200 if r.get("ok") else 400)
                 if p == "/api/assistant/action":
                     return self._json(state.assistant_action(str(d.get("action", "")), d))
                 if p == "/api/update/mode":

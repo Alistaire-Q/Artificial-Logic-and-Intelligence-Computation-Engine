@@ -23,7 +23,19 @@ from alice.voice.vocab import known_names
 
 URL = ("wss://generativelanguage.googleapis.com/ws/"
        "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key={key}")
+# Duygulu konuşma (affective dialog) ve "sana söylenmeyene cevap verme" (proactive audio) şimdilik v1alpha'da.
+URL_ALPHA = URL.replace(".v1beta.", ".v1alpha.")
 DEFAULT_MODELS = ["gemini-3.8-live", "gemini-3.1-flash-live-preview", "gemini-2.5-flash-native-audio-latest"]
+# Aynı istekte aynı argümanla ikinci kez çalışması bir şey değiştirmeyen araçlar.
+READ_ONLY_TOOLS = {"list_dir", "glob", "grep", "read_file", "system_info", "web_search", "web_fetch", "weather"}
+_READ_COMMAND = re.compile(r"^\s*(get-\w+|dir|ls|type|cat|where(\.exe)?|test-path|select-string)\b", re.I)
+
+
+def read_only(name: str, args: dict[str, Any]) -> bool:
+    """Aynı istekte tekrar çalıştırmanın anlamı olmayan okuma mı? Komutlarda sadece Get-*/dir/ls gibi okumalar."""
+    if name in READ_ONLY_TOOLS:
+        return True
+    return name == "run_command" and bool(_READ_COMMAND.match(str(args.get("command", ""))))
 LIVE_GROUPS = {"desktop", "browser", "personal", "system", "automation"}
 SCHEMA_KEYS = {"type", "description", "enum", "properties", "required", "items", "nullable", "format"}
 
@@ -53,8 +65,11 @@ Masaüstü simgelerini göster'i aç"). Tek tıklık işler için reflex daha h�
 Ekranda birden fazla adım gereken işi (bir uygulamada yazmak, mesaj göndermek, ayar değiştirmek) DOĞRUDAN
 computer_task'a ver; önce screenshot/ui_elements/reflex ile denemeye çalışma. computer aracıyla görmeden (koordinat
 tahmin ederek) tıklama.
-Mikrofon oyun/motor sesi de duyabilir: duyduğun cümle anlamsızsa, Türkçe/İngilizce değilse ya da sana
-söylenmemiş gibiyse cevap verme; gerekiyorsa tek cümleyle "anlayamadım, tekrar eder misin" de.
+Mikrofon oyun/motor sesini, videoyu ve kullanıcının Discord'da/odada başkalarıyla konuşmasını da duyar. Duyduğun cümle
+anlamsızsa, Türkçe değilse ya da sana söylenmemiş gibiyse HİÇ cevap verme, sessiz kal; bu normaldir. "Anlayamadım,
+tekrar eder misin" demeyi bir konuşmada en fazla bir kez ve sadece sana söylendiğinden emin olduğun bir cümle için yap.
+Her zaman Türkçe konuş. Başka dilde (Portekizce, Almanca, Japonca...) bir şey duyarsan o büyük ihtimalle oyun, video
+ya da başkasıdır: o dilde cevap verme, cevap verme.
 Uçuşla ilgili her soruda (hız, irtifa, stall, yakıt, yön, silah) önce flight action=status çağır; ekran
 görüntüsünden ya da hafızadan uçuş verisi söyleme.
 Araçların vermediği sayıları ve durumları (uçaktaki silahlar, mesafe, yakıt, ekranda göremediğin şeyler) asla
@@ -64,6 +79,8 @@ ne dediğini tam anlamadıysan önce sor. Bir işi yaptığını ancak araç son
 Monitörler: {monitors}. Her konuşmada sana öndeki pencerenin olduğu monitörün görüntüsü gelir. Başka monitörü ya da
 hepsini görmek için computer action=screenshot monitor=<numara> (0 = hepsi yan yana); computer_task'a da monitor
 verebilirsin.
+Klasör ve dosya soruları için list_dir kullan ("İndirilenler", "Masaüstü" gibi adları doğrudan ver; "son indirdiğim"
+için sort=newest), PowerShell ile klasör arama.
 Bir işe özel araç varsa (ör. 3B/Blender için blender) run_command ya da write_file yerine onu kullan; iş bitince
 sonucu kullanıcının ekranında aç (blender action=open gibi), çünkü kullanıcı ekranda görmek ister.
 Bir araç "onay gerekli" derse kullanıcıya kısaca sor; "evet" derse aynı çağrıyı tekrarla.
@@ -83,8 +100,18 @@ fiyat, maç, sürüm, hava dışındaki her güncel bilgi) ya da cevabından emi
 (önce tek kısa doğal cümle söyle, ör. "Bir düşüneyim.") ve gelen cevabı kendi sesinle, anlamını bozmadan söyle; bilgi
 ekleme. Selamlaşma, saat/tarih, basit komutlar (aç, kapat, çal, ses) ve kısa sohbet için çağırma.
 # Konuşma tarzın
-Sistem istemindeki kişilik ("Your personality") sesli konuşmada da sensin: aynı karakter, aynı ton. Kalıp cümlelerle
-konuşma ("Hemen bakıyorum", "Tabii ki", "Başka bir şey var mı?" gibi sözleri tekrarlama); cümlelerini çeşitlendir.
+Sistem istemindeki kişilik ("Your personality") sesli konuşmada da sensin: aynı karakter, aynı ton. Sen dili kullan;
+"siz", "efendim", "buyurun" yok. Müşteri hizmetleri cümleleri kesinlikle yok: "size nasıl yardımcı olabilirim",
+"başka bir konuda yardımcı olabilir miyim", "buradayım", "dinliyorum", "rica ederim, her zaman buradayım", "anladım,
+ihtiyacın olursa buradayım". Kullanıcı bir şey istemediyse yardım teklif etme, sessiz kal. Aşağıdaki "Az önceki
+konuşma"da söylediğin bir cümleyi ya da kalıbı tekrarlama; her cevabın o ana özel olsun.
+Konuşmanın ilk mesajı boşsa kullanıcı sadece adını söyledi ve sen zaten kısa bir tepki verdin: selam verme, yardım
+teklif etme, onun konuşmasını bekle.
+Sesindeki duyguyu dinle (ton, hız, gülme, iç çekme, küfür) ve cevabını da sesini de ona göre ayarla: keyifliyse
+keyifle, sinirliyse onun tarafında ve kısa (nasihat verme, "sakin ol" deme), yorgunsa yumuşak, heyecanlıysa canlı.
+Monoton, okur gibi konuşma; bir insan gibi vurgu yap, gerektiğinde gül.
+Kullanıcı bir cevabını beğenmediğini söylerse ("bu cevap kötüydü", "saçmaladın", "öyle deme") feedback aracını çağır
+(say: önceki isteği, reply: senin cevabın, note: ne dediği) ve kısaca kabul et; ne yapmamanı istiyorsa memory'ye ekle.
 Kullanıcının adını biliyorsan arada kullan. "O", "onu", "devam et", "az önceki" gibi sözler aşağıdaki "Az önceki
 konuşma"ya ya da hafızaya işaret eder; baştan sorma, kaldığın yerden devam et. Uygun düşerse tek cümlelik bir yorum
 ya da bir adım önde bir öneri ekleyebilirsin; dırdır etme.
@@ -93,6 +120,16 @@ Uzun süreli hafızan var (sistem istemindeki "Long-term memory"). Kullanıcı k
 olarak kaydet; "bunu unut" derse memory action=forget. Geçmiş bir konuşmayı ya da profilde olmayan kişisel bir
 bilgiyi sorarsa ("geçen gün ne demiştim", "hatırlıyor musun") önce memory action=search çağır, bilmediğini uydurma.
 Şu an: {now}.{history}"""
+
+_CANNED = re.compile(
+    r"(yardımcı olabil|nasıl yardım|buradayım|dinliyorum|rica ederim|anlayamadım|tekrar eder mi|"
+    r"ihtiyacınız olduğunda|ihtiyacın olduğunda|ne zaman ihtiyac|başka bir (konu|şey)|buyurun)", re.I)
+
+
+def canned_reply(text: str) -> bool:
+    """İçeriği olmayan kalıp cevap mı (selam, yardım teklifi, "anlayamadım")? Geçmişe konmaz, tekrar beslenmesin."""
+    return bool(_CANNED.search(text or "")) and len(text) < 160
+
 
 THINK_DECL = {
     "name": "think",
@@ -419,6 +456,12 @@ class LiveSession:
         # Az önceki konuşma: oturum 5 sn sessizlikte kapanıyor; yenisi bu kadar dakikalık geçmişi bilerek açılır.
         self.history_minutes = float(v.get("live_history_minutes", 30))
         self._history: list[tuple[float, str, str]] = []
+        # Duygulu konuşma: ses modeli kullanıcının sesindeki duyguyu anlar, kendi tonunu ona göre ayarlar.
+        # Proactive audio: kendisine söylenmeyen sesi (oyun, video, Discord'daki arkadaşlar) cevapsız geçebilir.
+        # Model ya da hesap desteklemezse oturum bu ikisi olmadan açılır.
+        self.affective = bool(v.get("live_affective", True))
+        self.proactive = bool(v.get("live_proactive", True))
+        self._no_extras: set[str] = set()  # bu özellikleri reddeden modeller: bir daha denenmez
 
     @property
     def available(self) -> bool:
@@ -432,7 +475,7 @@ class LiveSession:
             return False
         return True
 
-    def _setup(self, model: str) -> dict[str, Any]:
+    def _setup(self, model: str, extras: bool = False) -> dict[str, Any]:
         from datetime import datetime
 
         from alice.voice.assistant import spoken_time
@@ -450,17 +493,46 @@ class LiveSession:
         from alice import plugins
 
         enabled |= LIVE_GROUPS | plugins.live_groups()
-        return {"setup": {
+        setup: dict[str, Any] = {
             "model": f"models/{model}",
             "generationConfig": {"responseModalities": ["AUDIO"], "speechConfig": {
-                "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": self.voice}}, "languageCode": "tr-TR"}},
+                "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": self.current_voice()}}, "languageCode": "tr-TR"}},
             "systemInstruction": {"parts": [{"text": system}]},
             "tools": [{"functionDeclarations": declarations(self._specs()) + ([THINK_DECL] if self.think else [])}],
             "inputAudioTranscription": {},
             "outputAudioTranscription": {},
             "realtimeInputConfig": {"automaticActivityDetection": {
                 "endOfSpeechSensitivity": "END_SENSITIVITY_HIGH", "silenceDurationMs": self.silence_ms}},
-        }}
+        }
+        if extras and self.affective:
+            setup["generationConfig"]["enableAffectiveDialog"] = True
+        if extras and self.proactive:
+            setup["proactivity"] = {"proactiveAudio": True}
+        return {"setup": setup}
+
+    def current_voice(self) -> str:
+        """Ayarlar > Ses'te seçilen ses: config.toml değiştiyse oradan okunur, çekirdek yeniden başlamadan bir
+        sonraki konuşmada geçerli olur."""
+        from alice.config import alice_home
+
+        path = alice_home() / "config.toml"
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return self.voice
+        if mtime != getattr(self, "_voice_mtime", None):
+            self._voice_mtime = mtime
+            try:
+                import tomllib
+            except ImportError:  # pragma: no cover - Python 3.10
+                import tomli as tomllib
+            try:
+                name = (tomllib.loads(path.read_text(encoding="utf-8")).get("voice") or {}).get("live_voice")
+            except (OSError, ValueError):
+                name = None
+            if isinstance(name, str) and name.strip():
+                self.voice = name.strip()
+        return self.voice
 
     def history_text(self, limit: int = 8) -> str:
         """Son history_minutes içindeki konuşma (sesli, canlı ya da yazılı; hafıza varsa oradan, yoksa bu oturumun
@@ -480,7 +552,9 @@ class LiveSession:
         lines = []
         for ts, user, reply in items:
             line = f"- {datetime.fromtimestamp(ts):%H:%M} Kullanıcı: {user[:300]}"
-            if reply:
+            # Kalıp cevaplar ("Buradayım efendim, nasıl yardımcı olabilirim?") geçmişe konmaz: model kendi eski
+            # cümlesini görünce aynısını tekrar tekrar kuruyordu.
+            if reply and not canned_reply(reply):
                 line += f" / Sen: {reply[:300]}"
             lines.append(line)
         return "\n".join(lines)
@@ -500,23 +574,28 @@ class LiveSession:
             from websockets.sync.client import connect
         errors = []
         for model in self.models:
-            try:
-                ws = connect(URL.format(key=self.key), open_timeout=8, max_size=None)
-            except Exception as e:  # noqa: BLE001
-                raise LiveError(f"bağlanılamadı: {e}") from e
-            try:
-                ws.send(json.dumps(self._setup(model)))
-                msg = decode(ws.recv(timeout=10))
-                if "setupComplete" in msg:
-                    self.model = model
-                    return ws
-                errors.append(f"{model}: {str(msg)[:120]}")
-            except Exception as e:  # noqa: BLE001 - model yok/kapalı: sıradakini dene
-                errors.append(f"{model}: {e}")
-            try:
-                ws.close()
-            except Exception:  # noqa: BLE001
-                pass
+            want = (self.affective or self.proactive) and model not in self._no_extras
+            for extras in ([True, False] if want else [False]):
+                try:
+                    ws = connect((URL_ALPHA if extras else URL).format(key=self.key), open_timeout=8, max_size=None)
+                except Exception as e:  # noqa: BLE001
+                    raise LiveError(f"bağlanılamadı: {e}") from e
+                try:
+                    ws.send(json.dumps(self._setup(model, extras)))
+                    msg = decode(ws.recv(timeout=10))
+                    if "setupComplete" in msg:
+                        self.model = model
+                        return ws
+                    errors.append(f"{model}{' (duygulu)' if extras else ''}: {str(msg)[:120]}")
+                except Exception as e:  # noqa: BLE001 - model yok/kapalı ya da özelliği desteklemiyor
+                    errors.append(f"{model}{' (duygulu)' if extras else ''}: {e}")
+                if extras:
+                    self._no_extras.add(model)  # bu özelliklerle açılmadı: sonraki oturumlarda hiç deneme
+                    self.log(f"live {model}: duygulu konuşma/proactive audio desteklenmiyor, onlarsız açılıyor")
+                try:
+                    ws.close()
+                except Exception:  # noqa: BLE001
+                    pass
         raise LiveError("; ".join(errors) or "live modeli yok")
 
     def prefetch(self) -> None:
@@ -953,7 +1032,7 @@ class LiveSession:
 
     def _new_turn(self) -> None:
         """Kullanıcı yeni bir şey söyledi: araç sayacı, tekrar kontrolü ve dış içerik kirlenmesi sıfırlanır."""
-        self._turn = {"n": 0, "last": None}
+        self._turn = {"n": 0, "last": None, "seen": {}}
         from alice import guard
 
         guard.clear(getattr(self.agent, "ctx", None))
@@ -973,6 +1052,13 @@ class LiveSession:
             self.log(f"live aynı araç çağrısı tekrarlandı, çalıştırılmadı: {name}")
             return ("Bu çağrıyı az önce aynen yaptın, tekrar çalıştırılmadı. Önceki sonuç: " + last[2][:1500]
                     + "\nAynı aracı tekrar çağırma; bu sonuca göre kullanıcıya cevap ver.")
+        # Arada başka çağrı olsa da aynı okuma aynı istekte ikinci kez çalışmasın (voice.log: Get-Volume,
+        # Downloads listesi bir dakikada 5-6 kez). Değiştiren eylemler (tıkla, yaz) bu kontrole girmez.
+        seen = turn.setdefault("seen", {})
+        if key in seen and not repeatable and read_only(name, args):
+            self.log(f"live aynı okuma bu istekte tekrarlandı, çalıştırılmadı: {name}")
+            return ("Bu okumayı bu istekte zaten yaptın, sonuç değişmedi: " + seen[key][:1500]
+                    + "\nBaşka bir yol dene ya da bulduğunu kullanıcıya söyle.")
         turn["n"] += 1
         budget = int(getattr(self, "tool_budget", 10))
         if turn["n"] > budget:
@@ -988,6 +1074,8 @@ class LiveSession:
         if turn is not None:
             key = fc.get("name", "") + json.dumps(fc.get("args") or {}, sort_keys=True, ensure_ascii=False)
             turn["last"] = (key, time.monotonic(), text)
+            if read_only(fc.get("name", ""), fc.get("args") or {}):
+                turn.setdefault("seen", {})[key] = text
 
     def _run_call(self, ws, fc: dict[str, Any]) -> None:
         early = self._guard(fc)

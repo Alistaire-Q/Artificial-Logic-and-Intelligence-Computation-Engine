@@ -144,6 +144,10 @@ Eksik bir paket gereken bir komutu çalıştırırsan ALICE traceback yerine han
 
 Hiç anahtar yoksa ALICE sadece yerel Ollama'yı dener ve bunu açılışta söyler.
 
+**Dosyayla uğraşmak istemezsen:** uygulamada **Ayarlar → Anahtarlar**. Her sağlayıcının yanında "anahtarı al" bağlantısı var; anahtarı yapıştırıp Kaydet'e basınca `.env`'e yazılıyor ve hemen kullanılıyor (yeniden başlatmak gerekmiyor, yeni sağlayıcı arka planda ölçülüp model sırasına giriyor). Anahtarın tamamı arayüze hiç geri gelmiyor, sadece son 4 hanesi görünüyor. Arka plan çekirdeği (sesli asistan) yeni anahtarı bir sonraki açılışında görür.
+
+`.env`'in yeri: Windows'ta `C:\Users\<kullanıcı>\.alice\.env`, Linux/macOS'ta `~/.alice/.env`. Güncellemeyle yeni bir sağlayıcı gelince ALICE açılışta onun boş satırını (açıklaması ve bağlantısıyla) bu dosyaya kendisi ekler ve haber verir; dolu anahtarlarına dokunmaz. Dosya `.gitignore`'da, GitHub'a gitmez.
+
 Sonra:
 
 ```powershell
@@ -718,6 +722,14 @@ alice voice on        # çekirdekle birlikte açılsın (kapatmak: alice voice o
 * Ses tanıma ipuçlarına projelerinin adları ve hafızadaki özel adlar (kişiler, oyunlar) ekleniyor; Türkçe cümle içinde bozulan adlar daha az karışıyor.
 
 `[voice] enabled = true` yaparsan çekirdek (`alice core run`) sesli asistanı da başlatır ve bildirimleri seslendirir. Sessiz modda bildirimler sadece yazılı gelir.
+
+### Sadece sana cevap versin, kendi kendine uyanmasın
+
+* **Sesini tanıt:** `alice voice enroll` altı cümle okutur ve sesinin izini çıkarır (çevrimdışı TitaNet modeli, ~40 MB, bir kez indirilir). Bundan sonra "Alice" diyen başka bir ses (Discord'daki arkadaşın, videodaki biri) uyandırmaz. Bas-konuş ve "Alice sus" bu kontrole girmez. Her karşılaştırmanın skoru `voice.log`'a yazılır; seni tanımadığı olursa `[voice] speaker_threshold`'ı biraz düşür. Kapatmak için: `alice voice enroll --off`.
+* **Seçici uyanma:** Discord, TeamSpeak, Zoom ya da Teams mikrofonunu o an kullanıyorsa (sesli kanaldaysan) ya da DCS/War Thunder açıksa, "Alice" cümlenin başında olmalı ("Alice, haritayı aç") ve "Alice" demeden devam penceresi kapanır. Arkadaşına "şu an Alice'le uğraşıyorum" demen onu uyandırmaz. `[voice] social_mode = false` ile kapanır.
+* **Beğenmediğin cevap:** "Bu cevap kötüydü" de ya da uygulamada cevabın altındaki **Beğenmedim**. İstek ve cevap `alice eval` test setine eklenir, sonraki güncellemelerde denenir (`alice eval --feedback`).
+* **Ayarlar → Ses:** 30 Gemini sesini dinleyip seç; canlı konuşmada bir sonraki "Hey Alice"te geçerli.
+* **Ayarlar → Hafıza:** ALICE'in bildiklerini tek tek gör ve sil. Eski "sevgili" rolünden kalan izler (bebeğim, aşkım...) işaretlenir, tek tıkla temizlenir.
 
 ## Hafıza, projeler ve takip
 

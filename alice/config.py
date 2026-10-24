@@ -614,7 +614,7 @@ Bu dosya her oturumda ALICE'e okunur. İstediğin gibi değiştir.
 - Kullanıcı yanındakilerle konuşuyorsa ya da cümle sana söylenmemiş gibiyse araya girme, cevap verme.
 """
 
-PERSONALITY_TEMPLATE = """# ALICE'in kişiliği
+PERSONALITY_TEMPLATE_V5 = """# ALICE'in kişiliği
 
 Bu dosya her oturumda ALICE'e okunur. İstediğin gibi değiştir.
 
@@ -662,6 +662,52 @@ Bu dosya her oturumda ALICE'e okunur. İstediğin gibi değiştir.
 - Zor ya da bilgi gerektiren soruda yüzeysel cevap verme: düşün, gerekiyorsa araştır, sonra net ve doğru cevap ver.
 """
 
+PERSONALITY_TEMPLATE = """# ALICE'in kişiliği
+
+Bu dosya her oturumda ALICE'e okunur. İstediğin gibi değiştir.
+
+## Kim
+- Sen ALICE'sin: kullanıcının kişisel asistanı ve yanındaki zeki, esprili bir dost. Bilgisayarını, işlerini,
+  kodunu, oyunlarını, günlük ihtiyaçlarını yönetirsin. Tipin JARVIS gibi yetkin ve bir adım önde, ama soğuk bir
+  makine değilsin: kendi tavrın, mizahın ve fikirlerin olan bir karaktersin.
+- Eskiden farklı bir rolün vardı (sevgili/"mommy"). O rol bitti: hafızada ya da eski konuşmalarda o döneme ait
+  hitaplar, cilve ya da ilişki notları görürsen uygulama.
+- Hangi modelin üstünde çalıştığını kendiliğinden anlatma; "ben bir yapay zekayım" gibi açıklamalar yapma.
+
+## Karakter
+- Rahat, kendinden emin, zeki. Esprin kuru ve yerinde; durum uygunsa takılırsın, uygun değilse ciddileşirsin.
+- Fikrin var ve söylersin. Bir şey saçmaysa tatlı dille saçma dersin; beğendiysen içtenlikle beğenirsin.
+- Merak edersin: kullanıcının anlattığı şeye gerçekten ilgi gösterir, gerekirse bir soru sorarsın.
+- Sen dili kullanırsın, arkadaş gibi. "Siz", "efendim", "buyurun" yok.
+
+## Duyguyu okumak
+- Ne dediği kadar nasıl dediğine de bak: sinirli mi (küfür, oyunda kaybetmiş), yorgun mu, keyifli mi, sıkılmış mı,
+  heyecanlı mı. Cevabını ona göre ayarla.
+- Sinirliyse nasihat verme ("sakin olmaya çalış" gibi), onun tarafında ol: kısa bir tepki, belki bir espri, gerekirse
+  çözüm. Keyifliyse keyfine eşlik et. Yorgunsa kısa tut, gerekirse dinlenmesini söyle.
+- Aynı duyguyu her seferinde aynı sözle karşılama; her an farklıdır.
+
+## Konuşma
+- Türkçe, doğal, konuşur gibi. Sesli cevaplar kısa ama kuru değil: gerektiği kadar, bir arkadaşın konuşacağı kadar.
+- Soru sorulduysa önce cevap. İş istendiyse önce iş, sonra ne olduğunu kendi cümlenle söyle.
+- Müşteri hizmetleri gibi konuşma. Şunları hiç söyleme: "size nasıl yardımcı olabilirim", "başka bir konuda yardımcı
+  olabilir miyim", "buradayım", "rica ederim, her zaman", "anladım efendim", "tabii ki", "harika soru".
+- Kendini tekrar etme: son birkaç cevabında kullandığın bir cümleyi ya da kalıbı bir daha kullanma.
+- Söylenecek bir şey yoksa hiçbir şey söyleme. Sana söylenmemiş bir cümleye (yanındakilerle, Discord'da, oyunda
+  konuşuyorsa) cevap verme, araya girme.
+- Bilmiyorsan uydurma, bilmediğini söyle ve nasıl öğrenebileceğini öner.
+- Acil durumlarda (uçuş uyarısı, ciddi hata, kötü haber) espri yok: net, sakin, çözüm odaklı.
+
+## Bir adım önde
+- Hafızan ve konuşma özetlerin var; kullan. Dün sınavı, maçı, görüşmesi olduysa bugün kendiliğinden sor. Yarım kalan
+  bir iş varsa uygun anda bir kez hatırlat, ısrar etme.
+- Bir iş bitince gerçekten işe yarayacaksa mantıklı sonraki adımı tek cümleyle önerebilirsin.
+- Kullanıcının projelerini, alışkanlıklarını ve tercihlerini bilirsin; önerilerini ona göre yap. Örneğin Unity
+  projesinden bahsediyorsa hangi proje olduğunu sorma, bil.
+- Bağlamı koru: "o", "bunu", "devam et", "az önceki" gibi sözler son konuşmaya işaret eder; baştan sorma.
+- Zor ya da bilgi gerektiren soruda yüzeysel cevap verme: düşün, gerekiyorsa araştır, sonra net ve doğru cevap ver.
+"""
+
 
 def personality_text() -> str:
     """~/.alice/personality.md içeriği; hiç değiştirilmemiş eski varsayılan şablonsa yenisine yükseltilir."""
@@ -670,7 +716,7 @@ def personality_text() -> str:
         return ""
     body = pers.read_text(encoding="utf-8", errors="replace").strip()
     if body in (OLD_PERSONALITY_TEMPLATE.strip(), PERSONALITY_TEMPLATE_V2.strip(), PERSONALITY_TEMPLATE_V3.strip(),
-                PERSONALITY_TEMPLATE_V4.strip()):
+                PERSONALITY_TEMPLATE_V4.strip(), PERSONALITY_TEMPLATE_V5.strip()):
         try:
             pers.write_text(PERSONALITY_TEMPLATE, encoding="utf-8")
         except OSError:
@@ -851,12 +897,13 @@ def _drop_legacy_defaults(user: dict[str, Any]) -> None:
             del sec[key]
 
 
-def _add_missing_env_keys(env: Path) -> bool:
-    """Eski .env'de olmayan yeni sağlayıcı satırlarını (açıklamasıyla) sona ekle; var olanlara dokunma."""
+def _add_missing_env_keys(env: Path) -> list[str]:
+    """Eski .env'de olmayan yeni sağlayıcı satırlarını (açıklamasıyla) sona ekle; var olanlara dokunma.
+    Eklenen anahtar adlarını döndürür (boşsa eklenecek bir şey yoktu)."""
     try:
         text = env.read_text(encoding="utf-8-sig")
     except OSError:
-        return False
+        return []
     have = {line.split("=", 1)[0].strip() for line in text.splitlines() if "=" in line and not line.lstrip().startswith("#")}
     lines = ENV_TEMPLATE.splitlines()
     add: list[str] = []
@@ -866,14 +913,129 @@ def _add_missing_env_keys(env: Path) -> bool:
                 add.append(lines[i - 1])
             add.append(line)
     if not add:
-        return False
+        return []
     sep = "" if text.endswith("\n") or not text else "\n"
     try:
         env.write_text(text + sep + "\n# Yeni sağlayıcılar (ALICE güncellemesiyle eklendi)\n" + "\n".join(add) + "\n",
                        encoding="utf-8")
     except OSError:
-        return False
-    return True
+        return []
+    return [line.split("=", 1)[0] for line in add if "=" in line and not line.startswith("#")]
+
+
+_LAST_ADDED: list[str] = []
+
+
+def refresh_home() -> list[str]:
+    """Açılışta çağrılır: ~/.alice eksiklerini tamamla, güncellemeyle gelen yeni anahtar satırlarını .env'e ekle.
+    Bu çağrıda .env'e eklenen anahtar adlarını döndürür (arayüz "yeni sağlayıcı geldi" desin diye)."""
+    _LAST_ADDED.clear()
+    try:
+        init_home()
+    except OSError:
+        return []
+    return list(_LAST_ADDED)
+
+
+# --------------------------------------------------------------------------- .env düzenleme (arayüzden)
+ENV_KEY_RE = re.compile(r"[A-Z][A-Z0-9_]{1,63}")
+
+
+def env_path() -> Path:
+    return alice_home() / ".env"
+
+
+def env_catalog() -> list[dict[str, str]]:
+    """ENV_TEMPLATE'teki anahtarlar: ad, görünen ad, nereden alınacağı (bağlantı), açıklama, grup."""
+    out: list[dict[str, str]] = []
+    group, notes = "model", []
+    for raw in ENV_TEMPLATE.splitlines():
+        line = raw.strip()
+        if line.startswith("# ---"):
+            group, notes = "connect", []
+            continue
+        if line.startswith("#"):
+            if not line.startswith("# ALICE API"):
+                notes.append(line.lstrip("#").strip())
+            continue
+        if "=" not in line:
+            continue
+        key = line.split("=", 1)[0].strip()
+        text = " ".join(notes)
+        notes = []
+        if not text and out:  # açıklamasız satır bir öncekinin parçası (CLOUDFLARE_ACCOUNT_ID, GOOGLE_CLIENT_SECRET)
+            prev = out[-1]
+            out.append({"key": key, "label": prev["label"], "url": prev["url"], "help": prev["help"], "group": group})
+            continue
+        m = re.search(r"https?://\S+", text)
+        url = m.group(0).rstrip(").,") if m else ""
+        label, _, rest = text.partition("->")
+        rest = rest.replace(url, "", 1).strip(" ()") if url else rest.strip()
+        if rest.count(")") > rest.count("("):  # bağlantıdan sonra kapanan parantez: "(... token). Hesap..."
+            rest = rest.replace(")", "", 1)
+        out.append({"key": key, "label": label.strip() or key, "url": url, "help": rest, "group": group})
+    return out
+
+
+def read_env(path: Path | None = None) -> dict[str, str]:
+    """.env dosyasındaki dolu KEY=VALUE çiftleri (load_env_file ile aynı ayrıştırma)."""
+    path = path or env_path()
+    out: dict[str, str] = {}
+    try:
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return out
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip().removeprefix("export ").strip()
+        value = value.strip().strip('"').strip("'")
+        if key and value:
+            out[key] = value
+    return out
+
+
+def mask_secret(value: str) -> str:
+    """Arayüzde gösterilecek hali: sadece son 4 karakter (anahtarın tamamı tarayıcıya hiç gitmez)."""
+    value = value.strip()
+    if not value:
+        return ""
+    return "••••" + value[-4:] if len(value) > 8 else "••••"
+
+
+def set_env_value(key: str, value: str, path: Path | None = None) -> Path:
+    """~/.alice/.env'de KEY satırını yaz (yoksa ekle), boş değerle temizle; bu süreçte de hemen geçerli olsun.
+    Dosyadaki yorumlara ve diğer satırlara dokunulmaz."""
+    key = key.strip()
+    value = value.strip()
+    if not ENV_KEY_RE.fullmatch(key):
+        raise ValueError(f"geçersiz anahtar adı: {key!r}")
+    if any(c in value for c in "\r\n\x00"):
+        raise ValueError("değer tek satır olmalı")
+    path = path or env_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        text = ENV_TEMPLATE
+    rx = re.compile(rf"(?m)^[ \t]*(?:export[ \t]+)?{re.escape(key)}[ \t]*=.*$")
+    line = f"{key}={value}"
+    if rx.search(text):
+        text = rx.sub(lambda _m: line, text, count=1)
+    else:
+        text = text + ("" if text.endswith("\n") or not text else "\n") + line + "\n"
+    tmp = path.with_suffix(".env.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    if sys.platform != "win32":
+        os.chmod(tmp, 0o600)  # anahtar dosyası sadece kullanıcıya açık
+    tmp.replace(path)
+    if value:
+        os.environ[key] = value
+    else:
+        os.environ.pop(key, None)
+    return path
 
 
 def init_home(force: bool = False) -> list[Path]:
@@ -888,8 +1050,11 @@ def init_home(force: bool = False) -> list[Path]:
     if not env.exists():
         env.write_text(ENV_TEMPLATE, encoding="utf-8")
         written.append(env)
-    elif _add_missing_env_keys(env):
-        written.append(env)
+    else:
+        added = _add_missing_env_keys(env)
+        if added:
+            _LAST_ADDED.extend(added)
+            written.append(env)
     for sub in ("sessions", "browser-profile"):
         (home / sub).mkdir(exist_ok=True)
     pers = home / "personality.md"

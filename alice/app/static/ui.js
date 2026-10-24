@@ -632,6 +632,149 @@ function assistantPane(pane, data) {
     pane.appendChild(row);
   }
 }
+/* Ayarlar > Ses: Gemini seslerini dinle ve seç (Live ve normal sesli cevap aynı sesle konuşur). */
+let previewAudio = null;
+function voicePane(pane, data) {
+  const d = data || {};
+  pane.append(el("h2", "", "Ses"),
+    el("p", "", "ALICE'in konuşma sesi. Dinle'ye basınca o sesle kısa bir örnek çalar (ilk seferde birkaç saniye "
+      + "sürer). Seçtiğin ses canlı konuşmada bir sonraki \"Hey Alice\"te geçerli olur."));
+  if (!d.can_preview) pane.appendChild(el("p", "", "Örnek dinlemek için Gemini anahtarı gerekli (Ayarlar → Anahtarlar)."));
+  pane.appendChild(el("div", "sec", "Sesler"));
+  for (const v of d.voices || []) {
+    const on = v.name === d.live;
+    const row = el("div", "list-row");
+    const l = el("span", "l");
+    l.append(el("b", "", v.name + (on ? "  ✓" : "")), el("small", "", v.desc + (on ? " · şu an bu ses" : "")));
+    const play = el("button", "btn", "▶ Dinle");
+    play.disabled = !d.can_preview;
+    play.addEventListener("click", () => {
+      play.textContent = "…";
+      api("/api/voice/preview", { voice: v.name }).then((r) => {
+        play.textContent = "▶ Dinle";
+        if (!r || !r.ok) return toast((r && r.error) || "örnek üretilemedi");
+        if (previewAudio) previewAudio.pause();
+        previewAudio = new Audio("data:audio/wav;base64," + r.audio);
+        previewAudio.play();
+      });
+    });
+    const pick = el("button", on ? "btn" : "btn primary", on ? "Seçili" : "Seç");
+    pick.disabled = on;
+    pick.addEventListener("click", () => api("/api/voice/set", { voice: v.name }).then((r) => {
+      toast(r && r.ok ? v.name + " seçildi; bir sonraki konuşmada bu sesle konuşur" : "kaydedilemedi");
+      showSettings("voice");
+    }));
+    row.append(l, play, pick);
+    pane.appendChild(row);
+  }
+}
+/* Ayarlar > Hafıza: bildiklerini tek tek gör ve sil; eski rolden ("sevgili") kalan izleri temizle. */
+function memoryPane(pane, data) {
+  const d = data || {};
+  pane.append(el("h2", "", "Hafıza"),
+    el("p", "", "ALICE'in senin hakkında bildikleri. Yanlış ya da istemediğin bir şeyi sil; sesle de \"bunu unut\" diyebilirsin."));
+  if (!d.enabled) { pane.appendChild(el("p", "", "Hafıza kapalı (config.toml [memory] enabled = false).")); return; }
+  const old = d.old_role || {};
+  const oldTotal = (old.facts || 0) + (old.summaries || 0) + (old.episodes || 0);
+  if (oldTotal) {
+    const box = el("div", "list-row warn mem-old");
+    const l = el("span", "l");
+    l.append(el("b", "", "Eski rolden kalan izler"),
+      el("small", "", `${old.facts || 0} bilgi, ${old.summaries || 0} özet, ${old.episodes || 0} eski cevap ("bebeğim", "aşkım" gibi). `
+        + "Bunlar kaldıkça ALICE eski tavrına dönebiliyor. Örnek: " + (old.examples || []).join(" / ")));
+    const b = el("button", "btn primary", "Temizle");
+    b.addEventListener("click", () => api("/api/memory/action", { action: "purge_old_role" }).then((r) => {
+      toast(r && r.ok ? "Eski rol izleri temizlendi" : "temizlenemedi");
+      showSettings("memory");
+    }));
+    box.append(l, b);
+    pane.appendChild(box);
+  }
+  const facts = d.facts || [];
+  pane.appendChild(el("div", "sec", `Bildikleri (${facts.length})`));
+  const f = el("input"); f.type = "text"; f.placeholder = "Hafızada ara"; f.className = "set-filter";
+  const list = el("div");
+  const draw = () => {
+    list.replaceChildren();
+    const q = f.value.toLocaleLowerCase("tr");
+    const shown = facts.filter((x) => !q || x.text.toLocaleLowerCase("tr").includes(q));
+    if (!shown.length) list.appendChild(el("p", "", facts.length ? "Eşleşen yok." : "Henüz bir şey kaydedilmedi."));
+    for (const x of shown) {
+      const row = el("div", "list-row" + (x.old ? " warn" : ""));
+      const l = el("span", "l");
+      l.append(el("b", "", x.text), el("small", "", "#" + x.id + " · " + x.kind + (x.old ? " · eski rolden" : "")));
+      const del = el("button", "btn", "Sil");
+      del.addEventListener("click", () => api("/api/memory/action", { action: "forget", id: x.id }).then((r) => {
+        if (r && r.ok) { facts.splice(facts.indexOf(x), 1); draw(); }
+      }));
+      row.append(l, del);
+      list.appendChild(row);
+    }
+  };
+  f.addEventListener("input", draw);
+  draw();
+  pane.append(f, list);
+  if ((d.followups || []).length) {
+    pane.appendChild(el("div", "sec", "Takipler (sonra sorulacak / hatırlatılacak)"));
+    for (const x of d.followups) {
+      const row = el("div", "list-row");
+      const b = el("button", "btn", "Kapat");
+      b.addEventListener("click", () => api("/api/memory/action", { action: "done", id: x.id }).then((r) => { if (r && r.ok) row.remove(); }));
+      row.append(el("span", "l", x.text), b);
+      pane.appendChild(row);
+    }
+  }
+}
+/* Ayarlar > Anahtarlar: API anahtarlarını uygulamanın içinden gir. Değerin tamamı sunucudan hiç gelmez; sadece son 4 hane. */
+function keysPane(pane, data) {
+  const d = data || {};
+  pane.append(el("h2", "", "Anahtarlar"),
+    el("p", "", "Anahtarı yapıştırıp Kaydet: hemen kullanılır, yeniden başlatmak gerekmez. Hepsi bu bilgisayarda "
+      + (d.path || "~/.alice/.env") + " dosyasında durur, GitHub'a gitmez. En az iki model anahtarı (ör. Gemini + Groq) "
+      + "doldurmak, biri kotaya takılınca ALICE'in durmamasını sağlar."));
+  const groups = [["model", "Modeller"], ["connect", "Bağlantılar"]];
+  for (const [g, title] of groups) {
+    pane.appendChild(el("div", "sec", title));
+    for (const k of (d.keys || []).filter((x) => x.group === g)) pane.appendChild(keyRow(k));
+  }
+}
+function keyRow(k) {
+  const row = el("div", "list-row key-row");
+  const mark = el("span", "chk " + (k.set ? "ok" : "off"), k.set ? "✓" : "–");
+  const l = el("span", "l");
+  const sub = el("small", "");
+  sub.append(document.createTextNode(k.key + (k.preview ? " · " + k.preview : "")
+    + (k.source === "env" ? " · Windows ortam değişkeninden" : "") + (k.help ? " · " + k.help : "")));
+  if (k.url) {
+    const a = el("a", "", " anahtarı al ↗");
+    a.title = k.url;
+    a.addEventListener("click", (e) => { e.preventDefault(); api("/api/open", { url: k.url }); });
+    sub.appendChild(a);
+  }
+  l.append(el("b", "", k.label), sub);
+  const edit = el("div", "key-edit");
+  const inp = el("input");
+  inp.type = "password";
+  inp.autocomplete = "off";
+  inp.spellcheck = false;
+  inp.placeholder = k.set ? "değiştirmek için yeni anahtarı yapıştır" : "anahtarı yapıştır";
+  const save = el("button", "btn primary", "Kaydet");
+  const send = (value, msg) => api("/api/keys/set", { key: k.key, value }).then((r) => {
+    if (!r || !r.ok) return toast((r && r.error) || "kaydedilemedi");
+    toast(msg);
+    showSettings("apikeys");
+  });
+  save.addEventListener("click", () => { if (inp.value.trim()) send(inp.value.trim(), k.label + " kaydedildi"); });
+  inp.addEventListener("keydown", (e) => { if (e.key === "Enter" && inp.value.trim()) send(inp.value.trim(), k.label + " kaydedildi"); });
+  edit.append(inp, save);
+  if (k.source === "file") {
+    const del = el("button", "btn", "Sil");
+    del.addEventListener("click", () => send("", k.label + " silindi"));
+    edit.appendChild(del);
+  }
+  row.append(mark, l, edit);
+  return row;
+}
 /* Ayarlar > Bağlantılar: servislerin durumu, OAuth bağlanma/çıkış ve izleyen akışlar. */
 function connectPane(pane, data) {
   const d = data || {};
@@ -681,7 +824,7 @@ function connectPane(pane, data) {
 }
 
 const SETTINGS_TABS = [
-  ["general", "Genel", IC.gear], ["models", "Modeller", IC.spark], ["tools", "Araçlar", IC.bolt],
+  ["general", "Genel", IC.gear], ["apikeys", "Anahtarlar", IC.key], ["voice", "Ses", IC.sound], ["models", "Modeller", IC.spark], ["tools", "Araçlar", IC.bolt],
   ["assistant", "Asistan", IC.shield],
   ["connect", "Bağlantılar", IC.plug], ["memory", "Hafıza", IC.brain], ["usage", "Kullanım", IC.gauge],
   ["keys", "Kısayollar", IC.keyboard],
@@ -696,6 +839,8 @@ async function showSettings(tab) {
     usage: tab === "usage" ? await api("/api/usage") : null,
     connect: tab === "connect" ? await api("/api/connect") : null,
     assistant: tab === "assistant" ? await api("/api/assistant") : null,
+    apikeys: tab === "apikeys" ? await api("/api/keys") : null,
+    voice: tab === "voice" ? await api("/api/voice") : null,
   };
   showDialog((d) => {
     d.classList.add("settings");
@@ -770,13 +915,14 @@ async function showSettings(tab) {
       setTimeout(() => f.focus(), 0);
     } else if (tab === "assistant") {
       assistantPane(pane, data.assistant);
+    } else if (tab === "voice") {
+      voicePane(pane, data.voice);
+    } else if (tab === "apikeys") {
+      keysPane(pane, data.apikeys);
     } else if (tab === "connect") {
       connectPane(pane, data.connect);
     } else if (tab === "memory") {
-      pane.append(el("h2", "", "Hafıza"), el("p", "", "ALICE'in oturumlar arası kaydettiği notlar (~/.alice/memory.md)."));
-      const box = el("div", "prose mem");
-      setMd(box, (data.memory && data.memory.text) || "_(henüz bir şey kaydedilmedi)_");
-      pane.appendChild(box);
+      memoryPane(pane, data.memory);
     } else if (tab === "usage") {
       pane.append(el("h2", "", "Bugünkü kullanım"));
       const entries = Object.entries(data.usage || {});
