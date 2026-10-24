@@ -2,12 +2,18 @@
 
   alice                      etkileşimli oturum (REPL)
   alice "görev"              REPL'i bu mesajla başlat
-  alice -p "görev"           tek seferlik çalıştır, sonucu yaz, çık
+  alice -p "görev"           tek seferlik çalıştır, sonucu yaz, çık (--output-format json|stream-json: betikler için)
   alice init [--force]       ~/.alice altında config.toml, .env ve personality.md oluştur
+  alice eval [--add|--from-log N]   gerçek konuşmalardan test seti: düzeldi mi bozuldu mu
+  alice setup google         Google Takvim + Gmail kurulum sihirbazı (adım adım, sayfaları kendisi açar)
   alice doctor               anahtarları, modelleri ve opsiyonel bağımlılıkları test et
   alice models [--refresh] [--write]  ücretsiz modelleri canlı ölç/sırala; --write rolleri auto yapar
   alice reflex "hedef"       Jev/System One reflex döngüsünü tek başına çalıştır
   alice app                  masaüstü uygulamasını aç
+  alice update [--check]     GitHub'daki son sürüme güncelle (main'e merge olanı çeker)
+  alice connect [ad]         servis bağlantıları (Spotify, Steam, Discord, YouTube, kendi API'ların)
+  alice feeds                bağlı servisleri izleyip yeni bir şey olunca haber veren akışlar
+  alice log [n]              ALICE'in senin adına gönderdikleri (mesaj, DM, e-posta) ve reddettiklerin
   alice shortcut             masaüstüne ve Başlat menüsüne ALICE kısayolu koy (Windows)
   alice core run|install|uninstall|status|mode|stats   arka plan çekirdeği (izleme, modlar, görevler)
   alice rules [add "cümle"]  uyarı kuralları ("GPU uzun süre ısınırsa söyle")
@@ -26,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import re
 import sys
 import time
@@ -66,6 +73,7 @@ HELP = """[bold]Komutlar[/]
   /clear                      konuşmayı sıfırla
   /sessions, /resume [id]     kayıtlı oturumlar / oturumu geri yükle
   /cwd [yol]                  çalışma klasörünü göster/değiştir
+  /update [apply]             GitHub'daki son sürümü kontrol et / çek
   /exit                       çık
 Özel komutlar: ~/.alice/commands/*.md ya da projede .alice/commands/*.md ($ARGUMENTS yer tutucusu).
 Mesajda [bold]@dosya/yolu[/] yazarsan dosyanın içeriği mesaja eklenir.
@@ -191,20 +199,85 @@ class RichUI:
     def ask_permission(self, name: str, summary: str, risk: str) -> str:
         self._spin_stop()
         self._live_stop()
-        color = "red" if risk == "danger" else "yellow"
+        color = "red" if risk == "danger" else ("magenta" if risk == "send" else "yellow")
         console.print(f"[{color}]? İzin gerekiyor[/] [bold]{name}[/] ({risk})\n  {escape(summary)}")
         while True:
-            ans = console.input("  [bold][y][/]evet  [bold][n][/]hayır  [bold][a][/]bu araca hep izin ver > ").strip().lower()
+            ans = console.input("  [bold][y][/]evet  [bold][n][/]hayır  [bold][a][/]bu oturumda hep  "
+                                "[bold][p][/]bu projede hep (kalıcı) > ").strip().lower()
             if ans in ("y", "e", "evet", "yes", ""):
                 return "y"
             if ans in ("n", "h", "hayır", "no"):
                 return "n"
             if ans in ("a", "always", "hep"):
                 return "a"
+            if ans in ("p", "proje", "kalıcı"):
+                return "p"
+
+    def ask_choice(self, question: str, options: list[str], multi: bool = False) -> str:
+        self._spin_stop()
+        self._live_stop()
+        console.print(f"[cyan]? {escape(question)}[/]")
+        for i, o in enumerate(options, 1):
+            console.print(f"  [bold]{i}[/] {escape(o)}")
+        hint = "numaralar virgülle" if multi else "numara"
+        ans = console.input(f"  {hint} ya da kendi cevabın (boş = vazgeç) > ").strip()
+        picks = [p.strip() for p in ans.split(",")] if ans else []
+        if picks and all(p.isdigit() and 1 <= int(p) <= len(options) for p in picks):
+            chosen = [options[int(p) - 1] for p in (picks if multi else picks[:1])]
+            return ", ".join(chosen)
+        return ans
 
     def info(self, msg: str) -> None:
         self._spin_stop()
         console.print(f"[yellow]{escape(msg)}[/]")
+
+
+class JsonUI:
+    """`alice -p --output-format json|stream-json`: betik ve otomasyonlar için makinece okunur çıktı. stdout'a sadece
+    JSON gider (stream-json: her olay bir satır); izin gereken araç sorulmadan reddedilir (yolo hariç)."""
+
+    def __init__(self, out, stream: bool = False):
+        self.out = out
+        self.stream = stream
+        self.models: list[str] = []
+        self.tools: list[str] = []
+        self.errors: list[str] = []
+
+    def emit(self, ev: dict) -> None:
+        if self.stream:
+            self.out.write(json.dumps(ev, ensure_ascii=False) + "\n")
+            self.out.flush()
+
+    def stream_start(self) -> None:
+        pass
+
+    def stream_delta(self, text: str) -> None:
+        self.emit({"type": "delta", "text": text})
+
+    def stream_reset(self) -> None:
+        self.emit({"type": "reset"})
+
+    def stream_end(self, text: str, source: str) -> None:
+        if source and source not in self.models:
+            self.models.append(source)
+        if text or source:
+            self.emit({"type": "assistant", "text": text, "model": source})
+
+    def tool_start(self, call_id: str, name: str, summary: str) -> None:
+        self.tools.append(name)
+        self.emit({"type": "tool_use", "id": call_id, "name": name, "summary": summary})
+
+    def tool_end(self, call_id: str, name: str, result) -> None:
+        self.emit({"type": "tool_result", "id": call_id, "name": name, "is_error": bool(result.is_error),
+                   "text": result.text[:4000]})
+
+    def ask_permission(self, name: str, summary: str, risk: str) -> str:
+        self.emit({"type": "permission_denied", "name": name, "summary": summary, "risk": risk})
+        return "n"
+
+    def info(self, msg: str) -> None:
+        self.errors.append(msg)
+        self.emit({"type": "info", "text": msg})
 
 
 def print_diff(diff: str, max_lines: int = 40) -> None:
@@ -358,19 +431,18 @@ def repl(agent: Agent, router: Router, ctx: ToolContext, cfg: Config, resume: st
 def handle_slash(text: str, agent: Agent, router: Router, ctx: ToolContext, cfg: Config):
     """None, "exit", ("run", mesaj) ya da ("prefill", metin) döndürür."""
     from alice import session as sess
-    from alice.commands import INIT_PROMPT, council_prompt, expand_custom
+    from alice.commands import builtin_prompt, expand_custom
 
     parts = text.split()
     cmd, args = parts[0].lower(), parts[1:]
     if cmd in ("/exit", "/quit", "/q"):
         return "exit"
-    if cmd == "/init":
-        return ("run", INIT_PROMPT)
-    if cmd == "/kurul":
-        return ("run", council_prompt(" ".join(args)))
     custom = expand_custom(text, ctx.cwd)
     if custom is not None:
         return ("run", custom)
+    prompt = builtin_prompt(text)
+    if prompt is not None:
+        return ("run", prompt)
     if cmd == "/help":
         console.print(HELP)
     elif cmd == "/clear":
@@ -435,6 +507,24 @@ def handle_slash(text: str, agent: Agent, router: Router, ctx: ToolContext, cfg:
             console.print(f"[green]yüklendi:[/] {loaded[0]}")
         else:
             console.print("[yellow]oturum yok[/]")
+    elif cmd == "/update":
+        from alice import updater
+
+        info = updater.check(cfg)
+        if info.error and not info.available:
+            console.print(f"[yellow]{escape(info.error)}[/]")
+        elif not info.available:
+            console.print(f"[green]ALICE güncel[/] ({info.branch} @ {info.local[:7]})")
+        elif args and args[0] in ("apply", "yap"):
+            ok, msg = updater.apply_update(info, cfg, force="--force" in args,
+                                           emit=lambda s: console.print(f"[dim]{s}[/]"))
+            console.print(("[green]" if ok else "[red]") + escape(msg) + "[/] "
+                          + ("[dim](yeni sürüm için ALICE'i kapatıp aç)[/]" if ok else ""))
+        else:
+            console.print(f"[bold]Yeni sürüm var:[/] {info.local[:7]} → {info.remote[:7]} (CI: {info.ci})")
+            for line in info.commits[:8]:
+                console.print(f"  [dim]·[/] {escape(line)}")
+            console.print("[dim]çekmek için: /update apply[/]")
     elif cmd == "/cwd":
         if args:
             p = ctx.resolve(" ".join(args))
@@ -450,7 +540,7 @@ def handle_slash(text: str, agent: Agent, router: Router, ctx: ToolContext, cfg:
 
 def rewind_prompt(agent: Agent):
     turns = [(i, m) for i, m in enumerate(agent.messages)
-             if m.get("role") == "user" and not m.get("_image") and i > 0
+             if m.get("role") == "user" and not m.get("_image") and not m.get("_nudge") and i > 0
              and not str(m.get("content", "")).startswith("[Önceki konuşmanın özeti]")][-9:]
     if not turns:
         console.print("[yellow]geri sarılacak mesaj yok[/]")
@@ -489,9 +579,47 @@ def print_usage(router: Router) -> None:
 
 
 # ------------------------------------------------------------------- doctor
+def _doctor_connect(cfg: Config) -> None:
+    """Bağlantılar tek satırda: hangileri hazır, hangileri anahtar/izin bekliyor."""
+    from alice.connect.manifest import discover
+    from alice.connect.runner import ready
+
+    manifests, errors = discover(cfg)
+    if not manifests:
+        return
+    hazır = [m.label for m in manifests.values() if ready(m)[0]]
+    bekleyen = [f"{m.label} ({ready(m)[1]})" for m in manifests.values() if not ready(m)[0]]
+    console.print(f"[bold]Bağlantılar:[/] " + (f"[green]{', '.join(hazır)}[/]" if hazır else "[dim]hazır yok[/]")
+                  + (f"  [dim]bekleyen: {'; '.join(bekleyen)}[/]" if bekleyen else ""))
+    for e in errors:
+        console.print(f"  [yellow]{escape(e)}[/]")
+
+
+def _doctor_update(cfg: Config) -> None:
+    """Sürüm satırı: hangi commit'tesin, yeni sürüm var mı, otomatik güncelleme hangi modda."""
+    from alice import updater
+
+    mode = updater.settings(cfg).get("mode", "auto")
+    try:
+        info = updater.check(cfg, timeout=10, details=False)
+    except Exception as e:  # noqa: BLE001 - doctor hiçbir adımda düşmemeli
+        console.print(f"[dim]sürüm kontrolü yapılamadı: {e}[/]")
+        return
+    if info.error and not info.available:
+        console.print(f"[bold]Sürüm:[/] {__version__}  [dim]{info.error}[/]")
+    elif info.available:
+        console.print(f"[bold]Sürüm:[/] {__version__} @ {info.local[:7]}  "
+                      f"[yellow]yeni sürüm var[/] ({info.remote[:7]}) · güncelleme modu: {mode} · "
+                      "[bold]alice update[/]")
+    else:
+        console.print(f"[bold]Sürüm:[/] {__version__} @ {info.local[:7]}  [green]güncel[/] · güncelleme modu: {mode}")
+
+
 def doctor(cfg: Config) -> int:
     router = Router(cfg, max_wait=0)
     console.print(f"[bold]ALICE home:[/] {alice_home()}  config: {cfg.path or '(varsayılan)'}")
+    _doctor_update(cfg)
+    _doctor_connect(cfg)
     t = Table(title="Sağlayıcılar")
     for c in ("sağlayıcı", "anahtar", "test modeli", "sonuç"):
         t.add_column(c)
@@ -499,10 +627,16 @@ def doctor(cfg: Config) -> int:
     for chain in cfg.roles.values():
         for ref in chain:
             p = ref.split(":", 1)[0]
-            refs_by_provider.setdefault(p, ref)
+            if p in router.providers_cfg:  # "auto" bir sağlayıcı değil
+                refs_by_provider.setdefault(p, ref)
+    from alice.doctor import run_all, test_ref
+
     for name, pc in router.providers_cfg.items():
         key = "gerekmez" if not pc.needs_key else ("var" if pc.api_key else f"[dim]{pc.api_key_env} yok[/]")
-        ref = refs_by_provider.get(name, "")
+        ref = test_ref(router, name, pc, refs_by_provider.get(name, "")) if pc.enabled else ""
+        if not getattr(pc, "auto", True) and name not in refs_by_provider:
+            t.add_row(name, key, "", "[dim]krediyle çalışır, test edilmedi (elle seç)[/]")
+            continue
         if not pc.enabled or not ref:
             t.add_row(name, key, ref, "[dim]atlandı[/]")
             continue
@@ -527,6 +661,12 @@ def doctor(cfg: Config) -> int:
                       f"[dim]{d.latency * 1000:.0f} ms, {d.engine}[/]")
     except DeciderError as e:
         console.print(f"  [red]karar motoru çalışmıyor: {e}[/]")
+
+    marks = {"ok": "[green]✓[/]", "warn": "[yellow]![/]", "off": "[dim]–[/]", "fail": "[red]✗[/]"}
+    console.print("[bold]Özellikler:[/]")
+    for c in run_all(cfg, Path.cwd()):
+        console.print(f"  {marks.get(c.status, '?')} {c.name:<24} {escape(c.detail)}"
+                      + (f"  [dim]→ {escape(c.fix)}[/]" if c.fix and c.status != "ok" else ""))
 
     console.print("[bold]Opsiyonel bileşenler:[/]")
     for mod, why in (("mss", "ekran görüntüsü"), ("pyautogui", "fare/klavye"), ("pyperclip", "pano, Türkçe yazma"),
@@ -630,6 +770,43 @@ def reflex_cmd(cfg: Config, a: argparse.Namespace) -> int:
     return 0 if res.status == "done" else 1
 
 
+# ------------------------------------------------------------------- update
+def update_cmd(argv: list[str]) -> int:
+    """alice update [--check] [--force] [--restart]"""
+    from alice import updater
+
+    ap = argparse.ArgumentParser(prog="alice update", description="ALICE'i GitHub'daki son sürüme çek")
+    ap.add_argument("--check", action="store_true", help="sadece bak, güncelleme yapma")
+    ap.add_argument("--force", action="store_true", help="kirli ağaç / kırmızı CI uyarısını geç")
+    ap.add_argument("--restart", action="store_true", help="güncelleme sonrası uygulamayı aç")
+    a = ap.parse_args(argv)
+
+    cfg = load_config()
+    info = updater.check(cfg)
+    if info.error and not info.available:
+        console.print(f"[yellow]{info.error}[/]")
+        return 1
+    if not info.available:
+        console.print(f"[green]ALICE güncel[/] ({info.branch} @ {info.local[:7]})")
+        return 0
+    console.print(f"[bold]Yeni sürüm var:[/] {info.local[:7]} → {info.remote[:7]} "
+                  f"({info.branch}, CI: {info.ci})")
+    for line in info.commits[:10]:
+        console.print(f"  [dim]·[/] {escape(line)}")
+    if len(info.commits) > 10:
+        console.print(f"  [dim]… ve {len(info.commits) - 10} commit daha[/]")
+    if a.check:
+        if info.blocked:
+            console.print(f"[yellow]Otomatik güncellenmez: {info.blocked}[/]")
+        return 0
+    ok, msg = updater.apply_update(info, cfg, force=a.force, emit=lambda s: console.print(f"[dim]{s}[/]"))
+    console.print(("[green]" if ok else "[red]") + escape(msg) + "[/]")
+    if ok and a.restart:
+        console.print("[dim]ALICE yeniden açılıyor…[/]")
+        updater.restart([sys.executable, "-m", "alice", "app"])
+    return 0 if ok else 1
+
+
 # ---------------------------------------------------------------------- app
 def default_workspace() -> Path:
     """Uygulamanın başlangıç klasörü. Ev klasörü çok büyük ("bu proje" deyince her yeri tarıyordu), bu yüzden:
@@ -669,7 +846,30 @@ def app_cmd(argv: list[str]) -> int:
     a = ap.parse_args(argv)
     cwd = (a.cwd or default_workspace()).resolve()
     cfg = load_config(cwd=cwd)
+    # Açılışta güncelleme: [update] mode="auto" ise yeni commit çekilir ve ALICE kendini yeniden başlatır
+    # (bu çağrı o durumda geri dönmez). mode="notify" ise sadece bilgi döner, arayüzde duyurulur.
+    from alice import updater
+
+    if updater.boot_check() == "rolled":  # yeni sürüm üst üste çöktü: önceki sürüme dönüldü, onunla aç
+        console.print("[yellow]yeni sürüm açılamadı, önceki sürüme dönüldü; yeniden başlatılıyor[/]")
+        updater.restart(env={"ALICE_RESTARTED": "1"})
+    pending = updater.startup_update(cfg, emit=lambda s: console.print(f"[dim]güncelleme: {s}[/]"))
+    updater.mark_running()  # bundan sonra diske yeni kod gelirse "yeniden başlat" deriz
+    updater.watch_health()  # 90 sn ayakta kalırsak yeni sürüm sağlam
+    updater.mark_app()      # çekirdek, uygulama açıkken kendi başına çekmesin
     state = AppState(cfg, cwd, a.mode or cfg.agent.get("permission_mode", "auto"))
+    state.watch_updates(pending)
+    rb = updater.consume_rollback("app")
+    if rb:
+        state.ui.info(f"Son güncelleme ({str(rb.get('from'))[:7]}) açılamadığı için önceki sürüme "
+                      f"({str(rb.get('to'))[:7]}) dönüldü. Sebep: {rb.get('reason')}. Düzeltme gelince otomatik "
+                      "güncellenecek.")
+    ann = updater.consume_announcement("app")
+    if ann and ann.get("changes"):
+        lines = "\n".join(f"- {c}" for c in ann["changes"][:8])
+        more = len(ann["changes"]) - 8
+        state.ui.info(f"ALICE güncellendi ({ann['from'][:7]} → {ann['to'][:7]}). Neler değişti:\n{lines}"
+                      + (f"\n… ve {more} değişiklik daha" if more > 0 else ""))
     server = AppServer(state, a.port).start()
     if cfg.data.get("voice", {}).get("enabled"):
         # "Hey Alice" çekirdekte dinlenir; uygulama açılınca çekirdek kapalıysa onu da başlat.
@@ -694,6 +894,7 @@ def app_cmd(argv: list[str]) -> int:
         pass
     finally:
         server.stop()
+        updater.clear_app()
     return 0
 
 
@@ -756,13 +957,14 @@ def package_version() -> str:
 
 # ------------------------------------------------------------- alt komutlar
 SUBCOMMANDS = ("init", "doctor", "models", "reflex", "app", "shortcut", "core", "rules", "tasks", "voice", "quick",
-               "dcs", "watch", "phone", "notes", "brief", "report", "plugins")
+               "dcs", "watch", "phone", "notes", "brief", "report", "plugins", "update", "connect", "feeds",
+               "log", "setup", "eval")
 
 # Kendi argparse'ı olmayan alt komutlar: `alice <komut> --help` çalıştırmak yerine bu metni gösterir
 # (ör. `alice phone --help` köprüyü açıp beklemesin, `alice notes --help` notları listelemesin).
 _SUB_DOCS: dict[str, tuple[str, str | None]] = {
     "core": ("alice.core.cli", None), "rules": ("alice.core.cli", None), "tasks": ("alice.core.cli", None),
-    "voice": ("alice.voice.cli", None),
+    "feeds": ("alice.core.cli", None), "log": ("", None), "voice": ("alice.voice.cli", None),
     "notes": ("alice.extras.cli", None), "brief": ("alice.extras.cli", None), "report": ("alice.extras.cli", None),
     "watch": ("alice.app.phone", "watch_cmd"), "phone": ("alice.app.phone", "phone_cmd"),
     "dcs": ("alice.sims.dcs", "dcs_cmd"), "plugins": ("alice.plugins", "plugins_cmd"), "quick": ("", None),
@@ -828,6 +1030,8 @@ def _main_parser() -> TrArgumentParser:
     ap.add_argument("prompt", nargs="*", help="ilk mesaj (verilirse REPL bu mesajla başlar)")
     ap.add_argument("-p", "--print", dest="oneshot", action="store_true",
                     help="tek seferlik çalıştır ve çık (mesaj yoksa stdin'den okunur)")
+    ap.add_argument("--output-format", choices=["text", "json", "stream-json"], default="text",
+                    help="-p ile: text (varsayılan), json (sonunda tek nesne) ya da stream-json (her olay bir satır)")
     ap.add_argument("--mode", choices=MODES, help="izin modu (varsayılan: config permission_mode, genelde auto)")
     ap.add_argument("--yolo", action="store_true", help="hiçbir izin sorma (tam erişim), --mode yolo ile aynı")
     ap.add_argument("--cwd", type=Path, help="çalışma klasörü (varsayılan: bulunduğun klasör)")
@@ -907,6 +1111,29 @@ def _dispatch(argv: list[str]) -> int:
             console.print(f"[green]oluşturuldu:[/] {p}")
         console.print(f"Şimdi {alice_home() / '.env'} dosyasına API anahtarlarını yaz, sonra [bold]alice doctor[/].")
         return 0
+    if cmd == "log":
+        from alice import actionlog
+
+        rows = actionlog.recent(int(argv[1]) if len(argv) > 1 and argv[1].isdigit() else 30)
+        for r in reversed(rows):
+            console.print(escape(actionlog.format_row(r)))
+        if not rows:
+            console.print("[dim]kayıt yok: ALICE kimseye bir şey göndermedi[/]")
+        return 0
+    if cmd == "setup":
+        from alice.setup_google import setup_cmd
+
+        return setup_cmd(argv[1:])
+    if cmd == "eval":
+        from alice.evals import eval_cmd
+
+        return eval_cmd(argv[1:])
+    if cmd == "connect":
+        from alice.connect.cli import connect_cmd
+
+        return connect_cmd(argv[1:])
+    if cmd == "update":
+        return update_cmd(argv[1:])
     if cmd == "doctor":
         TrArgumentParser(prog="alice doctor", description="Her sağlayıcıya test isteği atar, karar motorunu dener, "
                          "eksik opsiyonel paketleri gösterir.").parse_args(argv[1:])
@@ -927,10 +1154,11 @@ def _dispatch(argv: list[str]) -> int:
 
             log_error()
             raise
-    if cmd in ("core", "rules", "tasks"):
+    if cmd in ("core", "rules", "tasks", "feeds"):
         from alice.core import cli as core_cli
 
-        return {"core": core_cli.core_cmd, "rules": core_cli.rules_cmd, "tasks": core_cli.tasks_cmd}[cmd](argv[1:])
+        return {"core": core_cli.core_cmd, "rules": core_cli.rules_cmd, "tasks": core_cli.tasks_cmd,
+                "feeds": core_cli.feeds_cmd}[cmd](argv[1:])
     if cmd in ("notes", "brief", "report"):
         from alice.extras import cli as extras_cli
 
@@ -974,6 +1202,11 @@ def _dispatch(argv: list[str]) -> int:
         except ValueError as e:
             console.print(f"[red]--model geçersiz:[/] {escape(str(e))}, ör. gemini:gemini-flash-latest")
             return 2
+
+    json_out = None
+    if a.oneshot and a.output_format != "text":
+        json_out = sys.stdout  # stdout'a sadece JSON; diğer her şey stderr'e
+        console.file = sys.stderr
     cwd = (a.cwd or Path.cwd()).resolve()
     if not cwd.is_dir():
         console.print(f"[red]klasör yok:[/] {escape(str(cwd))}")
@@ -987,15 +1220,25 @@ def _dispatch(argv: list[str]) -> int:
             console.print('[red]-p için görev yok.[/] Kullanım: alice -p "görev" (ya da görevi stdin\'den ver)')
             return 2
     agent, router, ctx = build(cfg, cwd, mode, a.verbose)
+    if json_out is not None:
+        agent.ui = JsonUI(json_out, stream=a.output_format == "stream-json")
     if a.model:
         router.role_overrides["brain"] = [a.model]
     if not _check_ready(router):
         return 2
     if a.oneshot:
+        t0 = time.monotonic()
         try:
             out = agent.run_turn(prompt)
         finally:
             cleanup(ctx)
+        if json_out is not None:
+            ui = agent.ui
+            json_out.write(json.dumps({"type": "result", "result": out or "", "is_error": not out,
+                                       "models": getattr(ui, "models", []), "tools": getattr(ui, "tools", []),
+                                       "notes": getattr(ui, "errors", []),
+                                       "duration_s": round(time.monotonic() - t0, 2)}, ensure_ascii=False) + "\n")
+            json_out.flush()
         return 0 if out else 1
     if prompt:
         agent.run_turn(prompt)

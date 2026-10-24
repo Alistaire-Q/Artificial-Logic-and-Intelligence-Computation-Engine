@@ -7,6 +7,7 @@
   alice core stats <anahtar> [süre]  ör. alice core stats pc.gpu.temp 1d
   alice rules [list|add "cümle"|rm|on|off <id>]
   alice tasks [list|add "cümle"|rm|run <id>]
+  alice feeds [list|--new|--test <ad>]   bağlı servisleri izleyip haber veren akışlar
 """
 
 from __future__ import annotations
@@ -38,9 +39,18 @@ def core_cmd(argv: list[str]) -> int:
         from alice.providers.router import Router
 
         router = Router(cfg)
+        from alice import updater
+
+        if updater.boot_check() == "rolled":  # yeni sürüm üst üste çöktü: önceki sürüme dönüldü
+            service.release_lock()
+            updater.restart(env={"ALICE_RESTARTED": "1"})
+        updater.mark_running()  # diskteki kod bundan yenileşirse boşta kalınca yeniden başlarız
+        updater.watch_health()
         core = service.Core(cfg, decider=Decider.from_config(cfg, router), run_agent=service.make_agent_runner(cfg))
         core.prime()  # DCS açık mı: ses modülü ekran kartını kullanıp kullanmayacağını buna göre seçer
+        announce_update(core, updater)
         voice = _start_voice(cfg, core) if cfg.data.get("voice", {}).get("enabled") and "--once" not in argv else None
+        core.greeter.voice = voice  # karşılamadan sonra "Hey Alice" demeden cevap verilebilsin
         sims = _start_sims(cfg, core) if "--once" not in argv else None
         phone = _start_phone(cfg, core) if cfg.data.get("phone", {}).get("enabled") and "--once" not in argv else None
         quick = _start_quick(cfg) if cfg.data.get("quick", {}).get("enabled", True) and "--once" not in argv else None
@@ -201,6 +211,127 @@ def _start_voice(cfg, core):
     threading.Thread(target=va.run, daemon=True, name="alice-voice").start()
     voice_log(f"ses modülü başladı: {time.monotonic() - t0:.1f} sn")
     return va
+
+
+FEED_TEMPLATE = """# ALICE akışları: bağlı servislerde yeni bir şey olunca haber verir.
+# Çekirdek çalışırken (alice core run) yoklanır. Ayrıntı: docs/CONNECT.md
+
+[[feed]]
+name = "ornek"
+connector = "discord"      # alice connect ile listelenen bağlantı
+action = "messages"        # o bağlantının bir eylemi
+args = { channel_id = "KANAL_ID" }
+every_minutes = 5
+id_field = "id"            # yeni öğeyi ayırt eden alan
+title = "Discord · {author.username}"
+body = "{content}"
+topic = "discord"
+# agent = "Bu mesajlara bakip bana ozetle"   # dolu olursa ALICE uyanir ve bu isi yapar
+# quiet = "23:00-08:00"      # bu saatlerde biriktir, sabah ozet olarak gelsin
+# digest_minutes = 60        # tek tek degil, saatte bir ozet
+# cooldown_minutes = 10      # bir bildirimden sonra gelenleri topla
+
+[feed.when]                  # hangi mesaj bildirime degsin (bos: hepsi)
+any = ["hayat", "@everyone"] # en az biri gecsin
+none = ["bot"]               # bunlar gecmesin
+# ask = "Bu mesaj bana bir sey soruyor ya da acil mi?"   # anlamina gore: hizli model karar verir
+
+[feed.escalate]              # bu tutarsa onem kritik olur, sessiz saatte de soylenir
+regex = '\\b(acil|hemen)\\b'   # tek tırnak: TOML kaçış yapmaz
+
+# Arkadas oyuna girince haber ver (Steam):
+# [[feed]]
+# name = "arkadaslar"
+# connector = "steam"
+# action = "profile"
+# args = { steamids = "STEAMID1,STEAMID2" }
+# mode = "change"
+# watch = ["gameextrainfo"]
+# id_field = "steamid"
+# every_minutes = 3
+# title = "{personaname} oyuna girdi"
+# body = "{gameextrainfo}"
+# [feed.when]
+# fields = { gameextrainfo = "*" }
+"""
+
+
+def announce_update(core, updater) -> None:
+    """Az önce güncellendiysek bir kez söyle. Uygulama açıksa sohbete o yazar, çekirdek susar."""
+    if updater.app_running():
+        return
+    from alice.core.notify import Notification
+
+    rb = updater.consume_rollback("core")
+    if rb:
+        core.notifier.send(Notification("ALICE güncellemesi geri alındı",
+                                        f"Yeni sürüm açılamadı, önceki sürüme dönüldü ({rb.get('reason')}).",
+                                        "warn", "core", kind="info"))
+    ann = updater.consume_announcement("core")
+    if not ann:
+        return
+    from alice.core.notify import Notification
+
+    changes = ann.get("changes") or []
+    body = "; ".join(changes[:3]) + (f" ve {len(changes) - 3} değişiklik daha" if len(changes) > 3 else "")
+    core.notifier.send(Notification("ALICE güncellendi", body or f"{ann.get('to', '')[:7]} sürümüne geçildi",
+                                    "info", "core", kind="info"))
+
+
+def feeds_cmd(argv: list[str]) -> int:
+    """alice feeds [list] | --new | --test <ad>"""
+    from alice.core.feeds import FeedMonitor, feeds_path, load_feeds
+
+    sub = argv[0] if argv else "list"
+    if sub == "--new":
+        p = feeds_path()
+        if p.exists():
+            console.print(f"[yellow]zaten var:[/] {p}")
+            return 1
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(FEED_TEMPLATE, encoding="utf-8")
+        console.print(f"[green]oluşturuldu:[/] {p}")
+        return 0
+
+    feeds, errors = load_feeds()
+    for e in errors:
+        console.print(f"[yellow]{escape(e)}[/]")
+
+    if sub == "--test" and len(argv) > 1:
+        feed = next((f for f in feeds if f.name == argv[1]), None)
+        if feed is None:
+            console.print(f"[red]akış yok:[/] {escape(argv[1])}")
+            return 1
+        cfg = load_config()
+        decider = None
+        if feed.when.ask or feed.escalate.ask:
+            from alice.decider import Decider
+            from alice.providers.router import Router
+
+            decider = Decider.from_config(cfg, Router(cfg))
+        mon = FeedMonitor(cfg=cfg, decider=decider, emit=lambda s: console.print(f"[dim]{escape(s)}[/]"))
+        try:
+            verdicts = mon.explain(feed)
+        except Exception as e:  # noqa: BLE001 - test komutu: hatayı göster, çökme
+            console.print(f"[red]{escape(str(e))}[/]")
+            return 1
+        passed = sum(v.ok for v in verdicts)
+        console.print(f"[bold]{len(verdicts)} öğe, {passed} tanesi koşulu geçiyor[/]  [dim]{escape(feed.describe())}[/]")
+        for v in verdicts[:15]:
+            mark = "[red]![/]" if v.ok and v.severity == "critical" else ("[green]✓[/]" if v.ok else "[dim]✗[/]")
+            line = escape(v.title + (f" — {v.body}" if v.body else ""))[:140]
+            console.print(f"  {mark} {line}  [dim]{escape(v.reason)}[/]")
+        if feed.mode == "change":
+            console.print("[dim]change modunda bildirim, izlenen alan bir önceki yoklamadan farklıysa gider.[/]")
+        return 0
+
+    if not feeds:
+        console.print(f"[dim]akış yok. Örnek dosya oluşturmak için: alice feeds --new  ({feeds_path()})[/]")
+        return 0
+    for f in feeds:
+        console.print(f"[bold]{escape(f.name)}[/]" + ("" if f.enabled else " [dim](kapalı)[/]")
+                      + f"  [dim]{escape(f.describe())}[/]")
+    return 0
 
 
 def rules_cmd(argv: list[str]) -> int:

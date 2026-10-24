@@ -121,6 +121,7 @@ class _FakeCore:
         self.store = Store(":memory:")
         self.interval = 15.0
         self.calls: list[str] = []
+        self.greeter = SimpleNamespace(voice=None)  # gerçek Core'daki karşılayıcı
         _FakeCore.instances.append(self)
 
     def prime(self):

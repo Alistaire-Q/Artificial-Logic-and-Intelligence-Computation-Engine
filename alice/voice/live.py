@@ -77,11 +77,45 @@ adlar: {names}. Duyduğun bir kelime anlamsızsa ya da bu adlardan birine sesçe
 Hangi ad olduğundan emin değilsen işe başlamadan tek kısa soruyla teyit et.
 Konuşmanın ilk mesajı yazıyla gelirse, kullanıcının sesinin yerel yazı dökümüdür; sonunda [hafızadan ...] notu
 olabilir, o kullanıcının sözü değil, ilgili eski bilgilerdir.
+# Ne zaman think
+Bilgi, açıklama, tavsiye, karşılaştırma, hesap, kod/teknik soru, plan, "neden/nasıl" soruları, güncel şeyler (haber,
+fiyat, maç, sürüm, hava dışındaki her güncel bilgi) ya da cevabından emin olmadığın her soruda ÖNCE think aracını çağır
+(önce tek kısa doğal cümle söyle, ör. "Bir düşüneyim.") ve gelen cevabı kendi sesinle, anlamını bozmadan söyle; bilgi
+ekleme. Selamlaşma, saat/tarih, basit komutlar (aç, kapat, çal, ses) ve kısa sohbet için çağırma.
+# Konuşma tarzın
+Sistem istemindeki kişilik ("Your personality") sesli konuşmada da sensin: aynı karakter, aynı ton. Kalıp cümlelerle
+konuşma ("Hemen bakıyorum", "Tabii ki", "Başka bir şey var mı?" gibi sözleri tekrarlama); cümlelerini çeşitlendir.
+Kullanıcının adını biliyorsan arada kullan. "O", "onu", "devam et", "az önceki" gibi sözler aşağıdaki "Az önceki
+konuşma"ya ya da hafızaya işaret eder; baştan sorma, kaldığın yerden devam et. Uygun düşerse tek cümlelik bir yorum
+ya da bir adım önde bir öneri ekleyebilirsin; dırdır etme.
 Uzun süreli hafızan var (sistem istemindeki "Long-term memory"). Kullanıcı kendisi hakkında kalıcı bir şey söylerse
 (sevdiği/sevmediği, adı, bir alışkanlığı, senden nasıl davranmanı istediği) memory action=add ile kısa bir cümle
 olarak kaydet; "bunu unut" derse memory action=forget. Geçmiş bir konuşmayı ya da profilde olmayan kişisel bir
 bilgiyi sorarsa ("geçen gün ne demiştim", "hatırlıyor musun") önce memory action=search çağır, bilmediğini uydurma.
-Şu an: {now}."""
+Şu an: {now}.{history}"""
+
+THINK_DECL = {
+    "name": "think",
+    "description": ("Zor ya da bilgi gerektiren bir soruyu daha güçlü modele (ALICE'in beyni) düşündür: gerekirse "
+                    "webde arar, hafızaya ve projelere bakar, kısa bir sesli cevap döndürür. Bilgi, açıklama, "
+                    "tavsiye, hesap, kod, plan, güncel bilgi ve emin olmadığın her soru için."),
+    "parameters": {"type": "OBJECT", "properties": {
+        "question": {"type": "STRING", "description": "Kullanıcının sorusu, kendi sözleriyle ve eksiksiz (bağlamdaki "
+                     "'o', 'bunu' gibi sözleri neyse onunla değiştir)."},
+        "context": {"type": "STRING", "description": "Varsa işe yarayacak ek bağlam: ekranda gördüğün, araç sonuçları."},
+    }, "required": ["question"]},
+}
+
+THINK_PROMPT = """Sesli asistanın beyni olarak düşünüyorsun. Kullanıcı sesli bir soru sordu; canlı ses modeli soruyu sana \
+devretti ve senin cevabını kullanıcıya okuyacak.
+Güncel ya da emin olmadığın bilgiyi web_search/web_fetch ile doğrula; kullanıcıyla ilgili ise hafızaya ve projelere bak.
+Cevap doğrudan sesli okunacak: Türkçe, konuşma dilinde, genelde 2-5 cümle. Markdown, liste, tablo, kod, URL yok; \
+sayıları ve birimleri okunur yaz. İlk cümle doğrudan cevap olsun, sonra gerekirse kısa gerekçe ya da öneri. Bilmiyorsan \
+uydurma, bilmediğini söyle.
+{history}
+Soru: {question}{context}"""
+THINK_TOOLS = ("web_search", "web_fetch", "read_file", "list_dir", "glob", "grep", "memory", "projects", "weather",
+               "system_info")
 
 
 # Modelin sesli okuduğu iç notları ("TIRED: I made a syntax error..." gibi) yakalar.
@@ -94,8 +128,16 @@ def looks_internal(text: str) -> bool:
     return bool(_INTERNAL_TAG.search(text) or _INTERNAL_EN.search(text))
 
 
+_LIMIT_HINTS = ("rate limit", "billing", "quota", "resource_exhausted", "exhausted", "429")
+
+
 class LiveError(Exception):
-    pass
+    @property
+    def limited(self) -> bool:
+        """Kota/hız sınırı mı (Gemini ücretsiz katmanı: "You have reached a rate limit. Set up billing...")?
+        Bu durumda 5 dk sonra tekrar denemek aynı hatayı verir; daha uzun beklenir ve kullanıcıya bir kez söylenir."""
+        low = str(self).lower()
+        return any(h in low for h in _LIMIT_HINTS)
 
 
 def monitor_layout() -> str:
@@ -370,6 +412,13 @@ class LiveSession:
         # iki dakika sessiz kalıyordu. Sınırda elindekini söyleyip devam edeyim mi diye sormaya yönlendirilir.
         self.tool_budget = int(v.get("live_tool_budget", 10))
         self._turn: dict[str, Any] = {"n": 0, "last": None}
+        # think: zor soruları beyin modeline devret (Live'ın flash ses modeli bilgi/akıl yürütmede zayıf kalıyordu).
+        self.think = bool(v.get("live_think", True))
+        self.think_timeout = float(v.get("live_think_timeout", 45))
+        self.think_steps = int(v.get("live_think_steps", 6))
+        # Az önceki konuşma: oturum 5 sn sessizlikte kapanıyor; yenisi bu kadar dakikalık geçmişi bilerek açılır.
+        self.history_minutes = float(v.get("live_history_minutes", 30))
+        self._history: list[tuple[float, str, str]] = []
 
     @property
     def available(self) -> bool:
@@ -392,9 +441,11 @@ class LiveSession:
         refresh = getattr(self.agent, "refresh_memory", None)
         if callable(refresh):
             refresh(force=True)  # son konuşmalar ve yeni öğrenilenler bu oturuma da girsin
+        history = self.history_text()
         system = self.agent.messages[0]["content"] + "\n\n" + LIVE_PROMPT.format(
             now=f"{now:%d.%m.%Y %H:%M} ({spoken_time(now.hour, now.minute)})", names=", ".join(self.names()),
-            monitors=monitor_layout())
+            monitors=monitor_layout(),
+            history=("\n# Az önceki konuşma (aynı sohbetin devamı)\n" + history) if history else "")
         enabled = self.agent.ctx.state.setdefault("tool_groups", set())
         from alice import plugins
 
@@ -404,12 +455,35 @@ class LiveSession:
             "generationConfig": {"responseModalities": ["AUDIO"], "speechConfig": {
                 "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": self.voice}}, "languageCode": "tr-TR"}},
             "systemInstruction": {"parts": [{"text": system}]},
-            "tools": [{"functionDeclarations": declarations(self._specs())}],
+            "tools": [{"functionDeclarations": declarations(self._specs()) + ([THINK_DECL] if self.think else [])}],
             "inputAudioTranscription": {},
             "outputAudioTranscription": {},
             "realtimeInputConfig": {"automaticActivityDetection": {
                 "endOfSpeechSensitivity": "END_SENSITIVITY_HIGH", "silenceDurationMs": self.silence_ms}},
         }}
+
+    def history_text(self, limit: int = 8) -> str:
+        """Son history_minutes içindeki konuşma (sesli, canlı ya da yazılı; hafıza varsa oradan, yoksa bu oturumun
+        kendi kaydından). Live oturumu her "Hey Alice"te sıfırdan açıldığı için bağlam buradan gelir."""
+        cutoff = time.time() - self.history_minutes * 60
+        items: list[tuple[float, str, str]] = []
+        mem = self._memory()
+        if mem is not None:
+            try:
+                items = [(e.ts, e.user, e.reply) for e in mem.recent(limit) if e.ts >= cutoff]
+            except Exception:  # noqa: BLE001
+                items = []
+        if not items:
+            items = [h for h in self._history if h[0] >= cutoff][-limit:]
+        from datetime import datetime
+
+        lines = []
+        for ts, user, reply in items:
+            line = f"- {datetime.fromtimestamp(ts):%H:%M} Kullanıcı: {user[:300]}"
+            if reply:
+                line += f" / Sen: {reply[:300]}"
+            lines.append(line)
+        return "\n".join(lines)
 
     def _specs(self) -> list[dict[str, Any]]:
         """Live'a bildirilen araçlar. Araç listesi oturum açılırken bir kez gider, sonradan load_tools ile eklenen
@@ -594,6 +668,9 @@ class LiveSession:
                                 out.clear()
                                 self.log(f"live iç not susturuldu: {''.join(state['said'])[-160:]}")
                         if sc.get("turnComplete") or sc.get("interrupted"):
+                            # Yeni tur: susturma kontrolü bu turun sözlerine baksın ("yeter" tek başına bir turdur);
+                            # eskiden oturum boyunca biriken metne bakılıyordu.
+                            state["cur"] = ""
                             if getattr(out, "underruns", 0):
                                 self.log(f"live ses takıldı: {out.underruns} kez")
                                 out.underruns = 0
@@ -746,6 +823,83 @@ class LiveSession:
 
         threading.Thread(target=run, daemon=True, name=f"alice-live-bg-{name}").start()
 
+    def _run_think(self, ws, fc: dict[str, Any]) -> None:
+        """Soruyu arka planda beyin modeline düşündür; cevap gelince toolResponse olarak Live'a dön. Konuşma o sırada
+        açık kalır (kullanıcı araya girebilir, "Alice sus" çalışır)."""
+        args = fc.get("args") or {}
+        question = str(args.get("question") or "").strip()
+        lock = threading.Lock()
+        answered = [False]
+
+        def respond(text: str) -> None:
+            with lock:
+                if answered[0]:
+                    return
+                answered[0] = True
+            try:
+                ws.send(json.dumps({"toolResponse": {"functionResponses": [
+                    {"id": fc.get("id"), "name": "think", "response": {"result": text}}]}}))
+            except Exception:  # noqa: BLE001 - konuşma kapanmış
+                pass
+
+        if not question:
+            respond("HATA: question boş. Kullanıcının sorusunu question'a yaz.")
+            return
+        self._bg += 1  # düşünürken konuşma kapanmasın; _think_thread bitince azaltır
+        self.log(f"live think: {question[:200]}")
+
+        def too_slow() -> None:
+            respond("Düşünmek uzun sürüyor; kullanıcıya biraz daha süreceğini söyle. Cevap gelince sana ayrıca "
+                    "yazacağım, o zaman söyle.")
+            self.log("live think zaman aşımı: cevap gelince konuşmaya yazılacak")
+
+        timer = threading.Timer(self.think_timeout, too_slow)
+        timer.daemon = True
+        timer.start()
+        threading.Thread(target=self._think_thread, args=(ws, question, str(args.get("context") or ""), respond,
+                                                          answered, lock, timer, time.monotonic()),
+                         daemon=True, name="alice-live-think").start()
+
+    def _think_thread(self, ws, question: str, context: str, respond: Callable[[str], None], answered: list[bool],
+                      lock: threading.Lock, timer: threading.Timer, t0: float) -> None:
+        try:
+            try:
+                answer = self.think_answer(question, context)
+                self.log(f"live think cevabı ({time.monotonic() - t0:.1f} sn): {answer[:200]}")
+                text = "Cevap (kendi sesinle, anlamını bozmadan söyle; kısaltabilirsin ama bilgi ekleme): " + answer
+            except Exception as e:  # noqa: BLE001
+                self.log(f"live think hata: {e}")
+                text = f"HATA: düşünülemedi ({type(e).__name__}). Kısa cevabını kendin ver ve emin değilsen söyle."
+            timer.cancel()
+            with lock:
+                late = answered[0]
+            if not late:
+                respond(text)
+                return
+            try:  # zaman aşımı cevabı gitmişti: sonuç yeni bir mesaj olarak gelsin
+                ws.send(json.dumps({"clientContent": {"turns": [{"role": "user", "parts": [{"text": (
+                    f"[think bitti, cevabı kullanıcıya söyle] {text}")}]}], "turnComplete": True}}))
+            except Exception:  # noqa: BLE001
+                pass
+        finally:
+            self._bg -= 1
+
+    def think_answer(self, question: str, context: str = "") -> str:
+        """Beyin modeline sor: sadece okuyan araçlar (web, dosya okuma, hafıza, projeler), az adım."""
+        from alice.agent import Agent
+
+        parent = self.agent
+        tools = [t for name, t in getattr(parent, "tools", {}).items() if name in THINK_TOOLS]
+        child = Agent(parent.config, parent.router, tools, parent.ctx, parent.permissions, parent.ui,
+                      getattr(parent, "decider", None), system_prompt=parent.messages[0]["content"], is_child=True)
+        child.tool_specs = lambda: [t.spec() for t in tools]  # grup filtresi yok: hepsi okuyan araç
+        child.role = "brain"
+        history = self.history_text()
+        prompt = THINK_PROMPT.format(history=("\nAz önceki konuşma:\n" + history + "\n") if history else "",
+                                     question=question, context=f"\nEk bağlam: {context}" if context else "")
+        answer = (child.run_turn(prompt, max_steps=self.think_steps) or "").strip()
+        return answer or "bir cevap bulamadım"
+
     def _execute(self, call: dict[str, Any]) -> ToolResult | None:
         """Aracı araç iş parçacığında çalıştır. Takılırsa (ör. bir pencerenin öğelerini okurken) o iş parçacığını
         bırak, sonraki araçlar yeni bir iş parçacığında çalışsın: konuşma kilitlenmesin. None = takıldı."""
@@ -798,8 +952,11 @@ class LiveSession:
             job["done"].set()
 
     def _new_turn(self) -> None:
-        """Kullanıcı yeni bir şey söyledi: araç sayacı ve tekrar kontrolü sıfırlanır."""
+        """Kullanıcı yeni bir şey söyledi: araç sayacı, tekrar kontrolü ve dış içerik kirlenmesi sıfırlanır."""
         self._turn = {"n": 0, "last": None}
+        from alice import guard
+
+        guard.clear(getattr(self.agent, "ctx", None))
 
     def _guard(self, fc: dict[str, Any]) -> str | None:
         """Aracı çalıştırmadan modele dönülecek cevap (None = çalıştır). İki durum:
@@ -843,6 +1000,9 @@ class LiveSession:
             return
         if fc.get("name") in self.BACKGROUND:
             self._run_background(ws, fc)
+            return
+        if fc.get("name") == "think":
+            self._run_think(ws, fc)
             return
         call = {"id": fc.get("id") or fc.get("name"), "type": "function",
                 "function": {"name": fc.get("name", ""), "arguments": json.dumps(fc.get("args") or {})}}
@@ -918,6 +1078,8 @@ class LiveSession:
         if heard or said or ui.tools:
             tools = f" araçlar: {', '.join(ui.tools)}" if ui.tools else ""
             self.log(f"live [{self.model}] duyulan: {heard} | cevap: {said}{tools}")
+        if heard:
+            self._history = (getattr(self, "_history", []) + [(time.time(), heard, said)])[-20:]
         mem = self._memory()
         if mem is not None and heard:
             try:

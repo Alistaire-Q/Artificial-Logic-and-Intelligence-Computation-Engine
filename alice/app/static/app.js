@@ -105,6 +105,8 @@ const IC = {
   gauge: '<path d="M4 18a8 8 0 1 1 16 0"/><path d="M12 18l4-6"/>',
   keyboard: '<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>',
   expand: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
+  update: '<path d="M12 4v10M8 10l4 4 4-4"/><path d="M5 18h14"/>',
+  plug: '<path d="M9 3v6M15 3v6"/><path d="M6 9h12v3a6 6 0 0 1-12 0z"/><path d="M12 18v3"/>',
   branch: '<circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7v10M18 10c0 4-6 3-11.2 7.3"/>',
 };
 
@@ -627,24 +629,30 @@ function finishTool(t, ev, live) {
 function onPermission(ev) {
   if (S.perms.has(ev.id)) return;
   hideWorking();
-  const card = el("div", "perm" + (ev.risk === "danger" ? " danger" : ""));
+  const card = el("div", "perm" + (ev.risk === "danger" ? " danger" : ev.risk === "send" ? " send" : ""));
   const q = el("div", "perm-q");
   const [verb, icon] = verbFor(ev.name);
   const ic = el("span", "perm-ic");
   ic.appendChild(svg(ev.risk === "danger" ? IC.shield : icon));
   const qt = el("div", "perm-qt");
-  qt.append(el("b", "", ev.risk === "danger" ? "Bu işlem geri alınamayabilir" : "ALICE izin istiyor"),
+  const head = ev.risk === "danger" ? "Bu işlem geri alınamayabilir"
+    : ev.risk === "send" ? "Bu mesaj başkasına gidecek" : "ALICE izin istiyor";
+  qt.append(el("b", "", head),
     el("small", "", `${verb} · ${ev.name}`));
   q.append(ic, qt);
   const acts = el("div", "perm-actions");
-  // 1/2/3 tuşları da cevaplar (Claude Code'daki gibi).
+  // 1-4 tuşları da cevaplar (Claude Code'daki gibi).
   const mk = (label, ans, cls, key) => {
     const b = el("button", "btn " + (cls || ""));
     b.append(document.createTextNode(label), el("kbd", "", key));
     b.addEventListener("click", () => api("/api/permission", { id: ev.id, answer: ans }));
     return b;
   };
-  acts.append(mk("İzin ver", "y", "primary", "1"), mk("Bu oturumda hep izin ver", "a", "", "2"), mk("Reddet", "n", "danger", "3"));
+  // Tehlikeli ve dışarı giden işlerde kalıcı izin yok (sunucu da kabul etmez).
+  const lasting = ev.risk !== "danger" && ev.risk !== "send";
+  acts.append(mk("İzin ver", "y", "primary", "1"), mk("Bu oturumda hep izin ver", "a", "", "2"));
+  if (lasting) acts.append(mk("Bu projede hep izin ver", "p", "", "3"));
+  acts.append(mk("Reddet", "n", "danger", lasting ? "4" : "3"));
   const pre = el("pre", ev.name === "run_command" ? "cmd" : "", ev.summary);
   card.append(q, pre, acts);
   card._id = ev.id;
@@ -655,8 +663,55 @@ function onPermission(ev) {
 function onPermissionDone(ev) {
   const card = S.perms.get(ev.id);
   if (!card) return;
-  const txt = { y: "İzin verildi", a: "Bu oturumda bu araca hep izin verildi", n: "Reddedildi" }[ev.answer] || ev.answer;
+  const txt = { y: "İzin verildi", a: "Bu oturumda bu araca hep izin verildi",
+    p: "Bu projede kalıcı izin verildi (.alice/permissions.toml)", n: "Reddedildi" }[ev.answer] || ev.answer;
   card._acts.replaceWith(el("div", "perm-done " + (ev.answer === "n" ? "no" : "yes"), txt));
+  card.classList.add("answered");
+}
+/* ===================================================================== seçenekli soru */
+function onChoice(ev) {
+  if (S.perms.has(ev.id)) return;
+  hideWorking();
+  const card = el("div", "perm choice");
+  const q = el("div", "perm-q");
+  const qt = el("div", "perm-qt");
+  qt.append(el("b", "", ev.question), el("small", "", ev.multi ? "Birden fazla seçebilirsin" : "ALICE soruyor"));
+  q.append(qt);
+  const acts = el("div", "perm-actions choice-actions");
+  const send = (ans) => api("/api/choice", { id: ev.id, answer: ans });
+  const picked = new Set();
+  (ev.options || []).forEach((o, i) => {
+    const [label, desc] = String(o).split(" — ");
+    const b = el("button", "btn" + (i === 0 ? " primary" : ""));
+    b.append(document.createTextNode(label), el("kbd", "", String(i + 1)));
+    if (desc) b.title = desc;
+    b.addEventListener("click", () => {
+      if (!ev.multi) return send(o);
+      picked.has(o) ? picked.delete(o) : picked.add(o);
+      b.classList.toggle("primary", picked.has(o));
+    });
+    acts.append(b);
+  });
+  const other = el("input", "choice-other");
+  other.placeholder = "Başka bir cevap yaz, Enter";
+  other.addEventListener("keydown", (e) => { if (e.key === "Enter" && other.value.trim()) send(other.value.trim()); });
+  acts.append(other);
+  if (ev.multi) {
+    const ok = el("button", "btn primary", "Gönder");
+    ok.addEventListener("click", () => send([...picked].join(", ") || other.value.trim()));
+    acts.append(ok);
+  }
+  card.append(q, acts);
+  card._id = ev.id;
+  card._acts = acts;
+  card._choice = true;
+  S.perms.set(ev.id, card);
+  add(card, true);
+}
+function onChoiceDone(ev) {
+  const card = S.perms.get(ev.id);
+  if (!card) return;
+  card._acts.replaceWith(el("div", "perm-done " + (ev.answer ? "yes" : "no"), ev.answer ? "Cevap: " + ev.answer : "Vazgeçildi"));
   card.classList.add("answered");
 }
 function pendingPerm() {
@@ -734,12 +789,56 @@ function turnSummary() {
   }
   add(row);
 }
+/* ================================================================ güncelleme */
+// Sunucu açılışta ve saatte bir GitHub'daki dala bakar; yeni commit varsa bu çubuk çıkar.
+function renderUpdate(u) {
+  const bar = $("#update");
+  S.update = u && (u.available || u.stale) ? u : null;
+  if (!S.update) { bar.hidden = true; return; }
+  const n = u.count || 0;
+  $("#upText").textContent = !u.available
+    ? "Yeni sürüm indirildi · yeniden başlatınca açılır"
+    : (n ? `Yeni sürüm hazır · ${n} değişiklik` : "Yeni sürüm hazır") + (u.blocked ? ` — ${u.blocked}` : "");
+  $("#upText").title = (u.commits || []).join("\n") || `${u.local} → ${u.remote}`;
+  const btn = $("#upApply");
+  btn.disabled = false;
+  btn.hidden = false;
+  btn.textContent = !u.available ? "Yeniden başlat" : u.blocked ? "Yine de güncelle" : "Güncelle ve yeniden başlat";
+  $("#upLater").hidden = false;
+  bar.hidden = false;
+  const v = $("#ver");
+  if (v && !v.querySelector(".up-dot")) v.appendChild(el("i", "up-dot"));
+}
+async function applyUpdate() {
+  const btn = $("#upApply");
+  const forced = !!(S.update && S.update.blocked);
+  btn.disabled = true;
+  btn.textContent = "Güncelleniyor…";
+  const r = await api("/api/update/apply", { force: forced });
+  if (!r || !r.ok) {
+    btn.disabled = false;
+    btn.textContent = forced ? "Yine de güncelle" : "Güncelle ve yeniden başlat";
+    return toast((r && (r.error || r.note)) || "Güncellenemedi");
+  }
+  btn.hidden = true;
+  $("#upLater").hidden = true;
+  $("#upText").textContent = r.note + " — ALICE yeniden başlatılıyor, birazdan yeni pencere açılacak.";
+}
+async function checkUpdate() {
+  toast("Güncelleme denetleniyor…");
+  const u = await api("/api/update/check", {});
+  if (!u) return toast("Denetlenemedi");
+  if (!u.available && !u.stale) return toast(u.error || "ALICE güncel");
+  renderUpdate(u);
+}
+
 function applyStatus(s) {
   Object.assign(S.status, s);
   const st = S.status;
   if ("team" in s) renderTeam(s.team);
   if (st.cwd !== undefined) { $("#cwd").textContent = st.cwd; $("#cwdBtn").title = st.cwd; }
   if (st.version) $("#ver").textContent = "ALICE " + st.version;
+  if ("update" in s) renderUpdate(s.update);
   if (st.user) { $("#userName").textContent = st.user; $("#avatar").textContent = st.user[0].toUpperCase(); }
   if (st.mode) {
     const [label, , icon] = MODES[st.mode] || [st.mode, "", IC.shield];
@@ -776,11 +875,13 @@ function applyStatus(s) {
   if (PREFS.panel && PREFS.tab === "context") renderPanel();
   // Sadece gelen durumda busy varsa uygula: kısmi güncelleme (ör. model değişimi) eski busy değeriyle işi bitmiş saymasın.
   if (s.busy !== undefined && s.busy !== S.busy) setBusy(s.busy);
-  for (const p of st.pending || []) onPermission(p);
+  for (const p of st.pending || []) (p.type === "ask_choice" ? onChoice : onPermission)(p);
   $$(".sess").forEach((b) => b.classList.toggle("active", b.dataset.id === st.session));
   if (app.classList.contains("empty")) greet();
 }
 async function refreshStatus() { const s = await api("/api/state"); if (s && s.version) applyStatus(s); }
+$("#upApply").addEventListener("click", applyUpdate);
+$("#upLater").addEventListener("click", () => { $("#update").hidden = true; });
 
 /* ============================================================ geçmiş/oturum */
 function renderHistory(items) {

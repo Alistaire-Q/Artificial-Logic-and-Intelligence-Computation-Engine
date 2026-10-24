@@ -233,3 +233,108 @@ def test_git_branch_and_session_times(app, workdir):
     t.join()
     row = client.get("/api/sessions").json()[0]
     assert row["title"] == "merhaba" and row["updated"] > 0
+
+
+def test_update_api(app, monkeypatch):
+    """Arayüz güncellemeyi görür, uygular ve yeniden başlatmayı tetikler."""
+    from alice import updater
+
+    state, _srv, client, _ = app
+    assert client.get("/api/update").json() == {"available": False}
+
+    info = updater.UpdateInfo(repo=None, branch="main", local="a" * 40, remote="b" * 40,
+                              commits=["yeni özellik"], ci="green")
+    monkeypatch.setattr(updater, "check", lambda *a, **k: info)
+    r = client.post("/api/update/check", json={}).json()
+    assert r["available"] and r["count"] == 1 and r["remote"] == "b" * 7
+    assert client.get("/api/state").json()["update"]["available"]
+
+    applied = {}
+    monkeypatch.setattr(updater, "apply_update", lambda i, c, force=False, emit=None: applied.setdefault("f", force) or (True, "güncellendi"))
+    monkeypatch.setattr(state, "_restart_soon", lambda: applied.setdefault("restart", True))
+    r = client.post("/api/update/apply", json={}).json()
+    assert r["ok"] and r["restarting"]
+    time.sleep(0.3)
+    assert applied.get("restart")
+    assert client.get("/api/state").json()["update"] is None
+
+
+def test_update_apply_waits_for_agent(app, monkeypatch):
+    """Ajan çalışırken güncelleme yapılmaz: iş yarıda kalmasın."""
+    state, _srv, client, _ = app
+    monkeypatch.setattr(state.agent, "busy", True, raising=False)
+    r = client.post("/api/update/apply", json={})
+    assert r.status_code == 409 and "durdur" in r.json()["error"]
+
+
+def test_update_mode_persists(app):
+    """Ayarlardan seçilen güncelleme modu config.toml'a yazılır."""
+    from alice.config import alice_home
+
+    state, _srv, client, _ = app
+    assert client.get("/api/state").json()["update_mode"] == "auto"
+    assert client.post("/api/update/mode", json={"mode": "notify"}).json() == {"ok": True, "mode": "notify"}
+    assert "notify" in (alice_home() / "config.toml").read_text(encoding="utf-8")
+    assert client.post("/api/update/mode", json={"mode": "saçma"}).status_code == 400
+
+
+def test_connections_api_lists_connectors_and_feeds(app, monkeypatch):
+    """Ayarlar > Bağlantılar: servislerin durumu ve akışlar arayüzden görünür."""
+    from alice.config import alice_home
+
+    state, _srv, client, _ = app
+    monkeypatch.setenv("STEAM_API_KEY", "k")
+    (alice_home() / "feeds.toml").write_text(
+        '[[feed]]\nname = "d"\nconnector = "discord"\naction = "messages"\nevery_minutes = 5\n', encoding="utf-8")
+
+    d = client.get("/api/connect").json()
+    by = {c["name"]: c for c in d["connectors"]}
+    assert {"steam", "spotify", "discord", "youtube_api"} <= set(by)
+    assert by["steam"]["ready"] and by["steam"]["kind"] == "api_key"
+    assert not by["spotify"]["ready"] and by["spotify"]["kind"] == "oauth2"
+    assert "library" in by["steam"]["actions"] and not d["errors"]
+    assert [f["name"] for f in d["feeds"]] == ["d"]
+    assert d["feeds"][0]["connector"] == "discord" and d["feeds"][0]["enabled"]
+
+
+def test_connect_auth_needs_client_id_then_starts_browser_flow(app, monkeypatch):
+    state, _srv, client, _ = app
+    monkeypatch.delenv("SPOTIFY_CLIENT_ID", raising=False)
+    r = client.post("/api/connect/auth", json={"name": "spotify"})
+    assert r.status_code == 400 and "SPOTIFY_CLIENT_ID" in r.json()["error"]
+    assert client.post("/api/connect/auth", json={"name": "steam"}).json()["error"].startswith("Steam anahtarla")
+    assert client.post("/api/connect/auth", json={"name": "yok"}).status_code == 400
+
+    monkeypatch.setenv("SPOTIFY_CLIENT_ID", "cid")
+    started = threading.Event()
+    monkeypatch.setattr("alice.connect.oauth.authorize",
+                        lambda *a, **k: started.set() or {"access_token": "t"})
+    assert client.post("/api/connect/auth", json={"name": "spotify"}).json()["ok"]
+    assert started.wait(5)
+
+
+def test_connect_logout_forgets_token(app):
+    from alice.connect import store
+
+    _state, _srv, client, _ = app
+    store.save("spotify", access_token="t")
+    assert client.post("/api/connect/logout", json={"name": "spotify"}).json() == {"ok": True}
+    assert store.get("spotify") == {}
+
+
+def test_bayat_uygulama_cekmeden_yeniden_baslar(app, monkeypatch):
+    """Kod başka bir süreçten indirildiyse 'Yeniden başlat' çekmeden yeniden başlatır."""
+    from alice import updater
+
+    state, _srv, client, _ = app
+    info = updater.UpdateInfo(repo=None, branch="main", local="b" * 40, remote="b" * 40, running="a" * 40)
+    monkeypatch.setattr(updater, "check", lambda *a, **k: info)
+    r = client.post("/api/update/check", json={}).json()
+    assert r["stale"] and not r["available"]
+    assert client.get("/api/state").json()["update"]["stale"]
+    monkeypatch.setattr(updater, "apply_update", lambda *a, **k: pytest.fail("çekecek bir şey yok"))
+    restarted = threading.Event()
+    monkeypatch.setattr(state, "_restart_soon", lambda: restarted.set())
+    r = client.post("/api/update/apply", json={}).json()
+    assert r["ok"] and r["restarting"] and "zaten indirilmiş" in r["note"]
+    assert restarted.wait(2)

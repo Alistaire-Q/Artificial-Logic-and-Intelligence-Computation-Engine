@@ -651,6 +651,9 @@ def _fake_app(monkeypatch, ready=True):
             self.ui = SimpleNamespace(info=lambda s: seen["infos"].append(s))
             self.router = SimpleNamespace(first_available=lambda role: "a:m" if ready else None)
 
+        def watch_updates(self, pending):
+            seen["pending"] = pending
+
     class Server:
         url = "http://127.0.0.1:1/"
 

@@ -20,7 +20,7 @@ from alice.permissions import Permissions
 from alice.prompts import COMPACT_PROMPT, build_system_prompt
 from alice.providers.openai_compat import ChatResult, StreamCancelled
 from alice.providers.router import AllProvidersFailed, Router, estimate_tokens, strip_images
-from alice.tools.base import Tool, ToolContext, ToolError, ToolResult, check_args, truncate, unknown_params
+from alice.tools.base import DANGER, SEND, Tool, ToolContext, ToolError, ToolResult, check_args, truncate, unknown_params
 
 # Yutulan hatalar için iz: varsayılan olarak sessiz, `logging.basicConfig(level=logging.DEBUG)` ile görünür.
 log = logging.getLogger(__name__)
@@ -199,6 +199,14 @@ PLAN_NOTE = ("[PLAN MODU: Şu an sadece okuyup araştırabilirsin; dosya değiş
              "onayını bekle.]\n\n")
 
 
+NUDGE_PREFIX = "[devam kontrolü] "
+# Cevabın sonu "yapacağım" diyorsa iş yarım kalmış demektir.
+_PROMISE_RX = re.compile(
+    r"(yapaca[ğg][ıi]m|edece[ğg]im|ba[şs]l[ıi]yorum|bakaca[ğg][ıi]m|deneyece[ğg]im|ekleyece[ğg]im|d[üu]zeltece[ğg]im|"
+    r"[çc]al[ıi][şs]t[ıi]raca[ğg][ıi]m|kontrol edece[ğg]im|yazaca[ğg][ıi]m|kuraca[ğg][ıi]m|indirece[ğg]im|"
+    r"\blet me\b|\bi'll\b|\bi will\b|\bnext,? i\b|\bnow i\b)[^.!?]{0,60}[.:…]*\s*$", re.I)
+
+
 class Agent:
     def __init__(
         self,
@@ -232,6 +240,17 @@ class Agent:
         self.output_limit = int(a.get("tool_output_chars", 12000))
         self.keep_images = int(a.get("keep_images", 2))
         self.stream = bool(a.get("stream", True))
+        # Araçlarla çalışırken iş bitmeden durursa ("şimdi testleri çalıştıracağım" deyip susmak, todo listesinde
+        # bitmemiş adım bırakmak) en fazla bu kadar kez devam etmesi hatırlatılır. 0 = kapalı.
+        self.finish_nudges = int(a.get("finish_nudges", 2))
+        try:
+            from alice.hooks import Hooks
+
+            self.hooks = Hooks.from_config(config, ctx.cwd)  # kullanıcının hook'ları (config.toml / hooks.toml)
+        except Exception:  # noqa: BLE001 - bozuk hook ayarı ajanı açılmaz yapmasın
+            from alice.hooks import Hooks
+
+            self.hooks = Hooks([], ctx.cwd)
         self.cancel = threading.Event()
         self.busy = False
         self._call_counts: dict[str, int] = {}
@@ -243,7 +262,7 @@ class Agent:
         # Uzun süreli hafıza (alice.memory.LongMemory): oturum kuranlar bağlar; testler ve gözetimsiz görevlerde None.
         self.memory: Any = None
         self.memory_channel = ""
-        self._memory_version = -1
+        self._memory_version: Any = -1
         # Geri sarma için: kullanıcı mesajının indeksi -> o turda ilk değişen dosyaların eski hali.
         self.checkpoints: dict[int, dict[str, bytes | None]] = {}
         if not is_child:
@@ -276,11 +295,15 @@ class Agent:
         if mem is None or self.is_child:
             return
         try:
-            version = mem.version
+            from alice import projects
+
+            scanned = projects.load()[0] if projects.enabled(self.config) else 0.0
+            version = (mem.version, scanned)
             if force or version != self._memory_version:
                 from alice.prompts import with_memory
 
-                self.messages[0]["content"] = with_memory(self.messages[0]["content"], mem.profile())
+                profile = "\n\n".join(b for b in (mem.profile(), projects.brief(self.config)) if b)
+                self.messages[0]["content"] = with_memory(self.messages[0]["content"], profile)
                 self._memory_version = version
         except Exception:  # noqa: BLE001 - hafıza hatası konuşmayı durdurmasın
             log.debug("hafıza profili yenilenemedi", exc_info=True)
@@ -316,6 +339,26 @@ class Agent:
         content_text = expand_mentions(user_text, self.ctx.cwd)
         if recall:
             content_text += "\n\n" + recall
+        if self.hooks.hooks and not self.is_child:
+            from alice.hooks import context, feedback
+
+            extra = []
+            if len(self.messages) == 1 and self.hooks.has("SessionStart"):
+                extra.append(context(self.hooks.run("SessionStart", {})))
+            if self.hooks.has("UserPromptSubmit"):
+                res = self.hooks.run("UserPromptSubmit", {"prompt": user_text})
+                blocked = feedback(res)
+                if blocked:
+                    self.ui.info(f"hook mesajı engelledi: {blocked}")
+                    return ""
+                extra.append(context(res))
+            extra = [e for e in extra if e]
+            if extra:
+                content_text += "\n\n[hook bağlamı]\n" + "\n".join(extra)
+        if not self.is_child:
+            from alice import guard
+
+            guard.clear(self.ctx)  # kullanıcının yeni mesajı: önceki turda okunan dış içerik bu turu kısıtlamaz
         if self.permissions.mode == "plan" and not self.is_child:
             content_text = PLAN_NOTE + content_text
         content: Any = content_text
@@ -340,6 +383,9 @@ class Agent:
         self._fail_counts.clear()
         self._error_streak = 0
         sink = _Sink(self.ui, self.cancel)
+        self._turn_tools: set[str] = set()
+        nudges = 0
+        stop_hooks = 3  # Stop hook'u ajanı en fazla bu kadar kez geri çevirebilir (sonsuz döngü olmasın)
         try:
             for _ in range(steps):
                 if self.cancel.is_set():
@@ -382,7 +428,22 @@ class Agent:
                 if msg.get("content"):
                     final = msg["content"]
                 if not msg.get("tool_calls"):
-                    return final
+                    if stop_hooks and self.hooks.has("Stop") and not self.is_child:
+                        from alice.hooks import feedback
+
+                        back = feedback(self.hooks.run("Stop", {"reply": final}))
+                        if back:
+                            stop_hooks -= 1
+                            self.messages.append({"role": "user", "content": NUDGE_PREFIX + "Stop hook'u işi bitmiş "
+                                                  "saymadı, devam et:\n" + back, "_nudge": True})
+                            continue
+                    nudge = self._unfinished(msg.get("content") or "") if nudges < self.finish_nudges else ""
+                    if not nudge:
+                        return final
+                    nudges += 1
+                    self.messages.append({"role": "user", "content": nudge, "_nudge": True})
+                    continue
+                self._turn_tools.update(c["function"]["name"] for c in msg["tool_calls"])
                 self._run_tools(msg["tool_calls"])
                 if self.on_step is not None:
                     try:
@@ -412,6 +473,26 @@ class Agent:
             raise
         finally:
             self.busy = False
+
+    def _unfinished(self, text: str) -> str:
+        """Tur araçlarla iş yaparken cevap verip durduysa ve iş bitmemiş görünüyorsa modele gidecek hatırlatma (boş:
+        bitti). Sesli rolde yok: ikinci cevap da sesli okunurdu."""
+        used = getattr(self, "_turn_tools", set())
+        if not used or self.role == "voice" or self.permissions.mode == "plan":
+            return ""  # plan modunda "şunu yapacağım" zaten istenen cevap
+        tail = text.strip()[-240:]
+        if tail.endswith("?"):
+            return ""  # kullanıcıya soru soruyor: beklemesi doğru
+        todos = self.ctx.state.get("todos") or []
+        left = [t.get("content", "") for t in todos if isinstance(t, dict) and t.get("status") != "done"]
+        if "todo_write" in used and left:
+            return (NUDGE_PREFIX + "Todo listesinde bitmemiş adımlar var: " + "; ".join(left[:6]) + ". Kullanıcıdan bir "
+                    "şey gerekmiyorsa araçlarla kaldığın yerden devam et. Gerçekten bittiyse listeyi güncelle ve "
+                    "sonucu söyle; takıldıysan neden takıldığını açıkça söyle.")
+        if _PROMISE_RX.search(tail):
+            return (NUDGE_PREFIX + "Yapacağını söyledin ama yapmadan durdun. Kullanıcıdan bir şey gerekmiyorsa şimdi "
+                    "araçlarla yap ve bitince sonucu bildir; gerekiyorsa açıkça sor.")
+        return ""
 
     def stop(self) -> None:
         """Başka bir thread'den (ör. uygulamadaki Durdur butonu) mevcut turu durdur. Model ya da araç cevabı
@@ -555,11 +636,14 @@ class Agent:
                     for idx, (tool, _, _) in batch:
                         results[idx] = futures[idx].result()
                         self.ui.tool_end(calls[idx]["id"], tool.name, results[idx])
+                        results[idx] = self._fence(tool, results[idx])
             i = j
         return [r if r is not None else ToolResult("çalıştırılmadı", is_error=True) for r in results]
 
     def _parallel_ok(self, prep: tuple[Tool, dict[str, Any], str]) -> bool:
         tool, args, _ = prep
+        if self.hooks.has("PreToolUse") or self.hooks.has("PostToolUse"):
+            return False  # hook'lar her çağrıda sırayla çalışsın (paralel yol _execute'u atlıyor)
         try:
             return bool(getattr(tool, "parallel_safe", False)) and self.permissions.decide(tool, args, self.ctx) == "allow"
         except Exception:  # noqa: BLE001 - bozuk argüman: sıralı yolda hata olarak modele dönecek
@@ -591,25 +675,93 @@ class Agent:
             return ToolResult(f"geçersiz argüman: {type(e).__name__}: {e}. Parametre tiplerini düzeltip tekrar dene.",
                               is_error=True)
         if verdict == "deny":
-            res = ToolResult("Plan modundasın: bu araç değişiklik yapıyor ve şu an kapalı. Önce planını yaz; kullanıcı "
-                             "onaylayıp modu değiştirince uygularsın.", is_error=True)
+            rule = self.permissions.matching_rule(tool, args, self.ctx, "deny")
+            self._log_outward(tool, args, summary, "blocked", f"izin kuralı {rule}" if rule else
+                              "plan modu ya da gözetimsiz çalışma")
+            if rule:
+                res = ToolResult(f"Kullanıcının izin kuralı bunu yasaklıyor ({rule}). Aynı şeyi başka biçimde de deneme; "
+                                 "gerekiyorsa kullanıcıya neden gerektiğini söyle.", is_error=True)
+            else:
+                res = ToolResult("Plan modundasın: bu araç değişiklik yapıyor ve şu an kapalı. Önce planını yaz; "
+                                 "kullanıcı onaylayıp modu değiştirince uygularsın.", is_error=True)
             self.ui.tool_start(call["id"], name, summary)
             self.ui.tool_end(call["id"], name, res)
             return res
         if verdict == "ask":
-            ans = self.ui.ask_permission(name, summary, risk)
+            from alice import guard
+
+            shown = f"[dış içerik okunduktan sonra: {guard.tainted(self.ctx)}] {summary}" if guard.tainted(self.ctx) \
+                else summary
+            ans = self.ui.ask_permission(name, shown, risk)
             if ans == "a":
                 self.permissions.always_allow.add(name)
-            elif ans != "y":
+            elif ans == "p" and risk in (DANGER, SEND):
+                # Geri alınamayan ya da başkasına giden işe kalıcı izin yazılmaz: bu seferlik evet sayılır.
+                self.ui.info("tehlikeli ya da dışarı giden işlerde kalıcı izin verilmez; sadece bu sefer izin verildi")
+            elif ans == "p":  # bu projede hep: kalıcı kural olarak yazılır, sonraki oturumlarda da sorulmaz
+                from alice.permissions import persist_allow, suggest_rule
+
+                rule = suggest_rule(tool, args, self.ctx.cwd)
+                try:
+                    where = persist_allow(self.ctx.cwd, rule)
+                    self.ui.info(f"kalıcı izin eklendi: {rule} ({where})")
+                except OSError as e:
+                    self.ui.info(f"kalıcı izin yazılamadı ({e}); bu oturum için izin verildi")
+                    self.permissions.always_allow.add(name)
+            elif ans not in ("y", "p"):
+                self._log_outward(tool, args, summary, "rejected")
                 return ToolResult("Kullanıcı bu çağrıyı reddetti. Aynı şeyi tekrar deneme; başka yol bul ya da kullanıcıya sor.",
                                   is_error=True)
         return tool, args, summary
 
     def _execute(self, call: dict[str, Any], tool: Tool, args: dict[str, Any], summary: str) -> ToolResult:
         self.ui.tool_start(call["id"], tool.name, summary)
+        if self.hooks.has("PreToolUse"):
+            from alice.hooks import feedback
+
+            blocked = feedback(self.hooks.run("PreToolUse", {"args": args}, tool.name))
+            if blocked:
+                result = ToolResult(f"Kullanıcının hook'u bu çağrıyı engelledi: {blocked}", is_error=True)
+                self.ui.tool_end(call["id"], tool.name, result)
+                return result
         result = self._run_tool(tool, args)
+        if self.hooks.has("PostToolUse"):
+            from dataclasses import replace
+
+            from alice.hooks import feedback
+
+            back = feedback(self.hooks.run("PostToolUse", {"args": args, "result": result.text[:4000],
+                                                           "is_error": result.is_error}, tool.name))
+            if back:
+                result = replace(result, text=result.text + "\n\n[hook geri bildirimi]\n" + back)
+        self._log_outward(tool, args, summary, "failed" if result.is_error else "sent", result.text)
         self.ui.tool_end(call["id"], tool.name, result)
-        return result
+        return self._fence(tool, result)
+
+    def _fence(self, tool: Tool, result: ToolResult) -> ToolResult:
+        """Dış içerik getiren aracın sonucunu "güvenilmeyen veri" diye işaretle ve turu kirlenmiş say (bkz. guard)."""
+        if not getattr(tool, "untrusted", False) or result.is_error:
+            return result
+        from dataclasses import replace
+
+        from alice import guard
+
+        if not guard.enabled(self.ctx):
+            return result
+        guard.mark(self.ctx, tool.name)
+        return replace(result, text=guard.wrap(tool.name, result.text))
+
+    @staticmethod
+    def _log_outward(tool: Tool, args: dict[str, Any], summary: str, outcome: str, detail: str = "") -> None:
+        """Başkasına giden eylemi (send riski) eylem kaydına yaz: gönderilen, reddedilen, engellenen hepsi."""
+        try:
+            if tool.risk_for(args) != SEND:
+                return
+        except Exception:  # noqa: BLE001 - risk hesaplanamadıysa kayıt yüzünden tur bozulmasın
+            return
+        from alice import actionlog
+
+        actionlog.log(tool.name, summary, outcome, args, detail)
 
     def _run_tool(self, tool: Tool, args: dict[str, Any]) -> ToolResult:
         # Araçlar bu thread'de çalışır (Playwright ve UI Automation nesneleri thread'e bağlı). Durdurulunca

@@ -12,6 +12,9 @@ if TYPE_CHECKING:
 
 # Risk sınıfları izin sistemi tarafından kullanılır.
 READ, WRITE, EXEC, COMPUTER, NETWORK, DANGER = "read", "write", "exec", "computer", "network", "danger"
+# Dışa dönük eylem: başka birine giden mesaj, gönderi, e-posta. Dosya düzenlemenin tersine geri alınamaz;
+# bu yüzden auto modda da sorulur ([agent] confirm_outward = false ile kapatılabilir).
+SEND = "send"
 
 
 @dataclass
@@ -55,6 +58,9 @@ class Tool:
     risk: str = READ
     # True: yan etkisi olmayan, thread'e bağlı nesne kullanmayan araç; art arda gelirse paralel çalışır.
     parallel_safe: bool = False
+    # True: sonucu dışarıdan gelen içerik (web sayfası, mesaj, e-posta, MCP). Modele "güvenilmeyen veri" diye
+    # işaretlenmiş gider; o turda komut çalıştırma ve dışarı mesaj göndermek auto modda da onaya bağlanır.
+    untrusted: bool = False
 
     def risk_for(self, args: dict[str, Any]) -> str:
         return self.risk

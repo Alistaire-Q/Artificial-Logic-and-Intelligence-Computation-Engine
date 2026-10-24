@@ -6,6 +6,9 @@ import html
 import json
 import os
 import re
+import threading
+import time
+from collections import OrderedDict
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -16,6 +19,39 @@ import httpx
 from alice.tools.base import NETWORK, Tool, ToolContext, ToolError, ToolResult, obj, truncate
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36"
+
+# Aynı sayfayı/aramayı bir oturumda defalarca çekmek yaygın (ajan adım adım ilerlerken aynı dokümana dönüyor).
+# Kısa ömürlü bellek içi önbellek bunu saniyelerden milisaniyelere indirir; TTL kısa olduğu için içerik bayatlamaz.
+CACHE_TTL = 180.0
+CACHE_MAX = 48
+_cache: "OrderedDict[tuple, tuple[float, Any]]" = OrderedDict()
+_cache_lock = threading.Lock()
+
+
+def cache_get(key: tuple) -> Any:
+    with _cache_lock:
+        hit = _cache.get(key)
+        if hit is None:
+            return None
+        ts, value = hit
+        if time.time() - ts > CACHE_TTL:
+            _cache.pop(key, None)
+            return None
+        _cache.move_to_end(key)
+        return value
+
+
+def cache_put(key: tuple, value: Any) -> None:
+    with _cache_lock:
+        _cache[key] = (time.time(), value)
+        _cache.move_to_end(key)
+        while len(_cache) > CACHE_MAX:
+            _cache.popitem(last=False)
+
+
+def cache_clear() -> None:
+    with _cache_lock:
+        _cache.clear()
 
 
 class _TextExtractor(HTMLParser):
@@ -110,6 +146,7 @@ def _extract(ctx: ToolContext, url: str, text: str, prompt: str) -> str | None:
 
 class WebFetch(Tool):
     name = "web_fetch"
+    untrusted = True
     parallel_safe = True
     description = ("Bir URL'yi arka planda indirir ve okunabilir metin döndürür: HTML asıl içeriğe çevrilir, JSON "
                    "düzenlenir, PDF metne çevrilir (ekranda bir şey açmaz).\n"
@@ -136,29 +173,36 @@ class WebFetch(Tool):
             start: int = 0) -> ToolResult:
         if "://" not in url:
             url = "https://" + url
-        try:
-            r = httpx.get(url, headers={"User-Agent": UA}, follow_redirects=True, timeout=30)
-        except httpx.HTTPError as e:
-            raise ToolError(f"indirilemedi: {e}") from e
-        ctype = r.headers.get("content-type", "").lower()
-        if "pdf" in ctype or (not ctype and str(r.url).lower().endswith(".pdf")):
-            body = _pdf_text(r.content)
-        else:
-            body = r.text
-            if not raw and "html" in ctype:
-                body = html_to_text(body, main_only=True)
-            elif not raw and "json" in ctype:
-                try:
-                    body = json.dumps(json.loads(body), ensure_ascii=False, indent=1)
-                except ValueError:
-                    pass
-        head = f"HTTP {r.status_code} {r.url}\n\n"
-        if prompt and r.status_code < 400:
-            answer = _extract(ctx, str(r.url), body, prompt)
+        key = ("fetch", url, raw)
+        hit = cache_get(key)
+        if hit is None:
+            try:
+                r = httpx.get(url, headers={"User-Agent": UA}, follow_redirects=True, timeout=30)
+            except httpx.HTTPError as e:
+                raise ToolError(f"indirilemedi: {e}") from e
+            ctype = r.headers.get("content-type", "").lower()
+            if "pdf" in ctype or (not ctype and str(r.url).lower().endswith(".pdf")):
+                body = _pdf_text(r.content)
+            else:
+                body = r.text
+                if not raw and "html" in ctype:
+                    body = html_to_text(body, main_only=True)
+                elif not raw and "json" in ctype:
+                    try:
+                        body = json.dumps(json.loads(body), ensure_ascii=False, indent=1)
+                    except ValueError:
+                        pass
+            hit = (r.status_code, str(r.url), body)
+            if r.status_code < 400:
+                cache_put(key, hit)  # sadece başarılı indirmeler; hatalı sayfa tekrar denensin
+        status, final_url, body = hit
+        head = f"HTTP {status} {final_url}\n\n"
+        if prompt and status < 400:
+            answer = _extract(ctx, final_url, body, prompt)
             if answer:
                 return ToolResult(head + answer)
         limit = int(ctx.config.agent.get("tool_output_chars", 12000))
-        return ToolResult(head + _paginate(body, start, limit), is_error=r.status_code >= 400)
+        return ToolResult(head + _paginate(body, start, limit), is_error=status >= 400)
 
 
 def _pdf_text(data: bytes) -> str:
@@ -232,6 +276,7 @@ def _domain_ok(url: str, allowed: list[str], blocked: list[str]) -> bool:
 
 class WebSearch(Tool):
     name = "web_search"
+    untrusted = True
     parallel_safe = True
     description = ("İnternette arar ve sonuçların başlık, URL ve özetini döndürür; ekranda bir şey açmaz. "
                    "Güncel bilgi, haber, fiyat ya da bilmediğin bir şey sorulunca kullan; ayrıntı için sonra web_fetch "
@@ -255,6 +300,17 @@ class WebSearch(Tool):
             blocked_domains: list[str] | None = None) -> ToolResult:
         allowed = [d for d in (allowed_domains or []) if d]
         blocked = [d for d in (blocked_domains or []) if d]
+        gkey = os.environ.get("GEMINI_API_KEY", "").strip()
+        if gkey and not allowed and not blocked and ctx.config.agent.get("search_grounding", True):
+            ckey = ("search", "gemini", query)
+            try:
+                res_g = cache_get(ckey)
+                if res_g is None:
+                    res_g = gemini_search(query, gkey, grounding_model(ctx))
+                    cache_put(ckey, res_g)
+                return ToolResult(format_grounded(res_g))
+            except ValueError:
+                pass  # kota/hata: klasik motorlar
         q = query + (f" site:{allowed[0]}" if len(allowed) == 1 and "site:" not in query else "")
         want = max_results * 3 if allowed or blocked else max_results
         key = os.environ.get("BRAVE_SEARCH_API_KEY") or ctx.config.agent.get("brave_api_key")
@@ -263,8 +319,13 @@ class WebSearch(Tool):
         res: list[dict[str, str]] = []
         errors = []
         for name, fn in engines:
+            ckey = ("search", name, q, want)  # dikkat: `key` yukarıda Brave anahtarı
             try:
-                res = [x for x in fn() if _domain_ok(x["url"], allowed, blocked)][:max_results]
+                raw_res = cache_get(ckey)
+                if raw_res is None:
+                    raw_res = fn()
+                    cache_put(ckey, raw_res)
+                res = [x for x in raw_res if _domain_ok(x["url"], allowed, blocked)][:max_results]
             except (httpx.HTTPError, ValueError) as e:
                 errors.append(f"{name}: {e}")
                 continue
@@ -275,6 +336,53 @@ class WebSearch(Tool):
                 raise ToolError("arama başarısız: " + "; ".join(errors))
             return ToolResult("sonuç yok")
         return ToolResult("\n\n".join(f"{i}. {r['title']}\n{r['url']}\n{r['snippet']}" for i, r in enumerate(res, 1)))
+
+
+# Google araması (Gemini grounding): model aramayı Google'da yapar, sonuçları okuyup kaynaklı özet yazar.
+# DuckDuckGo/Bing sayfası kazımaktan çok daha güncel ve dolu; kota dolarsa ya da hata verirse bir süre denenmez,
+# klasik motorlara düşülür.
+GROUNDING_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+GROUNDING_PROMPT = ("Bu soruyu Google'da ara ve bulduklarını kısa, olgusal bir özet olarak yaz: Türkçe, en fazla 8 madde, "
+                    "tarihleri, sayıları, sürümleri ve adları aynen koru; emin olmadığını belirt; yorum ekleme.\n"
+                    "Arama: {query}")
+_grounding = {"down_until": 0.0}
+
+
+def grounding_model(ctx: ToolContext) -> str:
+    return str(ctx.config.agent.get("grounding_model", "gemini-flash-latest"))
+
+
+def gemini_search(query: str, key: str, model: str, timeout: float = 25.0) -> dict[str, Any]:
+    """{'text': özet, 'sources': [{'title', 'url'}], 'queries': [...]}; kota/hata ValueError."""
+    if time.monotonic() < _grounding["down_until"]:
+        raise ValueError("Google araması geçici olarak kapalı (kota/hata)")
+    try:
+        r = httpx.post(GROUNDING_URL.format(model=model), headers={"x-goog-api-key": key},
+                       json={"contents": [{"role": "user", "parts": [{"text": GROUNDING_PROMPT.format(query=query)}]}],
+                             "tools": [{"google_search": {}}]}, timeout=timeout)
+    except httpx.HTTPError as e:
+        _grounding["down_until"] = time.monotonic() + 300
+        raise ValueError(f"bağlantı: {e}") from e
+    if r.status_code >= 400:
+        _grounding["down_until"] = time.monotonic() + (3600 if r.status_code == 429 else 900)
+        raise ValueError(f"HTTP {r.status_code}: {r.text[:160]}")
+    try:
+        cand = (r.json().get("candidates") or [{}])[0]
+        text = "".join(p.get("text", "") for p in (cand.get("content") or {}).get("parts", [])).strip()
+        meta = cand.get("groundingMetadata") or {}
+    except (ValueError, AttributeError) as e:
+        raise ValueError(f"bozuk cevap: {e}") from e
+    sources = [{"title": (c.get("web") or {}).get("title", ""), "url": (c.get("web") or {}).get("uri", "")}
+               for c in meta.get("groundingChunks") or [] if c.get("web")]
+    if not text or not sources:
+        raise ValueError("Google araması sonuç döndürmedi")
+    return {"text": text, "sources": sources[:8], "queries": meta.get("webSearchQueries") or []}
+
+
+def format_grounded(res: dict[str, Any]) -> str:
+    src = "\n".join(f"{i}. {s['title']}\n{s['url']}" for i, s in enumerate(res["sources"], 1))
+    return (f"Google araması özeti (Gemini, kaynaklı):\n{res['text']}\n\nKaynaklar (ayrıntı için web_fetch; "
+            f"başlık sitenin adıdır):\n{src}")
 
 
 _ENV_RX = re.compile(r"\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}")
@@ -302,6 +410,7 @@ def _json_arg(name: str, v: Any) -> Any:
 
 class HttpRequest(Tool):
     name = "http_request"
+    untrusted = True
     description = ("Herhangi bir HTTP isteği yapar (GET/POST/PUT/PATCH/DELETE): REST API çağırma, webhook, JSON gönderme, "
                    "dosya indirme. Sadece bir sayfayı okumak için web_fetch daha iyi.\n"
                    "- Gizli anahtarları yazma; başlıkta '${env:AD}' kullan, ALICE ortam değişkeninden doldurur.\n"

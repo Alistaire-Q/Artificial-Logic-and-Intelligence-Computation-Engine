@@ -15,7 +15,9 @@ def isolated_home(tmp_path, monkeypatch):
     home = tmp_path / "alice-home"
     monkeypatch.setenv("ALICE_HOME", str(home))
     for k in ("GEMINI_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "NVIDIA_API_KEY", "CEREBRAS_API_KEY",
-              "TYPESAFE_API_KEY", "MISTRAL_API_KEY", "SAMBANOVA_API_KEY", "GITHUB_MODELS_TOKEN"):
+              "TYPESAFE_API_KEY", "MISTRAL_API_KEY", "SAMBANOVA_API_KEY", "GITHUB_MODELS_TOKEN", "ZAI_API_KEY",
+              "COHERE_API_KEY", "AI_GATEWAY_API_KEY", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "HF_TOKEN",
+              "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"):
         monkeypatch.delenv(k, raising=False)
     return home
 
@@ -40,6 +42,28 @@ def close_sqlite_stores(monkeypatch):
             s.close()
         except Exception:  # noqa: BLE001
             pass
+
+
+@pytest.fixture(autouse=True)
+def no_project_scan(monkeypatch):
+    """Testler gerçek ev klasörünü (ve Windows'ta diğer sürücüleri) proje diye taramasın."""
+    from alice import projects
+
+    monkeypatch.setattr(projects, "enabled", lambda cfg=None: False)
+
+
+@pytest.fixture(autouse=True)
+def clear_web_cache(monkeypatch):
+    """web_fetch/web_search ve bağlantı önbellekleri testler arasında sızmasın; tekrar deneme beklemesin."""
+    from alice.connect import runner
+    from alice.tools import web
+
+    web.cache_clear()
+    runner.cache_clear()
+    monkeypatch.setattr(runner, "_sleep", lambda s: None)
+    yield
+    web.cache_clear()
+    runner.cache_clear()
 
 
 def rm_rf(name: str) -> str:

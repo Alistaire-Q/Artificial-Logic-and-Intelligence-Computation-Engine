@@ -395,6 +395,10 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: r
 .perm pre.cmd::before { content: "$ "; color: #d97757; }
 .perm-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .perm-actions .btn { display: inline-flex; align-items: center; gap: 8px; }
+.chk { width: 20px; text-align: center; font-weight: 700; }
+.chk.ok { color: #3c9a5f; } .chk.warn { color: #c88a1e; } .chk.fail { color: #c94a3c; } .chk.off { opacity: .45; }
+.choice-other { flex: 1 1 180px; min-width: 0; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line, #8884);
+  background: transparent; color: inherit; font: inherit; }
 .perm-actions kbd { font-size: 10.5px; padding: 0 5px; border-radius: 4px; border: 1px solid currentColor; opacity: .55; line-height: 15px; }
 .btn { padding: 6px 13px; border-radius: 8px; border: 1px solid var(--line-strong); font-size: 13.5px; background: var(--panel); }
 .btn:hover { background: var(--hover); }
@@ -474,6 +478,21 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: r
 #jump:hover { color: var(--text); }
 #jump svg { width: 17px; height: 17px; }
 #jump[hidden], #conn[hidden] { display: none; }
+#update[hidden] { display: none; }
+#update {
+  display: flex; align-items: center; gap: 9px; margin: 0 0 8px; padding: 7px 10px 7px 12px;
+  border: 1px solid var(--line-strong); border-radius: 12px; background: var(--panel); font-size: 13px;
+}
+#update svg { width: 17px; height: 17px; flex: none; color: var(--accent); fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+#upText { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.up-btn { padding: 5px 11px; border-radius: 9px; border: 1px solid transparent; background: var(--accent); color: #fff; font-size: 12.5px; cursor: pointer; }
+.up-btn.ghost { background: transparent; color: var(--muted); border-color: var(--line-strong); }
+.up-btn:disabled { opacity: .6; cursor: default; }
+.up-btn.ghost:hover { color: var(--text); }
+.conn-row .conn-act { display: flex; align-items: center; gap: 8px; }
+.conn-row code { font: 12px var(--mono); color: var(--muted); }
+.list-row.warn { color: var(--warn); }
+#ver .up-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-left: 5px; vertical-align: middle; }
 #conn {
   margin: 0 0 8px; padding: 7px 12px; border-radius: 10px; text-align: center; font-size: 13px;
   background: var(--accent-soft); color: var(--warn);
@@ -758,6 +777,8 @@ kbd {
 .risk { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--code); color: var(--faint); }
 .risk.write, .risk.exec, .risk.computer { color: var(--warn); }
 .risk.danger { color: var(--err); background: var(--del-bg); }
+.risk.send { color: var(--accent); }
+.perm.send .perm-ic { color: var(--accent); }
 .keys { display: inline-flex; gap: 4px; }
 .use-row { display: grid; grid-template-columns: 1fr 120px; gap: 4px 12px; padding: 9px 2px; border-bottom: 1px solid var(--line); font-size: 13px; }
 .use-row .l { font: 12.5px var(--mono); overflow-wrap: anywhere; }

@@ -37,12 +37,16 @@ class Memory(Tool):
                    "istediği ('bunu hatırla', 'bundan sonra hep...').\n"
                    "- Bilgi değişince yenisini eklemek yerine eskisini update ile güncelle; yanlışsa forget.\n"
                    "- Geçmiş konuşmalarda ya da kayıtlarda bir şey aramak için search ('geçen hafta ne konuşmuştuk').\n"
+                   "- Takip: ileride sorulacak/hatırlatılacak bir şey için followup (ör. sınav yarın: due=sınavdan sonraki "
+                   "gün, 'Sınavın nasıl geçtiğini sor'); profilde 'Follow-ups due' altındakini sorunca done.\n"
                    "- Profil zaten sistem isteminde; sadece okumak için çağırma. Geçici şeyleri (o anki iş) kaydetme; "
                    "not için notes aracı.")
     parameters = obj({
-        "action": {"type": "string", "enum": ["read", "add", "update", "forget", "search"],
+        "action": {"type": "string", "enum": ["read", "add", "update", "forget", "search", "followup", "followups",
+                                              "done"],
                    "description": "read: hepsini listele | add: note'u kaydet | update: id'li bilgiyi note ile değiştir "
-                   "| forget: id'li ya da query'ye uyan bilgiyi sil | search: query ile ara."},
+                   "| forget: id'li ya da query'ye uyan bilgiyi sil | search: query ile ara | followup: note'u takip "
+                   "olarak ekle (due, kind) | followups: açık takipleri listele | done: id'li takibi kapat."},
         "note": {"type": "string", "description": "add/update için tek, kısa Türkçe cümle, ör. 'Kullanıcı kahveyi "
                  "şekersiz içer.'"},
         "kind": {"type": "string", "enum": ["preference", "fact", "person", "routine", "note"],
@@ -50,6 +54,9 @@ class Memory(Tool):
                  "Varsayılan fact."},
         "id": {"type": "integer", "description": "update/forget için bilginin numarası (read/search çıktısındaki #)."},
         "query": {"type": "string", "description": "search ya da forget için arama ifadesi."},
+        "due": {"type": "string", "description": "followup için gün, YYYY-MM-DD. kind=open ise boş."},
+        "followup_kind": {"type": "string", "enum": ["ask", "remind", "open"],
+                          "description": "followup türü: ask sonra sor | remind o gün hatırlat | open yarım kalan iş."},
     }, ["action"])
     risk = WRITE
 
@@ -60,8 +67,9 @@ class Memory(Tool):
         return f"{args.get('action')} {args.get('note') or args.get('query') or args.get('id') or ''}".strip()
 
     def run(self, ctx: ToolContext, action: str, note: str | None = None, kind: str | None = None,
-            id: int | None = None, query: str | None = None, text: str | None = None) -> ToolResult:
-        from alice.memory import Fact, shared_memory
+            id: int | None = None, query: str | None = None, text: str | None = None, due: str | None = None,
+            followup_kind: str | None = None) -> ToolResult:
+        from alice.memory import Fact, _parse_day, shared_memory
 
         mem = ctx.state.get("memory") or shared_memory(ctx.config, ctx.router)
         if mem is None:
@@ -95,6 +103,21 @@ class Memory(Tool):
             cands = [h.item.line() for h in hits if isinstance(h.item, Fact)]
             return ToolResult("emin olamadım, hiçbirini silmedim. Adaylar (id ile sil):\n" + "\n".join(cands)
                               if cands else "eşleşen bilgi yok")
+        if action == "followup":
+            if not note:
+                raise ToolError("followup için note gerekli")
+            kind = followup_kind or ("open" if not due else "ask")
+            day = _parse_day(due)
+            if kind != "open" and day is None:
+                raise ToolError("followup için due (YYYY-MM-DD) gerekli; yarım kalan iş ise followup_kind=open")
+            return ToolResult(f"takip eklendi #{mem.add_followup(note, day, kind)}")
+        if action == "followups":
+            return ToolResult("\n".join(f.line() for f in mem.followups()) or "açık takip yok")
+        if action == "done":
+            if id is None:
+                raise ToolError("done için id gerekli")
+            f = mem.done_followup(id)
+            return ToolResult(f"kapatıldı: {f.text}" if f else f"#{id} bulunamadı")
         raise ToolError(f"bilinmeyen action: {action}")
 
 
@@ -106,17 +129,30 @@ class Task(Tool):
                    "araç çağrısıyla bitecek işlerde kullanma.")
     parameters = obj({
         "prompt": {"type": "string", "description": "Alt ajana eksiksiz görev: ne yapacak, nerede, ne döndürecek."},
-        "max_steps": {"type": "integer", "description": "En fazla adım. Varsayılan 40."},
+        "agent": {"type": "string", "description": "Kullanıcının tanımladığı özel alt ajanın adı (sistem istemindeki "
+                  "'Custom subagents' listesi). Boş: genel alt ajan."},
+        "max_steps": {"type": "integer", "description": "En fazla adım. Varsayılan 40 (özel ajanda kendi sınırı)."},
     }, ["prompt"])
     risk = READ  # alt ajanın kendi araç çağrıları ayrı ayrı izin kontrolünden geçer
 
-    def run(self, ctx: ToolContext, prompt: str, max_steps: int = 40) -> ToolResult:
+    def run(self, ctx: ToolContext, prompt: str, max_steps: int | None = None, agent: str = "") -> ToolResult:
         parent = ctx.state.get("agent")
         if parent is None:
             raise ToolError("alt ajan bu bağlamda kullanılamıyor")
-        sub = parent.spawn_child()
-        ctx.emit("alt ajan başladı")
-        result = sub.run_turn(prompt, max_steps=max_steps)
+        if agent:
+            from alice.skills import load_agents, spawn
+
+            defs = load_agents(ctx.cwd)
+            adef = defs.get(agent.strip().lower())
+            if adef is None:
+                raise ToolError(f"'{agent}' adında alt ajan yok. Tanımlı olanlar: {', '.join(defs) or '(yok)'}")
+            sub = spawn(parent, adef)
+            steps = max_steps or adef.max_steps
+        else:
+            sub = parent.spawn_child()
+            steps = max_steps or 40
+        ctx.emit(f"alt ajan başladı{f' ({agent})' if agent else ''}")
+        result = sub.run_turn(prompt, max_steps=steps)
         ctx.emit("alt ajan bitti")
         return ToolResult(result or "(alt ajan boş cevap döndürdü)")
 
@@ -157,4 +193,90 @@ class Reflex(Tool):
         return ToolResult(loop.run(goal, max_steps=max_steps, inputs=inputs).report())
 
 
-TOOLS = [TodoWrite(), Memory(), Task(), Reflex()]
+class AskUser(Tool):
+    name = "ask_user"
+    description = ("Kullanıcıya tıklanabilir seçeneklerle soru sorar ve cevabını bekler (uygulamada kart, terminalde "
+                   "numaralı liste). Sadece gerçekten kullanıcının vermesi gereken bir kararda kullan (iki makul yol, "
+                   "eksik bilgi); varsayılanı belli işlerde sorma. Önerdiğin seçeneği ilk sıraya koy. Kullanıcı "
+                   "listede olmayan bir cevap da yazabilir.")
+    parameters = obj({
+        "question": {"type": "string", "description": "Tek, net soru."},
+        "options": {"type": "array", "items": {"type": "string", "description": "Seçenek: kısa etiket, istersen "
+                    "' — ' ile açıklama."}, "description": "2-5 seçenek."},
+        "multi": {"type": "boolean", "description": "Birden fazla seçilebilsin mi? Varsayılan false."},
+    }, ["question", "options"])
+    risk = READ
+
+    def run(self, ctx: ToolContext, question: str, options: list[str], multi: bool = False) -> ToolResult:
+        ui = getattr(ctx.state.get("agent"), "ui", None)
+        # Sınıfta tanımlı olmalı: alt ajan/ses arayüzlerinin __getattr__'ı her adı sessizce yutan bir fonksiyon döndürür.
+        ask = getattr(ui, "ask_choice", None) if callable(getattr(type(ui), "ask_choice", None)) else None
+        opts = [str(o).strip() for o in options or [] if str(o).strip()][:6]
+        if len(opts) < 2:
+            raise ToolError("en az iki seçenek gerekli")
+        if not callable(ask):
+            return ToolResult("Bu arayüzde seçenekli soru gösterilemiyor (sesli konuşma ya da gözetimsiz çalışma). "
+                              "Soruyu ve seçenekleri cevabında kısaca sor, sonra dur ve kullanıcının cevabını bekle.")
+        answer = (ask(question, opts, bool(multi)) or "").strip()
+        if not answer:
+            return ToolResult("Kullanıcı cevap vermedi ya da soruyu kapattı. Varsayımda bulunma; kısaca sor ya da dur.")
+        return ToolResult(f"Kullanıcının cevabı: {answer}")
+
+
+class SkillTool(Tool):
+    name = "skill"
+    description = ("Kullanıcının ALICE'e öğrettiği bir skill'i (talimat + dosyalar) yükler. Sistem istemindeki "
+                   "'Skills' listesindeki bir iş geldiğinde önce bunu çağır, sonra yazdığına göre çalış.")
+    parameters = obj({"name": {"type": "string", "description": "Skill adı (listede yazan)."}}, ["name"])
+    risk = READ
+    parallel_safe = True
+
+    def run(self, ctx: ToolContext, name: str) -> ToolResult:
+        from alice.skills import load_skills
+
+        skills = load_skills(ctx.cwd)
+        sk = skills.get(name.strip().lower())
+        if sk is None:
+            raise ToolError(f"'{name}' adında skill yok. Olanlar: {', '.join(skills) or '(yok)'}")
+        files = sk.files()
+        listing = ("\nKlasördeki dosyalar (yollar bu klasöre göre):\n" + "\n".join(f"- {f}" for f in files)) if files else ""
+        return ToolResult(f"# Skill: {sk.name}\nKlasör: {sk.path.parent}\n\n{sk.body()}{listing}")
+
+
+class Projects(Tool):
+    name = "projects"
+    description = ("Kullanıcının bilgisayarındaki projeler (git depoları, Unity, Python, Node, .NET...): listele, ada/"
+                   "konuya göre bul, bir projenin ayrıntısı (yol, diller, son commitler, klasör içeriği, README). "
+                   "'Unity projem', 'oyunum', 'ALICE reposu' gibi sözlerde hangi klasör olduğunu buradan öğren.")
+    parameters = obj({
+        "action": {"type": "string", "enum": ["list", "find", "info", "rescan"],
+                   "description": "list: en son çalışılanlar | find: query'ye uyanlar | info: query'deki projenin "
+                   "ayrıntısı | rescan: diski yeniden tara (yeni proje eklendiyse)."},
+        "query": {"type": "string", "description": "find/info için proje adı ya da konu, ör. 'fps', 'alice', 'unity'."},
+    }, ["action"])
+    risk = READ
+
+    def run(self, ctx: ToolContext, action: str, query: str = "") -> ToolResult:
+        from alice import projects as pj
+
+        if action == "rescan":
+            found = pj.refresh(ctx.config)
+            return ToolResult(f"{len(found)} proje bulundu:\n" + "\n".join(f"- {p.line()}" for p in found[:15]))
+        found = pj.get(ctx.config, background=False)
+        if not found:
+            return ToolResult("proje bulunamadı. Proje klasörünü config.toml [projects] paths'e ekleyip rescan yap.")
+        if action == "list":
+            return ToolResult("\n".join(f"- {p.line()}" for p in found[:25]))
+        if not query:
+            raise ToolError(f"{action} için query gerekli")
+        hits = pj.find(query, found)
+        if not hits:
+            return ToolResult(f"'{query}' ile eşleşen proje yok. En son çalışılanlar:\n"
+                              + "\n".join(f"- {p.line()}" for p in found[:8]))
+        if action == "info":
+            return ToolResult(pj.info(hits[0]) + ("\nDiğer adaylar: " + ", ".join(p.name for p in hits[1:5])
+                                                 if len(hits) > 1 else ""))
+        return ToolResult("\n".join(f"- {p.line()}" for p in hits[:10]))
+
+
+TOOLS = [TodoWrite(), Memory(), Task(), Reflex(), Projects(), SkillTool(), AskUser()]

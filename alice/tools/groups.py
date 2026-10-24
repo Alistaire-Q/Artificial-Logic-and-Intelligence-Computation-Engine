@@ -16,14 +16,15 @@ from alice.tools.base import READ, Tool, ToolContext, ToolError, ToolResult, obj
 CORE = {"read_file", "write_file", "edit_file", "multi_edit", "apply_patch", "file_ops", "list_dir", "glob", "grep",
         "run_command",
         "process_output", "process_stop", "web_fetch", "web_search", "windows", "todo_write", "memory", "task", "weather", "youtube",
-        "load_tools", "run_plan", "task_control"}
+        "load_tools", "run_plan", "task_control", "skill", "ask_user"}
 
 # grup -> (araçlar, kısa açıklama, anahtar kelime regex'i)
 GROUPS: dict[str, tuple[set[str], str, str]] = {
-    "desktop": ({"computer", "computer_task", "ui_elements", "ui_act", "clipboard", "reflex"},
+    "desktop": ({"computer", "computer_task", "ui_elements", "ui_act", "clipboard", "reflex", "app"},
                 "ekran görüntüsü, fare/klavye, masaüstü uygulamalarında tıklama, pano",
                 r"tıkla|ekran|pencere|fare|mouse|klavye|screenshot|buton|düğme|menü|click|screen|pano|kopyala|"
-                r"yapıştır|clipboard|oyun|ayarlar|uygulamada|arayüz|simge|ikon"),
+                r"yapıştır|clipboard|oyun|ayarlar|uygulamada|arayüz|simge|ikon|whatsapp|instagram|insta\b|"
+                r"tiktok|dm at|mesaj at|uygulama aç"),
     "browser": ({"browser"}, "kullanıcının tarayıcısında web sayfası okuma, tıklama, form doldurma",
                 r"site|tarayıcı|browser|chrome|edge|firefox|opera|youtube|google|sayfa|link|https?://|www\.|\.com|"
                 r"giriş yap|login|online|internetten|instagram|twitter|github|e-?posta|mail"),
@@ -34,13 +35,19 @@ GROUPS: dict[str, tuple[set[str], str, str]] = {
                "CPU/RAM/GPU/disk durumu, çalışan işlemler, geçmiş ölçümler",
                r"cpu|ram|gpu|işlemci|ekran kartı|sıcaklık|derece|bellek|disk|pil|batarya|performans|işlem|süreç|"
                r"process|görev yöneticisi|kasıyor|yavaş|fps|metrik"),
-    "automation": ({"rules", "schedule"}, "uyarı kuralları ve zamanlanmış görevler",
+    "automation": ({"rules", "schedule", "feeds", "action_log"},
+                   "uyarı kuralları, zamanlanmış görevler, servis akışları ve gönderilenlerin kaydı",
                    r"kural|uyar|hatırlat|zamanla|her gün|her sabah|her akşam|haftada|alarm|schedule|rule|cron|"
-                   r"saat \d|otomatik"),
+                   r"saat \d|otomatik|haber ver|söyle bana|gelirse|girince|olunca|bildir|takip et|izle|"
+                   r"ne gönderdin|kime yazdın|ne yazdın|benim adıma|gönderdiklerin"),
     "blender": ({"blender"}, "Blender'da 3B sahne (bpy betiği)",
                 r"blender|3d|3b|üç boyut|modelle|sahne|render|mesh"),
     "flight": ({"flight"}, "DCS / War Thunder uçuş verisi ve kneeboard",
                r"dcs|war ?thunder|uçuş|uçak|kneeboard|pist|iniş|kalkış|simülasyon|sim\b"),
+    "connect": (set(),  # araçlar çalışma anında tanımlardan gelir (alice/connect)
+                "bağlı servisler: Spotify, Steam, Discord, YouTube, eklediğin API'lar",
+                r"spotify|müzik|şark[ıi]|parça|çal\b|duraklat|steam|oyun kütüphanesi|discord|sunucu|kanal|"
+                r"abone|izlenme|playlist|çalma listesi"),
     "net": ({"http_request"}, "REST API çağırma, webhook, JSON gönderme, URL'den dosya indirme",
             r"\bapi\b|endpoint|webhook|\bjson\b|\brest\b|http isteği|post isteği|istek at|indir|download|curl"),
     "team": ({"team", "council"}, "büyük işleri otonom ajan projesine bölme ve inceleme kurulu (uzmanlar "
@@ -50,6 +57,11 @@ GROUPS: dict[str, tuple[set[str], str, str]] = {
     "personal": ({"notes", "report", "media"}, "notlar, sabah/PC raporu, müzik ve ses seviyesi",
                  r"\bnot\b|notlar|not al|rapor|özet|sabah|müzik|şarkı|ses seviyesi|sesi aç|sesi kıs|spotify|"
                  r"kapat .*dakika|dakika sonra"),
+    "projects": ({"projects"}, "kullanıcının projeleri (repo, Unity, Python...) ve ayrıntıları",
+                 r"proje|repo\b|depo(su|m|yu)?\b|unity|godot|kodum|oyunum|oyunumu|uygulamam|scriptim|programım|"
+                 r"son commit|nerede duruyor|hangi klasör"),
+    "mail": ({"gmail"}, "Gmail (birden fazla hesap): e-posta ara, oku, taslak, gönder",
+             r"e-?posta|\bmail|gmail|gelen kutu|inbox|okunmamış|taslak|cevap yaz|yanıtla"),
     "home": ({"pc", "wifi", "android", "tv"}, "PC gücü/parlaklık, Wi-Fi ve ev ağı, TV, Android telefon",
              r"kilitle|uyut|uyku|hazırda|yeniden başlat|restart|parlaklı|monitör|ekranı kapat|güç plan|wi-?fi|"
              r"kablosuz|internet|modem|\bağ(a|da|ı|daki)?\b|ssid|\btv\b|televizyon|android|telefon|bildirim|"
@@ -57,6 +69,15 @@ GROUPS: dict[str, tuple[set[str], str, str]] = {
 }
 
 TOOL_TO_GROUP = {name: g for g, (names, _, _) in GROUPS.items() for name in names}
+
+# Bağlantı araçları (alice/connect) çalışma anında tanımlardan geliyor; adları burada tutulur ve
+# "connect" grubuna sayılır. Böylece her isteğe 4-5 servisin şeması eklenmez, gerekince açılır.
+CONNECT: set[str] = set()
+
+
+def register_connect(names) -> None:
+    CONNECT.clear()
+    CONNECT.update(names)
 _RX = {g: re.compile(rx, re.I) for g, (_, _, rx) in GROUPS.items()}
 
 
@@ -73,6 +94,8 @@ def all_groups() -> dict[str, tuple[set[str], str, str]]:
 def group_of(name: str) -> str | None:
     if name in TOOL_TO_GROUP:
         return TOOL_TO_GROUP[name]
+    if name in CONNECT:
+        return "connect"
     for g, (names, _, _) in plugins.groups().items():
         if name in names:
             return g
@@ -107,16 +130,32 @@ def visible_tools(tools: dict[str, Tool], enabled: set[str]) -> list[Tool]:
     return out
 
 
+def _clip(desc: str, n: int = 62) -> str:
+    """Grup açıklamasını kısalt: ilk virgüle kadar olan kısım çoğu zaman yeterli."""
+    desc = " ".join(desc.split())
+    if len(desc) <= n:
+        return desc
+    head = desc[:n]
+    cut = max(head.rfind(", "), head.rfind(" ve "))
+    return (head[:cut] if cut > n // 2 else head.rstrip()) + "…"
+
+
 class LoadTools(Tool):
     name = "load_tools"
     parallel_safe = True
 
     @property
     def description(self) -> str:  # eklenti grupları sonradan yüklendiği için her seferinde kurulur
-        return ("Şu an listede olmayan bir araç grubunu açar; araçlar bir sonraki adımdan itibaren kullanılabilir. "
-                "İş için gereken araç listede yoksa ('yapamam' demeden önce) bunu çağır. Gruplar: "
-                + "; ".join(f"{g}: {desc}" for g, (_, desc, _) in all_groups().items())
-                + "; MCP sunucuları için 'mcp:<sunucu>' (ör. mcp:github). Hepsi için 'all'.")
+        # Gemini Live açıklamayı 1000 karakterde kesiyor; grup sayısı arttıkça açıklamalar kısaltılır.
+        groups = all_groups()
+        for n in range(62, 20, -4):  # grup eklendikçe açıklamalar kısalır, toplam 1000 karakteri geçmez
+            text = ("Şu an listede olmayan bir araç grubunu açar; araçlar bir sonraki adımdan itibaren kullanılabilir. "
+                    "İş için gereken araç listede yoksa ('yapamam' demeden önce) bunu çağır. Gruplar: "
+                    + "; ".join(f"{g}: {_clip(desc, n)}" for g, (_, desc, _) in groups.items())
+                    + "; MCP sunucuları için 'mcp:<sunucu>' (ör. mcp:github). Hepsi için 'all'.")
+            if len(text) <= 1000:
+                break
+        return text
 
     parameters = obj({"groups": {"type": "array", "items": {"type": "string"},
                                  "description": "Açılacak grup adları, ör. [\"desktop\", \"browser\"]."}}, ["groups"])

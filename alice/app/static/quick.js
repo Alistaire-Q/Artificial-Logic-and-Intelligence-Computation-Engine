@@ -83,7 +83,7 @@ const handlers = {
   permission: (ev) => {
     const box = el("div", "perm", `İzin gerekiyor: ${ev.name} — ${ev.summary}`);
     box.id = "perm-" + ev.id;
-    for (const [ans, label] of [["y", "Evet"], ["n", "Hayır"], ["a", "Hep izin ver"]]) {
+    for (const [ans, label] of [["y", "Evet"], ["n", "Hayır"], ["a", "Hep izin ver"], ["p", "Projede kalıcı"]]) {
       const b = el("button", null, label);
       b.onclick = () => api("/api/permission", { id: ev.id, answer: ans });
       box.appendChild(b);
@@ -92,6 +92,18 @@ const handlers = {
     show();
   },
   permission_done: (ev) => { const b = document.getElementById("perm-" + ev.id); if (b) b.remove(); },
+  ask_choice: (ev) => {
+    const box = el("div", "perm", ev.question);
+    box.id = "perm-" + ev.id;
+    for (const o of ev.options || []) {
+      const b = el("button", null, String(o).split(" — ")[0]);
+      b.onclick = () => api("/api/choice", { id: ev.id, answer: o });
+      box.appendChild(b);
+    }
+    out.appendChild(box);
+    show();
+  },
+  ask_choice_done: (ev) => { const b = document.getElementById("perm-" + ev.id); if (b) b.remove(); },
   info: (ev) => { if (/hata|başarısız|veremedi/i.test(ev.text)) addErr(ev.text); },
 };
 
