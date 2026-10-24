@@ -282,6 +282,69 @@ def test_disconnected_user_browser_reconnects(ctx, monkeypatch):
     assert browser.get_browser(ctx, separate=True) is fresh
 
 
+class TargetClosedError(Exception):
+    pass
+
+
+def test_connection_lost_mid_call_reconnects_and_retries_read(ctx, monkeypatch):
+    # Opera bağlantısı çağrı sırasında öldü: is_connected hâlâ True der, ama işlem "closed" hatası verir.
+    old = make_session(attached=True)
+    ctx.state["browser"] = old
+
+    def dead(*a, **k):
+        raise TargetClosedError("Target page, context or browser has been closed")
+
+    old.snapshot = dead
+    fresh = make_session()
+    fresh.snapshot = lambda limit=120: [{"id": 1, "tag": "a", "role": "", "type": "", "text": "Ana sayfa",
+                                         "placeholder": "", "value": "", "href": "/", "inView": True}]
+    monkeypatch.setattr(browser, "BrowserSession", lambda **kw: fresh)
+    r = browser.Browser().run(ctx, "snapshot")
+    assert "Ana sayfa" in r.text and ctx.state["browser"] is fresh  # orada kalmadı: yeniden bağlandı
+
+
+def test_connection_lost_on_click_resets_without_repeating(ctx, monkeypatch):
+    old = make_session(attached=True)
+    ctx.state["browser"] = old
+    clicks = []
+
+    def dead(element_id):
+        clicks.append(element_id)
+        raise TargetClosedError("Browser closed")
+
+    old.locator = dead
+    monkeypatch.setattr(browser, "BrowserSession", lambda **kw: pytest.fail("tıklama tekrar edilmemeli"))
+    with pytest.raises(ToolError, match="bağlantısı koptu"):
+        browser.Browser().run(ctx, "click", element_id=3)
+    assert clicks == [3] and "browser" not in ctx.state  # sonraki çağrı yeni bağlantı kurar
+
+
+def test_reconnect_failure_is_explained(ctx, monkeypatch):
+    old = make_session(attached=True)
+    ctx.state["browser"] = old
+
+    def dead(*a, **k):
+        raise TargetClosedError("Connection closed")
+
+    old.snapshot = dead
+    again = make_session(attached=True)
+    again.snapshot = dead
+    monkeypatch.setattr(browser, "BrowserSession", lambda **kw: again)
+    with pytest.raises(ToolError, match="yeniden bağlanılamadı"):
+        browser.Browser().run(ctx, "snapshot")
+    assert "browser" not in ctx.state
+
+
+def test_other_errors_are_not_treated_as_disconnect(ctx, session):
+    def boom(*a, **k):
+        raise ValueError("beklenmeyen")
+
+    session.snapshot = boom
+    with pytest.raises(ValueError):
+        browser.Browser().run(ctx, "snapshot")
+    assert ctx.state["browser"] is session
+
+
 def test_alive_handles_errors():
     s = make_session(attached=True)
 

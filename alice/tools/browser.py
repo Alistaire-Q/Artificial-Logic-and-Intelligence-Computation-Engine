@@ -388,14 +388,34 @@ def _is_closed(page) -> bool:
         return True
 
 
-def get_browser(ctx: ToolContext, separate: bool = False) -> BrowserSession:
-    b = ctx.state.get("browser")
-    if b is not None and not b.alive():  # bağlantı ölmüş: her araç çağrısı "browser has been closed" demesin
-        ctx.state.pop("browser", None)
+# Playwright'ın bağlantı koptuğunda verdiği hatalar (Opera kapandı/yeniden başladı, köprü ölü bağlantıyı kesti).
+_CONNECTION_LOST = ("has been closed", "target closed", "browser closed", "connection closed", "not connected",
+                    "disconnected", "websocket error", "socket closed", "connection refused", "econnrefused")
+# Bağlantı kopunca yeni bağlantıyla bir kez daha denenebilen eylemler: tekrar etmek bir şeyi iki kez yapmaz.
+RETRY_SAFE = ("goto", "snapshot", "text", "screenshot", "tabs")
+RECONNECT_HINT = ("tarayıcı bağlantısı koptu (Opera kapandı, yeniden başladı ya da cevap vermiyor); bağlantı "
+                  "sıfırlandı. İşlem yapılmış olabilir: browser action=snapshot ile sayfaya bak, sonra gerekiyorsa tekrar dene.")
+
+
+def connection_lost(e: BaseException) -> bool:
+    msg = f"{type(e).__name__} {e}".lower()
+    return any(k in msg for k in _CONNECTION_LOST)
+
+
+def drop_browser(ctx: ToolContext) -> None:
+    """Oturumu bırak: sonraki çağrı yeniden bağlanır (kullanıcının tarayıcısı kapatılmaz)."""
+    b = ctx.state.pop("browser", None)
+    if b is not None:
         try:
             b.close()
         except Exception:  # noqa: BLE001
             pass
+
+
+def get_browser(ctx: ToolContext, separate: bool = False) -> BrowserSession:
+    b = ctx.state.get("browser")
+    if b is not None and not b.alive():  # bağlantı ölmüş: her araç çağrısı "browser has been closed" demesin
+        drop_browser(ctx)
         b = None
     if b is None:
         a = ctx.config.agent
@@ -464,9 +484,32 @@ class Browser(Tool):
             return NETWORK
         return COMPUTER
 
-    def run(self, ctx: ToolContext, action: str, url: str | None = None, element_id: int | None = None,
-            text: str | None = None, submit: bool = False, keys: str | None = None, amount: int = 600,
-            js: str | None = None, index: int | None = None, separate: bool = False) -> ToolResult:
+    def run(self, ctx: ToolContext, action: str, **kw: Any) -> ToolResult:
+        try:
+            return self._run(ctx, action, **kw)
+        except ToolError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            if action == "close" or not connection_lost(e):
+                raise
+            # Bağlantı ölmüş: oturumu at ki ALICE "browser has been closed" deyip orada kalmasın.
+            drop_browser(ctx)
+            if action not in RETRY_SAFE:
+                raise ToolError(RECONNECT_HINT) from e
+        try:
+            return self._run(ctx, action, **kw)  # yeni bağlantıyla bir kez daha
+        except ToolError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            if not connection_lost(e):
+                raise
+            drop_browser(ctx)
+            raise ToolError("tarayıcıya yeniden bağlanılamadı: Opera açık mı, opera://inspect'te 'Allow remote "
+                            "debugging' açık mı? İzin penceresi çıktıysa onayla.") from e
+
+    def _run(self, ctx: ToolContext, action: str, url: str | None = None, element_id: int | None = None,
+             text: str | None = None, submit: bool = False, keys: str | None = None, amount: int = 600,
+             js: str | None = None, index: int | None = None, separate: bool = False) -> ToolResult:
         from alice.tools.computer import as_bool, as_number
 
         # Zayıf modeller sayıları/bayrakları metin gönderiyor: "false" metni Enter'a bastırıyordu (bool("false")).

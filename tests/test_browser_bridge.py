@@ -1,5 +1,6 @@
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -104,3 +105,115 @@ def test_bridge_keeps_reference_to_upstream_pump_task():
         return task
 
     assert asyncio.run(main()).done()
+
+
+def test_bridge_closes_when_browser_stops_answering():
+    # Soket açık ama tarayıcı cevap vermiyor (Opera uykudan döndü, bağlantı yarı açık): köprü bunu fark edip
+    # kapanmalı, yoksa istemci sonsuza dek bekler.
+    class SilentUp:
+        def __init__(self):
+            self.sent: list[dict] = []
+            self.gate = asyncio.Event()
+            self.closed = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await self.gate.wait()
+            raise StopAsyncIteration
+
+        async def send(self, raw):
+            self.sent.append(json.loads(raw))
+
+        async def close(self):
+            self.closed = True
+            self.gate.set()
+
+    up = SilentUp()
+
+    async def fake_connect(url, **kw):
+        return up
+
+    class Client:
+        closed = False
+
+        async def close(self):
+            Client.closed = True
+
+    async def main():
+        bridge = bb.Bridge(find_upstream=lambda: "ws://x", connect=fake_connect, heartbeat=0.05,
+                           heartbeat_timeout=0.1)
+        bridge.client = Client()
+        await bridge._upstream()
+        await asyncio.wait_for(bridge.closed.wait(), 3)
+        return bridge
+
+    bridge = asyncio.run(main())
+    assert up.closed and Client.closed and bridge.up is None
+    assert any(m.get("id") == bb.HEARTBEAT_ID and m["method"] == "Browser.getVersion" for m in up.sent)
+
+
+def test_bridge_stays_up_while_browser_answers_heartbeat():
+    class EchoUp:
+        def __init__(self, bridge_ref):
+            self.bridge_ref = bridge_ref
+            self.gate = asyncio.Event()
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await self.gate.wait()
+            raise StopAsyncIteration
+
+        async def send(self, raw):
+            msg = json.loads(raw)
+            await self.bridge_ref[0]._from_browser(json.dumps({"id": msg["id"], "result": {}}))
+
+        async def close(self):
+            self.gate.set()
+
+    ref: list = []
+
+    async def fake_connect(url, **kw):
+        return EchoUp(ref)
+
+    async def main():
+        bridge = bb.Bridge(find_upstream=lambda: "ws://x", connect=fake_connect, heartbeat=0.02,
+                           heartbeat_timeout=0.2)
+        ref.append(bridge)
+        up = await bridge._upstream()
+        await asyncio.sleep(0.3)  # birkaç kalp atışı
+        alive = not bridge.closed.is_set() and bridge.up is up
+        await up.close()
+        await asyncio.wait_for(bridge.closed.wait(), 2)
+        return alive
+
+    assert asyncio.run(main())
+
+
+def test_closing_bridge_refuses_new_clients_and_reports_unhealthy():
+    class WS:
+        def __init__(self):
+            self.closed_with = None
+
+        async def close(self, code=1000, reason=""):
+            self.closed_with = (code, reason)
+
+    class Conn:
+        def respond(self, status, body):
+            return (status, body)
+
+    async def main():
+        bridge = bb.Bridge(find_upstream=lambda: pytest.fail("tarayıcıya yeniden bağlanmamalı"))
+        bridge.closed.set()
+        ws = WS()
+        await bridge.handle(ws)
+        return bridge, ws
+
+    bridge, ws = asyncio.run(main())
+    assert ws.closed_with and ws.closed_with[0] == 1011
+    req = SimpleNamespace(path="/alice-bridge")
+    assert bb._health(Conn(), req, bridge)[0] == 503
+    assert bb._health(Conn(), req)[0] == 200
