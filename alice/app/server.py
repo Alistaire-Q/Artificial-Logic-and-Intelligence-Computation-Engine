@@ -593,6 +593,28 @@ class AppState:
         set_config_value("voice", "tts_cloud", f"gemini:{name}")
         return {"ok": True}
 
+    _automations = None
+
+    @property
+    def automations(self):
+        """Ayarlar → Otomasyon: kurallar, zamanlanmış görevler, akışlar."""
+        if self._automations is None:
+            from alice.app.automations import Automations
+
+            self._automations = Automations(self.router, self.cfg)
+        return self._automations
+
+    _system = None
+
+    @property
+    def system(self):
+        """Ayarlar → Çekirdek: arka plandaki ALICE ve sesli asistan."""
+        if self._system is None:
+            from alice.app.system import SystemPanel
+
+            self._system = SystemPanel(self.cfg)
+        return self._system
+
     _enroll = None
 
     @property
@@ -1258,6 +1280,12 @@ def make_handler(state: AppState):
                 return self._json(state.assistant())
             if u.path == "/api/voice":
                 return self._json(state.voice_view())
+            if u.path == "/api/automations":
+                return self._json(state.automations.view())
+            if u.path == "/api/system":
+                return self._json(state.system.view())
+            if u.path == "/api/system/mictest":
+                return self._json(state.system.mic_test.view())
             if u.path == "/api/voice/enroll":
                 return self._json(state.enroll.view())
             if u.path == "/api/keys":
@@ -1348,6 +1376,12 @@ def make_handler(state: AppState):
                     return self._json({"ok": ok}, 200 if ok else 400)
                 if p == "/api/voice/preview":
                     r = state.voice_preview(str(d.get("voice", "")))
+                    return self._json(r, 200 if r.get("ok") else 400)
+                if p == "/api/automations/action":
+                    r = state.automations.action(str(d.get("action", "")), d)
+                    return self._json(r, 200 if r.get("ok") else 400)
+                if p == "/api/system/action":
+                    r = state.system.action(str(d.get("action", "")), d)
                     return self._json(r, 200 if r.get("ok") else 400)
                 if p == "/api/voice/enroll":
                     r = state.enroll_action(str(d.get("action", "")))
