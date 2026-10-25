@@ -653,7 +653,8 @@ class AppState:
 
     def enroll_action(self, action: str) -> dict[str, Any]:
         fn = {"start": self.enroll.start, "test": self.enroll.test, "install": self.enroll.install,
-              "cancel": self.enroll.cancel, "remove": self.enroll.remove}.get(action)
+              "cancel": self.enroll.cancel, "remove": self.enroll.remove, "done": self.enroll.done,
+              "skip": self.enroll.skip}.get(action)
         return fn() if fn else {"ok": False, "error": f"bilinmeyen işlem: {action}"}
 
     # ------------------------------------------------------------------ Hafıza sekmesi
@@ -1305,6 +1306,8 @@ def make_handler(state: AppState):
                 return self._json(state.assistant())
             if u.path == "/api/voice":
                 return self._json(state.voice_view())
+            if u.path == "/api/models/scores":
+                return self._json(state.setup.scores_view())
             if u.path == "/api/setup":
                 return self._json(state.setup.view())
             if u.path == "/api/notes":
