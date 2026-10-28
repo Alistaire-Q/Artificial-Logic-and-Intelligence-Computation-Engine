@@ -1639,6 +1639,22 @@ function memoryPane(pane, data) {
   }
   const facts = d.facts || [];
   pane.appendChild(el("div", "sec", `Bildikleri (${facts.length})`));
+  if (facts.length > 1) {
+    // Günde bir kendiliğinden de çalışır; tekrarları birleştirir, tek konuşmalık "bilgileri" atar.
+    const box = el("div", "list-row");
+    const l = el("span", "l");
+    l.append(el("b", "", "Toparla"), el("small", "", "Tekrarları birleştirir, bir konuşmalık ya da artık geçersiz olanları siler. \"Bunu hatırla\" dediklerine dokunmaz."));
+    const b = el("button", "btn", "Toparla");
+    b.addEventListener("click", () => {
+      b.disabled = true; b.textContent = "Toparlanıyor…";
+      api("/api/memory/action", { action: "tidy" }).then((r) => {
+        toast(r && r.ok ? ((r.done || []).length ? `${r.done.length} değişiklik yapıldı` : "Zaten derli toplu") : (r && r.error) || "toparlanamadı");
+        showSettings("memory");
+      });
+    });
+    box.append(l, b);
+    pane.appendChild(box);
+  }
   const f = el("input"); f.type = "text"; f.placeholder = "Hafızada ara"; f.className = "set-filter";
   const list = el("div");
   const draw = () => {

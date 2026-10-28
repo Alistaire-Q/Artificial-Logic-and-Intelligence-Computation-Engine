@@ -413,6 +413,7 @@ class AppState:
         self.watch_store = None  # telefon sunucusu: saat verisi buraya yazılır
         self.quick_pending: dict[str, Any] | None = None  # hızlı bar açılırken doldurulacak metin/görsel
         self.update: Any = None  # alice.updater.UpdateInfo: açılışta/arka planda bulunan yeni sürüm
+        self.restart_hook: Any = None  # çekirdeğin içindeyken (alice/app/host.py) yeniden başlayan çekirdektir
         self._update_lock = threading.Lock()
         self._update_stop = threading.Event()  # kapanışta arka plan güncelleme döngüsü dursun
         self._update_waits = (10.0, 60.0)  # ilk bakış, sonraki turlar (sn)
@@ -897,6 +898,12 @@ class AppState:
         mem = self.agent.memory
         if mem is None:
             return {"ok": False, "error": "hafıza kapalı"}
+        if action == "tidy":  # Ayarlar → Hafıza → Toparla: günlük toparlamayı şimdi çalıştır
+            try:
+                done = mem.consolidate()
+            except Exception as e:  # noqa: BLE001 - model yok/kota
+                return {"ok": False, "error": f"toparlanamadı: {e}"}
+            return {"ok": True, "done": done}
         if action == "forget":
             try:
                 gone = mem.forget(int(d.get("id", -1)))
@@ -1007,6 +1014,9 @@ class AppState:
             self.shutdown()
         except Exception:  # noqa: BLE001 - kapanış hatası yeniden başlamayı engellemesin
             pass
+        if self.restart_hook is not None:
+            self.restart_hook()  # çekirdek: kilidi bırakıp yeniden başlar, pencere yeni adrese geçer
+            return
         # Yeni süreç açılışta tekrar bakabilsin: bayrağı taşımıyoruz.
         updater.restart([sys.executable, "-m", "alice", *sys.argv[1:]],
                         env={"ALICE_RESTARTED": ""})

@@ -193,6 +193,7 @@ class Core:
         self._update_thread: threading.Thread | None = None
         self.restart_pending = False
         self.restart = restart or self._restart_process
+        self.busy_hook: Callable[[], bool] | None = None  # çekirdekteki uygulamada sohbet çalışıyor mu
         # Hafıza işi: bitmiş konuşmaları özetle, günü gelen hatırlatmaları bildir (10 dk'da bir, arka planda).
         self.memory_every = float(c.get("memory_every_minutes", 10)) * 60
         self._last_memory = time.monotonic()
@@ -306,6 +307,7 @@ class Core:
             if mem is None:
                 return
             mem.digest()
+            mem.maybe_consolidate()  # günde bir: tekrarlar birleşir, bir konuşmalık "bilgiler" silinir
             calendar_followups(mem, self.cfg)
             from alice.tools.gmail import new_important
 
@@ -336,7 +338,8 @@ class Core:
         if s.get("mode") == "off":
             return
         if self.restart_pending:
-            if not self.running_tasks:  # yarım görev bırakma: boşta kalınca
+            # yarım görev ya da yarım sohbet bırakma: boşta kalınca
+            if not self.running_tasks and not (self.busy_hook is not None and self.busy_hook()):
                 self.restart()
             return
         every = max(5.0, float(s.get("check_every_minutes") or 60)) * 60
@@ -384,7 +387,10 @@ class Core:
         """Aynı komutla yeniden başla. Tek kopya kilidi önce bırakılır, yoksa yeni süreç 'zaten çalışıyor' der."""
         from alice import updater
 
+        from alice.app.host import mark_restarting
+
         self.store.add_event("core", "Çekirdek yeni sürümle yeniden başlıyor", topic="core")
+        mark_restarting()  # açık pencere kapanmasın, yeni çekirdeğin adresine geçsin
         release_lock()
         try:
             state_path().unlink()

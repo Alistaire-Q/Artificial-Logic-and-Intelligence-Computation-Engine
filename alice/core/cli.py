@@ -59,6 +59,8 @@ def core_cmd(argv: list[str]) -> int:
         sims = _start_sims(cfg, core) if "--once" not in argv else None
         phone = _start_phone(cfg, core) if cfg.data.get("phone", {}).get("enabled") and "--once" not in argv else None
         quick = _start_quick(cfg) if cfg.data.get("quick", {}).get("enabled", True) and "--once" not in argv else None
+        host = _start_app(cfg, core) if (cfg.data.get("app", {}) or {}).get("in_core", True) and \
+            "--once" not in argv else None
         try:
             if "--once" in argv:
                 core.tick()
@@ -73,6 +75,8 @@ def core_cmd(argv: list[str]) -> int:
         except KeyboardInterrupt:
             core.stop()
         finally:
+            if host is not None:
+                host.stop()  # açık pencere bunu görüp kapanır
             if voice is not None:
                 voice.stop()
             if quick is not None:
@@ -147,6 +151,15 @@ def _start_phone(cfg, core):
         return None
     console.print(f"telefon: {ps.url}")
     return ps
+
+
+def _start_app(cfg, core):
+    """Uygulama çekirdeğin içinde açık durur: `alice app` sadece pencereyi buna bağlar (alice/app/host.py)."""
+    from alice.app.host import AppHost
+
+    host = AppHost(cfg, restart=core.restart).start()
+    core.busy_hook = lambda: host.busy  # sohbet sürerken güncelleme için yeniden başlama
+    return host
 
 
 def _start_sims(cfg, core):

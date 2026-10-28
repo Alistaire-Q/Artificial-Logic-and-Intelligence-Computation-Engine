@@ -86,7 +86,7 @@ def test_learn_uses_extractor_and_updates_existing():
 
 def test_import_markdown_once(tmp_path):
     md = tmp_path / "memory.md"
-    md.write_text("* Kullanıcının adı Hayat  _(2026-09-01)_\n* Projeler D:\\Unity altında  _(2026-09-02)_\n")
+    md.write_text("* Kullanıcının adı Hayat  _(2026-09-01)_\n* Projeler D:\\Unity altında  _(2026-09-02)_\n", encoding="utf-8")
     m = mem()
     assert m.import_markdown(md) == 2
     assert m.import_markdown(md) == 0
@@ -133,3 +133,36 @@ def test_memory_tool_add_search_forget(workdir):
     out = tool.run(ctx, "forget", query="Galatasaray tutar").text
     assert out.startswith("silindi")
     assert agent.memory.facts() == []
+
+
+def test_bir_konusmalik_seyler_bilgi_diye_kaydedilmez():
+    m = mem()
+    m.apply({"add": [
+        {"text": "Kullanıcı, Spotify'da DNA parçasını dinlemek istedi ancak oynatma başarısız oldu.", "kind": "fact"},
+        {"text": r"Kullanıcının masaüstünde C:\Users\x\Desktop\Deneme adında bir klasör var.", "kind": "fact"},
+        {"text": "Kullanıcı us.txt dosyasındaki değerin doğru olduğunu onayladı.", "kind": "fact"},
+        {"text": "Kullanıcı kahveyi şekersiz içer.", "kind": "preference"},
+    ]})
+    assert [f.text for f in m.facts()] == ["Kullanıcı kahveyi şekersiz içer."]
+
+
+def test_toparlama_birlestirir_siler_ama_hatirla_dediklerine_dokunmaz():
+    seen = []
+
+    def extractor(prompt):
+        seen.append(prompt)
+        return json.dumps({"remove": [2, 3], "merge": [{"ids": [4, 5], "text": "Kullanıcı Unciv ve Solitaire oynar."}],
+                           "update": []})
+
+    m = LongMemory(":memory:", {}, extractor)
+    m.remember("Kullanıcı kahveyi şekersiz içer.", "preference", source="kullanıcı")  # 1
+    m.remember("Kullanıcı reflex katmanında çalışıyor.", "fact", source="otomatik")  # 2
+    m.remember("Kullanıcının adı Hayat.", "fact", source="kullanıcı")  # 3: elle kaydedildi, silinmez
+    m.remember("Kullanıcı Unciv oynuyor.", "fact", source="otomatik")  # 4
+    m.remember("Kullanıcı Solitaire sever.", "preference", source="otomatik")  # 5
+    done = m.consolidate()
+    texts = {f.id: f.text for f in m.facts()}
+    assert texts == {1: "Kullanıcı kahveyi şekersiz içer.", 3: "Kullanıcının adı Hayat.",
+                     4: "Kullanıcı Unciv ve Solitaire oynar."}
+    assert "user asked to remember" in seen[0] and done
+    assert not m.maybe_consolidate()  # günde bir

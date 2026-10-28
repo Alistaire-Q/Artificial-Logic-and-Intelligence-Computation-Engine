@@ -134,6 +134,17 @@ def explicit_note(text: str) -> str | None:
     return None
 
 
+# Model kurala rağmen bir turun sonucunu "bilgi" diye yazarsa (eski hafızada çoğu buydu): dosya yolu, başarısız/denenen
+# iş, onaylanan değer, ALICE'i test etmek. Sadece otomatik çıkarılanlara uygulanır; "bunu hatırla" her zaman kaydedilir.
+_EPHEMERAL = re.compile(
+    r"[a-z]:\\|(?:^|\s)/[\w.-]+/|\b(?:başarısız|basarisiz|onayladı|onayladi|denedi|deniyor|test (?:et|ed)\w*|"
+    r"deneme klasör\w*|indirilenler|kurulum dosyası|şu anda|su anda|şu an\b|bu konuşmada|endişe duy\w*)", re.I)
+
+
+def ephemeral(text: str) -> bool:
+    return bool(_EPHEMERAL.search(text))
+
+
 def has_signal(text: str) -> bool:
     t = " " + fold(clean_user_text(text)) + " "
     return any(s in t for s in _SIGNALS)
@@ -225,6 +236,8 @@ class LongMemory:
         self.embedder = embedder  # alice.memvec.Embedder ya da None (sadece kelime araması)
         self.embed_min = float(o.get("embed_min", 0.68))  # bu kosinüsün altı "ilgisiz" sayılır
         self.digest_enabled = bool(o.get("digest", True))
+        self.consolidate_enabled = bool(o.get("consolidate", True))
+        self.max_facts = int(o.get("max_facts", 60))  # toparlamada hedef: profil kısa ve öz kalsın
         self.session_gap = float(o.get("session_gap_minutes", 20)) * 60
         self._digest_lock = threading.Lock()
         self._index_lock = threading.Lock()
@@ -831,16 +844,91 @@ class LongMemory:
                 continue
         for a in (data.get("add") or [])[:5]:
             text = a.get("text") if isinstance(a, dict) else a
-            if isinstance(text, str) and 3 <= len(text) <= 300:
+            if isinstance(text, str) and 3 <= len(text) <= 300 and not ephemeral(text):
                 fid, _ = self.remember(text, (a.get("kind") if isinstance(a, dict) else None) or "fact", "otomatik")
                 done.append(f"eklendi #{fid}")
         return done
 
+    # ------------------------------------------------------------------ toparlama
+    def maybe_consolidate(self, every_hours: float = 24.0) -> bool:
+        """Günde bir: bütün bilgileri baştan gözden geçir (Claude'un günlük hafıza sentezi gibi)."""
+        if self.extractor is None or not self.consolidate_enabled:
+            return False
+        if time.time() - float(self._meta("consolidated_at") or 0) < every_hours * 3600:
+            return False
+        self.consolidate()
+        return True
 
-EXTRACT_PROMPT = """You maintain the long-term memory of ALICE, a personal assistant. From the exchange below, extract only \
-DURABLE facts about the user that will still matter in future conversations: preferences and dislikes, personal info \
-(name, city, job, birthday), people in their life, habits/routines, how they want ALICE to behave. Ignore one-off \
-requests ("open YouTube"), questions, small talk and anything about the current moment.
+    def consolidate(self) -> list[str]:
+        """Bilgileri toparla: tekrarları birleştir, kurala uymayanları (bir turun sonucu, yol, test) sil, eskiyenleri
+        güncelle. Kullanıcının kendi "hatırla" dediklerine dokunulmaz. Yapılanları döndürür."""
+        if self.extractor is None:
+            return []
+        facts = self.facts()
+        self._meta("consolidated_at", repr(time.time()))
+        if len(facts) < 2:
+            return []
+        keep = {f.id for f in facts if self._source(f.id) in ("kullanıcı", "araç", "memory.md")}
+        now = time.time()
+        listing = "\n".join(f"{f.id} [{f.kind}, {_ago(f.created, now)}, used {f.hits}x"
+                            f"{', user asked to remember' if f.id in keep else ''}]: {f.text}" for f in facts)
+        data = parse_json(self.extractor(CONSOLIDATE_PROMPT.format(n=self.max_facts, facts=listing)))
+        done: list[str] = []
+        valid = {f.id for f in facts}
+
+        def ids(xs: Any) -> list[int]:
+            out = []
+            for x in xs or []:
+                try:
+                    if int(x) in valid:
+                        out.append(int(x))
+                except (TypeError, ValueError):
+                    continue
+            return out
+
+        for m in (data.get("merge") or [])[:20]:
+            if not isinstance(m, dict) or not isinstance(m.get("text"), str) or len(ids(m.get("ids"))) < 2:
+                continue
+            group = ids(m.get("ids"))
+            self.update(group[0], m["text"])
+            done.append(f"birleştirildi #{group[0]} ← " + ", ".join(f"#{i}" for i in group[1:]))
+            for i in group[1:]:
+                if i not in keep:
+                    self.forget(i)
+        for u in (data.get("update") or [])[:20]:
+            if isinstance(u, dict) and isinstance(u.get("text"), str) and ids([u.get("id")]):
+                if self.update(int(u["id"]), u["text"]):
+                    done.append(f"güncellendi #{u['id']}")
+        for i in ids(data.get("remove")):
+            if i not in keep and self.forget(i):
+                done.append(f"silindi #{i}")
+        return done
+
+    def _source(self, fid: int) -> str:
+        with self._lock:
+            row = self.db.execute("SELECT source FROM facts WHERE id = ?", (int(fid),)).fetchone()
+        return row[0] if row else ""
+
+
+# Neyin kalıcı bilgi olduğu: ChatGPT'nin "saved memories"i ve Claude'un hafızası gibi az ve öz. Konuşmanın kendisi
+# zaten episodes/summaries'te; buraya sadece aylar sonra da işe yarayacak, kullanıcıya dair şeyler girer.
+DURABLE_RULES = """A memory is worth saving ONLY if it will still be true and useful a month from now in an unrelated \
+conversation: who the user is (name, city, school/job, age), people in their life, lasting preferences and dislikes, \
+habits, long-running projects/goals, and standing instructions for how ALICE should behave ("always ask before \
+closing a game"). Test each one: "Would a human assistant write this in their notebook about their boss?"
+NEVER save (these belong to the conversation log, which is kept separately):
+- what happened in this conversation or a task's result: "wanted to play X on Spotify but it failed", "confirmed the \
+value in us.txt", "started the League of Legends installer", "is looking at project Y"
+- file paths, folder names, test folders, window titles, one-off settings
+- the user testing/trying ALICE's features, or facts about ALICE's own internals ("the reflex engine is called Jev")
+- passing moods and one-time worries ("thinks ALICE's voice changed")
+- contacts the user messaged once (a person is worth saving only with their relation: "Que Mal is the user's friend")
+- guesses: only save what the user actually said or clearly showed.
+Prefer one rich memory over several thin ones; if nothing qualifies (the usual case), save nothing."""
+
+EXTRACT_PROMPT = """You maintain the long-term memory of ALICE, a personal assistant. From the exchange below, extract \
+durable facts about the user.
+""" + DURABLE_RULES.replace("{", "{{").replace("}", "}}") + """
 Write each fact as one short Turkish sentence in the third person, starting with "Kullanıcı" when natural \
 (e.g. "Kullanıcı kahveyi şekersiz içer."). kind: preference | fact | person | routine | note.
 Existing related memories (id: text):
@@ -857,13 +945,16 @@ DIGEST_PROMPT = """You maintain the long-term memory of ALICE, a personal assist
 one finished conversation (it started {date}). Produce:
 1. "summary": 1-3 short Turkish sentences: what was talked about, what got done or decided, what is left. Concrete \
 (names, projects, numbers), no filler. Empty string if it was only trivial commands/small talk.
-2. Durable facts about the user that will matter later (projects they work on, plans, goals, preferences, people, \
-habits, how they want ALICE to behave). One short Turkish sentence each, third person ("Kullanıcı ..."). kind: \
-preference | fact | person | routine | note. Use "update"/"remove" with the existing ids below instead of duplicating.
-3. "followups": things a good assistant should bring up later. kind "ask": an upcoming event to ask about afterwards \
-(exam, match, trip, interview) with "due" = the day after it happens; kind "remind": something the user must do on a \
-day; kind "open": unfinished work from this conversation the user may want to continue (no due). Turkish, written as \
-an instruction to ALICE ("Matematik sınavının nasıl geçtiğini sor."). Only real ones; usually zero or one.
+2. "add": durable facts about the user. The summary already records what happened, so facts are rare: \
+usually zero, at most two. """ + DURABLE_RULES.replace("{", "{{").replace("}", "}}") + """
+One short Turkish sentence each, third person ("Kullanıcı ..."). kind: preference | fact | person | routine | note. \
+Use "update"/"remove" with the existing ids below instead of duplicating; also "remove" existing ones that break the \
+rules above.
+3. "followups": things a good assistant should bring up later. kind "ask": an upcoming event in the user's life to \
+ask about afterwards (exam, match, trip, interview) with "due" = the day after it happens; kind "remind": something \
+the user asked to be reminded of on a day; kind "open": only when the user said they will continue something later \
+(no due). A command that failed or a task ALICE was doing is NOT a follow-up. Turkish, written as an instruction to \
+ALICE ("Matematik sınavının nasıl geçtiğini sor."). Usually zero.
 4. "done": ids of the open follow-ups below that this conversation already resolved.
 Dates are YYYY-MM-DD; resolve "yarın", "cuma" etc. relative to the conversation date.
 Existing related memories (id: text):
@@ -875,6 +966,22 @@ Answer ONLY with JSON: {{"summary": "...", "add": [{{"text": "...", "kind": "...
 
 Conversation:
 {transcript}"""
+
+
+CONSOLIDATE_PROMPT = """You curate the long-term memory of ALICE, a personal assistant, the way a good human assistant \
+tidies their notebook about their boss once a day. Below is every saved memory (id [kind, age, how often it was \
+useful]: text).
+""" + DURABLE_RULES.replace("{", "{{").replace("}", "}}") + """
+Do this:
+- "remove": ids that break the rules above (results of single conversations, paths, tests, ALICE internals, passing \
+moods, stale plans whose time has passed). Never remove ones marked "user asked to remember".
+- "merge": groups of ids that say the same or overlapping things, with one combined Turkish sentence (first id is kept).
+- "update": rewrite vague or outdated ones into one clear sentence (same id).
+Aim for at most {n} memories that really describe the user. When unsure, keep it. Turkish, third person ("Kullanıcı ...").
+Answer ONLY with JSON: {{"remove": [1], "merge": [{{"ids": [2, 3], "text": "..."}}], "update": [{{"id": 4, "text": "..."}}]}}
+
+Memories:
+{facts}"""
 
 
 def _parse_day(value: Any) -> float | None:
@@ -908,9 +1015,9 @@ def make_extractor(options: dict[str, Any], router) -> Callable[[str], str] | No
     def extract(prompt: str) -> str:
         msgs = [{"role": "user", "content": prompt}]
         try:
-            res = router.chat(role, msgs, temperature=0, max_tokens=900, response_format={"type": "json_object"})
+            res = router.chat(role, msgs, temperature=0, max_tokens=1600, response_format={"type": "json_object"})
         except Exception:  # noqa: BLE001 - bazı modeller response_format'ı reddediyor
-            res = router.chat(role, msgs, temperature=0, max_tokens=900)
+            res = router.chat(role, msgs, temperature=0, max_tokens=1600)
         return res.message.get("content") or ""
 
     return extract

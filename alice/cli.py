@@ -817,6 +817,29 @@ def default_workspace() -> Path:
         return Path.home()
 
 
+def _attach_to_core() -> int | None:
+    """Uygulama çekirdeğin içinde açıksa (gerekirse çekirdeği başlatıp) pencereyi ona aç. Olmazsa None: uygulama
+    eskisi gibi kendi sürecinde kurulur. Pencereyi kapatmak çekirdeği kapatmaz; çekirdek kapanınca pencere kapanır."""
+    from alice.app import host
+    from alice.app.window import open_window
+
+    try:
+        cfg = load_config()
+        if not (cfg.data.get("app", {}) or {}).get("in_core", True):
+            return None
+        url = host.attach()
+    except Exception:  # noqa: BLE001 - bağlanamazsak eski yoldan açılsın
+        return None
+    if not url:
+        return None
+    console.print(f"[bold magenta]ALICE[/] uygulaması (çekirdekte): {url.split('?')[0]}")
+    try:
+        open_window(url, watch=host.follow(url))
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
 def app_cmd(argv: list[str]) -> int:
     from alice.app.server import AppServer, AppState
     from alice.app.window import open_window
@@ -828,7 +851,13 @@ def app_cmd(argv: list[str]) -> int:
     ap.add_argument("--mode", choices=MODES, help="izin modu (varsayılan: config permission_mode)")
     ap.add_argument("--window", choices=["auto", "webview", "app", "browser", "none"], default="auto",
                     help="pencere türü: auto (pywebview > Edge/Chrome uygulama modu > tarayıcı); none: pencere açma, sadece adresi yaz")
+    ap.add_argument("--standalone", action="store_true",
+                    help="çekirdeğe bağlanma, uygulamayı bu süreçte kur (eski davranış)")
     a = ap.parse_args(argv)
+    if not (a.standalone or a.cwd or a.port or a.mode or a.window == "none"):
+        attached = _attach_to_core()
+        if attached is not None:
+            return attached
     cwd = (a.cwd or default_workspace()).resolve()
     cfg = load_config(cwd=cwd)
     # Açılışta güncelleme: [update] mode="auto" ise yeni commit çekilir ve ALICE kendini yeniden başlatır

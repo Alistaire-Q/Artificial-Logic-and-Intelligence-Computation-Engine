@@ -160,7 +160,7 @@ def test_core_run_refuses_second_instance(monkeypatch, out):
 
 
 def test_core_run_once_ticks_and_releases_lock(monkeypatch, out, fake_core):
-    for name in ("_start_voice", "_start_sims", "_start_phone", "_start_quick"):
+    for name in ("_start_voice", "_start_sims", "_start_phone", "_start_quick", "_start_app"):
         monkeypatch.setattr(core_cli, name, lambda *a, n=name: pytest.fail(f"--once ile {n} başlamamalı"))
     assert core_cli.core_cmd(["run", "--once"]) == 0
     core = _FakeCore.instances[0]
@@ -179,16 +179,16 @@ def test_core_run_forever_stops_helpers_on_ctrl_c(monkeypatch, out, fake_core):
     def helper(name):
         return lambda *a: SimpleNamespace(stop=lambda: stopped.append(name))
 
-    for name in ("voice", "sims", "phone", "quick"):
+    for name in ("voice", "sims", "phone", "quick", "app"):
         monkeypatch.setattr(core_cli, f"_start_{name}", helper(name))
     assert core_cli.core_cmd(["run"]) == 0
     assert _FakeCore.instances[0].calls == ["prime", "forever", "stop"]
-    assert sorted(stopped) == ["phone", "quick", "sims", "voice"] and fake_core == [True]
+    assert sorted(stopped) == ["app", "phone", "quick", "sims", "voice"] and fake_core == [True]
     assert "her 15 sn" in out()
 
 
 def test_core_run_tray(monkeypatch, out, fake_core):
-    for name in ("_start_sims", "_start_quick"):
+    for name in ("_start_sims", "_start_quick", "_start_app"):
         monkeypatch.setattr(core_cli, name, lambda *a: None)
     monkeypatch.setattr(service, "run_tray", lambda core: True)
     assert core_cli.core_cmd(["run", "--tray"]) == 0
