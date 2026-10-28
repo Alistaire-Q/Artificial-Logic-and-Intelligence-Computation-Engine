@@ -78,6 +78,30 @@ def test_yeni_commit_gorulur_ve_cekilir(repos, monkeypatch, offline):
     assert not updater.check(make_config({"brain": ["a:m"]})).available
 
 
+def test_one_gecmis_dalda_guncelleme_yok(repos, monkeypatch, offline):
+    # main'den açılmış dal: SHA farklı ama main zaten içinde. Eskiden her açılışta "yeni sürüm var" deyip boş
+    # çekme + yeniden başlatma döngüsüne giriyordu.
+    clone, _ = repos
+    point_at(monkeypatch, clone)
+    git(clone, "checkout", "-qb", "ozellik")
+    (clone / "alice" / "x.py").write_text("# yerel\n", encoding="utf-8")
+    git(clone, "add", "-A")
+    git(clone, "commit", "-qm", "yerel commit")
+    info = updater.check(make_config({"brain": ["a:m"]}))
+    assert info.ahead and not info.available
+    assert updater.apply_update(info) == (False, "zaten en son sürümdesin")
+
+
+def test_baska_dalda_otomatik_cekilmez(repos, monkeypatch, offline):
+    clone, origin = repos
+    point_at(monkeypatch, clone)
+    git(clone, "checkout", "-qb", "ozellik")
+    push(origin, "main'e yeni")
+    git(clone, "fetch", "-q")
+    info = updater.check(make_config({"brain": ["a:m"]}))
+    assert info.available and not info.can_auto and "'ozellik' dalında" in info.blocked
+
+
 def test_kirli_agac_otomatik_guncellenmez(repos, monkeypatch, offline):
     clone, origin = repos
     point_at(monkeypatch, clone)

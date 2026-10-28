@@ -133,6 +133,12 @@ def remote_head(repo: Path, branch: str, timeout: float = 20.0) -> tuple[str, st
     return "", f"uzak dal bulunamadı: {branch}"
 
 
+def contains(repo: Path, sha: str, head: str = "HEAD") -> bool:
+    """`sha` yerel dalda zaten var mı (head'in atası ya da kendisi)? Commit yerelde yoksa False."""
+    code, _ = _git(["merge-base", "--is-ancestor", sha, head], repo, timeout=20)
+    return code == 0
+
+
 # --------------------------------------------------------------------------------- GitHub (anahtarsız)
 def _api(path: str, timeout: float = 8.0) -> Any:
     """Anahtarsız GitHub API çağrısı. Ulaşılamazsa None (güncelleme buna takılmaz)."""
@@ -198,10 +204,12 @@ class UpdateInfo:
     error: str = ""
     running: str = ""       # bu sürecin başladığı commit (mark_running çağrıldıysa)
     bad: bool = False       # uzaktaki commit daha önce açılamadığı için geri alındı
+    ahead: bool = False     # uzaktaki commit yerelde zaten var (yerel dal önde): çekecek bir şey yok
+    on: str = ""            # yerelde açık dal; ayarlardaki daldan farklıysa otomatik çekilmez
 
     @property
     def available(self) -> bool:
-        return bool(self.local and self.remote and self.local != self.remote)
+        return bool(self.local and self.remote and self.local != self.remote and not self.ahead)
 
     @property
     def stale(self) -> bool:
@@ -220,6 +228,8 @@ class UpdateInfo:
             return ""
         if self.bad:
             return "bu sürüm daha önce açılamadı ve geri alındı; yeni bir düzeltme bekleniyor"
+        if self.on and self.on not in ("HEAD", self.branch):
+            return f"depo '{self.on}' dalında; otomatik güncelleme yalnız {self.branch} dalında yapılır"
         if self.dirty:
             return "depoda kaydedilmemiş değişiklikler var"
         if self.ci == "red":
@@ -373,6 +383,10 @@ def check(cfg: Any = None, timeout: float | None = None, details: bool = True) -
     info = UpdateInfo(repo=repo, branch=branch, local=local_commit(repo), running=_RUNNING or "")
     info.remote, info.error = remote_head(repo, branch, float(timeout or s.get("startup_timeout") or 12))
     info.bad = bool(info.remote) and info.remote in (read_state().get("bad") or [])
+    # Yerel dal uzaktakinden öndeyse (ör. main'den açılmış bir özellik dalı) SHA'lar farklıdır ama çekecek bir şey
+    # yoktur. Bu bakılmazsa her açılışta "yeni sürüm var" denip boş bir çekme ve yeniden başlatma yapılıyordu.
+    info.ahead = info.local != info.remote and bool(info.remote) and contains(repo, info.remote)
+    info.on = current_branch(repo)
     if info.available:
         info.dirty = is_dirty(repo)
         if details:
@@ -455,6 +469,10 @@ def _apply_locked(info: UpdateInfo, repo: Path, say: Callable[[str], None]) -> t
     if code != 0:
         return False, ("fast-forward yapılamadı (yerel commit'lerin olabilir): " + out.strip()[-300:])
     new = local_commit(repo)
+    if new == info.local:
+        # Çekme bir şey getirmedi: "güncellendi" deyip yeniden başlatırsak açılışta aynı döngüye gireriz.
+        write_state(local=new, remote=info.remote)
+        return False, "zaten en son sürümdesin"
     if _pip_needed(repo, info.local, new):
         install_deps(repo, say)
     problem = smoke_test(repo)
