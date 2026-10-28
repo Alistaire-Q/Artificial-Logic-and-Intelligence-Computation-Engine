@@ -171,7 +171,7 @@ def test_all_turns_run_on_same_worker_thread(app):
 
 def test_new_endpoints_rewind_files_commands_images(app, workdir):
     state, srv, client, prov = app
-    (workdir / "notlar.txt").write_text("x")
+    (workdir / "notlar.txt").write_text("x", encoding="utf-8")
     assert "notlar.txt" in client.get("/api/files", params={"q": "not"}).json()
     names = [c["name"] for c in client.get("/api/commands").json()]
     assert "rewind" in names and "plan" in names

@@ -50,7 +50,7 @@ def repo(tmp_path):
     work = tmp_path / "work"
     work.mkdir()
     git(work, "init", "-b", "main")
-    (work / "a.txt").write_text("a\n")
+    (work / "a.txt").write_text("a\n", encoding="utf-8")
     git(work, "add", "a.txt")
     git(work, "commit", "-m", "ilk")
     git(work, "remote", "add", "origin", str(remote))
@@ -123,7 +123,7 @@ def test_commit_and_push_feature_branch(repo):
     ctx = ctx_for(work)
     t = Git()
     t.run(ctx, action="switch", branch="ozellik", create=True)
-    (work / "b.txt").write_text("b\n")
+    (work / "b.txt").write_text("b\n", encoding="utf-8")
     assert "b.txt" in t.run(ctx, action="status").text
     out = t.run(ctx, action="commit", message="b ekle", all=True)
     assert "b ekle" in out.text
@@ -138,7 +138,7 @@ def test_push_to_protected_branch_needs_explicit_flag(repo):
     work, _ = repo
     ctx = ctx_for(work)
     t = Git()
-    (work / "a.txt").write_text("değişti\n")
+    (work / "a.txt").write_text("değişti\n", encoding="utf-8")
     t.run(ctx, action="commit", message="ana dala", files=["a.txt"])
     with pytest.raises(ToolError, match="korumalı"):
         t.run(ctx, action="push")
@@ -151,7 +151,7 @@ def test_push_to_protected_branch_needs_explicit_flag(repo):
                                           ("conf.py", "TOKEN = 'ghp_" + "a" * 36 + "'\n")])
 def test_commit_refuses_secrets(repo, name, content):
     work, _ = repo
-    (work / name).write_text(content)
+    (work / name).write_text(content, encoding="utf-8")
     with pytest.raises(ToolError, match="anahtar"):
         Git().run(ctx_for(work), action="commit", message="x", all=True)
 

@@ -26,7 +26,7 @@ def make_agent(script, workdir, mode="auto"):
 
 
 def test_rewind_restores_files_and_conversation(workdir):
-    (workdir / "a.txt").write_text("orijinal\n")
+    (workdir / "a.txt").write_text("orijinal\n", encoding="utf-8")
     script = [tool_call("edit_file", {"path": "a.txt", "old_string": "orijinal", "new_string": "bir"}), "ok1",
               tool_call("write_file", {"path": "yeni.txt", "content": "x"}, "c2"),
               tool_call("edit_file", {"path": "a.txt", "old_string": "bir", "new_string": "iki"}, "c3"), "ok2"]
@@ -34,12 +34,12 @@ def test_rewind_restores_files_and_conversation(workdir):
     agent.run_turn("birinci")
     second = len(agent.messages)
     agent.run_turn("ikinci")
-    assert (workdir / "a.txt").read_text() == "iki\n" and (workdir / "yeni.txt").exists()
+    assert (workdir / "a.txt").read_text(encoding="utf-8") == "iki\n" and (workdir / "yeni.txt").exists()
     text, restored = agent.rewind(second)
     assert text == "ikinci" and len(agent.messages) == second
-    assert (workdir / "a.txt").read_text() == "bir\n" and not (workdir / "yeni.txt").exists()
+    assert (workdir / "a.txt").read_text(encoding="utf-8") == "bir\n" and not (workdir / "yeni.txt").exists()
     text, _ = agent.rewind(1)
-    assert text == "birinci" and (workdir / "a.txt").read_text() == "orijinal\n"
+    assert text == "birinci" and (workdir / "a.txt").read_text(encoding="utf-8") == "orijinal\n"
     assert len(agent.messages) == 1
 
 
@@ -55,7 +55,7 @@ def test_plan_mode_blocks_writes(workdir):
 
 def test_mentions_and_completion(workdir):
     (workdir / "src").mkdir()
-    (workdir / "src" / "main.py").write_text("print('hi')\n")
+    (workdir / "src" / "main.py").write_text("print('hi')\n", encoding="utf-8")
     out = expand_mentions("şuna bak @src/main.py ve @src lütfen, mail a@b.com", workdir)
     assert "<file path=" in out and "print('hi')" in out and "<folder path=" in out
     assert "a@b.com" in out and out.count("<file") == 1
@@ -74,9 +74,9 @@ def test_user_images_sent_as_parts(workdir):
 def test_custom_commands(workdir, isolated_home):
     d = workdir / ".alice" / "commands"
     d.mkdir(parents=True)
-    (d / "review.md").write_text("---\ndescription: incele\n---\nŞunu incele: $ARGUMENTS\n")
+    (d / "review.md").write_text("---\ndescription: incele\n---\nŞunu incele: $ARGUMENTS\n", encoding="utf-8")
     (isolated_home / "commands").mkdir(parents=True)
-    (isolated_home / "commands" / "selam.md").write_text("Bana selam ver")
+    (isolated_home / "commands" / "selam.md").write_text("Bana selam ver", encoding="utf-8")
     names = {c["name"]: c for c in catalog(workdir)}
     assert names["review"]["description"] == "incele" and names["selam"]["kind"] == "custom"
     assert expand_custom("/review hız", workdir) == "Şunu incele: hız"
@@ -107,17 +107,17 @@ def test_multi_edit_atomic(workdir):
 
     ctx = ToolContext(cwd=workdir, config=make_config({"brain": ["a:m"]}))
     f = workdir / "m.py"
-    f.write_text("a = 1\nb = 2\nc = 3\n")
+    f.write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")
     r = MultiEdit().run(ctx, path="m.py", edits=[{"old_string": "a = 1", "new_string": "a = 10"},
                                                  {"old_string": "a = 10\nb = 2", "new_string": "a = 10\nb = 20"}])
-    assert f.read_text() == "a = 10\nb = 20\nc = 3\n" and "+b = 20" in r.diff
+    assert f.read_text(encoding="utf-8") == "a = 10\nb = 20\nc = 3\n" and "+b = 20" in r.diff
     import pytest
 
     from alice.tools.base import ToolError
     with pytest.raises(ToolError, match="edit 2/2"):
         MultiEdit().run(ctx, path="m.py", edits=[{"old_string": "c = 3", "new_string": "c = 30"},
                                                  {"old_string": "yok", "new_string": "x"}])
-    assert f.read_text() == "a = 10\nb = 20\nc = 3\n"  # hiçbiri yazılmadı
+    assert f.read_text(encoding="utf-8") == "a = 10\nb = 20\nc = 3\n"  # hiçbiri yazılmadı
 
 
 def test_parallel_read_only_calls(workdir):

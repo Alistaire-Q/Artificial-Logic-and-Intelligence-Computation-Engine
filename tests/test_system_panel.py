@@ -45,7 +45,7 @@ def test_state_reports_voice(tmp_path):
     core, _ = make_core(tmp_path)
     core.voice = "listening"
     core.tick(1000)
-    assert json.loads(service.state_path().read_text())["voice"] == "listening"
+    assert json.loads(service.state_path().read_text(encoding="utf-8"))["voice"] == "listening"
 
 
 def test_stop_core_terminates_old_core_that_ignores_request(monkeypatch):
@@ -67,7 +67,7 @@ def test_stop_core_terminates_old_core_that_ignores_request(monkeypatch):
     monkeypatch.setattr(service, "read_state", lambda: dict(state))
     monkeypatch.setattr(psutil, "Process", Proc)
     (alice_home()).mkdir(parents=True, exist_ok=True)
-    (alice_home() / "core.pid").write_text("4242")
+    (alice_home() / "core.pid").write_text("4242", encoding="utf-8")
     assert system.stop_core(wait=0.05, sleep=lambda s: None)
     assert killed == [4242] and not (alice_home() / "core.pid").exists() and not service.stop_path().exists()
     killed.clear()
@@ -87,7 +87,7 @@ def test_panel_actions(monkeypatch):
     p = system.SystemPanel(cfg())
     v = p.view()
     assert v["core"]["running"] is False and "auto" in v["modes"] and any(x["name"] == "sherpa_onnx" for x in v["packages"])
-    assert p.action("mode", {"mode": "flight"})["ok"] and service.force_path().read_text() == "flight"
+    assert p.action("mode", {"mode": "flight"})["ok"] and service.force_path().read_text(encoding="utf-8") == "flight"
     assert p.action("mode", {"mode": "auto"})["ok"] and not service.force_path().exists()
     assert not p.action("mode", {"mode": "uzay"})["ok"]
     p.action("autostart", {"on": True})

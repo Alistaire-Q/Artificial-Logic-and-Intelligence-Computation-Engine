@@ -26,9 +26,9 @@ def grep_ctx(request, ctx, workdir, monkeypatch):
     elif files_mod.shutil.which("rg") is None:
         pytest.skip("ripgrep yok")
     (workdir / "src").mkdir()
-    (workdir / "src" / "a.py").write_text("import os\n\ndef foo():\n    return 1\n\ndef bar():\n    return 2\n")
-    (workdir / "src" / "b.ts").write_text("function foo() {}\n")
-    (workdir / "notes.txt").write_text("foo bar\n")
+    (workdir / "src" / "a.py").write_text("import os\n\ndef foo():\n    return 1\n\ndef bar():\n    return 2\n", encoding="utf-8")
+    (workdir / "src" / "b.ts").write_text("function foo() {}\n", encoding="utf-8")
+    (workdir / "notes.txt").write_text("foo bar\n", encoding="utf-8")
     return ctx
 
 
@@ -93,24 +93,24 @@ PATCH = """*** Begin Patch
 
 def test_apply_patch_add_update_delete(ctx, workdir):
     (workdir / "src").mkdir()
-    (workdir / "src" / "a.py").write_text("def foo():\n    return 1\n\ndef bar():\n    return 1\n")
-    (workdir / "old.txt").write_text("eski\n")
+    (workdir / "src" / "a.py").write_text("def foo():\n    return 1\n\ndef bar():\n    return 1\n", encoding="utf-8")
+    (workdir / "old.txt").write_text("eski\n", encoding="utf-8")
     r = ApplyPatch().run(ctx, patch="```\n" + PATCH + "\n```")
     assert "M src/a.py" in r.text and "A src/new.py" in r.text and "D old.txt" in r.text
-    assert (workdir / "src" / "a.py").read_text() == "def foo():\n    return 10\n\ndef bar():\n    return 1\n"
-    assert (workdir / "src" / "new.py").read_text() == "X = 1\nY = 2\n"
+    assert (workdir / "src" / "a.py").read_text(encoding="utf-8") == "def foo():\n    return 10\n\ndef bar():\n    return 1\n"
+    assert (workdir / "src" / "new.py").read_text(encoding="utf-8") == "X = 1\nY = 2\n"
     assert not (workdir / "old.txt").exists()
     assert "+    return 10" in r.diff
     assert str(workdir / "old.txt") in ctx.state["checkpoint"]
 
 
 def test_apply_patch_is_all_or_nothing(ctx, workdir):
-    (workdir / "a.txt").write_text("bir\niki\n")
+    (workdir / "a.txt").write_text("bir\niki\n", encoding="utf-8")
     patch = ("*** Begin Patch\n*** Update File: a.txt\n-bir\n+BİR\n*** Update File: a.txt\n-yok\n+x\n"
              "*** End Patch")
     with pytest.raises(ToolError, match="bulunamadı"):
         ApplyPatch().run(ctx, patch=patch)
-    assert (workdir / "a.txt").read_text() == "bir\niki\n"
+    assert (workdir / "a.txt").read_text(encoding="utf-8") == "bir\niki\n"
 
 
 def test_apply_patch_whitespace_tolerance_crlf_and_move(ctx, workdir):
@@ -128,7 +128,7 @@ def test_apply_patch_rejects_bad_input(ctx, workdir):
         parse_patch("merhaba")
     with pytest.raises(ToolError, match="'\\+' ile"):
         parse_patch("*** Begin Patch\n*** Add File: a\nx\n*** End Patch")
-    (workdir / "var.txt").write_text("x")
+    (workdir / "var.txt").write_text("x", encoding="utf-8")
     with pytest.raises(ToolError, match="zaten var"):
         ApplyPatch().run(ctx, patch="*** Begin Patch\n*** Add File: var.txt\n+y\n*** End Patch")
     assert ApplyPatch().summary({"patch": PATCH}) == "update src/a.py, add src/new.py, delete old.txt"
@@ -138,32 +138,32 @@ def test_apply_patch_rejects_bad_input(ctx, workdir):
 
 
 def test_file_ops_move_copy_mkdir(ctx, workdir):
-    (workdir / "a.txt").write_text("a")
-    (workdir / "b.txt").write_text("b")
+    (workdir / "a.txt").write_text("a", encoding="utf-8")
+    (workdir / "b.txt").write_text("b", encoding="utf-8")
     t = FileOps()
     t.run(ctx, action="mkdir", path="arsiv/2026")
     assert (workdir / "arsiv" / "2026").is_dir()
     t.run(ctx, action="copy", path="a.txt", destination="kopya.txt")
-    assert (workdir / "kopya.txt").read_text() == "a"
+    assert (workdir / "kopya.txt").read_text(encoding="utf-8") == "a"
     t.run(ctx, action="move", paths=["a.txt", "b.txt"], destination="arsiv/2026")
-    assert (workdir / "arsiv" / "2026" / "b.txt").read_text() == "b" and not (workdir / "a.txt").exists()
+    assert (workdir / "arsiv" / "2026" / "b.txt").read_text(encoding="utf-8") == "b" and not (workdir / "a.txt").exists()
     with pytest.raises(ToolError, match="zaten var"):
         t.run(ctx, action="copy", path="kopya.txt", destination="arsiv/2026/a.txt")
     t.run(ctx, action="copy", path="kopya.txt", destination="arsiv/2026/a.txt", overwrite=True)
     t.run(ctx, action="copy", path="arsiv", destination="yedek")
-    assert (workdir / "yedek" / "2026" / "a.txt").read_text() == "a"
+    assert (workdir / "yedek" / "2026" / "a.txt").read_text(encoding="utf-8") == "a"
     with pytest.raises(ToolError, match="kendi içine"):
         t.run(ctx, action="move", path="arsiv", destination="arsiv/2026")
 
 
 def test_file_ops_delete_goes_to_trash(ctx, workdir, isolated_home):
-    (workdir / "sil.txt").write_text("veri")
+    (workdir / "sil.txt").write_text("veri", encoding="utf-8")
     (workdir / "klasor").mkdir()
-    (workdir / "klasor" / "x").write_text("x")
+    (workdir / "klasor" / "x").write_text("x", encoding="utf-8")
     r = FileOps().run(ctx, action="delete", paths=["sil.txt", "klasor"])
     assert not (workdir / "sil.txt").exists() and not (workdir / "klasor").exists()
     trashed = list((isolated_home / "trash").rglob("sil.txt"))
-    assert trashed and trashed[0].read_text() == "veri" and "çöpe" in r.text
+    assert trashed and trashed[0].read_text(encoding="utf-8") == "veri" and "çöpe" in r.text
     assert ctx.state["checkpoint"][str(workdir / "sil.txt")] == b"veri"
     with pytest.raises(ToolError, match="yok"):
         FileOps().run(ctx, action="delete", path="sil.txt")

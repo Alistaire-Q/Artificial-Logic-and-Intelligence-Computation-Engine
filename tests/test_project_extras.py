@@ -112,7 +112,7 @@ def test_stalled_member_is_reported(workdir):
 
 def test_worktree_conflict_is_handed_back_to_the_agent(workdir):
     git_init(workdir)
-    (workdir / "a.txt").write_text("1\n")
+    (workdir / "a.txt").write_text("1\n", encoding="utf-8")
     git(workdir, "add", "-A")
     git(workdir, "commit", "-qm", "ilk")
     base = subprocess.run(["git", "-C", str(workdir), "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True,
@@ -136,23 +136,23 @@ def test_worktree_conflict_is_handed_back_to_the_agent(workdir):
     team.start()
     m = team.members["backend"]
     assert team.wait_until(lambda: m.status == "review", 10)
-    (workdir / "a.txt").write_text("ana dal\n")  # bu arada ana dal da aynı satırı değiştirdi
+    (workdir / "a.txt").write_text("ana dal\n", encoding="utf-8")  # bu arada ana dal da aynı satırı değiştirdi
     git(workdir, "commit", "-qam", "ana dalda değişiklik")
     note = team.review_member("backend", True)
     assert "çakışmayı çözüyor" in note and m.merge_attempts == 1
     assert team.wait_until(lambda: m.status == "review" and state["resolved"], 15)
     assert "birleştirildi" in team.review_member("backend", True)
-    assert (workdir / "a.txt").read_text() == "ana dal\n"  # -X theirs: ajan ana dalı kabul etti
+    assert (workdir / "a.txt").read_text(encoding="utf-8") == "ana dal\n"  # -X theirs: ajan ana dalı kabul etti
     assert any(x["kind"] == "conflict" for x in team.timeline)
 
 
 def test_run_command_changes_are_tracked_and_revertable(workdir):
     git_init(workdir)
-    (workdir / "a.py").write_text("eski\n")
+    (workdir / "a.py").write_text("eski\n", encoding="utf-8")
     git(workdir, "add", "-A")
     git(workdir, "commit", "-qm", "ilk")
-    (workdir / "kirli.txt").write_text("başta zaten vardı\n")  # proje başında değişmiş: dokunulmaz
-    (workdir / "w.py").write_text("open('a.py', 'w').write('yeni\\n')\nopen('b.py', 'w').write('x\\n')\n")
+    (workdir / "kirli.txt").write_text("başta zaten vardı\n", encoding="utf-8")  # proje başında değişmiş: dokunulmaz
+    (workdir / "w.py").write_text("open('a.py', 'w').write('yeni\\n')\nopen('b.py', 'w').write('x\\n')\n", encoding="utf-8")
     git(workdir, "add", "w.py")
     git(workdir, "commit", "-qm", "betik")
     cmd = py("w.py")
@@ -172,12 +172,12 @@ def test_run_command_changes_are_tracked_and_revertable(workdir):
     d = team.diff("backend")
     assert "-eski" in d and "+yeni" in d and "+x" in d
     team.revert("backend")
-    assert (workdir / "a.py").read_text() == "eski\n" and not (workdir / "b.py").exists()
+    assert (workdir / "a.py").read_text(encoding="utf-8") == "eski\n" and not (workdir / "b.py").exists()
     assert (workdir / "kirli.txt").exists()
 
 
 def test_check_command_lessons_and_rules_reach_the_council(workdir):
-    (workdir / "REVIEW.md").write_text("Her public fonksiyonun testi olmalı.\n")
+    (workdir / "REVIEW.md").write_text("Her public fonksiyonun testi olmalı.\n", encoding="utf-8")
     seen = {}
 
     def script(model, messages, tools, **kw):
@@ -223,7 +223,7 @@ def test_templates_timeline_and_check_guess(workdir):
     assert kinds[0] == "start" and "msg" in kinds
     (workdir / "tests").mkdir()
     assert guess_check(workdir) == "python -m pytest -q"
-    (workdir / "package.json").write_text('{"scripts": {"test": "jest"}}')
+    (workdir / "package.json").write_text('{"scripts": {"test": "jest"}}', encoding="utf-8")
     assert guess_check(workdir) == "npm test"
     team.stop()
 

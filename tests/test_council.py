@@ -130,7 +130,7 @@ def test_chat_council_tool_and_slash_command(workdir):
         n = steps(messages)
         return [tool_call("council", {"subject": "README yapısı iyi mi?", "depth": "1"}), "Kurul onayladı."][min(n, 1)]
 
-    (workdir / "README.md").write_text("# x\n")
+    (workdir / "README.md").write_text("# x\n", encoding="utf-8")
     agent, _, ctx = make(script, workdir)
     assert agent.run_turn(council_prompt("README")) == "Kurul onayladı."
     tool_text = next(m["content"] for m in agent.messages if m["role"] == "tool")
@@ -272,7 +272,7 @@ def plan_council_script(state):
 
 
 def test_plan_council_blocks_only_plan_breaking_issues_and_routes_notes(workdir):
-    (workdir / "index.html").write_text("x")
+    (workdir / "index.html").write_text("x", encoding="utf-8")
     state: dict = {}
     agent, _, ctx = make(plan_council_script(state), workdir)
     team = Team(ctx, "kurumsal web sitesi", council=True)

@@ -441,14 +441,23 @@ def kill_playwright_drivers() -> int:
         kids = psutil.Process().children(recursive=True)
     except Exception:  # noqa: BLE001
         return 0
-    n = 0
+    found = {}
     for p in kids:
         try:
             cmd = " ".join(p.cmdline()).lower()
             if "playwright" in cmd and "run-driver" in cmd:
-                p.kill()
-                n += 1
+                found[p.pid] = p
         except Exception:  # noqa: BLE001 - süreç bu arada bitmiş olabilir
+            continue
+    n = 0
+    for p in found.values():
+        try:
+            # Windows'ta venv'in python.exe'si asıl python'u alt süreç olarak açar: ikisi aynı komut satırını taşır.
+            # Biri diğerinin çocuğuysa ikisi de öldürülür ama tek sürücü sayılır.
+            top = p.ppid() not in found
+            p.kill()
+            n += top
+        except Exception:  # noqa: BLE001
             continue
     return n
 

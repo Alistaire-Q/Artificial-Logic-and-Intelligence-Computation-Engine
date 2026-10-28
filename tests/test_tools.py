@@ -28,11 +28,11 @@ def test_read_with_offset_and_cp1254(ctx, workdir):
 
 
 def test_edit_requires_unique(ctx, workdir):
-    (workdir / "d.txt").write_text("x\nx\n")
+    (workdir / "d.txt").write_text("x\nx\n", encoding="utf-8")
     with pytest.raises(ToolError):
         EditFile().run(ctx, path="d.txt", old_string="x", new_string="y")
     EditFile().run(ctx, path="d.txt", old_string="x", new_string="y", replace_all=True)
-    assert (workdir / "d.txt").read_text() == "y\ny\n"
+    assert (workdir / "d.txt").read_text(encoding="utf-8") == "y\ny\n"
 
 
 def test_edit_handles_crlf(ctx, workdir):
@@ -44,7 +44,7 @@ def test_edit_handles_crlf(ctx, workdir):
 def test_write_list_glob_grep(ctx, workdir):
     WriteFile().run(ctx, path="src/a.py", content="def foo():\n    return 1\n")
     (workdir / "node_modules").mkdir()
-    (workdir / "node_modules" / "x.py").write_text("def foo(): pass")
+    (workdir / "node_modules" / "x.py").write_text("def foo(): pass", encoding="utf-8")
     assert "src/" in ListDir().run(ctx).text
     g = Glob().run(ctx, pattern="**/*.py").text
     assert "a.py" in g and "node_modules" not in g
@@ -105,8 +105,8 @@ def test_html_to_text():
 def test_config_init_and_load(isolated_home, monkeypatch, tmp_path):
     written = init_home()
     assert (isolated_home / "config.toml") in written and (isolated_home / ".env").exists()
-    (isolated_home / ".env").write_text("GROQ_API_KEY=abc\n")
-    (isolated_home / "config.toml").write_text('[agent]\npermission_mode = "yolo"\n[roles]\nbrain = ["groq:x"]\n')
+    (isolated_home / ".env").write_text("GROQ_API_KEY=abc\n", encoding="utf-8")
+    (isolated_home / "config.toml").write_text('[agent]\npermission_mode = "yolo"\n[roles]\nbrain = ["groq:x"]\n', encoding="utf-8")
     cfg = load_config(cwd=tmp_path)
     assert cfg.agent["permission_mode"] == "yolo" and cfg.agent["max_steps"] == 80
     assert cfg.roles["brain"] == ["groq:x"] and cfg.roles["fast"]  # diğer roller varsayılandan
@@ -155,7 +155,7 @@ def test_cli_slash_commands(workdir, isolated_home, monkeypatch):
     assert handle_slash("/init", agent, router, ctx, cfg)[0] == "run"
     d = workdir / ".alice" / "commands"
     d.mkdir(parents=True)
-    (d / "test.md").write_text("Testleri çalıştır: $ARGUMENTS")
+    (d / "test.md").write_text("Testleri çalıştır: $ARGUMENTS", encoding="utf-8")
     assert handle_slash("/test hızlı", agent, router, ctx, cfg) == ("run", "Testleri çalıştır: hızlı")
     agent.messages.append({"role": "user", "content": "eski mesaj"})
     monkeypatch.setattr("alice.cli.console.input", lambda *a, **k: "1")
@@ -208,10 +208,10 @@ def test_blender_tool_parses_error_and_scene(tmp_path, monkeypatch):
         "raise SystemExit(1)\n", encoding="utf-8")
     if _sys.platform == "win32":
         exe = tmp_path / "fake_blender.cmd"
-        exe.write_text(f'@"{_sys.executable}" "{fake}"\r\n')
+        exe.write_text(f'@"{_sys.executable}" "{fake}"\r\n', encoding="utf-8")
     else:
         exe = tmp_path / "fake_blender.sh"
-        exe.write_text(f"#!/bin/sh\nexec {_sys.executable} {fake}\n")
+        exe.write_text(f"#!/bin/sh\nexec {_sys.executable} {fake}\n", encoding="utf-8")
     exe.chmod(0o755)
     monkeypatch.setattr(bl, "find_blender", lambda ctx=None: str(exe))
     monkeypatch.setattr(bl, "alice_home", lambda: tmp_path)
@@ -315,6 +315,8 @@ def test_browser_does_not_open_separate_window_without_consent(monkeypatch):
     from alice.tools.base import ToolError
 
     monkeypatch.setattr(browser, "cdp_alive", lambda e, timeout=0.4: False)
+    # Makinede hata ayıklama portu açık bir tarayıcı (Opera GX, köprü) varsa test ona bağlanmasın.
+    monkeypatch.setattr(browser, "user_browser_endpoint", lambda cdp=None, bridge_port=None: None)
     with pytest.raises(ToolError, match="ayrı pencere"):
         browser.BrowserSession(cdp="http://127.0.0.1:9222", allow_launch=False)
 
@@ -324,7 +326,7 @@ def test_devtools_active_port_endpoint(tmp_path, monkeypatch):
 
     d = tmp_path / "Opera GX Stable"
     d.mkdir()
-    (d / "DevToolsActivePort").write_text("9333\n/devtools/browser/abc\n")
+    (d / "DevToolsActivePort").write_text("9333\n/devtools/browser/abc\n", encoding="utf-8")
     monkeypatch.setattr(browser, "_port_open", lambda port, timeout=0.3: port == 9333)
     assert browser.devtools_active_endpoint([tmp_path / "yok", d]) == "ws://127.0.0.1:9333/devtools/browser/abc"
     monkeypatch.setattr(browser, "_port_open", lambda port, timeout=0.3: False)
@@ -424,7 +426,7 @@ def test_list_dir_known_folders_and_newest(tmp_path, monkeypatch):
     dl.mkdir()
     for i, name in enumerate(["eski.zip", "orta.pdf", "yeni.exe"]):
         f = dl / name
-        f.write_text("x" * (i + 1))
+        f.write_text("x" * (i + 1), encoding="utf-8")
         os.utime(f, (_t.time() - 1000 + i * 100,) * 2)
     ctx = ToolContext(cwd=tmp_path, config=make_config({"brain": ["a:m"]}))
     out = files.ListDir().run(ctx, path="İndirilenler", sort="newest", limit=2).text

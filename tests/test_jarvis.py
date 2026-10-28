@@ -199,22 +199,22 @@ def test_memory_tool_followups(workdir):
 def _make_projects(home: Path) -> None:
     game = home / "GitHub" / "SkyFighter"
     (game / "Assets" / "Scripts").mkdir(parents=True)
-    (game / "Assets" / "Scripts" / "Gun.cs").write_text("class Gun {}")
+    (game / "Assets" / "Scripts" / "Gun.cs").write_text("class Gun {}", encoding="utf-8")
     (game / "ProjectSettings").mkdir()
-    (game / "ProjectSettings" / "ProjectVersion.txt").write_text("m_EditorVersion: 6000.0.23f1\n")
+    (game / "ProjectSettings" / "ProjectVersion.txt").write_text("m_EditorVersion: 6000.0.23f1\n", encoding="utf-8")
     old = time.time() - 30 * 86400  # oyun bir ay önce, bot az önce çalışıldı
     for f in game.rglob("*"):
         os.utime(f, (old, old))
     bot = home / "Projects" / "discord-bot"
     (bot / ".git" / "logs").mkdir(parents=True)
-    (bot / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
-    (bot / ".git" / "config").write_text('[remote "origin"]\n\turl = https://ghp_SECRET@github.com/hayat/discord-bot.git\n')
+    (bot / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (bot / ".git" / "config").write_text('[remote "origin"]\n\turl = https://ghp_SECRET@github.com/hayat/discord-bot.git\n', encoding="utf-8")
     now = int(time.time())
     (bot / ".git" / "logs" / "HEAD").write_text(
         f"0000 1111 Hayat <h@x> {now - 7200} +0300\tcommit (initial): ilk sürüm\n"
-        f"1111 2222 Hayat <h@x> {now - 60} +0300\tcommit: müzik komutu eklendi\n")
-    (bot / "main.py").write_text("print('bot')\n")
-    (bot / "README.md").write_text("# Bot\n\nArkadaşlarla kullandığımız Discord müzik ve moderasyon botu.\n")
+        f"1111 2222 Hayat <h@x> {now - 60} +0300\tcommit: müzik komutu eklendi\n", encoding="utf-8")
+    (bot / "main.py").write_text("print('bot')\n", encoding="utf-8")
+    (bot / "README.md").write_text("# Bot\n\nArkadaşlarla kullandığımız Discord müzik ve moderasyon botu.\n", encoding="utf-8")
     (home / "Documents" / "notlar").mkdir(parents=True)  # proje değil
 
 

@@ -85,7 +85,7 @@ def test_google_client_from_paste_and_download(tmp_path, monkeypatch):
     assert p.action("google_client", {"text": "123.apps.googleusercontent.com", "secret": "s3"})["ok"]
     assert os.environ["GOOGLE_CLIENT_ID"] == "123.apps.googleusercontent.com" and p.view()["google"]["client"]
     dl = tmp_path / "client_secret_abc.json"
-    dl.write_text(json.dumps({"installed": {"client_id": "9.apps.googleusercontent.com", "client_secret": "q"}}))
+    dl.write_text(json.dumps({"installed": {"client_id": "9.apps.googleusercontent.com", "client_secret": "q"}}), encoding="utf-8")
     monkeypatch.setattr(setup_google, "find_downloaded_json", lambda folder=None: dl)
     assert p.view()["google"]["found_json"] == "client_secret_abc.json"
     assert p.action("google_client", {"use_download": True})["ok"] and os.environ["GOOGLE_CLIENT_SECRET"] == "q"

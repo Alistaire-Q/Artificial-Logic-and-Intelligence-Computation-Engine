@@ -12,21 +12,21 @@ from tests.test_council import js, role_of
 def test_find_entry_prefers_root_then_known_dirs(tmp_path):
     assert find_entry(tmp_path) == ""
     (tmp_path / "node_modules" / "x").mkdir(parents=True)
-    (tmp_path / "node_modules" / "x" / "index.html").write_text("x")
+    (tmp_path / "node_modules" / "x" / "index.html").write_text("x", encoding="utf-8")
     assert find_entry(tmp_path) == ""
     (tmp_path / "web").mkdir()
-    (tmp_path / "web" / "index.html").write_text("w")
+    (tmp_path / "web" / "index.html").write_text("w", encoding="utf-8")
     assert find_entry(tmp_path) == "web/index.html"
-    (tmp_path / "index.html").write_text("r")
+    (tmp_path / "index.html").write_text("r", encoding="utf-8")
     assert find_entry(tmp_path) == "index.html"
 
 
 def test_safe_path_blocks_secrets_and_escapes(tmp_path):
     (tmp_path / "a").mkdir()
-    (tmp_path / "a" / "index.html").write_text("ok")
-    (tmp_path / ".env").write_text("gizli")
+    (tmp_path / "a" / "index.html").write_text("ok", encoding="utf-8")
+    (tmp_path / ".env").write_text("gizli", encoding="utf-8")
     (tmp_path / ".git").mkdir()
-    (tmp_path / ".git" / "config").write_text("x")
+    (tmp_path / ".git" / "config").write_text("x", encoding="utf-8")
     assert safe_path(tmp_path, "a/") == (tmp_path / "a" / "index.html").resolve()
     for bad in (".env", ".git/config", "../x", "a/../../etc/passwd", "node_modules/a.js", "yok.html"):
         assert safe_path(tmp_path, bad) is None
@@ -74,8 +74,8 @@ def test_screenshot_server_hides_secrets_even_when_escaped(tmp_path):
 
     from alice.site import serve
 
-    (tmp_path / "index.html").write_text("ok")
-    (tmp_path / ".env").write_text("KEY=gizli")
+    (tmp_path / "index.html").write_text("ok", encoding="utf-8")
+    (tmp_path / ".env").write_text("KEY=gizli", encoding="utf-8")
     try:  # Windows'ta sembolik bağlantı yetki ister; yoksa o kısım atlanır
         (tmp_path / "link.txt").symlink_to(tmp_path / ".env")
     except OSError:

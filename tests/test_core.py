@@ -258,7 +258,7 @@ def test_core_tick_records_mode_and_state(tmp_path):
     assert store_mode(core.store) == "flight"
     s = read_state()
     assert s["running"] is False or s["mode"] == "flight"  # zaman damgası eski olduğu için running False
-    assert json.loads((alice_home() / "core-state.json").read_text())["policy"]["local_gpu"] is False
+    assert json.loads((alice_home() / "core-state.json").read_text(encoding="utf-8"))["policy"]["local_gpu"] is False
     force_mode("dev")
     core.tick(1015)
     assert core.modes.current == "dev"
@@ -382,7 +382,7 @@ def test_corrupt_task_file_keeps_memory(tmp_path):
 def test_core_prime_writes_mode_before_first_tick_and_hooks_get_policy(tmp_path):
     core, _ = make_core(tmp_path)
     core.prime()  # DCS açık: ses modülü daha başlamadan "GPU yok" görsün
-    assert json.loads((alice_home() / "core-state.json").read_text())["policy"]["local_gpu"] is False
+    assert json.loads((alice_home() / "core-state.json").read_text(encoding="utf-8"))["policy"]["local_gpu"] is False
     seen = []
     core.hooks.append(lambda pol: seen.append(pol.local_gpu))
     core.hooks.append(lambda pol: 1 / 0)  # çöken kanca turu bozmasın

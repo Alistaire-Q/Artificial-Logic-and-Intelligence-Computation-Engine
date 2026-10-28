@@ -463,7 +463,7 @@ def test_leak_detection_and_format_fallback(tmp_path):
                     verify=verify, formats_file=f)
     eng.synth("Yedekleme yarıda kaldı.", "serious")
     assert eng.last_format == "tag" and prompts[1] == "[serious, composed] Yedekleme yarıda kaldı."
-    assert json.loads(f.read_text()) == {"m1": ["notes"]}
+    assert json.loads(f.read_text(encoding="utf-8")) == {"m1": ["notes"]}
     eng2 = GeminiTTS("k", "Kore", ["m1"], client=httpx.Client(transport=httpx.MockTransport(handler)), formats_file=f)
     eng2.synth("Merhaba.", "calm")
     assert eng2.last_format == "tag" and prompts[-1].startswith("[calm")  # kayıtlı iyi biçim, tek istek
@@ -484,7 +484,7 @@ def test_gemini_too_long_audio_counts_as_leak(tmp_path):
     eng = GeminiTTS("k", "Kore", ["m1"], client=httpx.Client(transport=httpx.MockTransport(handler)), formats_file=f)
     audio = eng.synth("Söyle bakalım ne yapacağız?")
     assert eng.last_format == "tag" and audio.seconds < 5
-    assert json.loads(f.read_text()) == {"m1": ["notes"]}
+    assert json.loads(f.read_text(encoding="utf-8")) == {"m1": ["notes"]}
 
 
 def test_gemini_timeout_moves_to_next_model():
@@ -556,9 +556,9 @@ def test_chatterbox_local_server_end_to_end(tmp_path, monkeypatch):
 
     fake = tmp_path / "fake"
     (fake / "chatterbox").mkdir(parents=True)
-    (fake / "chatterbox" / "__init__.py").write_text("")
-    (fake / "chatterbox" / "mtl_tts.py").write_text(FAKE_CHATTERBOX)
-    (fake / "torch.py").write_text(FAKE_TORCH)
+    (fake / "chatterbox" / "__init__.py").write_text("", encoding="utf-8")
+    (fake / "chatterbox" / "mtl_tts.py").write_text(FAKE_CHATTERBOX, encoding="utf-8")
+    (fake / "torch.py").write_text(FAKE_TORCH, encoding="utf-8")
     monkeypatch.setenv("PYTHONPATH", str(fake))
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -608,7 +608,7 @@ def test_install_local_flow(tmp_path, monkeypatch):
         if cmd[1:3] == ["-m", "venv"] or "venv" in cmd:
             py = il.venv_python(tmp_path / "v")
             py.parent.mkdir(parents=True, exist_ok=True)
-            py.write_text("")
+            py.write_text("", encoding="utf-8")
         return 0
 
     monkeypatch.setattr(il, "_out", fake_out)
@@ -701,10 +701,10 @@ def test_local_server_whisper_trims_and_retries(tmp_path, monkeypatch):
 
     fake = tmp_path / "fake"
     (fake / "chatterbox").mkdir(parents=True)
-    (fake / "chatterbox" / "__init__.py").write_text("")
-    (fake / "chatterbox" / "mtl_tts.py").write_text(FAKE_CHATTERBOX)
-    (fake / "torch.py").write_text(FAKE_TORCH)
-    (fake / "whisper.py").write_text(FAKE_WHISPER)
+    (fake / "chatterbox" / "__init__.py").write_text("", encoding="utf-8")
+    (fake / "chatterbox" / "mtl_tts.py").write_text(FAKE_CHATTERBOX, encoding="utf-8")
+    (fake / "torch.py").write_text(FAKE_TORCH, encoding="utf-8")
+    (fake / "whisper.py").write_text(FAKE_WHISPER, encoding="utf-8")
     monkeypatch.setenv("PYTHONPATH", str(fake))
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))

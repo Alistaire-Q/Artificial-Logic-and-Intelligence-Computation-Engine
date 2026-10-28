@@ -136,7 +136,7 @@ def test_autonomous_project_plans_reviews_and_finishes(workdir):
     assert team.summary == "add() yazıldı ve test edildi."
     assert team.status() == "done" and not team.active()
     assert {m.status for m in team.members.values()} == {"done"}
-    assert (workdir / "src/api.py").read_text() == "def add(a, b):\n    return a + b\n"  # kapsam dışı yazma engellendi
+    assert (workdir / "src/api.py").read_text(encoding="utf-8") == "def add(a, b):\n    return a + b\n"  # kapsam dışı yazma engellendi
     assert (workdir / "tests/test_api.py").exists()
     assert state.get("tests_started_after") is True  # after: tests, backend onaylandıktan sonra başladı
     assert state.get("saw_diff")
@@ -292,12 +292,12 @@ def test_worktree_member_is_merged_on_approve(workdir):
     m = team.add({"name": "backend", "task": "a", "isolation": "worktree"})
     assert m.cwd.resolve() == (workdir / ".alice-team" / f"{team.id}-backend").resolve() and m.cwd.is_dir()
     assert m.branch.startswith("alice-team/backend-")
-    assert ".alice-team/" in (workdir / ".git/info/exclude").read_text()
+    assert ".alice-team/" in (workdir / ".git/info/exclude").read_text(encoding="utf-8")
     team.start()
     assert team.wait_until(lambda: m.status == "review", 10)
     assert not (workdir / "yeni.py").exists()
     note = team.review_member("backend", True)
-    assert "birleştirildi" in note and (workdir / "yeni.py").read_text() == "print(1)\n"
+    assert "birleştirildi" in note and (workdir / "yeni.py").read_text(encoding="utf-8") == "print(1)\n"
 
 
 def test_chat_team_tool_waits_for_summary(workdir):
