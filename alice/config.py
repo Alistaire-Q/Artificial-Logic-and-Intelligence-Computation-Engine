@@ -181,9 +181,14 @@ live_idle = 5
 # "Hey Alice" cümlesi yerelde (ekran kartında) uygulama/site adı ipuçlarıyla yazıya dökülür; döküm bu güvenin
 # üstündeyse Live'a ses yerine yazı gider (Live Türkçe cümledeki "GitHub" gibi adları bozuyor). Boş = hep ses.
 live_text_min = -0.7
-# turn: her konuşma turunun başında ekranın bir karesi Live'a gider (ekran Google'a gider). off: ekrandaki işleri
-# reflex katmanı sayfadaki öğe listesiyle yapar, görüntü sadece model computer screenshot isterse gider.
+# turn: her konuşma turunun başında ekranın bir karesi Live'a gider (ekran Google'a gider). auto: sadece ekrandan
+# söz edilen turlarda ("şuna tıkla", "ekrandaki"). off: ekrandaki işleri reflex katmanı sayfadaki öğe listesiyle
+# yapar, görüntü sadece model computer screenshot isterse gider.
 live_screen = "off"
+# Model hiçbir şey demeden araç çağırınca beklerken Live'ın sesiyle hazır kısa cümle ("Bir saniye.") çalınır.
+live_fillers = true
+# think'in modelleri, sırayla. Boş = ses için ölçülmüş hızlı modeller, ardından beyin zinciri.
+live_think_models = []
 # Konuşma tanımaya ve Live'a ipucu olarak verilen adlar: bunlar + Başlat menüsü programları + yer imleri.
 vocab = []
 # Konuşman bitti saymak için sessizlik (sn). Kısa = hızlı cevap; çok kısa olursa cümle ortasında keser.

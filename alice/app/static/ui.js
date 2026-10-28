@@ -1789,7 +1789,9 @@ function connectPane(pane, data) {
     const row = el("div", "list-row");
     const l = el("span", "l");
     l.append(el("b", "", f.name), el("small", "", f.describe || `${f.connector}.${f.action}`));
-    const st = f.error ? f.error : !f.enabled ? "kapalı" : f.held ? `${f.held} öğe özeti bekliyor` : "açık";
+    // Hata metni uzun olabilir; sağ sütuna koyarsak soldaki adı tek harf genişliğine ezer.
+    if (f.error) l.appendChild(el("small", "err", f.error));
+    const st = f.error ? "hata" : !f.enabled ? "kapalı" : f.held ? `${f.held} öğe özeti bekliyor` : "açık";
     row.append(l, el("span", "r" + (f.error ? "" : " ok"), st));
     pane.appendChild(row);
   }
