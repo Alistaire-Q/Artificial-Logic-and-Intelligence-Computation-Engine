@@ -13,6 +13,11 @@ def test_params_per_provider():
     # ChatGPT girişi: gpt-6-luna "minimal"i reddediyor, kapalı = none
     assert thinking.params("chatgpt", "gpt-6-luna", "off") == {"reasoning_effort": "none"}
     assert thinking.params("chatgpt", "gpt-6-luna", "medium") == {"reasoning_effort": "medium"}
+    assert thinking.params("chatgpt", "gpt-6-luna", "max") == {"reasoning_effort": "max"}
+    # xhigh/max sadece ChatGPT'de: diğerlerine high gider
+    assert thinking.params("gemini", "gemini-3.6-flash", "xhigh") == {"reasoning_effort": "high"}
+    assert thinking.params("openrouter", "x/y", "max") == {"reasoning": {"effort": "high"}}
+    assert thinking.level_for({"thinking": {"brain": "xhigh"}}, "brain") == "xhigh"
 
 
 def test_level_for_roles():

@@ -54,6 +54,8 @@ const THINK = {
   low: ["az düşünür", "Kısa düşünür, sonra yapar (önerilen)"],
   medium: ["orta düşünür", "Biraz daha dikkatli, biraz daha yavaş"],
   high: ["çok düşünür", "Zor işler için; basit işte gereksiz uzun sürer"],
+  xhigh: ["daha da çok", "Extra High: sadece ChatGPT modellerinde; diğerlerinde çok düşünür gibi"],
+  max: ["en çok", "Max: sadece ChatGPT modellerinde; en zor işler için, en yavaşı"],
   default: ["model karar verir", "Modelin kendi ayarı"],
 };
 async function setThinking(level) {

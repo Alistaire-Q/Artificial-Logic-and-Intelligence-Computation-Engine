@@ -1,7 +1,8 @@
 """Düşünme (reasoning) ayarı: her sağlayıcının kendi parametresine çevrilir.
 
 Düşünen modeller (GLM, Qwen3, gpt-oss, Gemini 3, Nemotron...) basit işlerde bile dakikalarca düşünebiliyor.
-Rol başına seviye: off | low | medium | high ("default" = modele bırak). config.toml:
+Rol başına seviye: off | low | medium | high | xhigh | max ("default" = modele bırak). xhigh ve max sadece ChatGPT
+girişinde var (Extra High, Max); diğer sağlayıcılarda high gider. config.toml:
 
     [thinking]
     default = "low"
@@ -15,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
-LEVELS = ("off", "low", "medium", "high", "default")
+LEVELS = ("off", "low", "medium", "high", "xhigh", "max", "default")
 DEFAULTS = {"default": "low", "fast": "off", "voice": "off", "live-think": "medium"}
 
 
@@ -34,6 +35,12 @@ def params(provider: str, model: str, level: str) -> dict[str, Any]:
     """Seviye -> istek gövdesine eklenecek alanlar. Bilinmeyen sağlayıcı/model için boş."""
     if level == "default" or not level:
         return {}
+    if provider == "chatgpt":
+        # ChatGPT girişi (Responses API, reasoning.effort). gpt-6-luna: none/low/medium/high/xhigh/max; "minimal"i
+        # 400 ile reddediyor ve hata "not_found" sayılıp model oturum boyunca ölü işaretleniyor, o yüzden off -> none.
+        return {"reasoning_effort": "none" if level == "off" else level}
+    if level in ("xhigh", "max"):
+        level = "high"  # diğer sağlayıcılarda en yüksek seviye
     m = model.lower()
     effort = "low" if level == "off" else level
     if "gpt-oss" in m:  # OpenAI açık ağırlıklı modeller: kapatılamaz, en az "low"
@@ -52,9 +59,5 @@ def params(provider: str, model: str, level: str) -> dict[str, Any]:
             return {"chat_template_kwargs": {"enable_thinking": on, "thinking": on}}
         return {}
     if provider == "ollama":
-        return {"reasoning_effort": "none" if level == "off" else level}
-    if provider == "chatgpt":
-        # ChatGPT girişi (Responses API, reasoning.effort). gpt-6-luna: none/low/medium/high; "minimal"i 400 ile
-        # reddediyor ve hata "not_found" sayılıp model oturum boyunca ölü işaretleniyor, o yüzden off -> none.
         return {"reasoning_effort": "none" if level == "off" else level}
     return {}
