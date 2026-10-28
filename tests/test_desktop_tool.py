@@ -620,7 +620,7 @@ def test_uri_opens_directly_without_searching(monkeypatch):
     monkeypatch.setattr(desktop, "_start_menu_lookup", lambda n: (_ for _ in ()).throw(AssertionError("arandı")))
     assert desktop.open_app("ms-settings:nightlight") == "açıldı: ms-settings:nightlight"
     assert opened == ["ms-settings:nightlight"]
-    assert not desktop.URI_RX.match("C:\Windows") and not desktop.URI_RX.match("Not Defteri")
+    assert not desktop.URI_RX.match(r"C:\Windows") and not desktop.URI_RX.match("Not Defteri")
 
 
 def test_desktop_shortcuts_are_not_scanned_recursively(tmp_path, monkeypatch):
