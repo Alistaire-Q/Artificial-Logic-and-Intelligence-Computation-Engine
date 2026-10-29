@@ -141,8 +141,8 @@ class SimHub:
                          f"{s.g or 0:.1f} G")
             fs = c.fuel_status(s)
             if fs:
-                extra = (f", üs {fs['home_nm']:.0f} nm, eve dönüş payı {fs['margin_min']:.0f} dk"
-                         if "home_min" in fs else "")
+                extra = (f", üs {fs['home_nm']:.0f} nm, bingo {fs['bingo_kg']:.0f} kg "
+                         f"({fs['margin_kg']:+.0f} kg pay)" if "bingo_kg" in fs else "")
                 lines.append(f"  yakıt {s.fuel_kg:.0f} kg, tüketim {fs['burn_kgs'] * 3600:.0f} kg/sa, "
                              f"{fs['left_min']:.0f} dk kaldı{extra}")
             nav = c.home_nav(s)

@@ -10,7 +10,7 @@ import pytest
 
 from alice.sims import checklists, kneeboard
 from alice.sims.dcs import DCSListener, install, parse_lua_table, read_mission, to_state, uninstall
-from alice.sims.flight import KT, FlightCompanion, FlightState, TouchdownTracker, save_debrief
+from alice.sims.flight import KT, NM, FlightCompanion, FlightState, TouchdownTracker, profile_for, save_debrief
 from alice.sims.warthunder import WarThunderPoller
 
 
@@ -56,7 +56,8 @@ def test_full_flight():
         x += 200
         tr.feed(st(t, fuel_kg=fuel, burn_kgs=1.0, x=x))
     texts = " ".join(r.texts())
-    assert "Eve dönmek için" in texts and "Bingo" in texts
+    assert "Joker. Bingo'ya" in texts and "Bingo. Şimdi eve dön" in texts and "tüketim" not in texts
+    assert texts.index("Joker") < texts.index("Bingo.")
     bingo = next(s for s in r.said if s[0].startswith("Bingo"))
     assert bingo[1] == "critical" and bingo[2] == "urgent"
     n = len(r.said)
@@ -66,7 +67,7 @@ def test_full_flight():
     assert len(r.said) == n                                     # tekrar etmez
 
     # uzun süre 8 G
-    for _ in range(7):
+    for _ in range(10):
         t += 1
         tr.feed(st(t, g=8.2, fuel_kg=fuel, x=x))
     assert any("G üstündesin" in s for s in r.texts())
@@ -433,8 +434,9 @@ def test_proactive_callouts():
     c._waypoint(st(5, extra={"wp_x": 1.5 * NM, "wp_z": 0, "wp_num": 3}))
     c._waypoint(st(6, extra={"wp_x": 1.4 * NM, "wp_z": 0, "wp_num": 3}))
     assert said[-1] == "3 numaralı waypoint'e 2 mil." and said.count("3 numaralı waypoint'e 2 mil.") == 1
-    c._weapons(st(7, extra={"weapons": "AIM-120C x2, AIM-9X x2", "gun": 500}))
-    c._weapons(st(8, extra={"weapons": "AIM-120C x1, AIM-9X x2", "gun": 90}))
+    c._weapons(st(30, extra={"weapons": "AIM-120C x2, AIM-9X x2", "gun": 500}))
+    c._weapons(st(31, extra={"weapons": "AIM-120C x1, AIM-9X x2", "gun": 500}))
+    c._weapons(st(50, extra={"weapons": "AIM-120C x1, AIM-9X x2", "gun": 90}))
     assert "Son AIM-120C." in said and "Top mermisi azaldı, 90 kaldı." in said
     text = "\n".join(describe_extra(st(9, extra={"radios": "251.000,127.500"})))
     assert "UHF 251.000" in text and "VHF 127.500" in text
@@ -553,3 +555,86 @@ def test_flight_tool_alert_actions(monkeypatch):
     assert tool.run(None, "alert_alt", ft=20000).text.startswith("kuruldu")
     assert c.alt_alert_ft == 20000
     assert tool.run(None, "alerts_clear").text == "1 uyarı kaldırıldı"
+
+
+def test_afterburner_does_not_trigger_fuel_calls():
+    """Bol yakıtla art yakıcı: oyunun anlık tüketimi 12 kg/s olsa da joker/bingo/"X dakika" yok."""
+    c, tr, r = make()
+    tr.feed(st(0, ias=80, agl=30))
+    fuel = 2500.0
+    for i in range(1, 200):
+        fuel -= 3.0
+        tr.feed(st(i, fuel_kg=fuel, burn_kgs=12.0, x=20 * NM))
+    assert r.texts() == []
+
+
+def test_tank_transfer_jumps_do_not_repeat_joker():
+    c, tr, r = make()
+    tr.feed(st(0, ias=80, agl=30))
+    fuel, t = 1300.0, 0  # 80 mil: bingo 770, joker 1257 kg
+    for _ in range(70):
+        t += 1
+        fuel -= 1
+        tr.feed(st(t, fuel_kg=fuel, x=80 * NM))
+    assert [x for x in r.texts() if x.startswith("Joker")] and len(r.said) == 1
+    for jump in (200, 0, 180, 0):  # dış tanktan aktarma göstergeyi oynatıyor
+        for _ in range(15):
+            t += 1
+            fuel -= 1
+            tr.feed(st(t, fuel_kg=fuel + jump, x=80 * NM))
+    assert len(r.said) == 1
+
+
+def test_low_fuel_load_warthunder_style():
+    """Kalkış noktası bilinmiyor (War Thunder) ve 12 dakikalık yakıtla çıkılmış: 10 dk uyarısı yok, 5 dk bir kez."""
+    c, tr, r = make()
+    tr.feed(st(0, ias=80, agl=30, x=None, z=None))
+    fuel = 720.0  # 1 kg/s ile 12 dakika
+    for i in range(1, 700):
+        fuel -= 1.0
+        tr.feed(st(i, fuel_kg=fuel, burn_kgs=None, x=None, z=None))
+    texts = r.texts()
+    assert len(texts) == 1 and texts[0].startswith("Yakıt yaklaşık 5 dakika") and "tüketim" not in texts[0]
+    assert r.said[0][1] == "critical"
+
+
+def test_endurance_warning_holds_before_speaking():
+    """Uzun uçuşta 10 ve 5 dakika uyarıları birer kez, eşik 20 sn sürünce."""
+    c, tr, r = make()
+    tr.feed(st(0, ias=80, agl=30, x=None, z=None))
+    fuel = 2400.0
+    for i in range(1, 2400):
+        fuel -= 1.0
+        tr.feed(st(i, fuel_kg=fuel, burn_kgs=None, x=None, z=None))
+        if fuel <= 150:
+            break
+    assert r.texts() == ["Yakıt yaklaşık 10 dakika yeter.", "Yakıt yaklaşık 5 dakika yeter."]
+
+
+def test_noisy_lights_and_info_gap():
+    from alice.sims.flight import FlightCompanion, FlightState
+
+    said = []
+    c = FlightCompanion(lambda text, sev="info", emo=None: said.append(text))
+    c.phase = "air"
+    for t, lights in ((1, "AutopilotOn"), (2, "StallSignalization"), (3, ""), (4, "HydraulicsFailure,MasterWarning"),
+                      (5, ""), (6, "HydraulicsFailure"), (200, ""), (201, "HydraulicsFailure")):
+        c._warnings(FlightState(t=t, extra={"warnings": lights}))
+    # otopilot uyarı değil; ana uyarı arızayla birlikte söylenmez;
+    # yanıp sönen ışık 2 dk dolmadan tekrar yok
+    assert said == ["Uyarı: stall.", "Uyarı: hidrolik arızası.", "Uyarı: hidrolik arızası."]
+    said.clear()
+    c.profile = profile_for("F-16C_50")
+    c.warn_seen = set()  # F-16'nın kendi stall uyarısı var
+    c._warnings(FlightState(t=300, extra={"warnings": "StallSignalization"}))
+    assert said == []
+    c._ext_tanks(FlightState(t=400, extra={"fuel_ext_kg": 30}))
+    c._waypoint(FlightState(t=401, x=0, z=0, extra={"wp_x": NM, "wp_z": 0, "wp_num": 2}))
+    c._ext_tanks(FlightState(t=402, extra={"fuel_ext_kg": 0}))
+    assert said == ["2 numaralı waypoint'e 1 mil."]  # tank anonsu üst üste binmedi
+
+
+def test_dcs_fraction_fuel_unknown_aircraft_is_guess():
+    assert to_state({"aircraft": "Su-25T", "fuel_int": 0.5}).extra.get("fuel_guess") is True
+    assert "fuel_guess" not in to_state({"aircraft": "F-16C_50", "fuel_int": 0.5}).extra
+    assert "fuel_guess" not in to_state({"aircraft": "Su-25T", "fuel_int": 2500.0}).extra

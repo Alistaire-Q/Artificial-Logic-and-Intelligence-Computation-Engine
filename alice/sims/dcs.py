@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from alice.sims.flight import FT, NM, FlightState, profile_for
+from alice.sims.flight import FT, NM, PROFILES, FlightState, profile_for
 
 PORT = 41230
 SCRIPT = Path(__file__).with_name("alice_export.lua")
@@ -92,6 +92,8 @@ def to_state(d: dict[str, Any], internal_fuel_kg: float | None = None) -> Flight
     ext_kg = None
     if isinstance(fe, (int, float)) and fe >= 0:
         ext_kg = fe * (internal_fuel_kg or profile_for(aircraft).internal_fuel_kg) if fe <= 1.5 else fe
+    # Oran veren modülde kapasiteyi bilmiyorsak kilo tahmindir: dakika hesabı (orandan bağımsız) olur, bingo olmaz.
+    guess = isinstance(fi, (int, float)) and fi <= 1.5 and not internal_fuel_kg and aircraft not in PROFILES
     num = lambda k: float(d[k]) if isinstance(d.get(k), (int, float)) else None  # noqa: E731
     return FlightState(t=float(d.get("t") or 0), source="dcs", aircraft=aircraft, ias=num("ias"), tas=num("tas"),
                        alt=num("alt"), agl=num("agl"), vv=num("vv"), aoa=num("aoa"), g=num("g"), fuel_kg=fuel,
@@ -99,7 +101,8 @@ def to_state(d: dict[str, Any], internal_fuel_kg: float | None = None) -> Flight
                        flare=int(d["flare"]) if isinstance(d.get("flare"), (int, float)) else None,
                        gear=num("gear"), x=num("x"), z=num("z"),
                        heading=math.degrees(num("heading")) % 360 if num("heading") is not None else None,
-                       extra=_extra(d, num) | ({"fuel_ext_kg": ext_kg} if ext_kg is not None else {}))
+                       extra=_extra(d, num) | ({"fuel_ext_kg": ext_kg} if ext_kg is not None else {})
+                       | ({"fuel_guess": True} if guess else {}))
 
 
 def _extra(d: dict[str, Any], num: Callable[[str], float | None]) -> dict[str, Any]:

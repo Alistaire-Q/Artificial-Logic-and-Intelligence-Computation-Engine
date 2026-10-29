@@ -289,7 +289,7 @@ def test_status_on_ground(h):
 def test_status_in_air_full(h):
     c = airborne(h, alt=3048.0, ias=300 * KT, g=2.0, fuel_kg=2000.0, x=0.0, z=-18520.0, heading=0.0,
                  chaff=30, flare=15, extra={"weapons": "AIM-120 x2"})
-    c.profile = SimpleNamespace(name="F-16C", reserve_kg=450)
+    c.profile = SimpleNamespace(name="F-16C", reserve_kg=450, cruise_kg_nm=4.0)
     c.home = (0.0, 0.0)
     for i in range(5):
         c.burn_hist.append((float(i), 1.0))
@@ -297,7 +297,7 @@ def test_status_in_air_full(h):
     out = h.status()
     lines = out.splitlines()
     assert lines[0] == "dcs: F-16C, 10,000 ft, 300 kt, 2.0 G"
-    assert any(ln.startswith("  yakıt 2000 kg, tüketim 3600 kg/sa, 33 dk kaldı, üs 10 nm") for ln in lines)
+    assert "  yakıt 2000 kg, tüketim 3600 kg/sa, 33 dk kaldı, üs 10 nm, bingo 490 kg (+1510 kg pay)" in lines
     # üs doğuda (z+), burun kuzeyde: 90° sağa dön
     assert "  üs (kalkış noktası): 090° yönünde (gerçek kuzey), 10 nm, şu an burnun 000°: 90° sağa dön" in lines
     assert "  silahlar: AIM-120 x2" in lines
