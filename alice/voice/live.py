@@ -37,12 +37,19 @@ def read_only(name: str, args: dict[str, Any]) -> bool:
         return True
     return name == "run_command" and bool(_READ_COMMAND.match(str(args.get("command", ""))))
 LIVE_GROUPS = {"desktop", "browser", "personal", "system", "automation"}
+# live_screen = "auto": kullanıcı ekrandakinden söz ediyorsa ("şuna tıkla", "ekrandaki", "bu ne") kare gider.
+SCREEN_WORDS = re.compile(
+    r"\b(ekran\w*|şu(nu|na|nda|ndaki|raya|rada|radaki)?|bu(nu|na|nda|ndaki|raya|rada|radaki)?|"
+    r"(sağ|sol|üst|alt|orta)daki|açık olan|gördüğün|görüyor|görünen|tıkla\w*|seç\w*|bak(sana|ar mısın)?|"
+    r"pencere\w*|sekme\w*|oyun\w*|video\w*|resim\w*|yazı\w*)\b", re.I)
 SCHEMA_KEYS = {"type", "description", "enum", "properties", "required", "items", "nullable", "format"}
 
 LIVE_PROMPT = """# Canlı sesli konuşma
 Kullanıcıyla sesli, canlı konuşuyorsun. Doğal, sıcak ve kısa konuş (genelde 1-2 cümle), Türkçe.
 Liste, kod, yol ya da uzun sayı okuma; gerekirse ekrana koyduğunu söyle.
 Bir iş istenince ilgili aracı hemen çağır.
+Sen hiçbir şey demeden araç çağırırsan kullanıcı senin sesinle "Bir saniye.", "Hemen bakıyorum." ya da "Bir
+düşüneyim." gibi kısa bir cümle duyar; araç sonucundan sonra bunu tekrarlama, doğrudan sonucu söyle.
 Birkaç araç sürecek bir işe başlarken önce tek kısa cümleyle ne yapacağını söyle (kullanıcı sessizlikte
 bekletilmesin). 3-4 denemede sonuç alamazsan araç çağırmayı bırak, bulduğunu söyle ve kullanıcıya sor.
 Web işlerini her zaman kullanıcının açık tarayıcısında, açık sekmelerinde yap; sıfırdan pencere açma.
@@ -77,7 +84,8 @@ Araçların vermediği sayıları ve durumları (uçaktaki silahlar, mesafe, yak
 uydurma ya da genel bilginden tahmin etme; bilmiyorsan "bu bilgiye ulaşamıyorum" de.
 Mesaj yazmak/göndermek gibi geri alınamayan işlerde hedef, kullanıcının söylediği uygulama ve sohbet olmalı;
 ne dediğini tam anlamadıysan önce sor. Bir işi yaptığını ancak araç sonucu "done" derse söyle.
-Monitörler: {monitors}. Her konuşmada sana öndeki pencerenin olduğu monitörün görüntüsü gelir. Başka monitörü ya da
+Monitörler: {monitors}. Kullanıcı ekrandakinden söz edince sana öndeki pencerenin olduğu monitörün görüntüsü gelir;
+görüntü gelmediyse ve ekranı görmen gerekiyorsa computer action=screenshot ile bak. Başka monitörü ya da
 hepsini görmek için computer action=screenshot monitor=<numara> (0 = hepsi yan yana); computer_task'a da monitor
 verebilirsin.
 Klasör ve dosya soruları için list_dir kullan ("İndirilenler", "Masaüstü" gibi adları doğrudan ver; "son indirdiğim"
@@ -119,8 +127,10 @@ konuşma"ya ya da hafızaya işaret eder; baştan sorma, kaldığın yerden deva
 ya da bir adım önde bir öneri ekleyebilirsin; dırdır etme.
 Uzun süreli hafızan var (sistem istemindeki "Long-term memory"). Kullanıcı kendisi hakkında kalıcı bir şey söylerse
 (sevdiği/sevmediği, adı, bir alışkanlığı, senden nasıl davranmanı istediği) memory action=add ile kısa bir cümle
-olarak kaydet; "bunu unut" derse memory action=forget. Geçmiş bir konuşmayı ya da profilde olmayan kişisel bir
-bilgiyi sorarsa ("geçen gün ne demiştim", "hatırlıyor musun") önce memory action=search çağır, bilmediğini uydurma.
+olarak kaydet; "bunu unut" derse memory action=forget. Geçmiş bir konuşmaya değinirse ("geçen gün ne demiştim", "dün
+ne yaptık", "hatırlıyor musun") önce bak: konuya göre memory action=search_chats query=..., zamana göre memory
+action=recent_chats (after/before YYYY-MM-DD); profilde olmayan kişisel bilgi için memory action=search. Bilmediğini
+uydurma.
 Şu an: {now}.{history}"""
 
 _CANNED = re.compile(
@@ -441,6 +451,7 @@ class LiveSession:
         self.model = ""
         self.names: Callable[[], list[str]] = lambda: known_names(cfg)
         # "turn": kullanıcı her konuşmaya başladığında ekranın bir karesi modele gider (ekrandakini görsün).
+        # "auto": sadece ekrandakinden söz edilen turlarda (SCREEN_WORDS).
         self.screen = str(v.get("live_screen", "off"))
         self.grab: Callable[[], str | None] = screen_frame
         self._pre: dict[str, Any] = {}  # önceden açılan bağlantı: {"thread", "ws", "error"}
@@ -471,6 +482,11 @@ class LiveSession:
         self.single_turn = False
         self._thinking = 0  # süren think sayısı: aynı anda birden fazlası beyni boğuyordu (cevaplar 3 dk sonra geldi)
         self._no_extras: set[str] = set()  # bu özellikleri reddeden modeller: bir daha denenmez
+        # Model araç çağırıp hiçbir şey söylemediyse beklerken hazır kısa cümle ("Bir saniye.") çalınır.
+        self.fillers_on = bool(v.get("live_fillers", True))
+        self._fillers = None
+        # think'in model sırası; boşsa ses için ölçülmüş hızlı modeller, ardından beyin zinciri.
+        self.think_models = [str(r) for r in v.get("live_think_models") or []]
 
     @property
     def available(self) -> bool:
@@ -521,6 +537,15 @@ class LiveSession:
         if extras and self.proactive:
             setup["proactivity"] = {"proactiveAudio": True}
         return {"setup": setup}
+
+    def wants_frame(self, text: str, unknown: bool = False) -> bool:
+        """Bu tura ekran karesi gitsin mi? "turn": her tur. "auto": sadece ekrandan söz edilince; her turda kare
+        göndermek cevabı geciktiriyor, bağlamı resimlerle doldurup modeli bulanıklaştırıyordu."""
+        if self.screen == "turn":
+            return True
+        if self.screen != "auto":
+            return False
+        return unknown or bool(SCREEN_WORDS.search(text or ""))
 
     def current_voice(self) -> str:
         """Ayarlar > Ses'te seçilen ses: config.toml değiştiyse oradan okunur, çekirdek yeniden başlamadan bir
@@ -697,6 +722,8 @@ class LiveSession:
                  "pending": True}
         self.hushed = False
         self.log(f"live açıldı [{self.model}]")
+        if getattr(self, "fillers_on", False):
+            threading.Thread(target=lambda: self.fillers().warm(), daemon=True, name="alice-live-warm").start()
 
         def touch() -> None:
             state["active"] = time.monotonic()
@@ -736,7 +763,7 @@ class LiveSession:
                                 out.put(base64.b64decode(data))
                                 touch()
                         if (t := (sc.get("inputTranscription") or {}).get("text")):
-                            if not state["framed"] and self.screen == "turn":
+                            if not state["framed"] and self.wants_frame(state["cur"] + t):
                                 # Kullanıcı konuşmaya başladı: cevaptan önce ekranın güncel hali modele gitsin.
                                 state["framed"] = True
                                 threading.Thread(target=send_frame, daemon=True).start()
@@ -806,7 +833,8 @@ class LiveSession:
 
         threading.Thread(target=reader, daemon=True, name="alice-live-in").start()
         try:
-            frame = self.grab() if self.screen == "turn" else None
+            # İlk cümle sesle gidiyorsa ne dendiği bilinmiyor: "auto"da da kare gider.
+            frame = self.grab() if self.wants_frame(first_text, unknown=bool(first_audio)) else None
             if frame and first_audio:
                 ws.send(json.dumps({"realtimeInput": {"video": {"data": frame, "mimeType": "image/jpeg"}}}))
             if first_audio:  # "Hey Alice ..." cümlesinin kendisi: yazıya çevirmeden doğrudan modele
@@ -837,6 +865,7 @@ class LiveSession:
                 except queue.Empty:
                     fc = None
                 if fc is not None:
+                    self._fill(state, out, fc)
                     self._run_call(ws, fc)
                     touch()
                     continue
@@ -870,6 +899,32 @@ class LiveSession:
 
     TOOL_TIMEOUT = 25.0  # sn: araç takılırsa modele hata dön, konuşma kilitlenmesin
     BACKGROUND = {"computer_task", "run_plan"}  # dakikalar sürebilir: arka planda çalışır, bitince sonuç konuşmaya yazılır
+    # Dolgu çalınmayanlar: arka plan işinde model hemen "başladım" der; diğerleri sessiz kayıt işleri.
+    NO_FILLER = BACKGROUND | {"task_control", "feedback", "memory"}
+
+    def fillers(self):
+        """Live'ın şu anki sesiyle hazır cümleler (ses Ayarlar'dan değişirse yenisi)."""
+        voice = self.current_voice()
+        if self._fillers is None or self._fillers.voice != voice:
+            from alice.voice.fillers import gemini_fillers
+
+            self._fillers = gemini_fillers(self.cfg, voice, self.key)
+        return self._fillers
+
+    def _fill(self, state: dict[str, Any], out, fc: dict[str, Any]) -> None:
+        """Model bu turda henüz hiç konuşmadan araç çağırdıysa kısa bir "bir saniye" çal; turda bir kez."""
+        name = fc.get("name", "")
+        if (not getattr(self, "fillers_on", False) or name in self.NO_FILLER or state.get("spoke") or out.playing
+                or state.get("filled") == state.get("asked")):
+            return
+        try:
+            pcm = self.fillers().get("think" if name == "think" else "tool")
+        except Exception:  # noqa: BLE001 - dolgu yoksa sessiz bekle, konuşma bozulmasın
+            pcm = None
+        if pcm:
+            state["filled"] = state.get("asked")
+            out.put(pcm)
+            self.log(f"live dolgu çalındı ({name})")
 
     def _run_background(self, ws, fc: dict[str, Any]) -> None:
         name = fc.get("name", "")
@@ -1017,12 +1072,30 @@ class LiveSession:
         child = Agent(parent.config, parent.router, tools, parent.ctx, parent.permissions, parent.ui,
                       getattr(parent, "decider", None), system_prompt=parent.messages[0]["content"], is_child=True)
         child.tool_specs = lambda: [t.spec() for t in tools]  # grup filtresi yok: hepsi okuyan araç
-        child.role = "brain"
+        child.role = self._think_role(parent.router)
         history = self.history_text()
         prompt = THINK_PROMPT.format(history=("\nAz önceki konuşma:\n" + history + "\n") if history else "",
                                      question=question, context=f"\nEk bağlam: {context}" if context else "")
         answer = (child.run_turn(prompt, max_steps=self.think_steps) or "").strip()
         return answer or "bir cevap bulamadım"
+
+    THINK_ROLE = "live-think"
+
+    def _think_role(self, router) -> str:
+        """think'in model sırası: önce ses için ölçülmüş hızlı modeller, sonra beyin zinciri. Beyin zincirinin
+        başındaki model takılınca (providers.log 25 Ekim: nvidia:z-ai/glm-5.3 ReadTimeout) her think 180 sn zaman
+        aşımını bekliyordu: 13 think'in medyanı 189 sn, hiçbiri 25 sn'de yetişmedi."""
+        try:
+            refs = list(getattr(self, "think_models", None) or [])
+            if not refs:
+                refs = router.auto_chain("voice")[:3] + router.chain("brain")
+        except Exception:  # noqa: BLE001 - router ölçüm/rol bilgisi yok: eski davranış
+            return "brain"
+        chain = [r for i, r in enumerate(refs) if r not in refs[:i]]
+        if not chain:
+            return "brain"
+        router.role_overrides[self.THINK_ROLE] = chain  # council.py'deki gibi: geçici rol, kendi zinciriyle
+        return self.THINK_ROLE
 
     def _execute(self, call: dict[str, Any]) -> ToolResult | None:
         """Aracı araç iş parçacığında çalıştır. Takılırsa (ör. bir pencerenin öğelerini okurken) o iş parçacığını

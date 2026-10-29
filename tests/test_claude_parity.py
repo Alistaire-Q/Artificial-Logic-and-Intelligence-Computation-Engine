@@ -94,7 +94,7 @@ def test_permission_rules_allow_ask_deny(workdir):
 
 def test_project_permission_file(workdir):
     (workdir / ".alice").mkdir()
-    (workdir / ".alice" / "permissions.toml").write_text('[permissions]\ndeny = ["run_command(npm publish*)"]\n')
+    (workdir / ".alice" / "permissions.toml").write_text('[permissions]\ndeny = ["run_command(npm publish*)"]\n', encoding="utf-8")
     assert Permissions("yolo").decide(TOOLS["run_command"], {"command": "npm publish"}, ctx_with(workdir)) == "deny"
 
 
@@ -182,8 +182,8 @@ def test_skills_listed_and_loaded(workdir, isolated_home):
     d = isolated_home / "skills" / "unity-build"
     (d / "scripts").mkdir(parents=True)
     (d / "SKILL.md").write_text("---\nname: unity-build\ndescription: Unity'den Windows build almak\n---\n"
-                                "1. scripts/build.ps1'i çalıştır.\n")
-    (d / "scripts" / "build.ps1").write_text("Unity.exe -batchmode")
+                                "1. scripts/build.ps1'i çalıştır.\n", encoding="utf-8")
+    (d / "scripts" / "build.ps1").write_text("Unity.exe -batchmode", encoding="utf-8")
     assert "unity-build" in load_skills(workdir)
     prompt = build_system_prompt(workdir)
     assert "# Skills" in prompt and "Unity'den Windows build almak" in prompt and "build.ps1" not in prompt
@@ -198,7 +198,7 @@ def test_custom_subagent_prompt_tools_and_model(workdir):
     (workdir / ".alice" / "agents").mkdir(parents=True)
     (workdir / ".alice" / "agents" / "inceleyici.md").write_text(
         "---\nname: inceleyici\ndescription: kodu inceler\ntools: read_file, grep\nmodel: a:m\nmax_steps: 5\n---\n"
-        "Sen titiz bir kod inceleyicisin.\n")
+        "Sen titiz bir kod inceleyicisin.\n", encoding="utf-8")
     script = [tool_call("task", {"prompt": "main.py'yi incele", "agent": "inceleyici"}), "Alt ajan: sorun yok.",
               "İnceleyici sorun bulmadı."]
     agent, provs, _ = make_agent(script, workdir)
@@ -278,15 +278,15 @@ def test_notebook_edit_replace_insert_delete(workdir):
                      "metadata": {}}, {"cell_type": "markdown", "source": ["# Başlık"], "metadata": {}}],
           "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
     p = workdir / "a.ipynb"
-    p.write_text(json.dumps(nb))
+    p.write_text(json.dumps(nb), encoding="utf-8")
     ctx = ToolContext(cwd=workdir, config=make_config({"brain": ["a:m"]}))
     tool = NotebookEdit()
     tool.run(ctx, "a.ipynb", 0, source="print(2)\nprint(3)")
-    data = json.loads(p.read_text())
+    data = json.loads(p.read_text(encoding="utf-8"))
     assert data["cells"][0]["source"] == ["print(2)\n", "print(3)"] and data["cells"][0]["outputs"] == []
     tool.run(ctx, "a.ipynb", 2, mode="insert", source="x = 1", cell_type="code")
     tool.run(ctx, "a.ipynb", 1, mode="delete")
-    data = json.loads(p.read_text())
+    data = json.loads(p.read_text(encoding="utf-8"))
     assert [c["cell_type"] for c in data["cells"]] == ["code", "code"] and data["nbformat"] == 4
     with pytest.raises(ToolError):
         tool.run(ctx, "a.ipynb", 9)
@@ -299,7 +299,7 @@ def test_review_builtins_and_user_override(workdir):
     assert builtin_prompt("/yok") is None
     d = workdir / ".alice" / "commands"
     d.mkdir(parents=True)
-    (d / "review.md").write_text("---\ndescription: benim incelemem\n---\nBenim tarzımla incele: $ARGUMENTS\n")
+    (d / "review.md").write_text("---\ndescription: benim incelemem\n---\nBenim tarzımla incele: $ARGUMENTS\n", encoding="utf-8")
     assert expand_custom("/review hız", workdir) == "Benim tarzımla incele: hız"
     names = [c["name"] for c in catalog(workdir)]
     assert names.count("review") == 1 and "security-review" in names
@@ -366,7 +366,7 @@ def test_project_allow_persists_across_sessions(workdir):
     agent.ui = ui = Ask("p")
     agent.run_turn("çalıştır")
     assert ui.asked == 1 and any("kalıcı izin eklendi: run_command(echo selam*)" in n for n in ui.notes)
-    assert "run_command(echo selam*)" in (workdir / ".alice" / "permissions.toml").read_text()
+    assert "run_command(echo selam*)" in (workdir / ".alice" / "permissions.toml").read_text(encoding="utf-8")
     # Yeni oturum (yeni ajan): aynı türden komut artık sorulmaz.
     agent2, _, _ = make_agent([tool_call("run_command", {"command": "echo selam dünya"}), "tamam"], workdir, mode="ask")
     agent2.ui = ui2 = Ask("n")
@@ -376,5 +376,5 @@ def test_project_allow_persists_across_sessions(workdir):
     agent3, _, _ = make_agent([tool_call("run_command", {"command": "rm -rf build"}), "tamam"], workdir, mode="ask")
     agent3.ui = ui3 = Ask("p")
     agent3.run_turn("sil")
-    assert "rm -rf" not in (workdir / ".alice" / "permissions.toml").read_text()
+    assert "rm -rf" not in (workdir / ".alice" / "permissions.toml").read_text(encoding="utf-8")
     assert any("kalıcı izin verilmez" in n for n in ui3.notes)

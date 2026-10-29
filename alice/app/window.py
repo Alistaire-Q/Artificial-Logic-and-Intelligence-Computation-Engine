@@ -10,9 +10,11 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import webbrowser
 from pathlib import Path
+from typing import Any, Callable
 
 from alice.config import alice_home
 
@@ -35,8 +37,33 @@ def _browser_candidates() -> list[str]:
     return [p for p in out if p and Path(p).exists()]
 
 
-def open_window(url: str, title: str = "ALICE", prefer: str = "auto") -> str:
-    """Pencereyi açar ve kapanana kadar bekler. Hangi yöntemin kullanıldığını döndürür."""
+def _watch(watch: Callable[[], str | None], close: Callable[[], None], load: Callable[[str], None]) -> None:
+    """watch() saniyede bir: "" = devam, yeni adres = ona geç, None = kapat (bkz. alice/app/host.py follow)."""
+    def loop() -> None:
+        while True:
+            time.sleep(1.0)
+            try:
+                r = watch()
+            except Exception:  # noqa: BLE001 - izleyici hatası pencereyi kapatmasın
+                continue
+            try:
+                if r is None:
+                    close()
+                    return
+                if r:
+                    load(r)
+            except Exception:  # noqa: BLE001 - pencere zaten kapanmış olabilir
+                return
+
+    threading.Thread(target=loop, daemon=True, name="alice-window-watch").start()
+
+
+def open_window(url: str, title: str = "ALICE", prefer: str = "auto",
+                watch: Callable[[], str | None] | None = None) -> str:
+    """Pencereyi açar ve kapanana kadar bekler. Hangi yöntemin kullanıldığını döndürür.
+
+    watch verilirse (çekirdekteki uygulamaya bağlı pencere) çekirdek kapanınca pencere de kapanır, çekirdek yeniden
+    başlayınca yeni adrese geçer."""
     if prefer in ("auto", "webview"):
         try:
             import webview  # pywebview
@@ -44,7 +71,10 @@ def open_window(url: str, title: str = "ALICE", prefer: str = "auto") -> str:
             # Windows'taki pywebview (WinForms) simgeyi System.Drawing.Icon ile açar ve .png verilince
             # yakalanamayan bir .NET hatasıyla çöker; orada .ico kullan.
             icon = Path(__file__).parent / "static" / ("alice.ico" if sys.platform == "win32" else "icon.png")
-            webview.create_window(title, url, width=1320, height=880, min_size=(820, 560), background_color="#16161a")
+            win = webview.create_window(title, url, width=1320, height=880, min_size=(820, 560),
+                                        background_color="#16161a")
+            if watch is not None:
+                _watch(watch, win.destroy, win.load_url)
             kwargs = {"icon": str(icon)} if icon.exists() else {}
             try:
                 webview.start(**kwargs)
@@ -58,10 +88,24 @@ def open_window(url: str, title: str = "ALICE", prefer: str = "auto") -> str:
         for exe in _browser_candidates():
             profile = alice_home() / "app-window"
             profile.mkdir(parents=True, exist_ok=True)
-            proc = subprocess.Popen([exe, f"--app={url}", "--window-size=1320,880", f"--user-data-dir={profile}",
-                                     "--no-first-run", "--no-default-browser-check"])
-            proc.wait()
-            return "app"
+            # Uygulama modundaki pencerenin adresi dışarıdan değiştirilemiyor: çekirdek yeniden başlayınca pencere
+            # kapatılıp yeni adresle yeniden açılır.
+            box: dict[str, Any] = {"url": url, "next": None, "proc": None}
+
+            def relaunch(u: str, box: dict[str, Any] = box) -> None:
+                box["next"] = u
+                box["proc"].terminate()
+
+            if watch is not None:
+                _watch(watch, lambda box=box: box["proc"].terminate(), relaunch)
+            while True:
+                box["proc"] = subprocess.Popen([exe, f"--app={box['url']}", "--window-size=1320,880",
+                                                f"--user-data-dir={profile}", "--no-first-run",
+                                                "--no-default-browser-check"])
+                box["proc"].wait()
+                if not box["next"]:
+                    return "app"
+                box["url"], box["next"] = box["next"], None
     webbrowser.open(url)
     try:
         while True:

@@ -43,9 +43,9 @@ def test_run_plan_plans_executes_confirms_and_verifies(workdir):
         "İkisi de tamam.",
     ]
     agent, _, ui = make_agent(script, workdir)
-    (workdir / "b.txt").write_text("eski")
+    (workdir / "b.txt").write_text("eski", encoding="utf-8")
     assert agent.run_turn("şunları yap") == "İkisi de tamam."
-    assert (workdir / "a.txt").read_text() == "selam" and (workdir / "b.txt").read_text() == "yeni"
+    assert (workdir / "a.txt").read_text(encoding="utf-8") == "selam" and (workdir / "b.txt").read_text(encoding="utf-8") == "yeni"
     assert ui.events.count(("ask", "run_plan")) == 1  # sadece geri alınamaz adım için
     report = [m for m in agent.messages if m["role"] == "tool" and m["name"] == "run_plan"][0]["content"]
     assert report.startswith("done: 2/2")

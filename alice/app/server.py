@@ -413,6 +413,7 @@ class AppState:
         self.watch_store = None  # telefon sunucusu: saat verisi buraya yazılır
         self.quick_pending: dict[str, Any] | None = None  # hızlı bar açılırken doldurulacak metin/görsel
         self.update: Any = None  # alice.updater.UpdateInfo: açılışta/arka planda bulunan yeni sürüm
+        self.restart_hook: Any = None  # çekirdeğin içindeyken (alice/app/host.py) yeniden başlayan çekirdektir
         self._update_lock = threading.Lock()
         self._update_stop = threading.Event()  # kapanışta arka plan güncelleme döngüsü dursun
         self._update_waits = (10.0, 60.0)  # ilk bakış, sonraki turlar (sn)
@@ -887,6 +888,7 @@ class AppState:
             "facts": [{"id": f.id, "kind": KINDS.get(f.kind, f.kind), "text": f.text,
                        "old": bool(OLD_ROLE_RX.search(f.text))} for f in mem.facts()],
             "followups": [{"id": f.id, "text": f.line()} for f in mem.followups()],
+            "portrait": mem._meta("portrait") or "",
             "old_role": {"facts": len(old["facts"]), "summaries": len(old["summaries"]),
                          "episodes": len(old["episodes"]),
                          "examples": [e.reply[:140] for e in old["episodes"][-3:]] + [s.text[:140] for s in old["summaries"][-2:]]},
@@ -897,6 +899,12 @@ class AppState:
         mem = self.agent.memory
         if mem is None:
             return {"ok": False, "error": "hafıza kapalı"}
+        if action == "tidy":  # Ayarlar → Hafıza → Toparla: günlük toparlamayı şimdi çalıştır
+            try:
+                done = mem.consolidate()
+            except Exception as e:  # noqa: BLE001 - model yok/kota
+                return {"ok": False, "error": f"toparlanamadı: {e}"}
+            return {"ok": True, "done": done}
         if action == "forget":
             try:
                 gone = mem.forget(int(d.get("id", -1)))
@@ -1007,6 +1015,9 @@ class AppState:
             self.shutdown()
         except Exception:  # noqa: BLE001 - kapanış hatası yeniden başlamayı engellemesin
             pass
+        if self.restart_hook is not None:
+            self.restart_hook()  # çekirdek: kilidi bırakıp yeniden başlar, pencere yeni adrese geçer
+            return
         # Yeni süreç açılışta tekrar bakabilsin: bayrağı taşımıyoruz.
         updater.restart([sys.executable, "-m", "alice", *sys.argv[1:]],
                         env={"ALICE_RESTARTED": ""})
@@ -1792,8 +1803,9 @@ def make_handler(state: AppState):
 
 
 class AppServer:
-    def __init__(self, state: AppState, port: int = 0, host: str = "127.0.0.1"):
+    def __init__(self, state: AppState, port: int = 0, host: str = "127.0.0.1", owns_state: bool = True):
         self.state = state
+        self.owns_state = owns_state  # çekirdekte hızlı bar/telefon ortak durumu kullanır: onu kapatmak sahibinin işi
         self.httpd = ThreadingHTTPServer((host, port), make_handler(state))
         self.httpd.daemon_threads = True
         self._thread = threading.Thread(target=self.httpd.serve_forever, daemon=True, name="alice-http")
@@ -1807,7 +1819,8 @@ class AppServer:
         return self
 
     def stop(self) -> None:
-        self.state.shutdown()
+        if self.owns_state:
+            self.state.shutdown()
         self.httpd.shutdown()
         self.httpd.server_close()
 

@@ -620,7 +620,7 @@ def test_uri_opens_directly_without_searching(monkeypatch):
     monkeypatch.setattr(desktop, "_start_menu_lookup", lambda n: (_ for _ in ()).throw(AssertionError("arandı")))
     assert desktop.open_app("ms-settings:nightlight") == "açıldı: ms-settings:nightlight"
     assert opened == ["ms-settings:nightlight"]
-    assert not desktop.URI_RX.match("C:\Windows") and not desktop.URI_RX.match("Not Defteri")
+    assert not desktop.URI_RX.match(r"C:\Windows") and not desktop.URI_RX.match("Not Defteri")
 
 
 def test_desktop_shortcuts_are_not_scanned_recursively(tmp_path, monkeypatch):
@@ -628,9 +628,9 @@ def test_desktop_shortcuts_are_not_scanned_recursively(tmp_path, monkeypatch):
     start, desk = tmp_path / "Start", tmp_path / "Desktop"
     (start / "Araçlar").mkdir(parents=True)
     (desk / "projeler" / "derin").mkdir(parents=True)
-    (start / "Araçlar" / "Hesap Makinesi.lnk").write_text("x")
-    (desk / "Oyun.lnk").write_text("x")
-    (desk / "projeler" / "derin" / "Gizli Uygulama.lnk").write_text("x")
+    (start / "Araçlar" / "Hesap Makinesi.lnk").write_text("x", encoding="utf-8")
+    (desk / "Oyun.lnk").write_text("x", encoding="utf-8")
+    (desk / "projeler" / "derin" / "Gizli Uygulama.lnk").write_text("x", encoding="utf-8")
     monkeypatch.setattr(desktop, "_shortcut_roots", lambda: [start, desk])
     desktop._shortcut_cache.clear()
     names = sorted(p.name for p in desktop._shortcut_files())

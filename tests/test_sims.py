@@ -128,7 +128,7 @@ def test_save_debrief_html(tmp_path):
     page = save_debrief(r.debriefs[0], [(1_000_000 + i, 90 + i % 20) for i in range(0, 120, 5)], out=tmp_path)
     html = page.read_text(encoding="utf-8")
     assert "<svg" in html and "Nabız" in html and "İrtifa" in html
-    assert json.loads(page.with_suffix(".json").read_text())["aircraft"] == "F-16C"
+    assert json.loads(page.with_suffix(".json").read_text(encoding="utf-8"))["aircraft"] == "F-16C"
 
 
 # ------------------------------------------------------------------- DCS
@@ -161,14 +161,14 @@ def test_dcs_listener_udp():
 def test_install_is_idempotent_and_keeps_other_exports(tmp_path):
     d = tmp_path / "DCS"
     (d / "Scripts").mkdir(parents=True)
-    (d / "Scripts" / "Export.lua").write_text("dofile(lfs.writedir()..'Scripts/TacviewGameExport.lua')\n")
+    (d / "Scripts" / "Export.lua").write_text("dofile(lfs.writedir()..'Scripts/TacviewGameExport.lua')\n", encoding="utf-8")
     install([d], port=45000)
     install([d], port=45000)
-    text = (d / "Scripts" / "Export.lua").read_text()
+    text = (d / "Scripts" / "Export.lua").read_text(encoding="utf-8")
     assert text.count("alice_export.lua") == 1 and "Tacview" in text
-    assert '"127.0.0.1", 45000, 10' in (d / "Scripts" / "alice_export.lua").read_text()
+    assert '"127.0.0.1", 45000, 10' in (d / "Scripts" / "alice_export.lua").read_text(encoding="utf-8")
     uninstall([d])
-    assert "alice" not in (d / "Scripts" / "Export.lua").read_text() and "Tacview" in (d / "Scripts" / "Export.lua").read_text()
+    assert "alice" not in (d / "Scripts" / "Export.lua").read_text(encoding="utf-8") and "Tacview" in (d / "Scripts" / "Export.lua").read_text(encoding="utf-8")
 
 
 MISSION = r'''

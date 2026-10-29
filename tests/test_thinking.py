@@ -10,11 +10,20 @@ def test_params_per_provider():
     assert thinking.params("nvidia", "z-ai/glm-5.3", "low")["chat_template_kwargs"]["enable_thinking"] is False
     assert thinking.params("nvidia", "meta/llama-4", "low") == {}
     assert thinking.params("gemini", "gemini-3.6-flash", "default") == {}
+    # ChatGPT girişi: gpt-6-luna "minimal"i reddediyor, kapalı = none
+    assert thinking.params("chatgpt", "gpt-6-luna", "off") == {"reasoning_effort": "none"}
+    assert thinking.params("chatgpt", "gpt-6-luna", "medium") == {"reasoning_effort": "medium"}
+    assert thinking.params("chatgpt", "gpt-6-luna", "max") == {"reasoning_effort": "max"}
+    # xhigh/max sadece ChatGPT'de: diğerlerine high gider
+    assert thinking.params("gemini", "gemini-3.6-flash", "xhigh") == {"reasoning_effort": "high"}
+    assert thinking.params("openrouter", "x/y", "max") == {"reasoning": {"effort": "high"}}
+    assert thinking.level_for({"thinking": {"brain": "xhigh"}}, "brain") == "xhigh"
 
 
 def test_level_for_roles():
     assert thinking.level_for({}, "fast") == "off"
     assert thinking.level_for({}, "brain") == "low"
+    assert thinking.level_for({}, "live-think") == "medium"  # low havuz sorusunu yanlış, medium aynı sürede doğru
     assert thinking.level_for({"thinking": {"default": "high", "brain": "medium"}}, "brain") == "medium"
     assert thinking.level_for({"thinking": {"default": "high"}}, "vision") == "high"
 

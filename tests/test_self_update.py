@@ -43,7 +43,7 @@ def test_ayni_anda_tek_surec_gunceller():
 def test_cokmus_surecten_kalan_kilit_temizlenir():
     p = updater._lock_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text("12345")
+    p.write_text("12345", encoding="utf-8")
     old = p.stat().st_mtime - updater.LOCK_STALE - 10
     os.utime(p, (old, old))
     with updater.update_lock():
@@ -139,7 +139,7 @@ def test_uygulama_isareti(monkeypatch):
 
 def test_olu_pid_uygulama_sayilmaz():
     updater._app_pid_path().parent.mkdir(parents=True, exist_ok=True)
-    updater._app_pid_path().write_text("999999999")
+    updater._app_pid_path().write_text("999999999", encoding="utf-8")
     assert not updater.app_running()
 
 

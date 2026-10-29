@@ -134,6 +134,17 @@ def explicit_note(text: str) -> str | None:
     return None
 
 
+# Model kurala rağmen bir turun sonucunu "bilgi" diye yazarsa (eski hafızada çoğu buydu): dosya yolu, başarısız/denenen
+# iş, onaylanan değer, ALICE'i test etmek. Sadece otomatik çıkarılanlara uygulanır; "bunu hatırla" her zaman kaydedilir.
+_EPHEMERAL = re.compile(
+    r"[a-z]:\\|(?:^|\s)/[\w.-]+/|\b(?:başarısız|basarisiz|onayladı|onayladi|denedi|deniyor|test (?:et|ed)\w*|"
+    r"deneme klasör\w*|indirilenler|kurulum dosyası|şu anda|su anda|şu an\b|bu konuşmada|endişe duy\w*)", re.I)
+
+
+def ephemeral(text: str) -> bool:
+    return bool(_EPHEMERAL.search(text))
+
+
 def has_signal(text: str) -> bool:
     t = " " + fold(clean_user_text(text)) + " "
     return any(s in t for s in _SIGNALS)
@@ -225,6 +236,8 @@ class LongMemory:
         self.embedder = embedder  # alice.memvec.Embedder ya da None (sadece kelime araması)
         self.embed_min = float(o.get("embed_min", 0.68))  # bu kosinüsün altı "ilgisiz" sayılır
         self.digest_enabled = bool(o.get("digest", True))
+        self.consolidate_enabled = bool(o.get("consolidate", True))
+        self.max_facts = int(o.get("max_facts", 60))  # toparlamada hedef: profil kısa ve öz kalsın
         self.session_gap = float(o.get("session_gap_minutes", 20)) * 60
         self._digest_lock = threading.Lock()
         self._index_lock = threading.Lock()
@@ -362,6 +375,7 @@ class LongMemory:
                 self._bump()
         if cur.rowcount:
             self.index_soon()
+            self._stale_portrait()
         return bool(cur.rowcount)
 
     def forget(self, fid: int) -> Fact | None:
@@ -374,7 +388,13 @@ class LongMemory:
             self.db.execute("DELETE FROM vectors WHERE kind = 'fact' AND ref = ?", (int(fid),))
             self.db.commit()
             self._bump()
+        self._stale_portrait()
         return Fact(*row)
+
+    def _stale_portrait(self) -> None:
+        """Silinen/değişen bilgi eski tanıtımda kalmasın: sonraki toparlamaya kadar madde listesine dön."""
+        if self._meta("portrait"):
+            self._meta("portrait", "")
 
     def old_role(self) -> dict[str, list[Any]]:
         """Eski rolden kalan izler: bilgiler, özetler ve o dönemin cevapları."""
@@ -403,6 +423,7 @@ class LongMemory:
                 self.db.execute("DELETE FROM vectors WHERE kind = 'episode' AND ref = ?", (e.id,))  # yeniden dizinlensin
             self.db.commit()
             self._bump()
+        self._stale_portrait()
         return {k: len(v) for k, v in found.items()}
 
     def forget_matching(self, query: str) -> tuple[list[Fact], list[Hit]]:
@@ -548,9 +569,88 @@ class LongMemory:
         hits.sort(key=lambda h: h.score, reverse=True)
         return hits[:limit]
 
+    # ------------------------------------------------------------------ geçmiş sohbetler (isteyince)
+    # Claude'un conversation_search / recent_chats araçları gibi: eski konuşmalar her mesaja kendiliğinden eklenmez
+    # (yanlış eşleşen bir konuşma modelin kafasını karıştırıyordu); kullanıcı geçmişe değinince model bunlarla bakar.
+    def sessions(self, after: float | None = None, before: float | None = None, limit: int = 400) -> list[list[Episode]]:
+        """Zaman aralığındaki konuşmalar, session_gap'ten uzun sessizlikle ayrılmış tur grupları (eskiden yeniye)."""
+        sql, args = "SELECT id, ts, channel, user, reply FROM episodes WHERE 1=1", []
+        if after is not None:
+            sql, args = sql + " AND ts >= ?", args + [after]
+        if before is not None:
+            sql, args = sql + " AND ts < ?", args + [before]
+        with self._lock:
+            rows = self.db.execute(sql + " ORDER BY ts DESC LIMIT ?", args + [int(limit)]).fetchall()
+        groups: list[list[Episode]] = []
+        for r in reversed(rows):
+            e = Episode(*r)
+            if groups and e.ts - groups[-1][-1].ts <= self.session_gap:
+                groups[-1].append(e)
+            else:
+                groups.append([e])
+        return groups
+
+    def _session_text(self, group: list[Episode], turns: int = 4, now: float | None = None) -> str:
+        """Bir konuşmanın kısa hâli: özeti varsa özet, ayrıca ilk ve son birkaç tur."""
+        start, end = group[0].ts, group[-1].ts
+        with self._lock:
+            row = self.db.execute("SELECT text FROM summaries WHERE start <= ? AND end >= ? ORDER BY id DESC LIMIT 1",
+                                  (end, start)).fetchone()
+        head = f"## {datetime.fromtimestamp(start):%d.%m.%Y %H:%M} ({_ago(start, now)}, {len(group)} tur)"
+        lines = [head] + ([f"Özet: {row[0]}"] if row else [])
+
+        def turn(e: Episode) -> str:
+            return f"- Kullanıcı: {_clip(e.user, 240)}" + (f"\n  ALICE: {_clip(e.reply, 240)}" if e.reply else "")
+
+        if turns <= 0:
+            return "\n".join(lines)
+        if len(group) <= turns:
+            return "\n".join(lines + [turn(e) for e in group])
+        first, last = group[: turns // 2], group[len(group) - (turns - turns // 2):]
+        return "\n".join(lines + [turn(e) for e in first] + [f"  … {len(group) - turns} tur daha …"]
+                         + [turn(e) for e in last])
+
+    def recent_chats(self, n: int = 5, after: float | None = None, before: float | None = None) -> str:
+        """Son n konuşma (ya da verilen zaman aralığındakiler), yeniden eskiye."""
+        groups = self.sessions(after, before)[-max(1, min(int(n), 20)):]
+        now = time.time()
+        return "\n\n".join(self._session_text(g, now=now) for g in reversed(groups)) or "bu aralıkta konuşma yok"
+
+    def search_chats(self, query: str, limit: int = 5, after: float | None = None,
+                     before: float | None = None) -> str:
+        """Konuya göre geçmiş konuşma arama: eşleşen turların bulunduğu konuşmalar (özet + bağlam turları)."""
+        hits = self.search(query, limit=30, facts=False, min_score=0.2)
+        picked: list[tuple[float, float]] = []  # (puan, tur zamanı)
+        for h in hits:
+            ts = h.item.ts if isinstance(h.item, Episode) else h.item.start
+            if (after is not None and ts < after) or (before is not None and ts >= before):
+                continue
+            picked.append((h.score, ts))
+        if not picked:
+            return f"geçmiş konuşmalarda '{query}' ile ilgili bir şey bulunamadı"
+        out, seen, now = [], set(), time.time()
+        for _, ts in sorted(picked, reverse=True):
+            group = next((g for g in self.sessions(ts - 6 * 3600, ts + 6 * 3600)
+                          if g[0].ts - 1 <= ts <= g[-1].ts + self.session_gap), None)
+            if not group or group[0].id in seen:
+                continue
+            seen.add(group[0].id)
+            # Eşleşen tur görünsün: konuşma uzunsa onun etrafındaki turlar.
+            i = min(range(len(group)), key=lambda k: abs(group[k].ts - ts))
+            window = group[max(0, i - 2): i + 3]
+            text = self._session_text(group, turns=0, now=now).splitlines()
+            text += [f"- Kullanıcı: {_clip(e.user, 300)}" + (f"\n  ALICE: {_clip(e.reply, 300)}" if e.reply else "")
+                     for e in window]
+            out.append("\n".join(text))
+            if len(out) >= limit:
+                break
+        return "\n\n".join(out)
+
     def recall(self, query: str, exclude_after: float | None = None) -> str:
-        """Kullanıcının sözüne eklenecek hafıza notu (boş olabilir)."""
-        hits = self.search(query, limit=self.recall_limit, exclude_after=exclude_after)
+        """Kullanıcının sözüne eklenecek hafıza notu (boş olabilir): kalıcı bilgiler ve güçlü eşleşen konuşma
+        özetleri. Tek tek eski turlar artık eklenmez; onları model search_chats / recent_chats ile kendisi bulur."""
+        hits = [h for h in self.search(query, limit=self.recall_limit + 4, exclude_after=exclude_after)
+                if isinstance(h.item, Fact) or (isinstance(h.item, Summary) and h.score >= 0.6)][: self.recall_limit]
         if not hits:
             return ""
         ids = [h.item.id for h in hits if isinstance(h.item, Fact)]
@@ -737,9 +837,15 @@ class LongMemory:
         """Sistem istemine giren blok: kullanıcıyı tanıtan bilgiler, son günlerin özeti, günü gelen takipler ve son
         birkaç konuşma."""
         chars = chars or self.profile_chars
+        portrait = self._meta("portrait") or ""
+        since = float(self._meta("portrait_at") or 0) if portrait else 0.0
         with self._lock:
-            rows = self.db.execute("SELECT id, kind, text, created, updated, hits FROM facts").fetchall()
+            # Günlük tanıtım varsa o yazıldıktan sonra eklenen/değişen bilgiler madde olarak eklenir; gerisi tanıtımda.
+            rows = self.db.execute("SELECT id, kind, text, created, updated, hits FROM facts WHERE updated > ?",
+                                   (since,)).fetchall()
         facts = [Fact(*r) for r in rows]
+        if portrait:
+            chars = max(400, chars - len(portrait))
         facts.sort(key=lambda f: (_KIND_ORDER.index(f.kind) if f.kind in _KIND_ORDER else 9, -f.hits, -f.updated))
         out, used = [], 0
         for f in facts:
@@ -751,13 +857,17 @@ class LongMemory:
         eps = self.recent(recent)
         sums = self.summaries(4, within_days=10)
         due = self.due_followups()
-        if not out and not eps and not sums and not due:
+        if not portrait and not out and not eps and not sums and not due:
             return ""
         parts = ["# Long-term memory\nWhat you know about the user from earlier conversations (stored locally). Use it "
                  "naturally to personalize answers; don't recite it. Each user message may end with a [hafızadan ...] "
-                 "note of related memories. To save something new, change or delete a memory, use the memory tool."]
+                 "note of related memories. To save something new, change or delete a memory, use the memory tool. "
+                 "Older conversations are not shown here: when the user refers to one, look it up with memory "
+                 "action=search_chats (by topic) or recent_chats (by time) before answering."]
+        if portrait:
+            parts.append(portrait)
         if out:
-            parts.append("\n".join(out))
+            parts.append(("Newer notes:\n" if portrait else "") + "\n".join(out))
         if sums:
             parts.append("Earlier conversations, summarized (continue from them naturally, e.g. ask how a thing went):\n"
                          + "\n".join(f"- {s.line()}" for s in sums))
@@ -831,16 +941,119 @@ class LongMemory:
                 continue
         for a in (data.get("add") or [])[:5]:
             text = a.get("text") if isinstance(a, dict) else a
-            if isinstance(text, str) and 3 <= len(text) <= 300:
+            if isinstance(text, str) and 3 <= len(text) <= 300 and not ephemeral(text):
                 fid, _ = self.remember(text, (a.get("kind") if isinstance(a, dict) else None) or "fact", "otomatik")
                 done.append(f"eklendi #{fid}")
         return done
 
+    # ------------------------------------------------------------------ toparlama
+    def maybe_consolidate(self, every_hours: float = 24.0) -> bool:
+        """Günde bir: bütün bilgileri baştan gözden geçir (Claude'un günlük hafıza sentezi gibi)."""
+        if self.extractor is None or not self.consolidate_enabled:
+            return False
+        if time.time() - float(self._meta("consolidated_at") or 0) < every_hours * 3600:
+            return False
+        self.consolidate()
+        return True
 
-EXTRACT_PROMPT = """You maintain the long-term memory of ALICE, a personal assistant. From the exchange below, extract only \
-DURABLE facts about the user that will still matter in future conversations: preferences and dislikes, personal info \
-(name, city, job, birthday), people in their life, habits/routines, how they want ALICE to behave. Ignore one-off \
-requests ("open YouTube"), questions, small talk and anything about the current moment.
+    def consolidate(self) -> list[str]:
+        """Bilgileri toparla: tekrarları birleştir, kurala uymayanları (bir turun sonucu, yol, test) sil, eskiyenleri
+        güncelle. Kullanıcının kendi "hatırla" dediklerine dokunulmaz. Yapılanları döndürür."""
+        if self.extractor is None:
+            return []
+        self._meta("consolidated_at", repr(time.time()))
+        done = self._tidy_facts(self.facts())
+        try:
+            self.write_portrait()
+        except Exception:  # noqa: BLE001 - profil yazılamazsa eski profil (ya da madde listesi) kalır
+            log.debug("profil yazılamadı", exc_info=True)
+        return done
+
+    def write_portrait(self) -> str:
+        """Kullanıcının kısa, başlıklı tanıtımı (Claude'un günlük hafıza sentezi gibi): kalıcı bilgiler + son 30 günün
+        konuşma özetlerinden. Sistem istemine madde listesi yerine bu girer."""
+        if self.extractor is None:
+            return ""
+        facts = self.facts()
+        sums = self.summaries(30, within_days=30)
+        if not facts and not sums:
+            return ""
+        prompt = PORTRAIT_PROMPT.format(
+            facts="\n".join(f"- ({KINDS.get(f.kind, f.kind)}) {f.text}" for f in facts) or "(yok)",
+            summaries="\n".join(f"- {s.line()}" for s in sums) or "(yok)")
+        text = parse_json(self.extractor(prompt)).get("portrait")
+        if not isinstance(text, str) or not text.strip():
+            return ""
+        text = _clip(text.strip(), self.profile_chars)
+        self._meta("portrait", text)
+        self._meta("portrait_at", repr(time.time()))
+        self._bump()
+        return text
+
+    def _tidy_facts(self, facts: list[Fact]) -> list[str]:
+        if len(facts) < 2:
+            return []
+        keep = {f.id for f in facts if self._source(f.id) in ("kullanıcı", "araç", "memory.md")}
+        now = time.time()
+        listing = "\n".join(f"{f.id} [{f.kind}, {_ago(f.created, now)}, used {f.hits}x"
+                            f"{', user asked to remember' if f.id in keep else ''}]: {f.text}" for f in facts)
+        data = parse_json(self.extractor(CONSOLIDATE_PROMPT.format(n=self.max_facts, facts=listing)))
+        done: list[str] = []
+        valid = {f.id for f in facts}
+
+        def ids(xs: Any) -> list[int]:
+            out = []
+            for x in xs or []:
+                try:
+                    if int(x) in valid:
+                        out.append(int(x))
+                except (TypeError, ValueError):
+                    continue
+            return out
+
+        for m in (data.get("merge") or [])[:20]:
+            if not isinstance(m, dict) or not isinstance(m.get("text"), str) or len(ids(m.get("ids"))) < 2:
+                continue
+            group = ids(m.get("ids"))
+            self.update(group[0], m["text"])
+            done.append(f"birleştirildi #{group[0]} ← " + ", ".join(f"#{i}" for i in group[1:]))
+            for i in group[1:]:
+                if i not in keep:
+                    self.forget(i)
+        for u in (data.get("update") or [])[:20]:
+            if isinstance(u, dict) and isinstance(u.get("text"), str) and ids([u.get("id")]):
+                if self.update(int(u["id"]), u["text"]):
+                    done.append(f"güncellendi #{u['id']}")
+        for i in ids(data.get("remove")):
+            if i not in keep and self.forget(i):
+                done.append(f"silindi #{i}")
+        return done
+
+    def _source(self, fid: int) -> str:
+        with self._lock:
+            row = self.db.execute("SELECT source FROM facts WHERE id = ?", (int(fid),)).fetchone()
+        return row[0] if row else ""
+
+
+# Neyin kalıcı bilgi olduğu: ChatGPT'nin "saved memories"i ve Claude'un hafızası gibi az ve öz. Konuşmanın kendisi
+# zaten episodes/summaries'te; buraya sadece aylar sonra da işe yarayacak, kullanıcıya dair şeyler girer.
+DURABLE_RULES = """A memory is worth saving ONLY if it will still be true and useful a month from now in an unrelated \
+conversation: who the user is (name, city, school/job, age), people in their life, lasting preferences and dislikes, \
+habits, long-running projects/goals, and standing instructions for how ALICE should behave ("always ask before \
+closing a game"). Test each one: "Would a human assistant write this in their notebook about their boss?"
+NEVER save (these belong to the conversation log, which is kept separately):
+- what happened in this conversation or a task's result: "wanted to play X on Spotify but it failed", "confirmed the \
+value in us.txt", "started the League of Legends installer", "is looking at project Y"
+- file paths, folder names, test folders, window titles, one-off settings
+- the user testing/trying ALICE's features, or facts about ALICE's own internals ("the reflex engine is called Jev")
+- passing moods and one-time worries ("thinks ALICE's voice changed")
+- contacts the user messaged once (a person is worth saving only with their relation: "Que Mal is the user's friend")
+- guesses: only save what the user actually said or clearly showed.
+Prefer one rich memory over several thin ones; if nothing qualifies (the usual case), save nothing."""
+
+EXTRACT_PROMPT = """You maintain the long-term memory of ALICE, a personal assistant. From the exchange below, extract \
+durable facts about the user.
+""" + DURABLE_RULES.replace("{", "{{").replace("}", "}}") + """
 Write each fact as one short Turkish sentence in the third person, starting with "Kullanıcı" when natural \
 (e.g. "Kullanıcı kahveyi şekersiz içer."). kind: preference | fact | person | routine | note.
 Existing related memories (id: text):
@@ -857,13 +1070,16 @@ DIGEST_PROMPT = """You maintain the long-term memory of ALICE, a personal assist
 one finished conversation (it started {date}). Produce:
 1. "summary": 1-3 short Turkish sentences: what was talked about, what got done or decided, what is left. Concrete \
 (names, projects, numbers), no filler. Empty string if it was only trivial commands/small talk.
-2. Durable facts about the user that will matter later (projects they work on, plans, goals, preferences, people, \
-habits, how they want ALICE to behave). One short Turkish sentence each, third person ("Kullanıcı ..."). kind: \
-preference | fact | person | routine | note. Use "update"/"remove" with the existing ids below instead of duplicating.
-3. "followups": things a good assistant should bring up later. kind "ask": an upcoming event to ask about afterwards \
-(exam, match, trip, interview) with "due" = the day after it happens; kind "remind": something the user must do on a \
-day; kind "open": unfinished work from this conversation the user may want to continue (no due). Turkish, written as \
-an instruction to ALICE ("Matematik sınavının nasıl geçtiğini sor."). Only real ones; usually zero or one.
+2. "add": durable facts about the user. The summary already records what happened, so facts are rare: \
+usually zero, at most two. """ + DURABLE_RULES.replace("{", "{{").replace("}", "}}") + """
+One short Turkish sentence each, third person ("Kullanıcı ..."). kind: preference | fact | person | routine | note. \
+Use "update"/"remove" with the existing ids below instead of duplicating; also "remove" existing ones that break the \
+rules above.
+3. "followups": things a good assistant should bring up later. kind "ask": an upcoming event in the user's life to \
+ask about afterwards (exam, match, trip, interview) with "due" = the day after it happens; kind "remind": something \
+the user asked to be reminded of on a day; kind "open": only when the user said they will continue something later \
+(no due). A command that failed or a task ALICE was doing is NOT a follow-up. Turkish, written as an instruction to \
+ALICE ("Matematik sınavının nasıl geçtiğini sor."). Usually zero.
 4. "done": ids of the open follow-ups below that this conversation already resolved.
 Dates are YYYY-MM-DD; resolve "yarın", "cuma" etc. relative to the conversation date.
 Existing related memories (id: text):
@@ -877,12 +1093,53 @@ Conversation:
 {transcript}"""
 
 
+CONSOLIDATE_PROMPT = """You curate the long-term memory of ALICE, a personal assistant, the way a good human assistant \
+tidies their notebook about their boss once a day. Below is every saved memory (id [kind, age, how often it was \
+useful]: text).
+""" + DURABLE_RULES.replace("{", "{{").replace("}", "}}") + """
+Do this:
+- "remove": ids that break the rules above (results of single conversations, paths, tests, ALICE internals, passing \
+moods, stale plans whose time has passed). Never remove ones marked "user asked to remember".
+- "merge": groups of ids that say the same or overlapping things, with one combined Turkish sentence (first id is kept).
+- "update": rewrite vague or outdated ones into one clear sentence (same id).
+Aim for at most {n} memories that really describe the user. When unsure, keep it. Turkish, third person ("Kullanıcı ...").
+Answer ONLY with JSON: {{"remove": [1], "merge": [{{"ids": [2, 3], "text": "..."}}], "update": [{{"id": 4, "text": "..."}}]}}
+
+Memories:
+{facts}"""
+
+
+PORTRAIT_PROMPT = """Write ALICE's short portrait of the one user she assists, from her saved memories and the summaries \
+of the last 30 days of conversations. It goes into her system prompt so she knows who she is talking to.
+Turkish, in the third person, short markdown sections, only those that have content, in this order:
+**Kim** (name, age, city, school/job), **Projeler ve hedefler**, **Tercihler**, **ALICE'ten istedikleri** (standing \
+instructions, keep their exact meaning), **Son zamanlarda** (what is going on in their life these weeks, from the \
+summaries; skip one-off commands). Bullet points, concrete, no filler, no guesses; at most ~900 characters.
+Answer ONLY with JSON: {{"portrait": "..."}}
+
+Saved memories:
+{facts}
+
+Conversation summaries:
+{summaries}"""
+
+
 def _parse_day(value: Any) -> float | None:
     """'2026-10-23' -> o günün sabahı 09:00 (yerel saat); geçersizse None."""
     if not isinstance(value, str):
         return None
     try:
         return datetime.strptime(value.strip()[:10], "%Y-%m-%d").replace(hour=9).timestamp()
+    except ValueError:
+        return None
+
+
+def _day_start(value: Any) -> float | None:
+    """'2026-10-23' -> o günün başı (00:00, yerel saat); boş ya da geçersizse None."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return datetime.strptime(value.strip()[:10], "%Y-%m-%d").timestamp()
     except ValueError:
         return None
 
@@ -908,9 +1165,9 @@ def make_extractor(options: dict[str, Any], router) -> Callable[[str], str] | No
     def extract(prompt: str) -> str:
         msgs = [{"role": "user", "content": prompt}]
         try:
-            res = router.chat(role, msgs, temperature=0, max_tokens=900, response_format={"type": "json_object"})
+            res = router.chat(role, msgs, temperature=0, max_tokens=1600, response_format={"type": "json_object"})
         except Exception:  # noqa: BLE001 - bazı modeller response_format'ı reddediyor
-            res = router.chat(role, msgs, temperature=0, max_tokens=900)
+            res = router.chat(role, msgs, temperature=0, max_tokens=1600)
         return res.message.get("content") or ""
 
     return extract

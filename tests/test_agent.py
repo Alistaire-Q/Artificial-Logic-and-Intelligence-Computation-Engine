@@ -19,13 +19,17 @@ def make_agent(script, workdir, mode="auto", approve="y", providers=None, **agen
 
 
 def test_tool_loop_writes_file_and_finishes(workdir):
+    import sys
+
+    # Testi çalıştıran Python: PATH'te python olmayabilir; Windows'ta komut PowerShell'de çalışır ("||" yok, & gerekir).
+    run = f'& "{sys.executable}" hello.py' if sys.platform == "win32" else f'"{sys.executable}" hello.py'
     script = [tool_call("write_file", {"path": "hello.py", "content": "print('selam')\n"}),
-              tool_call("run_command", {"command": "python3 hello.py || python hello.py"}, cid="c2"),
+              tool_call("run_command", {"command": run}, cid="c2"),
               "Bitti, dosya çalışıyor."]
     agent, provs, ui = make_agent(script, workdir)
     out = agent.run_turn("hello.py yaz ve çalıştır")
     assert out == "Bitti, dosya çalışıyor."
-    assert (workdir / "hello.py").read_text() == "print('selam')\n"
+    assert (workdir / "hello.py").read_text(encoding="utf-8") == "print('selam')\n"
     tool_msgs = [m for m in agent.messages if m["role"] == "tool"]
     assert "selam" in tool_msgs[1]["content"]
     # Her tool_call'un cevabı geçmişte olmalı
@@ -33,11 +37,11 @@ def test_tool_loop_writes_file_and_finishes(workdir):
 
 
 def test_edit_file_roundtrip(workdir):
-    (workdir / "a.txt").write_text("alpha\nbeta\n")
+    (workdir / "a.txt").write_text("alpha\nbeta\n", encoding="utf-8")
     script = [tool_call("edit_file", {"path": "a.txt", "old_string": "beta", "new_string": "gamma"}), "ok"]
     agent, _, _ = make_agent(script, workdir)
     agent.run_turn("düzenle")
-    assert (workdir / "a.txt").read_text() == "alpha\ngamma\n"
+    assert (workdir / "a.txt").read_text(encoding="utf-8") == "alpha\ngamma\n"
 
 
 def test_dangerous_command_asks_and_denial_is_reported(workdir):

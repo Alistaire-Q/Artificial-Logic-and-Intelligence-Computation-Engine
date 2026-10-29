@@ -159,7 +159,7 @@ def test_agent_stream_full_turn(workdir):
 
 def test_diff_on_edit_and_write(workdir):
     ctx = ToolContext(cwd=workdir, config=make_config({"brain": ["a:m"]}))
-    (workdir / "a.py").write_text("x = 1\ny = 2\n")
+    (workdir / "a.py").write_text("x = 1\ny = 2\n", encoding="utf-8")
     r = EditFile().run(ctx, path="a.py", old_string="y = 2", new_string="y = 3")
     assert "-y = 2" in r.diff and "+y = 3" in r.diff
     r = WriteFile().run(ctx, path="new.py", content="print(1)\n")

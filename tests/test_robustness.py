@@ -198,9 +198,9 @@ def test_glob_skips_heavy_dirs_and_respects_deadline(workdir, monkeypatch):
     from alice.tools import files
 
     (workdir / "src" / "deep").mkdir(parents=True)
-    (workdir / "src" / "deep" / "a.py").write_text("")
+    (workdir / "src" / "deep" / "a.py").write_text("", encoding="utf-8")
     (workdir / "node_modules" / "pkg").mkdir(parents=True)
-    (workdir / "node_modules" / "pkg" / "b.py").write_text("")
+    (workdir / "node_modules" / "pkg" / "b.py").write_text("", encoding="utf-8")
     ctx = ToolContext(cwd=workdir, config=make_config({"brain": ["a:m"]}))
     out = Glob().run(ctx, pattern="**/*.py").text
     assert "a.py" in out and "node_modules" not in out

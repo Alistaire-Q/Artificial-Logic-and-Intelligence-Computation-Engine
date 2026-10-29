@@ -300,7 +300,7 @@ def test_make_agent_runner_uses_unattended_agent(monkeypatch, tmp_path):
 def test_lock_acquire_and_release():
     assert acquire_lock() is True
     lock = alice_home() / "core.pid"
-    assert lock.read_text() == str(os.getpid())
+    assert lock.read_text(encoding="utf-8") == str(os.getpid())
     assert acquire_lock() is True  # kendi pid'imiz
     release_lock()
     assert not lock.exists()
@@ -310,7 +310,7 @@ def test_lock_acquire_and_release():
 def test_lock_blocked_by_live_alice_core(monkeypatch):
     lock = alice_home() / "core.pid"
     lock.parent.mkdir(parents=True, exist_ok=True)
-    lock.write_text("99999")
+    lock.write_text("99999", encoding="utf-8")
     monkeypatch.setattr(service.psutil, "pid_exists", lambda pid: pid == 99999)
     cmd = ["python", "-m", "alice", "core", "run"]
     monkeypatch.setattr(service.psutil, "Process", lambda pid: SimpleNamespace(cmdline=lambda: cmd))
@@ -324,9 +324,9 @@ def test_lock_blocked_by_live_alice_core(monkeypatch):
 def test_lock_stale_or_garbage(monkeypatch):
     lock = alice_home() / "core.pid"
     lock.parent.mkdir(parents=True, exist_ok=True)
-    lock.write_text("çöp")
+    lock.write_text("çöp", encoding="utf-8")
     assert acquire_lock() is True
-    lock.write_text("99999")
+    lock.write_text("99999", encoding="utf-8")
 
     def denied(pid):
         raise psutil.AccessDenied(pid)

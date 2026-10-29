@@ -55,7 +55,7 @@ def test_set_env_replaces_and_appends(tmp_path, monkeypatch):
     monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
     setup_google.set_env(env, "GOOGLE_CLIENT_ID", "id1")
     setup_google.set_env(env, "GOOGLE_CLIENT_SECRET", "s1")
-    assert env.read_text().splitlines() == ["# yorum", "GOOGLE_CLIENT_ID=id1", "GEMINI_API_KEY=k", "GOOGLE_CLIENT_SECRET=s1"]
+    assert env.read_text(encoding="utf-8").splitlines() == ["# yorum", "GOOGLE_CLIENT_ID=id1", "GEMINI_API_KEY=k", "GOOGLE_CLIENT_SECRET=s1"]
     assert os.environ["GOOGLE_CLIENT_ID"] == "id1"
     monkeypatch.delenv("GOOGLE_CLIENT_ID")
     monkeypatch.delenv("GOOGLE_CLIENT_SECRET")
@@ -79,7 +79,7 @@ def test_wizard_full_flow_with_downloaded_json(tmp_path, monkeypatch):
                           env_path=tmp_path / ".env", downloads=downloads)
     assert rc == 0
     assert opened == [url for _, url, _ in setup_google.STEPS]
-    assert "GOOGLE_CLIENT_ID=123-abc.apps.googleusercontent.com" in (tmp_path / ".env").read_text()
+    assert "GOOGLE_CLIENT_ID=123-abc.apps.googleusercontent.com" in (tmp_path / ".env").read_text(encoding="utf-8")
     assert gmail == ["okul", "kisisel"]  # "Okul!" geçersiz ad: tekrar soruldu
     assert any("Takvim bağlandı" in s for s in said) and "okul (okul@x.com)" in said[-1]
     monkeypatch.delenv("GOOGLE_CLIENT_ID")
@@ -133,7 +133,7 @@ def test_assistant_tab_status_settings_rules_and_gmail(app, workdir, isolated_ho
 
     r = client.post("/api/assistant/action", json={"action": "rule_delete", "kind": "allow",
                                                    "rule": "run_command(git status*)"}).json()
-    assert r["ok"] and "git status" not in (workdir / ".alice" / "permissions.toml").read_text()
+    assert r["ok"] and "git status" not in (workdir / ".alice" / "permissions.toml").read_text(encoding="utf-8")
     assert client.post("/api/assistant/action", json={"action": "gmail_logout", "account": "okul"}).json()["ok"]
     assert client.get("/api/assistant").json()["gmail"] == []
     r = client.post("/api/assistant/action", json={"action": "gmail_connect", "account": "iş"}).json()

@@ -18,6 +18,14 @@ def no_screen(monkeypatch):
     monkeypatch.setattr("alice.voice.live.screen_frame", lambda: None)  # testler gerçek ekranı çekmesin
 
 
+@pytest.fixture(autouse=True)
+def no_filler_synth(monkeypatch, tmp_path):
+    from alice.voice import fillers
+
+    # Testler Gemini TTS'e gitmesin, gerçek ~/.alice'e ses yazmasın.
+    monkeypatch.setattr(fillers, "gemini_fillers", lambda cfg, voice, key: fillers.Fillers(voice, None, tmp_path))
+
+
 def test_sanitize_schema_for_gemini():
     s = {"type": "object", "additionalProperties": False, "properties": {
         "a": {"type": ["string", "null"], "default": "x"}, "b": {"type": "array", "items": {"type": "integer"}}},
@@ -525,3 +533,81 @@ def test_live_prompt_keeps_simple_questions_off_think():
     from alice.voice.live import LIVE_PROMPT
 
     assert "destitute ne demek" in LIVE_PROMPT and "think ÇAĞIRMA" in LIVE_PROMPT
+
+
+def test_filler_plays_when_model_calls_a_tool_silently(monkeypatch, tmp_path):
+    # voice.log 28 Ekim: hava durumu sorusunda model hiçbir şey demeden araç çağırdı, 10 sn sessizlik oldu.
+    from alice.voice import fillers
+    from alice.voice.audio import Audio
+
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    Audio(b"\x05\x00" * 50, 24000).save(tmp_path / "x.wav")
+    for text in fillers.TOOL:
+        Audio(b"\x05\x00" * 50, 24000).save(fillers.Fillers("Kore", None, tmp_path)._file(text))
+    ws = FakeWS([{"serverContent": {"inputTranscription": {"text": "Ankara'da hava nasıl"}}},
+                 {"toolCall": {"functionCalls": [{"id": "c1", "name": "weather", "args": {"city": "Ankara"}}]}},
+                 {"toolCall": {"functionCalls": [{"id": "c2", "name": "weather", "args": {"city": "İzmir"}}]}}])
+    agent = SimpleNamespace(messages=[{"role": "system", "content": "s"}], ctx=SimpleNamespace(state={}), ui=None,
+                            tool_specs=lambda: [], _enable_groups_for=lambda **k: None,
+                            _execute_calls=lambda c: [ToolResult("12 derece")])
+    cfg = SimpleNamespace(data={"voice": {"live_idle": 0.5, "live_models": ["m1"]}})
+    out = FakeOut()
+    logs = []
+    s = LiveSession(cfg, agent, log=logs.append, connect=lambda url, **k: ws, out_factory=lambda: out)
+    s.names = lambda: []
+    s.converse("Ankara'da hava nasıl", queue.Queue(), threading.Event())
+    assert out.chunks[0] == b"\x05\x00" * 50  # ilk araçtan önce dolgu çalındı
+    assert sum("dolgu" in line for line in logs) == 1  # aynı turda ikinci araçta tekrar çalınmadı
+
+
+def test_no_filler_after_model_already_spoke():
+    s = LiveSession.__new__(LiveSession)
+    s.fillers_on = True
+    s.log = lambda m: None
+    played = []
+    s.fillers = lambda: SimpleNamespace(get=lambda kind: b"pcm")
+    out = SimpleNamespace(playing=False, put=played.append)
+    s._fill({"spoke": True, "asked": 1.0}, out, {"name": "weather"})
+    s._fill({"spoke": False, "asked": 1.0}, out, {"name": "computer_task"})  # model zaten "başladım" diyecek
+    assert played == []
+    s._fill({"spoke": False, "asked": 1.0}, out, {"name": "think"})
+    assert played == [b"pcm"]
+
+
+def test_fillers_generate_in_background_and_do_not_repeat(tmp_path):
+    from alice.voice.audio import Audio
+    from alice.voice.fillers import Fillers
+
+    made = []
+    f = Fillers("Kore", lambda text: made.append(text) or Audio(text.encode("utf-8")[:20].ljust(20, b"\0"), 24000),
+                tmp_path)
+    assert f.get() is None  # henüz ses yok: beklemeden döner, arka planda üretir
+    _wait(lambda: not f._warming and len(made) == 5)
+    a, b = f.get(), f.get()
+    assert a and b and a != b  # aynı cümle art arda gelmez
+    assert f.get("think")
+
+
+def test_think_uses_fast_models_before_the_brain_chain():
+    # providers.log 25 Ekim: beyin zincirinin başındaki nvidia:z-ai/glm-5.3 180 sn takıldı; 13 think'in medyanı 189 sn.
+    router = SimpleNamespace(role_overrides={},
+                             auto_chain=lambda role: ["cerebras:q", "cohere:c", "cf:g", "gemini:l"],
+                             chain=lambda role: ["nvidia:glm", "cerebras:q", "gemini:f"])
+    s = LiveSession.__new__(LiveSession)
+    s.think_models = []
+    assert s._think_role(router) == "live-think"
+    assert router.role_overrides["live-think"] == ["cerebras:q", "cohere:c", "cf:g", "nvidia:glm", "gemini:f"]
+    s.think_models = ["gemini:f"]
+    s._think_role(router)
+    assert router.role_overrides["live-think"] == ["gemini:f"]
+
+
+def test_auto_screen_sends_frame_only_when_screen_is_mentioned(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    cfg = SimpleNamespace(data={"voice": {"live_screen": "auto"}})
+    s = LiveSession(cfg, SimpleNamespace())
+    assert s.wants_frame("ekrandaki şarkıya tıkla") and s.wants_frame("şunu aç") and s.wants_frame("bu ne")
+    assert not s.wants_frame("Ankara'da hava nasıl") and not s.wants_frame("Merhaba, nasılsın")
+    assert s.wants_frame("", unknown=True)  # ilk cümle sesle gitti, ne dendiği bilinmiyor
+    s.screen = "off"
+    assert not s.wants_frame("ekrandaki")

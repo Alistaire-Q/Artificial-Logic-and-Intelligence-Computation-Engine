@@ -136,7 +136,7 @@ class QuickBar:
         self.hotkeys = {"open": q.get("hotkey", "<ctrl>+<alt>+a"), "region": q.get("region_hotkey", "<ctrl>+<alt>+s"),
                         "clipboard": q.get("clipboard_hotkey", "<ctrl>+<alt>+c")}
         self.state = state or AppState(cfg, cwd or Path.home(), cfg.agent.get("permission_mode", "auto"))
-        self.server = AppServer(self.state).start()
+        self.server = AppServer(self.state, owns_state=state is None).start()
         self.last_open = 0.0
         self._listener = None
         self.launcher = self._launch

@@ -54,6 +54,8 @@ const THINK = {
   low: ["az düşünür", "Kısa düşünür, sonra yapar (önerilen)"],
   medium: ["orta düşünür", "Biraz daha dikkatli, biraz daha yavaş"],
   high: ["çok düşünür", "Zor işler için; basit işte gereksiz uzun sürer"],
+  xhigh: ["daha da çok", "Extra High: sadece ChatGPT modellerinde; diğerlerinde çok düşünür gibi"],
+  max: ["en çok", "Max: sadece ChatGPT modellerinde; en zor işler için, en yavaşı"],
   default: ["model karar verir", "Modelin kendi ayarı"],
 };
 async function setThinking(level) {
@@ -1635,8 +1637,32 @@ function memoryPane(pane, data) {
     box.append(l, b);
     pane.appendChild(box);
   }
+  if (d.portrait) {
+    // Günlük toparlamada bilgilerden ve son konuşma özetlerinden yazılır; ALICE'in sistem istemine bu girer.
+    pane.appendChild(el("div", "sec", "Seni nasıl tanıyor"));
+    const p = el("div", "md mem-portrait");
+    p.innerHTML = window.DOMPurify && window.marked ? DOMPurify.sanitize(marked.parse(d.portrait)) : "";
+    if (!p.innerHTML) p.textContent = d.portrait;
+    pane.appendChild(p);
+  }
   const facts = d.facts || [];
   pane.appendChild(el("div", "sec", `Bildikleri (${facts.length})`));
+  if (facts.length > 1) {
+    // Günde bir kendiliğinden de çalışır; tekrarları birleştirir, tek konuşmalık "bilgileri" atar.
+    const box = el("div", "list-row");
+    const l = el("span", "l");
+    l.append(el("b", "", "Toparla"), el("small", "", "Tekrarları birleştirir, bir konuşmalık ya da artık geçersiz olanları siler. \"Bunu hatırla\" dediklerine dokunmaz."));
+    const b = el("button", "btn", "Toparla");
+    b.addEventListener("click", () => {
+      b.disabled = true; b.textContent = "Toparlanıyor…";
+      api("/api/memory/action", { action: "tidy" }).then((r) => {
+        toast(r && r.ok ? ((r.done || []).length ? `${r.done.length} değişiklik yapıldı` : "Zaten derli toplu") : (r && r.error) || "toparlanamadı");
+        showSettings("memory");
+      });
+    });
+    box.append(l, b);
+    pane.appendChild(box);
+  }
   const f = el("input"); f.type = "text"; f.placeholder = "Hafızada ara"; f.className = "set-filter";
   const list = el("div");
   const draw = () => {
@@ -1789,7 +1815,9 @@ function connectPane(pane, data) {
     const row = el("div", "list-row");
     const l = el("span", "l");
     l.append(el("b", "", f.name), el("small", "", f.describe || `${f.connector}.${f.action}`));
-    const st = f.error ? f.error : !f.enabled ? "kapalı" : f.held ? `${f.held} öğe özeti bekliyor` : "açık";
+    // Hata metni uzun olabilir; sağ sütuna koyarsak soldaki adı tek harf genişliğine ezer.
+    if (f.error) l.appendChild(el("small", "err", f.error));
+    const st = f.error ? "hata" : !f.enabled ? "kapalı" : f.held ? `${f.held} öğe özeti bekliyor` : "açık";
     row.append(l, el("span", "r" + (f.error ? "" : " ok"), st));
     pane.appendChild(row);
   }
