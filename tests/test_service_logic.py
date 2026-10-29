@@ -108,11 +108,11 @@ def test_core_default_monitors_include_watch(monkeypatch, tmp_path):
     cfg.data.setdefault("watch", {})["export_path"] = str(tmp_path / "gb")
     core = Core(cfg, store=Store(":memory:"), rules=RuleSet(tmp_path / "r.json"), tasks=TaskStore(tmp_path / "t.json"))
     # Akış gözlemcisi her zaman takılı: sohbetten eklenen akış çekirdek yeniden başlamadan çalışsın (boşken iş yapmaz).
-    assert [getattr(m, "name", "") for m in core.monitors][1:] == ["watch", "feeds"] and core.monitors[0] is core.pc
+    assert [getattr(m, "name", "") for m in core.monitors][1:] == ["watch", "feeds", "internet", "telefon"] and core.monitors[0] is core.pc
     cfg.data["watch"]["export_path"] = ""
     core2 = Core(cfg, store=Store(":memory:"), rules=RuleSet(tmp_path / "r.json"),
                  tasks=TaskStore(tmp_path / "t.json"))
-    assert core2.monitors[0] is core2.pc and [getattr(m, "name", "") for m in core2.monitors][1:] == ["feeds"]
+    assert core2.monitors[0] is core2.pc and [getattr(m, "name", "") for m in core2.monitors][1:] == ["feeds", "internet", "telefon"]
 
 
 def test_tick_survives_broken_monitor(tmp_path):

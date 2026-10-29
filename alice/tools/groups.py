@@ -22,10 +22,12 @@ CORE = {"read_file", "write_file", "edit_file", "list_dir", "glob", "grep", "run
 
 # grup -> (araçlar, kısa açıklama, anahtar kelime regex'i)
 GROUPS: dict[str, tuple[set[str], str, str]] = {
-    "files": ({"file_ops", "multi_edit", "apply_patch", "notebook_edit"},
-              "dosya taşıma/kopyalama/silme, bir dosyada çok değişiklik, çok dosyaya yama, Jupyter defteri",
+    "files": ({"file_ops", "multi_edit", "apply_patch", "notebook_edit", "find_files"},
+              "dosya taşıma/kopyalama/silme, kişisel dosya bulma (indirilenler, son açılanlar), bir dosyada çok "
+              "değişiklik, çok dosyaya yama, Jupyter defteri",
               r"taşı|kopyala|\bsil(in|e|er misin)?\b|yeniden adlandır|adını değiştir|çöp|düzenle|değiştir|düzelt|refactor|"
-              r"yama|patch|notebook|ipynb|jupyter|\bkod|code|script|fonksiyon|\.py\b|\.js\b|\.ts\b|bug|klasör"),
+              r"yama|patch|notebook|ipynb|jupyter|\bkod|code|script|fonksiyon|\.py\b|\.js\b|\.ts\b|bug|klasör|"
+              r"indirdiğim|indirilen|açtığım|nerede(ydi)?\b|\bpdf|excel|word dosya|belge(yi|si|m)|toparla"),
     "plan": ({"todo_write", "run_plan", "task_control", "task", "process_output", "process_stop", "skill"},
              "çok adımlı iş planı ve yapılacaklar listesi, alt ajan, arka plandaki komutun çıktısı/durdurma, beceriler",
              r"önce .* sonra|ardından|sonra da|adım adım|planla|alt ajan|arka planda|background|sunucu(yu)? başlat|"

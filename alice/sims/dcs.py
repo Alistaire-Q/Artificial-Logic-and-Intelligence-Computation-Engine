@@ -123,10 +123,35 @@ def _extra(d: dict[str, Any], num: Callable[[str], float | None]) -> dict[str, A
     if wx is not None and wz is not None:
         e["wind_kt"] = math.hypot(wx, wz) / 0.514444
         e["wind_from"] = (math.degrees(math.atan2(wz, wx)) + 180) % 360  # rüzgarın geldiği yön
-    for k in ("weapons", "warnings", "mode", "radios"):
+    for k in ("weapons", "warnings", "mode", "radios", "ack"):
         if isinstance(d.get(k), str) and d[k].strip("/ "):
             e[k] = d[k]
+    if isinstance(d.get("rwr"), str):
+        e["contacts"] = parse_rwr(d["rwr"])
     return {k: v for k, v in e.items() if v is not None}
+
+
+def parse_rwr(text: str) -> list[dict[str, Any]]:
+    """Betiğin RWR satırı -> temaslar. Açı burna göre radyan (sağa pozitif), saat yönüne çevrilir (12 = önü)."""
+    out = []
+    for part in text.split(";"):
+        f = part.split("|")
+        if len(f) < 4:
+            continue
+        try:
+            az = math.degrees(float(f[1]))
+        except ValueError:
+            continue
+        sig = f[2].lower()
+        out.append({"id": f[0], "clock": clock_of(az), "name": f[3].strip() or "?", "lock": "lock" in sig,
+                    "missile": "missile" in sig, "dist_m": None, "kind": "radar"})
+    return out
+
+
+def clock_of(rel_deg: float) -> int:
+    """Burna göre açı (derece, sağa pozitif) -> saat yönü 1-12."""
+    c = round((rel_deg % 360) / 30) % 12
+    return 12 if c == 0 else c
 
 
 class DCSListener:
@@ -405,6 +430,57 @@ def latest_mission(dirs: list[Path] | None = None) -> Path | None:
             if p.is_dir():
                 cands += list(p.rglob("*.miz"))
     return max(cands, key=lambda p: p.stat().st_mtime) if cands else None
+
+
+COMMANDS = {"gear": "teker", "hook": "kanca", "flaps": "flap", "airbrake": "hava freni", "flare": "flare",
+            "chaff": "chaff"}
+_seq = [0]
+
+
+def send_command(kind: str, arg: str, port: int = PORT) -> int:
+    """Betiğin komut kanalına (port+1) gönder; dönen sıra numarası betiğin "ack" alanında gelir."""
+    if kind == "cmd" and arg not in COMMANDS:
+        raise ValueError(f"izin verilmeyen komut: {arg}")
+    _seq[0] += 1
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.sendto(f"{_seq[0]}|{kind}|{arg}".encode(), ("127.0.0.1", port + 1))
+    return _seq[0]
+
+
+def current_mission(dirs: list[Path] | None = None) -> Path | None:
+    """Şu an yüklü görev: DCS günlüğündeki son "loadMission <yol>" satırı (genelde Temp/DCS/tempMission.miz).
+    Günlükte yoksa en son değiştirilen görev."""
+    for d in dirs if dirs is not None else saved_games_dirs():
+        log = d / "Logs" / "dcs.log"
+        try:
+            with log.open("rb") as f:
+                f.seek(max(0, log.stat().st_size - 2_000_000))
+                tail = f.read().decode("utf-8", errors="replace")
+        except OSError:
+            continue
+        found = re.findall(r"loadMission (.+?\.miz)\s*$", tail, re.M)
+        if found and Path(found[-1].strip()).is_file():
+            return Path(found[-1].strip())
+    return latest_mission(dirs)
+
+
+def briefing_text(m: MissionInfo) -> str:
+    """Kalkıştan önce sesli brifing: görev, uçak, rota (ilk iki ayak ve toplam), telsiz, açıklamanın başı."""
+    parts = [f"Görev: {m.name}." + (f" {m.group} grubundasın." if m.group else "")]
+    legs = m.legs()
+    if len(legs) > 1:
+        total = sum(d for _, d, _ in legs[1:])
+        parts.append(f"Rotada {len(legs) - 1} nokta var, toplam {total:.0f} mil.")
+        for wp, dist, brg in legs[1:3]:
+            alt = f"{wp.alt_ft:,.0f}".replace(",", ".")
+            parts.append(f"{wp.name}: {brg:03.0f} derece, {dist:.0f} mil, {alt} feet.")
+    if m.frequency_mhz:
+        parts.append(f"Grup frekansı {m.frequency_mhz:g}.")
+    desc = re.sub(r"\s+", " ", m.description or "").strip()
+    if desc:
+        first = re.split(r"(?<=[.!?])\s", desc, maxsplit=1)[0]
+        parts.append(f"Görev açıklaması: {first[:220]}")
+    return " ".join(parts)
 
 
 # ---------------------------------------------------------------- komutlar

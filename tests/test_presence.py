@@ -50,7 +50,8 @@ def test_greets_after_long_absence_with_followups():
 
 def test_silent_without_news_after_first_greeting_and_respects_gap_and_quiet():
     sent = []
-    g = Greeter(cfg(), lambda n: sent.append(n) or True, idle=lambda: 0.0, clock=lambda: datetime(2026, 10, 22, 10))
+    g = Greeter(cfg(), lambda n: sent.append(n) or True, idle=lambda: 0.0, clock=lambda: datetime(2026, 10, 22, 10),
+                morning=lambda c, n: {})
     assert g.greet(7200) .startswith("Günaydın")  # günün ilk dönüşü: kısa selam
     assert g.greet(7200) == ""  # aynı gün, söyleyecek bir şey yok: sus
     assert len(sent) == 1
@@ -64,7 +65,8 @@ def test_silent_without_news_after_first_greeting_and_respects_gap_and_quiet():
 
 
 def test_muted_mode_does_not_count():
-    g = Greeter(cfg(), lambda n: False, idle=lambda: 0.0, clock=lambda: datetime(2026, 10, 22, 10))
+    g = Greeter(cfg(), lambda n: False, idle=lambda: 0.0, clock=lambda: datetime(2026, 10, 22, 10),
+                morning=lambda c, n: {})
     assert g.greet(7200) == "" and g.last_greet == 0.0
 
 
@@ -81,3 +83,20 @@ def test_compose_uses_model_with_fallback():
     assert compose(b, mem, Router()) == "Akşamlar Hayat. Sınav nasıl geçti?"
     text = compose(b, mem, None)
     assert "İyi akşamlar" in text and "Dişçi" in text
+
+
+def test_morning_summary_on_startup_once_per_day(tmp_path):
+    sent = []
+    st = tmp_path / "g.json"
+    info = {"weather": "İstanbul: şu an 12°C, yağmurlu", "notes": ["faturayı öde"]}
+    mk = lambda hour: Greeter(cfg(), lambda n: sent.append(n) or True, idle=lambda: 5.0,  # noqa: E731
+                              clock=lambda: datetime(2026, 10, 22, hour), morning=lambda c, n: info, state_path=st)
+    g = mk(8)
+    assert g.tick()  # bilgisayar sabah açıldı: yokluk ölçülmeden günün ilk özeti
+    assert wait_for(lambda: sent)
+    assert sent[0].body.startswith("Günaydın") and "yağmurlu" in sent[0].body
+    assert not mk(9).tick()  # ALICE yeniden başladı: aynı gün tekrar söylemez (dosyada)
+    assert not Greeter(cfg(), lambda n: True, idle=lambda: 5.0, clock=lambda: datetime(2026, 10, 23, 15),
+                       morning=lambda c, n: info, state_path=st).tick()  # öğleden sonra açılış: sabah özeti yok
+    b = compose({"greeting": "Günaydın", "away": "", "followups": [], "events": [], "mail": [], "morning": info})
+    assert "yağmurlu" in b

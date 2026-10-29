@@ -105,7 +105,7 @@ def check_projects(cfg) -> Check:
                  + (f": {top}" if top else ""), "" if found else "[projects] paths'e proje klasörünü ekle")
 
 
-def check_calendar(cfg) -> Check:
+def check_calendar(cfg, network: bool = True) -> Check:
     name = "Google Takvim"
     from alice.connect import runner
     from alice.connect.manifest import discover
@@ -114,6 +114,18 @@ def check_calendar(cfg) -> Check:
     if m is None:
         return Check(name, "off", "bağlantı tanımı kapalı")
     ok, why = runner.ready(m)
+    if ok and network and "upcoming" in m.actions:
+        # "Bağlı" görünüp her istekte 404 veriyordu ({calendarId} doldurulmuyordu): gerçekten bir kez oku.
+        from datetime import datetime, timedelta
+
+        now = datetime.now().astimezone()
+        try:
+            runner.call(m, m.actions["upcoming"], {"timeMin": now.isoformat(),
+                                                   "timeMax": (now + timedelta(days=1)).isoformat(), "maxResults": 1},
+                        cache=False)
+        except Exception as e:  # noqa: BLE001
+            return Check(name, "fail", f"bağlı ama okunamıyor: {str(e)[:120]}",
+                         "Ayarlar → Kurulum → Takvimi bağla (komut: alice connect google_calendar)")
     if ok:
         return Check(name, "ok", "bağlı")
     fix = "Ayarlar → Kurulum → Google (komut: alice setup google)" if "GOOGLE_CLIENT_ID" in why or \
@@ -220,7 +232,7 @@ def run_all(cfg, cwd=None, network: bool = True) -> list[Check]:
         _safe("Anlam araması (hafıza)", lambda: check_embedding(cfg, network)),
         _safe("Hafıza", lambda: check_memory(cfg)),
         _safe("Projeler", lambda: check_projects(cfg)),
-        _safe("Google Takvim", lambda: check_calendar(cfg)),
+        _safe("Google Takvim", lambda: check_calendar(cfg, network)),
         _safe("Gmail", lambda: check_gmail(cfg, network)),
         _safe("Komut sandbox'ı", lambda: check_sandbox(cfg)),
         _safe("Dönüşte karşılama", lambda: check_greeting(cfg)),

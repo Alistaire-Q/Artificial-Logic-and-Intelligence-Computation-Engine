@@ -166,6 +166,33 @@ def test_calendar_events_become_followups(monkeypatch):
     assert calendar_followups(mem, None) == 2 and len(mem.followups()) == 2  # tekrar eklenmez
 
 
+def test_memory_job_steps_survive_calendar_error(monkeypatch):
+    # takvim hata verince hatırlatmalar iki hafta gitmemişti; hata da her saat kayda yazılıyordu
+    import time as _t
+
+    from alice.core import service
+    from alice.memory import LongMemory
+
+    mem = LongMemory(":memory:", {})
+    mem.add_followup("ilacını al", _t.time() - 5, "remind")
+    sent, events = [], []
+    core = object.__new__(service.Core)
+    core.cfg = None
+    core.notifier = type("N", (), {"send": lambda self, n: sent.append(n.body)})()
+    core.store = type("S", (), {"add_event": lambda self, *a, **k: events.append(a[1])})()
+    monkeypatch.setattr(core, "_memory", lambda: mem, raising=False)
+    monkeypatch.setattr(service, "calendar_followups", lambda m, c: (_ for _ in ()).throw(RuntimeError("404")))
+    monkeypatch.setattr(core, "_latency_report", lambda: None, raising=False)
+    monkeypatch.setattr(core, "_important_mail", lambda: None, raising=False)
+    monkeypatch.setattr(core, "_health_report", lambda: None, raising=False)
+    monkeypatch.setattr(core, "_weekly", lambda m: None, raising=False)
+    monkeypatch.setattr(core, "_mail_dates", lambda m: None, raising=False)
+    core.memory_job()
+    core.memory_job()
+    assert sent == ["ilacını al"]  # bir kez gider, takvim hatası durdurmaz
+    assert events == ["takvim takibi hata verdi"]  # aynı hata günde bir yazılır
+
+
 def test_calendar_manifest_loads():
     from alice.connect.manifest import discover
 

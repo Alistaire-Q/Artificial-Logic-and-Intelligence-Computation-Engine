@@ -638,3 +638,96 @@ def test_dcs_fraction_fuel_unknown_aircraft_is_guess():
     assert to_state({"aircraft": "Su-25T", "fuel_int": 0.5}).extra.get("fuel_guess") is True
     assert "fuel_guess" not in to_state({"aircraft": "F-16C_50", "fuel_int": 0.5}).extra
     assert "fuel_guess" not in to_state({"aircraft": "Su-25T", "fuel_int": 2500.0}).extra
+
+
+def test_cruise_fuel_is_learned_from_flights(tmp_path, monkeypatch):
+    import json
+
+    from alice.sims import flight
+
+    def series(n, burn, ias=400, alt=20000, g=1.0):
+        return {"t": [float(i) for i in range(n)], "alt_ft": [alt] * n, "g": [g] * n, "ias_kt": [ias] * n,
+                "fuel_kg": [4000 - burn * i for i in range(n)]}
+
+    s = series(200, 1.0)
+    # 400 kt IAS 20000 ft'te ~560 kt TAS: saniyede 1 kg -> ~6.4 kg/nm
+    assert [round(x, 1) for x in flight.cruise_parts(s)] == [6.4]
+    dog = series(200, 1.0, g=4.0)  # çatışma parçası sayılmaz
+    assert flight.cruise_parts(dog) == []
+    jump = series(200, 1.0)
+    jump["fuel_kg"][100] -= 900  # tank atma parçayı böler, değeri bozmaz
+    assert all(6 < x < 7 for x in flight.cruise_parts(jump))
+    for i in range(3):
+        (tmp_path / f"2026{i}.json").write_text(json.dumps({"aircraft": "F-16C", "series": s}), encoding="utf-8")
+    monkeypatch.setattr(flight, "flights_dir", lambda: tmp_path)
+    assert flight.learn_cruise()["F-16C"]["parts"] == 3
+    assert round(flight.profile_for("F-16C_50").cruise_kg_nm, 1) == 6.4  # elle verilen 4.0 yerine
+    assert flight.profile_for("FA-18C_hornet").cruise_kg_nm == 6.0  # öğrenilmeyen uçak aynı kalır
+
+
+def test_coach_compares_with_previous_flights(tmp_path):
+    import json
+
+    from alice.sims.flight import Debrief, coach, load_history
+
+    def deb(**k):
+        base = dict(aircraft="F-16C", source="dcs", start_wall=1000.0, end_wall=2000.0, duration_s=1200.0, max_g=5.0,
+                    max_ias_kt=500.0, max_alt_ft=20000.0, fuel_used_kg=2400.0, min_fuel_kg=900.0,
+                    approach_on_speed_pct=60.0, max_sink_final_ms=None, touchdown_vv_ms=-2.0, chaff_used=None,
+                    flare_used=None)
+        return Debrief(**{**base, **k})
+
+    hist = [dict(aircraft="F-16C", duration_s=1200.0, fuel_used_kg=2400.0, touchdown_vv_ms=-v,
+                 approach_on_speed_pct=60.0) for v in (2.0, 2.4, 1.9, 2.1)]
+    assert coach(deb(touchdown_vv_ms=-1.2), hist).startswith("Son 4 inişinin en yumuşağıydı")
+    assert "alçalmayı" in coach(deb(touchdown_vv_ms=-3.4), hist)
+    assert "yüzde 60 yerine 30" in coach(deb(approach_on_speed_pct=30.0), hist)
+    assert "en uzun uçuşundu" in coach(deb(duration_s=3000.0), hist)
+    assert coach(deb(), hist[:2]) == ""  # az geçmiş: sus
+    (tmp_path / "20261001-1000.json").write_text(json.dumps({"start_wall": 1000.0, "series": {"t": [1]}}), "utf-8")
+    (tmp_path / "20261002-1000.json").write_text(json.dumps({"start_wall": 5.0, "series": {"t": [1]}}), "utf-8")
+    assert load_history(tmp_path, exclude=1000.0) == [{"start_wall": 5.0}]  # az önce kaydedilen uçuş hariç
+
+
+def test_rwr_and_minimap_contacts_parse():
+    from alice.sims.dcs import clock_of, parse_rwr
+    from alice.sims.warthunder import contacts
+
+    assert [clock_of(a) for a in (0, 29, 91, 180, -60, 350)] == [12, 1, 3, 6, 10, 12]
+    cs = parse_rwr("101|1.571|lock|SA-6 Straight Flush|0.8;102|-3.1416|scan|MiG-29|0.2;bad")
+    assert [(c["clock"], c["name"], c["lock"], c["missile"]) for c in cs] == [
+        (3, "SA-6 Straight Flush", True, False), (6, "MiG-29", False, False)]
+    info = {"map_min": [0, 0], "map_max": [10000, 10000], "valid": True}
+    objs = [{"type": "aircraft", "icon": "Player", "color": "#faC81E", "x": 0.5, "y": 0.5, "dx": 0.0, "dy": -1.0},
+            {"type": "aircraft", "icon": "Fighter", "color": "#f40C00", "x": 0.5, "y": 0.6},   # 1 km güneyde: saat 6
+            {"type": "aircraft", "icon": "Fighter", "color": "#174DFF", "x": 0.6, "y": 0.5},   # dost
+            {"type": "aircraft", "icon": "Bomber", "color": "#f40C00", "x": 0.8, "y": 0.5},    # 3 km doğu: saat 3
+            {"type": "ground_model", "icon": "Tank", "color": "#f40C00", "x": 0.5, "y": 0.4}]
+    got = [(c["clock"], round(c["dist_m"]), c["name"]) for c in contacts(objs, info)]
+    assert got == [(6, 1000, "Fighter"), (3, 3000, "Bomber")]
+
+
+def test_threat_callouts_once_and_six_warning():
+    c, tr, r = make()
+    tr.feed(st(0, ias=0, agl=0.5, alt=50))
+    tr.feed(st(1, ias=80, agl=30))
+    radar = {"id": "7", "clock": 2, "name": "SA-6", "lock": False, "missile": False, "dist_m": None, "kind": "radar"}
+    tr.feed(st(2, extra={"contacts": [radar]}))
+    tr.feed(st(3, extra={"contacts": [radar]}))
+    tr.feed(st(4, extra={"contacts": [{**radar, "lock": True}]}))
+    tr.feed(st(5, extra={"contacts": [{**radar, "lock": True}]}))
+    tr.feed(st(6, extra={"contacts": [{**radar, "lock": True, "missile": True}]}))
+    said = r.texts()
+    assert said.count("Yeni radar: SA-6, saat 2.") == 1 and said.count("Saat 2'den kilit: SA-6.") == 1
+    assert "Füze! Saat 2, SA-6. Chaff at, dön!" in said
+    bandit = {"id": "", "clock": 6, "dist_m": 1200.0, "kind": "aircraft", "name": "Fighter", "lock": False,
+              "missile": False}
+    for t in (30, 31, 45, 52):
+        tr.feed(st(t, extra={"contacts": [bandit]}))
+    six = [x for x in r.texts() if x.startswith("Arkanda")]
+    assert six == ["Arkanda düşman, saat 6, 1,2 kilometre!"] * 2  # 20 sn'de bir
+    far = {**bandit, "clock": 1, "dist_m": 4000.0}
+    tr.feed(st(80, extra={"contacts": [{**far, "dist_m": 9000.0}]}))
+    tr.feed(st(81, extra={"contacts": [far]}))
+    tr.feed(st(99, extra={"contacts": [far]}))
+    assert r.texts().count("Düşman saat 1, 4,0 kilometre.") == 1

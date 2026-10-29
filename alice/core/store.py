@@ -151,7 +151,42 @@ class Store:
             n = self._db.execute("DELETE FROM samples WHERE ts < ?", (cutoff,)).rowcount
             self._db.execute("DELETE FROM events WHERE ts < ?", (cutoff,))
             self._db.commit()
+        self.thin(now)
         return n
+
+    THIN_AFTER_DAYS = 2.0   # bundan eski ölçümler dakikada bire iner (core.db 20 günde 1,7 milyon satır, 130 MB oldu)
+    THIN_STEP_DAYS = 3.0    # bir çağrıda en çok bu kadar gün: saatlik turu uzun süre kilitlemesin
+
+    def thin(self, now: float | None = None) -> int:
+        """Eski ölçümleri anahtar başına dakikada bir satıra indir: sayılar ortalanır, metinde son değer kalır.
+
+        Nerede kalındığı `meta` tablosunda durur; aynı aralık iki kez işlenmez."""
+        now = time.time() if now is None else now
+        upto = now - self.THIN_AFTER_DAYS * 86400
+        with self._lock:
+            db = self._db
+            db.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+            row = db.execute("SELECT value FROM meta WHERE key = 'thinned_until'").fetchone()
+            start = float(row[0]) if row else (db.execute("SELECT MIN(ts) FROM samples").fetchone()[0] or upto)
+            start = start // 60 * 60  # dakika sınırı: kovalar parçalanmasın
+            end = min(upto, start + self.THIN_STEP_DAYS * 86400) // 60 * 60
+            if end <= start:
+                return 0
+            before = db.execute("SELECT COUNT(*) FROM samples WHERE ts >= ? AND ts < ?", (start, end)).fetchone()[0]
+            # Tek MAX() olan sorguda SQLite yalın sütunları (text) en son satırdan alır.
+            db.execute("CREATE TEMP TABLE IF NOT EXISTS _thin (ts REAL, key TEXT, value REAL, text TEXT)")
+            db.execute("DELETE FROM _thin")
+            db.execute("INSERT INTO _thin SELECT MAX(ts), key, AVG(value), text FROM samples WHERE ts >= ? AND ts < ? "
+                       "GROUP BY key, CAST(ts / 60 AS INTEGER)", (start, end))
+            db.execute("DELETE FROM samples WHERE ts >= ? AND ts < ?", (start, end))
+            db.execute("INSERT INTO samples SELECT * FROM _thin")
+            db.execute("INSERT OR REPLACE INTO meta VALUES ('thinned_until', ?)", (str(end),))
+            db.commit()
+            after = db.execute("SELECT COUNT(*) FROM _thin").fetchone()[0]
+            free = db.execute("PRAGMA freelist_count").fetchone()[0] * db.execute("PRAGMA page_size").fetchone()[0]
+            if free > 50 * 2**20 and str(self.path) != ":memory:":
+                db.execute("VACUUM")  # silinen yer dosyaya geri verilsin
+        return before - after
 
     # ----------------------------------------------------------------- okuma
     def _q(self, sql: str, args: tuple = ()) -> list[tuple]:

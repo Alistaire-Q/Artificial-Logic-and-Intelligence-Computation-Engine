@@ -6,6 +6,7 @@ canlı duruma ACTIVE üzerinden ulaşır.
 
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any
 
@@ -25,6 +26,7 @@ class SimHub:
         self.companions: dict[str, FlightCompanion] = {}
         self.last_debrief: tuple[Debrief, str] | None = None
         self._parts: list = []
+        self._briefed: str = ""  # brifingi verilen görev (yol + değişme zamanı): aynı görev için bir kez
 
     def _say(self, text: str, severity: str, emotion: str) -> None:
         self.notifier.send(Notification("Uçuş", text, severity, "flight", kind="flight", emotion=emotion))
@@ -41,6 +43,12 @@ class SimHub:
         page = save_debrief(d, self.store.series("watch.hr", d.start_wall, d.end_wall))
         self.last_debrief = (d, str(page))
         self.store.add_event("flight", f"Uçuş değerlendirmesi: {d.aircraft}", f"{d.summary()} ({page})", "info", "flight")
+        try:  # bir sonraki uçuşun bingo'su bu uçuşun seyir yakıtını da kullansın
+            from alice.sims.flight import learn_cruise
+
+            learn_cruise(page.parent)
+        except Exception:  # noqa: BLE001 - öğrenme değerlendirmeyi bozmasın
+            pass
 
     def companion(self, source: str) -> FlightCompanion:
         if source not in self.companions:
@@ -61,8 +69,14 @@ class SimHub:
 
             comp = self.companion("dcs")
             tracker = TouchdownTracker(comp)
+
+            def feed(s, comp=comp, tracker=tracker):
+                if comp.last_state is None and (s.ias or 0) < 30:  # yerde yeni oturum: kalkıştan önce brifing
+                    threading.Thread(target=self.brief_mission, daemon=True, name="alice-dcs-brief").start()
+                tracker.feed(s)
+
             try:
-                self._parts.append(DCSListener(tracker.feed, comp.restricted, comp.session_end,
+                self._parts.append(DCSListener(feed, comp.restricted, comp.session_end,
                                                lambda rows: self.store.add_many(rows),
                                                port=int(self.cfg.get("dcs_port", PORT))).start())
             except OSError as e:
@@ -84,6 +98,67 @@ class SimHub:
             p.stop()
         if ACTIVE is self:
             ACTIVE = None
+
+    def brief_mission(self, path=None) -> str:
+        """Yüklü DCS görevini oku: sesli kısa brifing ver, kneeboard'u güncelle. Aynı görev için bir kez."""
+        from alice.sims import kneeboard as kb
+        from alice.sims.dcs import briefing_text, current_mission, read_mission, saved_games_dirs
+
+        try:
+            path = path or current_mission()
+            if path is None:
+                return ""
+            key = f"{path}|{path.stat().st_mtime}"
+            if key == self._briefed:
+                return ""
+            self._briefed = key
+            info = read_mission(path)
+        except (OSError, ValueError, KeyError) as e:
+            self.store.add_event("info", "DCS görevi okunamadı", str(e)[:200], "info", "flight")
+            return ""
+        text = briefing_text(info)
+        self._say(text, "info", "calm")
+        try:
+            dirs = saved_games_dirs()
+            if dirs:
+                kb.write(kb.render(info, kb.load_notes()), kb.kneeboard_dirs(dirs))
+        except Exception:  # noqa: BLE001 - kneeboard olmadan da brifing söylendi
+            pass
+        return text
+
+    def cockpit(self, command: str, mhz: float | None = None, wait: float = 2.0) -> str:
+        """Sesli kokpit komutu (sadece DCS, izin listesi betikte). Teker yerde kaldırılmaz, zaten istenen konumdaysa
+        gönderilmez. Betiğin onayı ("ack") beklenir; gelmezse betik eski olabilir."""
+        from alice.sims.dcs import COMMANDS, send_command
+
+        c = self.companions.get("dcs")
+        s = c.last_state if c is not None else None
+        if s is None or time.time() - s.wall > 5:
+            return "yapılamadı: DCS'ten canlı veri gelmiyor (sesli kokpit komutları sadece DCS'te)"
+        if command == "radio":
+            if not mhz:
+                return "yapılamadı: frekans (MHz) gerekli"
+            seq = send_command("freq", f"{float(mhz):.3f}")
+        else:
+            name = command.removesuffix("_up").removesuffix("_down")
+            if name not in COMMANDS:
+                return f"yapılamadı: bilinmeyen komut {command}"
+            if name == "gear":
+                down = (s.gear or 0) > 0.5
+                if command == "gear_up" and c.phase != "air":
+                    return "yapmadım: yerdeyken teker kaldırılmaz"
+                if (command == "gear_down") == down:
+                    return f"gerek yok: teker zaten {'aşağıda' if down else 'yukarıda'}"
+            seq = send_command("cmd", name)
+        end = time.monotonic() + wait
+        while time.monotonic() < end:
+            ack = str((c.last_state.extra or {}).get("ack") or "")
+            if ack.startswith(f"{seq}|"):
+                _, status, *rest = ack.split("|")
+                return ("yapıldı: " if status == "ok" else "yapılamadı: ") + "|".join(rest)
+            time.sleep(0.1)
+        return ("gönderildi ama DCS onay vermedi: veri betiği eski olabilir (DCS'i yeniden başlat) ya da bu modül "
+                "komutu desteklemiyor")
 
     def alert_home(self, nm: float) -> str:
         """Havadaki uçuşa 'üsse nm mil kalınca söyle' uyarısı kur."""
@@ -170,6 +245,18 @@ class SimHub:
                 lines.append(f"  kurulu uyarı: yakıt {c.fuel_alert_kg:.0f} kg'ye inince söylenecek")
             if s.chaff is not None:
                 lines.append(f"  chaff {s.chaff}, flare {s.flare}")
+            cs = s.extra.get("contacts")
+            if isinstance(cs, list):
+                planes = [f"saat {c['clock']} {c['dist_m'] / 1000:.1f} km" for c in cs if c.get("kind") == "aircraft"]
+                radars = [f"{c['name']} saat {c['clock']}" + (" (FÜZE)" if c.get("missile") else " (kilit)"
+                                                               if c.get("lock") else "")
+                          for c in cs if c.get("kind") == "radar"]
+                if planes:
+                    lines.append("  en yakın düşmanlar (mini haritada, irtifa bilinmiyor): " + ", ".join(planes[:4]))
+                if radars:
+                    lines.append("  RWR: " + ", ".join(radars[:6]))
+                if not planes and not radars:
+                    lines.append("  görünen düşman/radar yok")
         if lines:
             return "\n".join(lines)
         if self.cfg.get("dcs", True) and "dcs" in self.companions and self.companions["dcs"].last_state is None:

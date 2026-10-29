@@ -127,6 +127,15 @@ def test_yerlesik_tanimlar_gecerli():
         assert man.actions and man.base_url.startswith("https://")
 
 
+def test_yerlesik_yol_parametreleri_doldurulur():
+    # {calendarId} küçük harf kalıbına uymadığı için adrese olduğu gibi gidiyordu: takvim hep 404 verdi
+    found, _ = mf.discover()
+    for man in found.values():
+        for act in man.actions.values():
+            filled = runner.PLACEHOLDER.sub("x", act.path)
+            assert "{" not in filled, (man.name, act.name, act.path)
+
+
 def test_kullanici_tanimi_yerlesigi_ezer(tmp_path, monkeypatch):
     d = tmp_path / "connect"
     d.mkdir()

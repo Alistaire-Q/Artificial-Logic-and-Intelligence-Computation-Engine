@@ -884,18 +884,29 @@ class UIAct(Tool):
 
 class Clipboard(Tool):
     name = "clipboard"
-    description = ("Panodaki metni okur (get) ya da panoya metin koyar (set). 'Kopyaladığım şey', 'panodaki' "
-                   "denince get; kullanıcının yapıştıracağı bir şey hazırlamak için set.")
+    description = ("Panodaki metni okur (get), panoya metin koyar (set) ya da son 12 saatte kopyalananları listeler "
+                   "(history). 'Kopyaladığım şey', 'panodaki' denince get; 'az önce/10 dk önce kopyaladığım' ve "
+                   "'bir önceki kopyaladığım' için history. Kopyalananı çevir/özetle/düzelt/cevap yaz istenince: "
+                   "get (ya da history) -> işle -> sonucu set ile panoya koy ve 'panoda, yapıştırabilirsin' de.")
     parameters = obj({
-        "action": {"type": "string", "enum": ["get", "set"], "description": "get: oku | set: text'i panoya koy."},
+        "action": {"type": "string", "enum": ["get", "set", "history"],
+                   "description": "get: oku | set: text'i panoya koy | history: son kopyalananlar (yeni önce)."},
         "text": {"type": "string", "description": "set için metin."},
     }, ["action"])
     risk = COMPUTER
 
     def risk_for(self, args: dict[str, Any]) -> str:
-        return READ if args.get("action") == "get" else COMPUTER
+        return READ if args.get("action") in ("get", "history") else COMPUTER
 
     def run(self, ctx: ToolContext, action: str, text: str | None = None) -> ToolResult:
+        if action == "history":
+            from datetime import datetime
+
+            from alice.core import clipwatch
+
+            items = clipwatch.load()[::-1]
+            return ToolResult("\n".join(f"{datetime.fromtimestamp(i['ts']):%H:%M} | {i['text'][:300]}" for i in items)
+                              or "pano geçmişi boş (çekirdek çalışırken tutulur; şifreye benzeyenler kaydedilmez)")
         try:
             import pyperclip
         except ImportError as e:
@@ -903,7 +914,7 @@ class Clipboard(Tool):
         if action == "get":
             return ToolResult(pyperclip.paste() or "(pano boş)")
         if action != "set":
-            raise ToolError(f"bilinmeyen action: {action}. Geçerli: get, set")
+            raise ToolError(f"bilinmeyen action: {action}. Geçerli: get, set, history")
         if text is None:  # eksik text panoyu sessizce boşaltıyordu (kullanıcının kopyaladığı şey gidiyordu)
             raise ToolError("set için text gerekli")
         pyperclip.copy(str(text))

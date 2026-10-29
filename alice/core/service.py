@@ -174,7 +174,18 @@ class Core:
 
             monitors.append(FeedMonitor(self.notifier.send, run_agent, cfg, decider=decider,
                                         emit=lambda s: self.store.add_event("info", s, topic="feed")))
+            if c.get("net_watch", True):
+                from alice.core.watchdogs import NetWatch
+
+                monitors.append(NetWatch(self.store, self.notifier.send))
+            if c.get("phone_notifications", True):
+                from alice.home.phone_watch import PhoneWatch
+
+                monitors.append(PhoneWatch(self.notifier.send, mode=lambda: self.modes.current))
         self.monitors: list[Monitor] = monitors
+        from alice.core.watchdogs import GameHealth
+
+        self.game_health = GameHealth(self.store, self.notifier.send)
         self.rules = rules or RuleSet()
         self.tasks = tasks or TaskStore()
         self.run_agent = run_agent
@@ -219,6 +230,10 @@ class Core:
         if rows:
             self.store.add_many(rows, now)
         self._update_mode(now)
+        try:
+            self.game_health.check(self.modes.current, now)
+        except Exception as e:  # noqa: BLE001 - nöbetçi turu durdurmasın
+            self.store.add_event("error", "oyun sağlığı kontrolü hata verdi", repr(e)[:300], topic="core")
         for hook in self.hooks:
             try:
                 hook(self.modes.policy)
@@ -301,39 +316,90 @@ class Core:
 
     def memory_job(self) -> None:
         """Konuşma bitince özetlenmesi uygulama kapalıyken de olsun; "remind" takipleri günü gelince bildirim olur
-        (her biri bir kez; ALICE sohbette de hatırlatır, profilde durur)."""
-        try:
-            mem = self._memory()
-            if mem is None:
-                return
-            mem.digest()
-            mem.maybe_consolidate()  # günde bir: tekrarlar birleşir, bir konuşmalık "bilgiler" silinir
-            calendar_followups(mem, self.cfg)
-            from alice.voice import latency
+        (her biri bir kez; ALICE sohbette de hatırlatır, profilde durur).
 
-            week = latency.weekly_report()
-            if week:  # sesli modun haftalık gecikmesi: yavaşlık tahminle değil ölçümle görülsün
-                self.store.add_event("info", "Sesli mod: bu haftanın gecikmesi", week, topic="voice")
-            from alice.tools.gmail import new_important
-
-            mails = new_important(self.cfg)
-            if mails:
-                self.notifier.send(Notification(f"{len(mails)} yeni önemli e-posta", "; ".join(mails[:3]),
-                                                "info", "mail", kind="info"))
-            sent = set(json.loads(mem._meta("reminded") or "[]"))
-            now = time.time()
-            due = [f for f in mem.due_followups(now) if f.kind == "remind" and f.id not in sent
-                   and (f.due or 0) <= now]
-            for f in due:
-                self.notifier.send(Notification("Hatırlatma", f.text, "info", "memory", kind="info"))
-                sent.add(f.id)
-            if due:
-                mem._meta("reminded", json.dumps(sorted(sent)[-200:]))
-        except Exception as e:  # noqa: BLE001 - hafıza işi çekirdeği durdurmasın
+        Adımlar birbirinden bağımsız: takvim 404 verdiği için iki hafta hatırlatma ve e-posta bildirimi hiç
+        gitmemişti. Aynı hata her saat kayda yazılmaz, günde bir yazılır."""
+        mem = self._memory()
+        if mem is None:
+            return
+        steps: list[tuple[str, Callable[[], Any]]] = [
+            ("hatırlatmalar", lambda: self._send_reminders(mem)),  # en önemlisi önce
+            ("konuşma özeti", mem.digest),
+            ("hafıza toparlama", mem.maybe_consolidate),  # günde bir: tekrarlar birleşir
+            ("takvim takibi", lambda: calendar_followups(mem, self.cfg)),
+            ("sesli mod gecikme raporu", self._latency_report),
+            ("önemli e-postalar", self._important_mail),
+            ("sağlık raporu", self._health_report),
+            ("haftalık özet", lambda: self._weekly(mem)),
+            ("e-posta tarihleri", lambda: self._mail_dates(mem)),
+        ]
+        for name, fn in steps:
             try:
-                self.store.add_event("error", "hafıza işi hata verdi", repr(e)[:300], topic="core")
-            except Exception:  # noqa: BLE001
-                pass
+                fn()
+            except Exception as e:  # noqa: BLE001 - bir adım diğerlerini durdurmasın
+                self._step_error(name, e)
+
+    def _send_reminders(self, mem) -> None:
+        sent = set(json.loads(mem._meta("reminded") or "[]"))
+        now = time.time()
+        due = [f for f in mem.due_followups(now) if f.kind == "remind" and f.id not in sent and (f.due or 0) <= now]
+        for f in due:
+            self.notifier.send(Notification("Hatırlatma", f.text, "info", "memory", kind="info"))
+            sent.add(f.id)
+        if due:
+            mem._meta("reminded", json.dumps(sorted(sent)[-200:]))
+
+    def _latency_report(self) -> None:
+        from alice.voice import latency
+
+        week = latency.weekly_report()
+        if week:  # sesli modun haftalık gecikmesi: yavaşlık tahminle değil ölçümle görülsün
+            self.store.add_event("info", "Sesli mod: bu haftanın gecikmesi", week, topic="voice")
+
+    def _important_mail(self) -> None:
+        from alice.tools.gmail import new_important
+
+        mails = new_important(self.cfg)
+        if mails:
+            self.notifier.send(Notification(f"{len(mails)} yeni önemli e-posta", "; ".join(mails[:3]),
+                                            "info", "mail", kind="info"))
+
+    def _health_report(self) -> None:
+        from alice import health_report
+
+        def send(title: str, body: str) -> bool:
+            return self.notifier.send(Notification(title, body, "warn", "core", kind="alert"))
+
+        health_report.report(self.cfg, self.store, send)
+
+    def _weekly(self, mem) -> None:
+        from alice.extras import weekly
+
+        weekly.maybe_send(self.store, mem, self.router(), lambda t, b: self.notifier.send(
+            Notification(t, b, "info", "memory", kind="info", emotion="cheerful")))
+
+    def _mail_dates(self, mem) -> None:
+        from alice.extras import mailwatch
+        from alice.tools import gmail
+
+        if not gmail.accounts() or not ((self.cfg.data.get("gmail") or {}).get("extract_dates", True)):
+            return
+        mailwatch.scan(self.cfg, self.router(), mem, lambda t, b: self.notifier.send(
+            Notification(t, b, "info", "mail", kind="info")))
+
+    def _step_error(self, name: str, e: Exception) -> None:
+        key = (name, type(e).__name__, str(e)[:80])
+        now = time.time()
+        seen = getattr(self, "_step_errors", {})
+        self._step_errors = seen
+        if now - seen.get(key, 0) < 86400:
+            return
+        seen[key] = now
+        try:
+            self.store.add_event("error", f"{name} hata verdi", repr(e)[:300], "warn", "core")
+        except Exception:  # noqa: BLE001
+            pass
 
     # ---------------------------------------------------------- güncelleme
     def _maybe_update(self, now: float) -> None:
@@ -450,6 +516,14 @@ class Core:
     def run_forever(self) -> None:
         self.store.add_event("core", "Çekirdek başladı", severity="info", topic="core")
         _take_stop_request()  # önceki çekirdeğe gönderilmiş, kullanılmamış istek yenisini kapatmasın
+        clip = None
+        if (self.cfg.data.get("core") or {}).get("clipboard_history", True):
+            try:  # pano geçmişi: "az önce kopyaladığım" (alice/core/clipwatch.py)
+                from alice.core.clipwatch import ClipWatch
+
+                clip = ClipWatch().start()
+            except Exception:  # noqa: BLE001 - pyperclip yoksa geçmiş tutulmaz
+                clip = None
         try:
             while not self.stop_event.is_set():
                 t0 = time.monotonic()
@@ -472,6 +546,8 @@ class Core:
                         self.store.add_event("core", "Çekirdek uygulamadan durduruldu", topic="core")
                         self.stop()
         finally:
+            if clip is not None:
+                clip.stop()
             self.store.add(MODE_KEY, text="off")
             self.store.add_event("core", "Çekirdek durdu", topic="core")
             try:

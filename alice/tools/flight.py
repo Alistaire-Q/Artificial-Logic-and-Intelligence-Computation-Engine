@@ -9,7 +9,7 @@ from typing import Any
 
 from alice.tools.base import READ, WRITE, Tool, ToolContext, ToolError, ToolResult, obj
 
-ACTIONS = ["status", "alert_home", "alert_alt", "alert_fuel", "alerts_clear", "last_debrief", "checklist_list", "checklist_start", "checklist_next", "checklist_prev",
+ACTIONS = ["status", "cockpit", "brief", "alert_home", "alert_alt", "alert_fuel", "alerts_clear", "last_debrief", "checklist_list", "checklist_start", "checklist_next", "checklist_prev",
            "checklist_stop", "kneeboard_build", "kneeboard_note", "kneeboard_clear", "kneeboard_show"]
 
 
@@ -22,10 +22,12 @@ class Flight(Tool):
                    "'oyun bu bilgiyi vermiyor' de.\n"
                    "- Sadece alert_home/alt/fuel ile kurulabilen uyarıları söz ver ('X mile gelince söyle' -> "
                    "alert_home).\n"
+                   "- 'Teker indir', 'flare at', 'telsizi 251'e al' gibi istekler -> cockpit (sadece DCS).\n"
                    "- Kontrol listesinde sesliyken sadece dönen adımı oku; 'tamam/devam' gelince checklist_next.")
     parameters = obj({
         "action": {"type": "string", "enum": ACTIONS,
-                   "description": "status: canlı yakıt, kalan dakika, üssün yönü/mesafesi, kaç derece dönmeli | "
+                   "description": "status: canlı yakıt, kalan dakika, üssün yönü/mesafesi, kaç derece dönmeli, en yakın "
+                   "düşmanlar/RWR | cockpit: DCS'te command'ı uygula | brief: yüklü DCS görevinin brifingini oku | "
                    "alert_home: üsse nm mil kalınca söyle | alert_alt: ft irtifasına gelince söyle | alert_fuel: yakıt "
                    "kg'a inince söyle | alerts_clear | last_debrief: son uçuşun değerlendirmesi | checklist_list | "
                    "checklist_start: name listesini başlat | checklist_next/prev/stop | kneeboard_note: text'i not "
@@ -37,6 +39,10 @@ class Flight(Tool):
         "nm": {"type": "number", "description": "alert_home için deniz mili."},
         "ft": {"type": "number", "description": "alert_alt için feet."},
         "kg": {"type": "number", "description": "alert_fuel için kilogram."},
+        "command": {"type": "string", "enum": ["gear_up", "gear_down", "flaps", "airbrake", "hook", "flare", "chaff",
+                                               "radio"],
+                    "description": "cockpit için. flaps/airbrake/hook aç-kapa yapar; radio: mhz frekansına ayarla."},
+        "mhz": {"type": "number", "description": "cockpit radio için frekans, ör. 251 ya da 124.5."},
     }, ["action"])
     risk = READ
 
@@ -45,7 +51,19 @@ class Flight(Tool):
         return WRITE if a in ("kneeboard_build", "kneeboard_note", "kneeboard_clear") else READ
 
     def run(self, ctx: ToolContext, action: str, name: str = "", text: str = "", mission: str = "",
-            nm: float | None = None, ft: float | None = None, kg: float | None = None) -> ToolResult:
+            nm: float | None = None, ft: float | None = None, kg: float | None = None, command: str = "",
+            mhz: float | None = None) -> ToolResult:
+        if action in ("cockpit", "brief"):
+            from alice.sims import hub
+
+            if hub.ACTIVE is None:
+                return ToolResult("uçuş takibi bu süreçte çalışmıyor (alice core run ile başlar)")
+            if action == "brief":
+                hub.ACTIVE._briefed = ""
+                return ToolResult(hub.ACTIVE.brief_mission() or "yüklü görev bulunamadı")
+            if not command:
+                raise ToolError("command gerekli")
+            return ToolResult(hub.ACTIVE.cockpit(command, _number(mhz)))
         if action.startswith("alert"):
             from alice.sims import hub
 

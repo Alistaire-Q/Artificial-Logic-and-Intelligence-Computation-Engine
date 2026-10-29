@@ -28,7 +28,8 @@ DEFAULT_PROGRAMS = {
 DEFAULT_POLICIES: dict[str, dict[str, Any]] = {
     "normal": {"min_severity": "info", "topics": [], "voice": True, "local_gpu": True},
     "dev": {"min_severity": "info", "topics": [], "voice": True, "local_gpu": True},
-    "flight": {"min_severity": "critical", "topics": ["flight"], "voice": True, "local_gpu": False},
+    # oyunda telefon mesajları da söylensin (WhatsApp/SMS); toplu bildirim özeti oyun bitince
+    "flight": {"min_severity": "critical", "topics": ["flight", "phone"], "voice": True, "local_gpu": False},
     "quiet": {"min_severity": "warn", "topics": [], "voice": False, "local_gpu": True},
 }
 

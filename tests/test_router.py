@@ -293,3 +293,30 @@ def test_real_calls_are_recorded_for_reliability():
     assert r.chat("brain", [{"role": "user", "content": "hi"}]).text == "tamam"
     assert round(ranking.reliability("a:m1")[1], 3) == 1 and ranking.reliability("b:m2")[1] == 0
     assert ranking.load_health()["b:m2"]["ok"] == 1
+
+
+def test_thinking_model_out_of_budget_retries_with_bigger_max_tokens():
+    # Cerebras qwen küçük max_tokens'ı düşünmeye harcayıp boş dönüyordu: her istekte sıradaki modele düşülüyordu
+    cfg = make_config({"fast": ["a:think", "b:m"]})
+    a = FakeProvider("a", [ProviderError("too_large", "cevap max_tokens'a takıldı, içerik yok"), "a ok", "a again"])
+    b = FakeProvider("b", ["unused"])
+    r = router_with(cfg, {"a": a, "b": b})
+    assert r.chat("fast", [{"role": "user", "content": "x"}], max_tokens=200).text == "a ok"
+    assert a.calls[1]["max_tokens"] == 1024 and b.calls == []
+    assert r.size_limit == {}  # girdi büyük değildi, öğrenilen sınır olmamalı
+    r.chat("fast", [{"role": "user", "content": "x"}], max_tokens=200)
+    assert a.calls[2]["max_tokens"] == 1024  # hatırlanır, ilk denemede geniş pay
+
+
+def test_repeated_timeouts_back_off_and_reset_on_success():
+    r = Router(make_config({"brain": ["a:m"]}), provider_factory=lambda pc: None, sleep=lambda s: None)
+    e = ProviderError("network", "zaman aşımı (ReadTimeout)")
+    waits = []
+    for _ in range(3):
+        t = __import__("time").monotonic()
+        r._penalize("a:m", "a", e, False, False)
+        waits.append(round((r.cooldown_until["a:m"] - t) / 600))
+    assert waits == [1, 2, 4]
+    r.strikes.pop("a:m")  # başarı sayacı sıfırlar
+    r._penalize("a:m", "a", e, False, False)
+    assert r.strikes["a:m"] == 1

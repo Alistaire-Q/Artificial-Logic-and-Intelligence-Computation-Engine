@@ -30,8 +30,10 @@ class Metrics(Tool):
                    "durum için system_info. Anahtarı bilmiyorsan önce action=keys.\n"
                    "Ör. dün uçuşta GPU sıcaklığı: action=stats key=pc.gpu.temp since=dün until=bugün mode=flight.")
     parameters = obj({
-        "action": {"type": "string", "enum": ["status", "keys", "stats", "series", "events", "modes"],
-                   "description": "status: çekirdek çalışıyor mu, hangi mod | keys: pattern'e uyan anahtarlar | stats: "
+        "action": {"type": "string", "enum": ["status", "health", "keys", "stats", "series", "events", "modes"],
+                   "description": "status: çekirdek çalışıyor mu, hangi mod | health: ALICE'in bileşenlerinde (takvim, "
+                   "Gmail, modeller, disk, tekrarlayan hatalar) şu an bozuk olan var mı ('sağlığın nasıl', 'bir sorun "
+                   "var mı') | keys: pattern'e uyan anahtarlar | stats: "
                    "key için en düşük/ortalama/en yüksek | series: key'in zaman içindeki değerleri | events: olay "
                    "günlüğü | modes: modların açık olduğu zaman aralıkları."},
         "key": {"type": "string", "description": "stats/series için anahtar, ör. 'pc.gpu.temp'; stats'ta glob olabilir "
@@ -62,6 +64,10 @@ class Metrics(Tool):
             return ToolResult(f"çekirdek çalışıyor, mod: {s.get('mode')}{' (elle sabit)' if s.get('forced') else ''}, "
                               f"en düşük bildirim: {p.get('min_severity')}, ses: {p.get('voice')}, "
                               f"yerel GPU: {p.get('local_gpu')}")
+        if action == "health":
+            from alice import health_report
+
+            return ToolResult(health_report.summary_now(ctx.config, st))
         if action == "keys":
             ks = st.keys(pattern or "*", since=t0)
             return ToolResult("\n".join(ks) or "veri yok")

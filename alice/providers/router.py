@@ -12,7 +12,9 @@ listedeki ilk uygun modele gider; hata türüne göre:
   not_found  -> model oturum boyunca kapatılır (katalogdan kalkmış)
   too_large  -> sadece bu istek için atlanır (context o sağlayıcıya sığmıyor)
   bad_request + tools -> model bu oturumda tool'suz işlerde kullanılır
-  server/network -> 30 sn soğuma
+  server/network -> 30 sn soğuma (zaman aşımı 10 dk)
+  üst üste hata -> soğuma her seferinde ikiye katlanır (en çok 6 saat), ilk başarıda sıfırlanır
+  cevap max_tokens'a takıldı, içerik yok -> aynı model hemen daha geniş çıktı payıyla bir kez daha denenir
   unreachable -> 10 dk soğuma (sunucu yok, ör. Ollama kapalı)
 
 Ücretsiz katmanlar sürekli değiştiği için tek bir sağlayıcıya güvenmek yerine
@@ -233,6 +235,8 @@ class Router:
         self.no_thinking: set[str] = set()  # düşünme parametresini reddeden modeller
         self.thinking_overrides: dict[str, str] = {}  # /think ile oturumluk seviye
         self.size_limit: dict[str, int] = {}
+        self.strikes: dict[str, int] = {}  # üst üste hata sayısı: aynı modele boşuna gidip beklememek için
+        self.out_floor: dict[str, int] = {}  # düşünürken max_tokens'ı bitiren modele en az bu kadar çıktı payı
         self.usage = UsageTracker(usage_path or alice_home() / "usage.json")
         self.sleep = sleep
         self.max_wait = max_wait
@@ -524,7 +528,8 @@ class Router:
                 extra = {**think, **(self.config.model_extra(ref) or {})}  # elle yazılan model ayarı önce gelir
                 if gemini_extra and is_gemini(pc):  # ör. reasoning_effort: sadece Gemini'nin anladığı ayarlar
                     extra.update(gemini_extra)
-                kw = dict(tools=tools, temperature=temperature, max_tokens=max_tokens,
+                out = max(max_tokens, self.out_floor.get(ref, 0)) if max_tokens else None
+                kw = dict(tools=tools, temperature=temperature, max_tokens=out,
                           response_format=response_format, extra=extra or None)
                 emitted = [False]
                 first = [0.0]  # ilk kelime anı (gerçek kullanımdaki hız ölçümü için)
@@ -556,12 +561,22 @@ class Router:
                     try:
                         res = call()
                     except ProviderError as e:
-                        if not (think and e.kind == "bad_request") or emitted[0]:
+                        if emitted[0]:
                             raise
-                        # Sağlayıcı düşünme parametresini tanımadı: bir daha gönderme, ayarsız tekrar dene.
-                        self.no_thinking.add(ref)
-                        self._log(f"{ref} düşünme ayarını kabul etmedi ({e}); ayarsız deneniyor")
-                        kw["extra"] = {k: v for k, v in extra.items() if k not in think} or None
+                        if think and e.kind == "bad_request":
+                            # Sağlayıcı düşünme parametresini tanımadı: bir daha gönderme, ayarsız tekrar dene.
+                            self.no_thinking.add(ref)
+                            self._log(f"{ref} düşünme ayarını kabul etmedi ({e}); ayarsız deneniyor")
+                            kw["extra"] = {k: v for k, v in extra.items() if k not in think} or None
+                        elif e.kind == "too_large" and "max_tokens" in str(e) and out:
+                            # Düşünen model (Cerebras qwen) küçük çıktı payını düşünmeye harcayıp boş dönüyordu:
+                            # girdi büyük değil, payı genişletip aynı modelde bir kez daha dene ve bunu hatırla.
+                            self.out_floor[ref] = min(8192, max(out * 4, 1024))
+                            kw["max_tokens"] = self.out_floor[ref]
+                            self._log(f"{ref} cevabı max_tokens={out} içinde bitiremedi; {kw['max_tokens']} ile "
+                                      "deneniyor")
+                        else:
+                            raise
                         res = call()
                     if looks_garbled(res.text):
                         raise ProviderError("garbled", "model anlamsız, birbirine karışmış dillerde metin üretti")
@@ -578,6 +593,7 @@ class Router:
                     failed.append(f"{ref} ({e.status or e.kind})")
                     continue
                 self.usage.record(ref, res.usage, ok=True)
+                self.strikes.pop(ref, None)
                 if self._real_clients:
                     ttft = first[0] - t_start if first[0] else 0.0
                     gen = time.monotonic() - (first[0] or t_start)
@@ -631,6 +647,9 @@ class Router:
             self.dead_providers.add(provider)
         elif e.kind == "not_found":
             self.dead_models.add(ref)
+        elif e.kind == "too_large" and "max_tokens" in low:
+            self.cooldown_until[ref] = now + 300  # geniş payla da bitiremedi: girdi değil model sorunlu
+            self.cooldown_kind[ref] = "server"
         elif e.kind == "too_large":
             # Ör. Groq ücretsiz katmanı dakikada 8K token: bu büyüklükteki istekleri bir daha bu modele yollama.
             if est:
@@ -646,13 +665,14 @@ class Router:
                 # Cevap vermeden takılan model (NVIDIA'da GLM-5.3 gibi) 30 sn sonra yine denenince her istek
                 # zaman aşımını (180 sn) baştan bekliyordu: bir süre sıradakiyle devam et.
                 base = TIMEOUT_COOLDOWN
-            wait = base
+            n = self.strikes[ref] = self.strikes.get(ref, 0) + 1
+            wait = base * 2 ** min(n - 1, 5)  # GLM-5.3 her 10 dk'da bir yine denenip 3 dk bekletiyordu
             if e.retry_after and e.kind == "rate_limit":
                 wait = e.retry_after
             elif e.retry_after:
                 # 503 + Retry-After: sunucu ne zaman açılacağını söylüyor. Önceden yok sayılıp 30 sn sonra yine
                 # aynı modele gidiliyor, her seferinde boşuna bir istek ve bekleme harcanıyordu.
-                wait = max(base, e.retry_after)
+                wait = max(wait, e.retry_after)
             self.cooldown_until[ref] = now + min(max(wait, 1.0), 6 * 3600)
             self.cooldown_kind[ref] = e.kind
 

@@ -336,3 +336,47 @@ def test_status_skips_companion_without_state(h):
     airborne(h, src="warthunder")
     out = h.status()
     assert out.startswith("warthunder:") and "dcs:" not in out
+
+
+def test_briefing_from_current_mission_log(tmp_path, monkeypatch, h):
+    from alice.sims.dcs import MissionInfo, Waypoint, briefing_text, current_mission
+
+    miz = tmp_path / "tempMission.miz"
+    miz.write_bytes(b"x")
+    (tmp_path / "Logs").mkdir()
+    (tmp_path / "Logs" / "dcs.log").write_text(
+        f"2026 INFO Dispatcher (Main): loadMission C:/eski.miz\n2026 INFO Dispatcher (Main): loadMission {miz}\n",
+        encoding="utf-8")
+    assert current_mission([tmp_path]) == miz
+    m = MissionInfo("Kırmızı Bayrak", "F-16C_50", "Viper 1", 251.0,
+                    [Waypoint("Kalkış", 0, 0, 0), Waypoint("WP1", 18520, 0, 15000), Waypoint("Hedef", 18520, 18520, 20000)],
+                    "SA-6 bataryasını vur. Sonra eve dön.")
+    text = briefing_text(m)
+    assert text.startswith("Görev: Kırmızı Bayrak. Viper 1 grubundasın. Rotada 2 nokta var, toplam 20 mil.")
+    assert "WP1: 000 derece, 10 mil, 15.000 feet." in text and "Hedef: 090 derece" in text
+    assert "Grup frekansı 251." in text and text.endswith("Görev açıklaması: SA-6 bataryasını vur.")
+    monkeypatch.setattr(dcs, "read_mission", lambda p: m)
+    monkeypatch.setattr(dcs, "saved_games_dirs", lambda: [])
+    assert h.brief_mission(miz) == text and h.notifier.sent[-1].body == text
+    assert h.brief_mission(miz) == ""  # aynı görev bir kez
+
+
+def test_cockpit_commands_safety_and_ack(monkeypatch, h):
+    sent = []
+    c = h.companion("dcs")
+
+    def fake_send(kind, arg, port=dcs.PORT):
+        sent.append((kind, arg))
+        c.last_state.extra["ack"] = f"{len(sent)}|ok|{arg}"
+        return len(sent)
+
+    monkeypatch.setattr(dcs, "send_command", fake_send)
+    assert "canlı veri gelmiyor" in h.cockpit("flare")
+    c.last_state = FlightState(t=1, source="dcs", gear=1.0, wall=time.time())
+    c.phase = "ground"
+    assert h.cockpit("gear_up") == "yapmadım: yerdeyken teker kaldırılmaz"
+    assert h.cockpit("gear_down") == "gerek yok: teker zaten aşağıda" and sent == []
+    assert h.cockpit("flare") == "yapıldı: flare" and sent == [("cmd", "flare")]
+    assert h.cockpit("radio", 251) == "yapıldı: 251.000" and sent[-1] == ("freq", "251.000")
+    c.phase = "air"
+    assert h.cockpit("gear_up") == "yapıldı: gear"

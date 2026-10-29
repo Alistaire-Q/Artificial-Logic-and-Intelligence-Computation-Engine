@@ -13,7 +13,7 @@ from typing import Any
 from alice.connect import store
 from alice.connect.manifest import Action, Auth, Manifest
 
-PLACEHOLDER = re.compile(r"\{([a-z_][a-z0-9_]*)\}")
+PLACEHOLDER = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")  # Google'ın {calendarId} gibi camelCase adları da
 TIMEOUT = 30.0
 RETRY_STATUSES = {429, 502, 503, 504}
 MAX_RETRY_WAIT = 5.0     # saniye: Retry-After bundan uzunsa beklemeden hatayı söyle

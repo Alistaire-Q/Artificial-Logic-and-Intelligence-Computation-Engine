@@ -82,7 +82,96 @@ PROFILES = {
 
 
 def profile_for(aircraft: str) -> Profile:
-    return PROFILES.get(aircraft) or PROFILES["default"]
+    base = PROFILES.get(aircraft) or PROFILES["default"]
+    learned = learned_cruise(base.name if base.name != "uçak" else aircraft)
+    if learned is None:
+        return base
+    from dataclasses import replace
+
+    # tek tük bozuk parça yüzünden bingo saçmalamasın: elle verilen değerin yarısı ile iki katı arası
+    return replace(base, cruise_kg_nm=min(max(learned, base.cruise_kg_nm / 2), base.cruise_kg_nm * 2))
+
+
+# --------------------------------------------------------------- uçuşlardan öğrenilen seyir yakıtı
+# Mil başına yakıt elle tahmin ediliyordu (F-16 4, F/A-18 6, diğerleri 5). Kayıtlı uçuşların düz, sakin
+# bölümlerinden (G ~1, irtifa sabite yakın, yakıt sıçramasız) gerçek değer çıkarılır ve bingo bunu kullanır.
+CRUISE_MIN_S = 60      # bir seyir parçası en az bu kadar sürmeli
+CRUISE_MAX_S = 300
+CRUISE_MIN_PARTS = 3   # bundan azsa elle verilen değer kalır
+_learned_cache: dict[str, Any] = {}
+
+
+def cruise_parts(series: dict[str, list]) -> list[float]:
+    """Bir uçuşun seyir parçalarında mil başına yakıt (kg/nm). Hız IAS'tan kaba TAS'a çevrilir (%2 / 1000 ft)."""
+    t, alt, g, ias, fuel = (series.get(k) or [] for k in ("t", "alt_ft", "g", "ias_kt", "fuel_kg"))
+    out: list[float] = []
+    start = 0
+    nm = 0.0
+
+    def close(i: int) -> None:
+        if t[i] - t[start] >= CRUISE_MIN_S and nm > 3 and fuel[start] - fuel[i] > 0:
+            out.append((fuel[start] - fuel[i]) / nm)
+
+    n = min(len(t), len(alt), len(g), len(ias), len(fuel))
+    for i in range(1, n):
+        dt = t[i] - t[i - 1]
+        ok = (fuel[i] is not None and fuel[i - 1] is not None and 0 < dt <= 10 and 0.6 <= (g[i] or 0) <= 1.6
+              and (ias[i] or 0) > 150 and 0 <= fuel[i - 1] - fuel[i] <= 5 * dt  # üstü tank atma ya da AB
+              and abs(alt[i] - alt[start]) < 2000)
+        if not ok:
+            close(i - 1)
+            start, nm = i, 0.0
+            continue
+        nm += ias[i] * (1 + 0.02 * max(alt[i], 0) / 1000) * dt / 3600
+        if t[i] - t[start] >= CRUISE_MAX_S:
+            close(i)
+            start, nm = i, 0.0
+    if n > 1 and start < n - 1:  # uçuş seyirdeyken bitti
+        close(n - 1)
+    return out
+
+
+def learn_cruise(folder: Path | None = None) -> dict[str, dict[str, float]]:
+    """Kayıtlı bütün uçuşlardan uçak başına seyir yakıtı; ~/.alice/flights/cruise.json'a yazılır."""
+    folder = folder or flights_dir()
+    parts: dict[str, list[float]] = {}
+    for f in sorted(folder.glob("*.json")):
+        if f.name == "cruise.json":
+            continue
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if d.get("aircraft") and d.get("series"):
+            parts.setdefault(d["aircraft"], []).extend(cruise_parts(d["series"]))
+    result = {}
+    for ac, xs in parts.items():
+        xs = sorted(x for x in xs[-200:] if 0.5 <= x <= 40)  # son uçuşlar
+        if len(xs) >= CRUISE_MIN_PARTS:
+            # Çatışma ve art yakıcılı parçalar yukarı çeker; eve dönüş ekonomik uçulur: alt üçte bir
+            result[ac] = {"kg_nm": round(xs[len(xs) // 3], 2), "parts": len(xs)}
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "cruise.json").write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
+    except OSError:
+        pass
+    _learned_cache.clear()
+    return result
+
+
+def learned_cruise(aircraft: str, folder: Path | None = None) -> float | None:
+    path = (folder or flights_dir()) / "cruise.json"
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    if _learned_cache.get("mtime") != (path, mtime):
+        try:
+            _learned_cache.update(mtime=(path, mtime), data=json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            return None
+    entry = (_learned_cache.get("data") or {}).get(aircraft)
+    return float(entry["kg_nm"]) if entry else None
 
 
 def fmt_min(m: float) -> str:
@@ -126,6 +215,63 @@ class Debrief:
         if self.hr:
             parts.append(f"Nabzın ortalama {self.hr['avg']:.0f}, en yüksek {self.hr['max']:.0f}.")
         return " ".join(parts)
+
+
+# ------------------------------------------------------------------------------- uçuş koçluğu
+def load_history(folder: Path | None = None, exclude: float | None = None, limit: int = 80) -> list[dict[str, Any]]:
+    """Kayıtlı uçuşlar, eskiden yeniye (seri verisi olmadan). `exclude`: az önce kaydedilen bu uçuşun başlangıcı."""
+    out = []
+    for f in sorted((folder or flights_dir()).glob("2*.json"))[-limit:]:
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if exclude is not None and abs(float(d.get("start_wall") or 0) - exclude) < 1:
+            continue
+        d.pop("series", None)
+        out.append(d)
+    return out
+
+
+def _avg(xs: list[float]) -> float:
+    return sum(xs) / len(xs)
+
+
+def coach(d: Debrief, history: list[dict[str, Any]]) -> str:
+    """Önceki uçuşlarla karşılaştırıp en fazla iki cümle: gelişme/gerileme ve bir sonraki uçuş için tek hedef.
+
+    İniş ve yaklaşma bütün uçuşlarla, yakıt ve kişisel rekorlar aynı uçakla karşılaştırılır. Az geçmiş varsa susar."""
+    out: list[str] = []
+    lands = [abs(h["touchdown_vv_ms"]) for h in history if h.get("touchdown_vv_ms") is not None][-5:]
+    if d.touchdown_vv_ms is not None and len(lands) >= 3:
+        v, avg = abs(d.touchdown_vv_ms), _avg(lands)
+        if v < min(lands):
+            out.append(f"Son {len(lands)} inişinin en yumuşağıydı (ortalaman {avg:.1f}).")
+        elif v < avg - 0.3:
+            out.append(f"Son {len(lands)} inişin ortalaması {avg:.1f}, bu {v:.1f}: gelişiyorsun.")
+        elif v > avg + 0.5:
+            out.append(f"Son {len(lands)} inişin ortalaması {avg:.1f}, bu {v:.1f}; bir dahakine son 50 feet'te "
+                       "alçalmayı biraz daha kes.")
+    appr = [h["approach_on_speed_pct"] for h in history if h.get("approach_on_speed_pct") is not None][-5:]
+    if d.approach_on_speed_pct is not None and len(appr) >= 3 and len(out) < 2:
+        p, avg = d.approach_on_speed_pct, _avg(appr)
+        if p >= avg + 15:
+            out.append(f"Yaklaşmada on speed oranın ortalamanın ({avg:.0f}) epey üstündeydi.")
+        elif p <= avg - 15:
+            out.append(f"Yaklaşma ortalamanın altındaydı (yüzde {avg:.0f} yerine {p:.0f}); hedef: AoA'yı on speed'de "
+                       "tutup gazla düzelt.")
+    same = [h for h in history if h.get("aircraft") == d.aircraft and (h.get("duration_s") or 0) >= 60]
+    if len(out) < 2 and len(same) >= 3:
+        if d.duration_s > max(h["duration_s"] for h in same):
+            out.append(f"Bu uçakla en uzun uçuşundu ({fmt_min(d.duration_s / 60)}).")
+        elif d.fuel_used_kg and all(h.get("fuel_used_kg") for h in same[-5:]):
+            rate = d.fuel_used_kg / (d.duration_s / 60)
+            avg = _avg([h["fuel_used_kg"] / (h["duration_s"] / 60) for h in same[-5:]])
+            if rate < avg * 0.8:
+                out.append(f"Dakikada {rate:.0f} kilo yaktın, bu uçaktaki ortalamandan ({avg:.0f}) belirgin az.")
+            elif rate > avg * 1.3:
+                out.append(f"Dakikada {rate:.0f} kilo yaktın, ortalaman {avg:.0f}: art yakıcıda çok kaldın.")
+    return " ".join(out[:2])
 
 
 class FlightCompanion:
@@ -188,6 +334,10 @@ class FlightCompanion:
         self.flaps_said = False
         self.ext_last: float | None = None
         self.ext_said = False
+        self.threat_seen: dict[str, float] = {}   # RWR yayıcı/kilit/füze anahtarı -> son görüldüğü an
+        self.threat_said: dict[str, float] = {}
+        self.bandit_close = False                 # en yakın düşman 5 km içinde (7 km'de yeniden kurulur)
+        self.six_last = -1e9
 
     # ---------------------------------------------------------------- girişler
     def restricted(self) -> None:
@@ -229,6 +379,62 @@ class FlightCompanion:
         self._ground(s)
         self._flaps(s)
         self._ext_tanks(s)
+        self._contacts(s)
+
+    # ------------------------------------------------------------------- tehditler
+    SIX_REPEAT = 20.0       # arkadaki düşman uyarısı en sık
+    SIX_RANGE = 2000.0
+    MERGE_RANGE = 5000.0
+    LOST_AFTER = 10.0       # bu kadar görünmeyen kilit/füze bitmiş sayılır
+
+    @staticmethod
+    def _km(m: float) -> str:
+        return f"{m:.0f} metre" if m < 1000 else f"{m / 1000:.1f} kilometre".replace(".", ",")
+
+    def _contacts(self, s: FlightState) -> None:
+        """RWR (DCS) ve mini harita (War Thunder) temasları: füze, kilit, yeni radar, arkadaki ve yaklaşan düşman.
+
+        F-16'nın RWR'ı zaten öter; ALICE onun söylemediğini söyler: yönü saat olarak ve radarın adı."""
+        cs = s.extra.get("contacts")
+        if not isinstance(cs, list):
+            return
+        t = s.t
+        for c in cs:
+            if c.get("kind") != "radar":
+                continue
+            base = f"{c.get('id')}|{c.get('name')}"
+            for key, cond in ((f"m|{base}", c.get("missile")), (f"l|{base}", c.get("lock")), (f"s|{base}", True)):
+                if not cond:
+                    continue
+                fresh = t - self.threat_seen.get(key, -1e9) > self.LOST_AFTER
+                self.threat_seen[key] = t
+                if not fresh:
+                    continue
+                clock, name = c.get("clock"), c.get("name") or "radar"
+                if key[0] == "m":
+                    self.say(f"Füze! Saat {clock}, {name}. Chaff at, dön!", "critical", "urgent")
+                elif key[0] == "l":
+                    self.say(f"Saat {clock}'den kilit: {name}.", "warn", self._urgent())
+                elif name != "?" and t - self.threat_said.get(name, -1e9) > 120:
+                    self.threat_said[name] = t
+                    self._info(s, f"Yeni radar: {name}, saat {clock}.")
+                break  # füze varsa kilit/yeni radar ayrıca söylenmez
+        planes = [c for c in cs if c.get("kind") == "aircraft" and c.get("dist_m") is not None]
+        if not planes:
+            self.bandit_close = False
+            return
+        near = planes[0]
+        six = next((c for c in planes if c["dist_m"] <= self.SIX_RANGE and c.get("clock") in (4, 5, 6, 7, 8)), None)
+        if six is not None and t - self.six_last >= self.SIX_REPEAT:
+            self.six_last = t
+            self.say(f"Arkanda düşman, saat {six['clock']}, {self._km(six['dist_m'])}!", "warn", "urgent")
+            self.bandit_close = True
+            return
+        if near["dist_m"] <= self.MERGE_RANGE and not self.bandit_close:
+            self.bandit_close = True
+            self._info(s, f"Düşman saat {near['clock']}, {self._km(near['dist_m'])}.", "serious")
+        elif near["dist_m"] > self.MERGE_RANGE + 2000:
+            self.bandit_close = False
 
     # ------------------------------------------------------------------- evre
     def _airborne(self, s: FlightState) -> bool:
@@ -675,7 +881,11 @@ class FlightCompanion:
         if d.duration_s < 60:
             return
         self.on_debrief(d)
-        self.say(d.summary(), "info", "calm")
+        try:
+            tip = coach(d, load_history(exclude=d.start_wall))
+        except Exception:  # noqa: BLE001 - karşılaştırma olmadan da değerlendirme söylensin
+            tip = ""
+        self.say(d.summary() + (" " + tip if tip else ""), "info", "calm")
 
     def note_touchdown(self, s: FlightState) -> None:
         """Teker yere değdiği an (agl ~0) son dikey hızı sakla."""

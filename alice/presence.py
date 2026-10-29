@@ -5,7 +5,10 @@ söyleyecek bir şey varsa kısa bir sesli brifing verir:
   * günü gelen takipler ("Matematik sınavın nasıl geçti?"), hatırlatmalar, yarım kalan iş
   * bugünün kalan takvimi (Google Takvim bağlıysa)
   * okunmamış önemli e-postalar (Gmail bağlıysa)
-Söyleyecek bir şey yoksa sadece günün ilk dönüşünde kısa bir selam verir; yoksa susar. Metni hızlı model senin
+Söyleyecek bir şey yoksa sadece günün ilk dönüşünde kısa bir selam verir; yoksa susar.
+Günün ilk karşılaması öğleden önceyse sabah özetine döner: hava, bugünün programı ([brief] days), dünden kalan notlar
+ve sağlık raporunun bekleyen sorunları da eklenir. Bilgisayar sabah açıldığında (çekirdek yeni başladı, uzaklık
+ölçülemedi) da bu özet bir kez söylenir; hangi gün söylendiği dosyada durur, ALICE yeniden başlasa da tekrarlamaz. Metni hızlı model senin
 kişiliğinle yazar (model yoksa kalıp cümle). Sonra birkaç saniye "Hey Alice" demeden cevap verebilirsin; konuşma
 hafızaya da yazılır, Live "az önceki konuşma"da görür. Uçuş/oyun modu bildirimleri susturuyorsa karşılama da susar.
 
@@ -20,6 +23,7 @@ config.toml:
 from __future__ import annotations
 
 import ctypes
+import json
 import subprocess
 import sys
 import threading
@@ -27,7 +31,8 @@ import time
 from datetime import datetime
 from typing import Any, Callable
 
-DEFAULTS = {"enabled": True, "away_minutes": 90, "min_gap_hours": 3, "quiet_hours": "00:30-07:00"}
+DEFAULTS = {"enabled": True, "away_minutes": 90, "min_gap_hours": 3, "quiet_hours": "00:30-07:00",
+            "morning_until": 13}  # günün ilk karşılaması bu saatten önceyse sabah özeti
 
 
 def idle_seconds() -> float | None:
@@ -112,10 +117,39 @@ def unread_mail(cfg) -> list[str]:
         return []
 
 
-def briefing(mem, cfg, away: float, now: datetime) -> dict[str, Any]:
+def morning_info(cfg, now: datetime) -> dict[str, Any]:
+    """Sabah özetinin ek parçaları: hava, bugünün programı, dünden kalan notlar, sağlık raporunun bekleyen sorunu."""
+    from alice.extras import brief
+
+    data = (getattr(cfg, "data", None) or {})
+    b = dict(data.get("brief") or {})
+    out: dict[str, Any] = {}
+    try:
+        out["weather"] = brief.weather(str(b.get("city") or ""), auto=True)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        g = brief.gather(b, now=now, weather_fn=lambda c: "")
+        if b.get("days"):
+            out["program"] = g.get("bugün", "")
+        out["notes"] = g.get("dünden kalanlar") or []
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from alice import health_report
+
+        pending = (json.loads(health_report.state_path().read_text(encoding="utf-8")).get("pending") or {})
+        if pending.get("body"):
+            out["health"] = pending["body"]
+    except (OSError, ValueError):
+        pass
+    return out
+
+
+def briefing(mem, cfg, away: float, now: datetime, morning: dict[str, Any] | None = None) -> dict[str, Any]:
     due = mem.due_followups(now.timestamp()) if mem is not None else []
     return {"greeting": part_of_day(now), "away": _away_text(away), "followups": due,
-            "events": today_events(cfg, now), "mail": unread_mail(cfg)}
+            "events": today_events(cfg, now), "mail": unread_mail(cfg), "morning": morning}
 
 
 def has_news(b: dict[str, Any]) -> bool:
@@ -139,13 +173,25 @@ Takipler (sorulacak/hatırlatılacak/yarım kalan):
 Bugünün kalan takvimi:
 {events}
 Okunmamış önemli e-postalar:
-{mail}"""
+{mail}{morning}"""
+
+MORNING_PROMPT = """
+
+Bu günün ilk karşılaması: kısa bir sabah özeti yap (en fazla 5 cümle). Sıra: hava (tek cümle, şemsiye ya da mont gerekiyorsa söyle), bugün ne var (program ve takvim), sonra takipler ve e-postalar, en son dünden kalanlar ve ALICE'in kendi sorunu.
+Hava: {weather}
+Bugünün programı: {program}
+Dünden kalan notlar: {notes}
+ALICE'in kendi sorunu (sağlık raporu): {health}"""
 
 
 def compose(b: dict[str, Any], mem=None, router=None) -> str:
     fups = "\n".join(f"- ({f.kind}) {f.text}" for f in b["followups"]) or "(yok)"
     events = "\n".join(f"- {e}" for e in b["events"]) or "(yok)"
     mail = "\n".join(f"- {m}" for m in b["mail"]) or "(yok)"
+    mo = b.get("morning")
+    morning = MORNING_PROMPT.format(weather=mo.get("weather") or "(yok)", program=mo.get("program") or "(yok)",
+                                    notes="; ".join(mo.get("notes") or []) or "(yok)",
+                                    health=mo.get("health") or "(yok)") if mo else ""
     if router is not None:
         try:
             from alice.config import personality_text
@@ -153,14 +199,17 @@ def compose(b: dict[str, Any], mem=None, router=None) -> str:
             profile = mem.profile(chars=1200, recent=0) if mem is not None else ""
             prompt = COMPOSE_PROMPT.format(away=b["away"], greeting=b["greeting"], persona=personality_text()[:1500]
                                            or "(varsayılan: sakin, kısa, sıcak)", profile=profile[:1500] or "(yok)",
-                                           followups=fups, events=events, mail=mail)
-            res = router.chat("fast", [{"role": "user", "content": prompt}], temperature=0.7, max_tokens=220)
+                                           followups=fups, events=events, mail=mail, morning=morning)
+            res = router.chat("fast", [{"role": "user", "content": prompt}], temperature=0.7,
+                              max_tokens=380 if mo else 220)
             text = (res.message.get("content") or "").strip()
             if text:
                 return text
         except Exception:  # noqa: BLE001 - model yoksa kalıp cümle
             pass
     parts = [f"{b['greeting']}, hoş geldin."]
+    if mo and mo.get("weather"):
+        parts.append(mo["weather"] + ".")
     if b["followups"]:
         parts.append(b["followups"][0].text)
     if b["events"]:
@@ -176,7 +225,8 @@ class Greeter:
 
     def __init__(self, cfg, notify: Callable[[Any], bool], memory: Callable[[], Any] = lambda: None,
                  router: Callable[[], Any] = lambda: None, idle: Callable[[], float | None] = idle_seconds,
-                 clock: Callable[[], datetime] = datetime.now):
+                 clock: Callable[[], datetime] = datetime.now,
+                 morning: Callable[[Any, datetime], dict[str, Any]] = morning_info, state_path: Any = None):
         self.cfg = cfg
         self.notify = notify
         self.memory = memory
@@ -186,7 +236,17 @@ class Greeter:
         self.voice: Any = None  # VoiceAssistant: karşılamadan sonra "Hey Alice" demeden cevap verilebilsin
         self.away_since: float | None = None
         self.last_greet = 0.0
-        self.last_day = ""
+        self.morning = morning
+        if state_path is None:
+            from alice.config import alice_home
+
+            state_path = alice_home() / "greeting-state.json"
+        self.state_path = state_path
+        try:
+            self.last_day = str(json.loads(state_path.read_text(encoding="utf-8")).get("last_day") or "")
+        except (OSError, ValueError, AttributeError):
+            self.last_day = ""
+        self._started = False
         self._busy = threading.Lock()
 
     def tick(self) -> bool:
@@ -198,6 +258,14 @@ class Greeter:
         if idle is None:
             return False
         now = time.time()
+        if not self._started:
+            self._started = True
+            # Sabah bilgisayar açıldı: çekirdek yeni başladı, yokluk ölçülemedi ama günün ilk özeti henüz yapılmadı
+            today = self.clock()
+            if (idle < 300 and self.last_day != today.strftime("%Y-%m-%d") and 6 <= today.hour < int(s["morning_until"])
+                    and self._allowed(s, now)):
+                threading.Thread(target=self.greet, args=(8 * 3600,), daemon=True, name="alice-greeting").start()
+                return True
         if idle >= float(s["away_minutes"]) * 60:
             if self.away_since is None:
                 self.away_since = now - idle
@@ -224,8 +292,14 @@ class Greeter:
         try:
             now = self.clock()
             mem = self.memory()
-            b = briefing(mem, self.cfg, away, now)
             first_today = self.last_day != now.strftime("%Y-%m-%d")
+            mo = None
+            if first_today and now.hour < int(settings(self.cfg)["morning_until"]):
+                try:
+                    mo = self.morning(self.cfg, now)
+                except Exception:  # noqa: BLE001 - sabah ekleri olmadan da karşıla
+                    mo = None
+            b = briefing(mem, self.cfg, away, now, mo)
             if not has_news(b) and not first_today:
                 return ""
             text = compose(b, mem, self.router())
@@ -236,6 +310,10 @@ class Greeter:
                 return ""  # mod susturdu: sayma, sonra tekrar denenebilsin
             self.last_greet = time.time()
             self.last_day = now.strftime("%Y-%m-%d")
+            try:
+                self.state_path.write_text(json.dumps({"last_day": self.last_day}), encoding="utf-8")
+            except (OSError, AttributeError):
+                pass
             self._after(mem, b, text)
             return text
         finally:
