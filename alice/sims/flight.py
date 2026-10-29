@@ -568,8 +568,7 @@ class FlightCompanion:
             say_it = kind != last or s.t - self.appr_last_say >= self.APPR_REPEAT
         if not say_it:
             return
-        text = {"sink": "Çok hızlı alçalıyorsun.", "slow": "Yavaşsın, stall'a yaklaşıyorsun, güç ver.",
-                "fast": "Hızlısın.", "on": "On speed, iyi."}[kind]
+        text = APPROACH[kind]
         self.appr_last_say, self.appr_last_kind = s.t, kind
         self.say(text, "info", "calm" if kind == "on" else "serious")
 
@@ -642,6 +641,21 @@ WARNING_NAMES = {
     "RightAileronFailure": "sağ eleron hasarı", "CanopyOpen": "kanopi açık", "FuelTankDamage": "yakıt tankı hasarı",
     "MasterWarning": "ana uyarı", "LeftEngineFire": "sol motor yangını", "RightEngineFire": "sağ motor yangını",
 }
+
+
+APPROACH = {"sink": "Çok hızlı alçalıyorsun.", "slow": "Yavaşsın, stall'a yaklaşıyorsun, güç ver.",
+            "fast": "Hızlısın.", "on": "On speed, iyi."}
+
+
+def callouts() -> list[tuple[str, str]]:
+    """Uçuşta söylenen sabit cümleler ve tonları. Ses önceden üretilip diske konur: uçuşta ekran kartı oyuna
+    kaldığı için ses buluttan geliyor (her uyarı 1-2 sn gecikme, kota); önbellekteki ses anında çalar."""
+    fixed = [("Yere yaklaşıyorsun, burnu kaldır!", "urgent"), ("Teker kapalı! Alçak ve yavaşsın.", "urgent"),
+             ("Flaplar hâlâ açık, toplamayı unutma.", "serious"), ("Dış tanklar boşaldı.", "calm")]
+    fixed += [(text, "calm" if kind == "on" else "serious") for kind, text in APPROACH.items()]
+    # Tek ışıklı uyarılar (en sık durum); önce en kritikleri.
+    names = sorted(WARNING_NAMES.values(), key=lambda n: ("yangın" not in n, "hasar" in n, n))
+    return fixed + [(f"Uyarı: {n}.", "urgent") for n in names]
 
 
 def warning_name(key: str) -> str:

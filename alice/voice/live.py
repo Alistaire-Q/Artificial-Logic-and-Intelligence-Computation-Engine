@@ -339,6 +339,7 @@ class AudioOut:
         self._gen = 0
         self.busy_until = 0.0
         self.underruns = 0
+        self.played = 0  # çalınan bayt (araya girilince cevabın ne kadarının duyulduğu buradan hesaplanır)
         self._t = threading.Thread(target=self._run, daemon=True, name="alice-live-out")
         self._t.start()
 
@@ -356,6 +357,7 @@ class AudioOut:
         self.busy_until = 0.0
 
     dead: Exception | None = None
+    played = 0
 
     @property
     def playing(self) -> bool:
@@ -416,6 +418,7 @@ class AudioOut:
                     self.busy_until = time.monotonic() + len(piece) / 2 / self.rate + 0.2
                     if out.write(piece):  # True: çalarken ses bitti (takılma duyuldu)
                         self.underruns += 1
+                    self.played += len(piece)
 
 
 def _close(ws) -> None:
@@ -485,6 +488,8 @@ class LiveSession:
         # Model araç çağırıp hiçbir şey söylemediyse beklerken hazır kısa cümle ("Bir saniye.") çalınır.
         self.fillers_on = bool(v.get("live_fillers", True))
         self._fillers = None
+        # Araya girilince cevabın duyulmayan kısmı modele not olarak gider ("devam et" deyince oradan sürdürsün).
+        self.cut_notes = bool(v.get("live_cut_note", True))
         # think'in model sırası; boşsa ses için ölçülmüş hızlı modeller, ardından beyin zinciri.
         self.think_models = [str(r) for r in v.get("live_think_models") or []]
 
@@ -754,13 +759,20 @@ class LiveSession:
                         if sc.get("interrupted"):
                             out.clear()
                             self.log("live araya girildi (kullanıcı konuştu ya da gürültü)")
+                            self._note_cut(ws, state, out)
                         for part in (sc.get("modelTurn") or {}).get("parts", []):
                             data = (part.get("inlineData") or {}).get("data")
                             if data and not part.get("thought") and not state["mute"]:
                                 if state.get("asked") and not state.get("spoke"):
                                     state["spoke"] = True  # kullanıcının son sözünden ilk sese kadar geçen süre
-                                    self.log(f"live cevap gecikmesi: {time.monotonic() - state['asked']:.1f} sn")
-                                out.put(base64.b64decode(data))
+                                    wait = time.monotonic() - state["asked"]
+                                    self.log(f"live cevap gecikmesi: {wait:.1f} sn")
+                                    self._latency(wait, state, ui)
+                                pcm = base64.b64decode(data)
+                                if not state.get("recv"):
+                                    state["play0"] = getattr(out, "played", 0)
+                                state["recv"] = state.get("recv", 0) + len(pcm)
+                                out.put(pcm)
                                 touch()
                         if (t := (sc.get("inputTranscription") or {}).get("text")):
                             if not state["framed"] and self.wants_frame(state["cur"] + t):
@@ -797,6 +809,7 @@ class LiveSession:
                             self._flush_log(state, ui)
                             state["mute"] = False
                             state["framed"] = False
+                            state["recv"] = 0
                             if sc.get("turnComplete"):
                                 state["cur"], state["pending"] = "", False
                     if msg.get("toolCall"):
@@ -902,6 +915,36 @@ class LiveSession:
     # Dolgu çalınmayanlar: arka plan işinde model hemen "başladım" der; diğerleri sessiz kayıt işleri.
     NO_FILLER = BACKGROUND | {"task_control", "feedback", "memory"}
 
+    def _latency(self, wait: float, state: dict[str, Any], ui) -> None:
+        """Turun gecikmesini kaydet (haftalık özet için). Dolgu çalındıysa kullanıcı o arada bir ses duydu."""
+        from alice.voice import latency
+
+        try:
+            latency.record("canlı", wait, model=getattr(self, "model", ""), tools=bool(getattr(ui, "tools", None)),
+                           filler=bool(state.get("filled")) and state.get("filled") == state.get("asked"))
+        except Exception:  # noqa: BLE001 - ölçüm konuşmayı bozmasın
+            pass
+
+    def _note_cut(self, ws, state: dict[str, Any], out) -> None:
+        """Söz kesildi: cevabın çalınan kısmı duyuldu, kalanı duyulmadı. Sunucu ise cevabın gönderdiği kadarını
+        (çalınandan çok daha fazlasını) söylenmiş sayıyor; modele duyulmayan kısmı not olarak ver."""
+        recv, said = state.get("recv", 0), "".join(state["said"])
+        if not getattr(self, "cut_notes", True) or not recv or not said or state["mute"]:
+            return
+        from alice.voice.bargein import cut_note, split_heard
+
+        heard, unheard = split_heard(said, (getattr(out, "played", 0) - state.get("play0", 0)) / recv)
+        note = cut_note(heard, unheard)
+        if not note:
+            return
+        try:  # turnComplete yok: not geçmişe eklenir, cevap kullanıcının yeni sözüne verilir
+            ws.send(json.dumps({"clientContent": {"turns": [{"role": "user", "parts": [{"text": note}]}],
+                                                  "turnComplete": False}}))
+        except Exception:  # noqa: BLE001
+            return
+        state["said"] = [(heard + " …(sözü kesildi)").strip()]  # kayda da duyulan kısım girsin
+        self.log(f"live söz kesildi: cevabın {len(heard)}/{len(said)} karakteri duyuldu")
+
     def fillers(self):
         """Live'ın şu anki sesiyle hazır cümleler (ses Ayarlar'dan değişirse yenisi)."""
         voice = self.current_voice()
@@ -917,8 +960,10 @@ class LiveSession:
         if (not getattr(self, "fillers_on", False) or name in self.NO_FILLER or state.get("spoke") or out.playing
                 or state.get("filled") == state.get("asked")):
             return
+        from alice.voice.fillers import user_tone
+
         try:
-            pcm = self.fillers().get("think" if name == "think" else "tool")
+            pcm = self.fillers().get("think" if name == "think" else "tool", user_tone("".join(state.get("heard") or [])[-200:]))
         except Exception:  # noqa: BLE001 - dolgu yoksa sessiz bekle, konuşma bozulmasın
             pcm = None
         if pcm:
@@ -1284,14 +1329,24 @@ class LiveSession:
         if heard or said or ui.tools:
             tools = f" araçlar: {', '.join(ui.tools)}" if ui.tools else ""
             self.log(f"live [{self.model}] duyulan: {heard} | cevap: {said}{tools}")
+        history = getattr(self, "_history", [])
         if heard:
-            self._history = (getattr(self, "_history", []) + [(time.time(), heard, said)])[-20:]
+            self._history = (history + [(time.time(), heard, said)])[-20:]
+        elif said and history and state.get("ep_open"):
+            # Araçtan sonra ayrı turda gelen cevap: kullanıcının sorusuna ait (yoksa kayıtta cevap boş kalıyordu).
+            ts, user, before = history[-1]
+            self._history[-1] = (ts, user, (before + " " + said).strip())
         mem = self._memory()
-        if mem is not None and heard:
+        if mem is not None and (heard or (said and state.get("ep"))):
             try:
-                mem.record(heard, said, "canlı")
-                mem.learn(heard, said)
+                if heard:
+                    state["ep"] = mem.record(heard, said, "canlı")
+                    mem.learn(heard, said)
+                elif state.get("ep_open"):
+                    mem.add_reply(state["ep"], said)
             except Exception:  # noqa: BLE001 - hafıza hatası konuşmayı bozmasın
                 pass
+        if heard:
+            state["ep_open"] = True  # sonraki kullanıcısız cevap bu tura eklenir
         state["heard"], state["said"] = [], []
         ui.tools = []

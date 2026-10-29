@@ -309,6 +309,11 @@ class Core:
             mem.digest()
             mem.maybe_consolidate()  # günde bir: tekrarlar birleşir, bir konuşmalık "bilgiler" silinir
             calendar_followups(mem, self.cfg)
+            from alice.voice import latency
+
+            week = latency.weekly_report()
+            if week:  # sesli modun haftalık gecikmesi: yavaşlık tahminle değil ölçümle görülsün
+                self.store.add_event("info", "Sesli mod: bu haftanın gecikmesi", week, topic="voice")
             from alice.tools.gmail import new_important
 
             mails = new_important(self.cfg)

@@ -741,6 +741,15 @@ class TTSRouter:
 
         threading.Thread(target=run, daemon=True, name="alice-tts-warm").start()
 
+    def cached(self, text: str, emotion: str = "calm") -> bool:
+        """Bu cümlenin sesi önbellekte var mı (herhangi bir motordan)?"""
+        from alice.voice.spoken_numbers import normalize
+
+        if self.cache is None:
+            return False
+        text = normalize(text)
+        return any(self.cache._file(e.name, emotion, text).exists() for e in self.order())
+
     def synth(self, text: str, emotion: str = "calm") -> Audio:
         from alice.voice.spoken_numbers import normalize
 

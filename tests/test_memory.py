@@ -234,3 +234,101 @@ def test_hafiza_araci_gecmis_sohbet_eylemleri(workdir):
 
     with pytest.raises(ToolError):
         Memory().run(ctx, "search_chats")
+
+
+def test_vektorler_parti_parti_kaydedilir_kota_dolunca_kalan_beklenir():
+    from alice.memvec import RateLimited, normalize
+
+    class Emb:
+        available, calls = True, 0
+
+        def embed(self, texts):
+            self.calls += 1
+            if self.calls > 1:
+                raise RateLimited("429")  # dakikalık kota: ilk parti geçti, ikincisi takıldı
+            return [normalize([1.0, float(i)]) for i in range(len(texts))]
+
+    m = LongMemory(":memory:", {}, None, Emb())
+    for i in range(30):
+        _chat(m, time.time() - i, f"konuşma {i}", "cevap")
+    assert m.index_pending() == 20  # ilk parti kaydedildi; eskiden hepsi atılıyordu
+    assert m.db.execute("SELECT COUNT(*) FROM vectors").fetchone()[0] == 20
+
+
+def test_aractan_sonra_gelen_canli_cevap_soruya_eklenir():
+    from types import SimpleNamespace
+
+    from alice.voice.live import LiveSession
+
+    m = mem()
+    s = LiveSession.__new__(LiveSession)
+    s.log, s.model, s._history = (lambda x: None), "m", []
+    s.agent = SimpleNamespace(memory=m)
+    ui = SimpleNamespace(tools=[])
+    state = {"heard": ["Ankara'da hava nasıl?"], "said": []}
+    s._flush_log(state, ui)  # model önce sustu, aracı çağırdı
+    state["said"] = ["Ankara'da hava kapalı ve on iki derece."]
+    s._flush_log(state, ui)  # cevap ayrı turda geldi
+    ep = m.recent(1)[0]
+    assert ep.user == "Ankara'da hava nasıl?" and "on iki derece" in ep.reply
+    assert len(m.recent(5)) == 1 and "on iki derece" in s._history[-1][2]
+
+
+def test_gurultu_kaydedilmez_ozetteki_kalip_cumleler_atilir():
+    from alice.memory import strip_filler
+
+    m = mem()
+    assert m.record("हे या इनिशियलाइज़ेशन", "") is None and m.recent() == []
+    assert m.record("Ankara'da hava nasıl?", "") is not None
+    assert strip_filler("Kullanıcı sesinin değiştiğini söyledi. Hiçbir işlem gerçekleştirilmedi veya karar "
+                        "alınmadı. Devam eden bir iş kalmadı.") == "Kullanıcı sesinin değiştiğini söyledi."
+    assert strip_filler("Kullanıcı hava durumunu sordu; ALICE henüz yanıt vermedi.") == "Kullanıcı hava durumunu sordu."
+
+
+def test_toparlama_tekrar_eden_ilgiyi_ekler_degersiz_ozeti_siler():
+    seen = []
+
+    def extractor(prompt):
+        seen.append(prompt)
+        if "portrait" in prompt:
+            return json.dumps({"portrait": "**Tercihler**\n- Unciv oynar"})
+        return json.dumps({"add": [{"text": "Kullanıcı Unciv oynar.", "kind": "preference"},
+                                   {"text": r"Kullanıcı C:\Deneme klasörünü açtı.", "kind": "fact"}],
+                           "drop_summaries": [2, 99]})
+
+    m = LongMemory(":memory:", {}, extractor)
+    now = time.time()
+    m.add_summary(now - 7200, now - 7000, "Kullanıcı Unciv'de yeni şehir kurdu.")
+    m.add_summary(now - 3600, now - 3500, "Kullanıcı ALICE'in Not Defteri otomasyonunu denedi.")
+    m.add_summary(now - 600, now - 500, "Kullanıcı Unciv'de savaş başlattı.")
+    done = m.consolidate()
+    assert "Unciv'de savaş" in seen[0] and "drop_summaries" in seen[0]  # özetler toparlamaya girer
+    assert [f.text for f in m.facts()] == ["Kullanıcı Unciv oynar."]  # yol içeren eklenmez
+    assert [x.id for x in m.summaries(10)] == [1, 3] and "özet silindi #2" in done
+
+
+def test_toparlama_talimati_silmez_toplu_silmez_guclu_modeli_kullanir():
+    fast, strong = [], []
+
+    def synthesizer(prompt):
+        strong.append(prompt)
+        return json.dumps({"remove": [1, 2, 3, 4, 5, 6, 7, 8],
+                           "add": [{"text": "Kullanıcı WhatsApp'ta Que Mal ile iletişime geçti.", "kind": "person"},
+                                   {"text": "Kullanıcı Unciv oynar.", "kind": "preference"}],
+                           "drop_summaries": [1, 2, 3, 4, 5, 6]})
+
+    m = LongMemory(":memory:", {}, lambda p: fast.append(p) or "{}")
+    m.synthesizer = synthesizer
+    m.remember("Kullanıcı oyunlarda reklam çıkınca durulmasını ister.", "preference", source="otomatik")  # 1
+    for word in ("elma", "armut", "kiraz", "erik", "incir", "ayva", "dut"):  # 2..8
+        m.remember(f"Kullanıcı {word} meyvesini sever.", "preference", source="otomatik")
+    now = time.time()
+    for i in range(6):
+        m.add_summary(now - 1000 + i, now - 900 + i, f"Kullanıcı konu{i} üzerinde çalıştı.")
+    m.consolidate()
+    texts = [f.text for f in m.facts()]
+    assert any("reklam" in t for t in texts)  # talimat silinmedi
+    assert len([t for t in texts if "meyvesini" in t]) == 5  # 8'in en fazla dörtte biri (2) silindi
+    assert "Kullanıcı Unciv oynar." in texts and not any("Que Mal" in t for t in texts)  # tek olay bilgi olmaz
+    assert len(m.summaries(10)) == 4  # özetlerin en fazla üçte biri
+    assert strong and not fast  # günlük toparlama güçlü modelle

@@ -145,6 +145,33 @@ def ephemeral(text: str) -> bool:
     return bool(_EPHEMERAL.search(text))
 
 
+# Ses tanımanın gürültüden uydurduğu yabancı yazı ("हे या इनिशियलाइज़ेशन"): sohbet kaydına girip aramayı kirletiyordu.
+# Yunan, Kiril, İbrani/Arap, Hint, Tay/Tibet, Japon, Çin, Kore yazıları.
+_FOREIGN_RANGES = ((0x0370, 0x04FF), (0x0590, 0x06FF), (0x0900, 0x0FFF), (0x3040, 0x30FF), (0x3400, 0x9FFF),
+                   (0xAC00, 0xD7AF))
+_FOREIGN = re.compile("[" + "".join(f"{chr(a)}-{chr(b)}" for a, b in _FOREIGN_RANGES) + "]")
+
+
+# Kullanıcının ALICE'ten kalıcı isteği ("... sormasını ister", "asla ... yapmasın").
+_INSTRUCTION = re.compile(r"\b(ister|istemez|istiyor|istemiyor|asla|her zaman|hitap|çağır|cagir|sorulmasını)\w*",
+                          re.I)
+
+
+def noise_turn(user: str) -> bool:
+    """Kaydedilmeye değmeyen tur: harflerin çoğu Latin dışı yazıysa (ses tanıma gürültüyü başka dilde yazmış)."""
+    letters = [c for c in user if c.isalpha()]
+    return bool(letters) and len(_FOREIGN.findall(user)) > len(letters) * 0.3
+
+
+# Cümle geçmiş zamanla bitiyorsa ("şarkısını açtı", "iletişime geçti", "dinlemeye çalıştı") bir olaydır, alışkanlık
+# değil ("dinler", "oynar"). Özetlerden çıkarılan bilgilerde bu ayrım modele bırakılamadı.
+_PAST = re.compile(r"\w+(?:dı|di|du|dü|tı|ti|tu|tü)(?:lar|ler)?[.!]?$", re.I)
+
+
+def past_event(text: str) -> bool:
+    return bool(_PAST.search(text.strip()))
+
+
 def has_signal(text: str) -> bool:
     t = " " + fold(clean_user_text(text)) + " "
     return any(s in t for s in _SIGNALS)
@@ -248,6 +275,9 @@ class LongMemory:
         self.profile_chars = int(o.get("profile_chars", 2500))
         self.keep_days = float(o.get("keep_days", 365))
         self.extractor = extractor  # prompt -> JSON metni; None ise sadece açık "hatırla" istekleri kaydedilir
+        # Günlük toparlama ve tanıtım için daha güçlü model (günde iki çağrı). Hızlı model kuralları tutmuyordu:
+        # "WhatsApp'ta X'e yazdı"yı kalıcı bilgi yaptı, bütün özetleri sildi. None: extractor kullanılır.
+        self.synthesizer: Callable[[str], str] | None = None
         self._lock = threading.RLock()
         self._learn_lock = threading.Lock()
         if isinstance(self.path, Path):
@@ -275,6 +305,7 @@ class LongMemory:
         except Exception:  # noqa: BLE001 - embedding opsiyonel: yoksa kelime araması
             embedder = None
         mem = cls(alice_home() / "memory.db", o, make_extractor(o, router), embedder)
+        mem.synthesizer = make_extractor(o, router, str(o.get("synthesis_role", "brain")))
         mem.import_markdown(alice_home() / "memory.md")
         return mem
 
@@ -439,7 +470,7 @@ class LongMemory:
     def record(self, user: str, reply: str, channel: str = "") -> int | None:
         user = clean_user_text(user)
         reply = (reply or "").strip()
-        if not user:
+        if not user or noise_turn(user):
             return None
         with self._lock:
             cur = self.db.execute("INSERT INTO episodes(ts, channel, user, reply, terms) VALUES (?, ?, ?, ?, ?)",
@@ -447,6 +478,24 @@ class LongMemory:
             self.db.commit()
         self.index_soon()
         return int(cur.lastrowid)
+
+    def add_reply(self, eid: int, reply: str) -> bool:
+        """Tura sonradan gelen cevabı ekle. Canlı sesli modda araç çağrılınca model önce susup cevabı araçtan sonra
+        ayrı bir turda söylüyor; o cevap eskiden kaydedilmiyordu (kayıtların yarısında cevap boştu)."""
+        reply = (reply or "").strip()
+        if not reply:
+            return False
+        with self._lock:
+            row = self.db.execute("SELECT user, reply FROM episodes WHERE id = ?", (int(eid),)).fetchone()
+            if row is None:
+                return False
+            full = (row[1] + " " + reply).strip()[:2000]
+            self.db.execute("UPDATE episodes SET reply = ?, terms = ? WHERE id = ?",
+                            (full, " ".join(terms(row[0] + " " + full)), int(eid)))
+            self.db.execute("DELETE FROM vectors WHERE kind = 'episode' AND ref = ?", (int(eid),))
+            self.db.commit()
+        self.index_soon()
+        return True
 
     def recent(self, n: int = 5) -> list[Episode]:
         with self._lock:
@@ -462,11 +511,15 @@ class LongMemory:
         threading.Thread(target=self.index_pending, kwargs={"wait": False}, daemon=True,
                          name="alice-memory-index").start()
 
-    def index_pending(self, limit: int = 256, wait: bool = True) -> int:
+    def index_pending(self, limit: int = 60, wait: bool = True) -> int:
         """Vektörü olmayanları vektöre çevir; bu çağrının eklediği sayıyı döndürür. wait: arka planda süren bir
-        indeksleme varsa bitmesini bekle (sonra kalanları yap)."""
+        indeksleme varsa bitmesini bekle (sonra kalanları yap). Her parti ayrı kaydedilir: kota yarıda dolarsa
+        yapılan iş kaybolmaz; kalanlar kota açılınca kendiliğinden devam eder."""
         if self.embedder is None or not self._index_lock.acquire(timeout=30 if wait else 0):
             return 0
+        from alice.memvec import BATCH, pack
+
+        done, left = 0, False
         try:
             with self._lock:
                 todo = [("fact", r[0], r[1]) for r in self.db.execute(
@@ -475,25 +528,43 @@ class LongMemory:
                     "SELECT id, text FROM summaries WHERE id NOT IN (SELECT ref FROM vectors WHERE kind = 'summary')")]
                 todo += [("episode", r[0], f"Kullanıcı: {r[1]}\nALICE: {r[2][:400]}") for r in self.db.execute(
                     "SELECT id, user, reply FROM episodes WHERE id NOT IN (SELECT ref FROM vectors WHERE kind = "
-                    "'episode') ORDER BY ts DESC LIMIT ?", (limit,))]
+                    "'episode') ORDER BY ts DESC LIMIT ?", (limit + 1,))]
+            left = len(todo) > limit
             todo = todo[:limit]
-            if not todo:
-                return 0
-            from alice.memvec import pack
-
-            vecs = self.embedder.embed([t[2][:2000] for t in todo])
-            with self._lock:
-                # Embedding sürerken güncellenen/silinen bilgi eski metnin vektörüyle kaydedilmesin.
-                facts = dict(self.db.execute("SELECT id, text FROM facts").fetchall())
-                rows = [(k, ref, pack(v)) for (k, ref, text), v in zip(todo, vecs)
-                        if k != "fact" or facts.get(ref) == text]
-                self.db.executemany("INSERT OR REPLACE INTO vectors(kind, ref, vec) VALUES (?, ?, ?)", rows)
-                self.db.commit()
-            return len(todo)
-        except Exception:  # noqa: BLE001 - embedding opsiyonel; kelime araması çalışmaya devam eder
-            return 0
+            for i in range(0, len(todo), BATCH):
+                part = todo[i:i + BATCH]
+                try:
+                    vecs = self.embedder.embed([t[2][:2000] for t in part])
+                except Exception:  # noqa: BLE001 - embedding opsiyonel; kelime araması çalışmaya devam eder
+                    left = True
+                    break
+                with self._lock:
+                    # Embedding sürerken güncellenen/silinen bilgi eski metnin vektörüyle kaydedilmesin.
+                    facts = dict(self.db.execute("SELECT id, text FROM facts").fetchall())
+                    rows = [(k, ref, pack(v)) for (k, ref, text), v in zip(part, vecs)
+                            if k != "fact" or facts.get(ref) == text]
+                    self.db.executemany("INSERT OR REPLACE INTO vectors(kind, ref, vec) VALUES (?, ?, ?)", rows)
+                    self.db.commit()
+                done += len(part)
         finally:
             self._index_lock.release()
+        if left and isinstance(self.path, Path):
+            self._index_later()
+        return done
+
+    def _index_later(self) -> None:
+        """Birikmiş kayıtlar var (kota doldu ya da çok fazla): kota açılınca devam et."""
+        if getattr(self, "_index_timer", None) is not None and self._index_timer.is_alive():
+            return
+        from alice.memvec import RATE_WAIT
+
+        def run() -> None:
+            self._index_timer = None
+            self.index_soon()
+
+        self._index_timer = threading.Timer(RATE_WAIT + 5, run)
+        self._index_timer.daemon = True
+        self._index_timer.start()
 
     def _semantic(self, query: str, kinds: list[str], limit: int = 12) -> dict[tuple[str, int], float]:
         """(tür, id) -> 0..1 anlam benzerliği puanı (embed_min'in altı yok sayılır). Embedding yoksa boş."""
@@ -811,8 +882,8 @@ class LongMemory:
         if not data:
             raise ValueError("özet cevabı boş")
         self.apply(data)
-        summary = data.get("summary")
-        if isinstance(summary, str) and summary.strip():
+        summary = strip_filler(data.get("summary") or "") if isinstance(data.get("summary"), str) else ""
+        if summary:
             channels = ", ".join(dict.fromkeys(e.channel for e in group if e.channel))
             self.add_summary(group[0].ts, group[-1].ts, summary, channels)
         for fid in data.get("done") or []:
@@ -951,6 +1022,8 @@ class LongMemory:
         """Günde bir: bütün bilgileri baştan gözden geçir (Claude'un günlük hafıza sentezi gibi)."""
         if self.extractor is None or not self.consolidate_enabled:
             return False
+        if not self._meta("portrait") and (self.facts(1) or self.summaries(1)):
+            every_hours = min(every_hours, 6.0)  # tanıtım hiç yazılamadıysa (model/kota) bir gün bekleme
         if time.time() - float(self._meta("consolidated_at") or 0) < every_hours * 3600:
             return False
         self.consolidate()
@@ -981,7 +1054,7 @@ class LongMemory:
         prompt = PORTRAIT_PROMPT.format(
             facts="\n".join(f"- ({KINDS.get(f.kind, f.kind)}) {f.text}" for f in facts) or "(yok)",
             summaries="\n".join(f"- {s.line()}" for s in sums) or "(yok)")
-        text = parse_json(self.extractor(prompt)).get("portrait")
+        text = parse_json(self._synth(prompt)).get("portrait")
         if not isinstance(text, str) or not text.strip():
             return ""
         text = _clip(text.strip(), self.profile_chars)
@@ -991,21 +1064,31 @@ class LongMemory:
         return text
 
     def _tidy_facts(self, facts: list[Fact]) -> list[str]:
-        if len(facts) < 2:
+        """Günlük toparlama. Bilgilerle birlikte son 30 günün konuşma özetleri de gider: tek konuşmadan bilgi
+        çıkmıyor (kural gereği), ama birkaç konuşmada tekrar eden şey (oynadığı oyunlar, sevdiği müzik) kalıcıdır;
+        Claude'un sohbet geçmişinden günlük sentezi gibi buradan eklenir. Değersiz özetler (ALICE'i denemek, olmayan
+        komutlar, yanlış duyulan sesler) de silinir, profilin "son zamanlarda"sını kirletmesin."""
+        sums = self.summaries(40, within_days=30)
+        if len(facts) < 2 and len(sums) < 2:
             return []
         keep = {f.id for f in facts if self._source(f.id) in ("kullanıcı", "araç", "memory.md")}
+        # Kalıcı talimatlar ("oyunu kapatmamasını ister") en değerli bilgiler: model "bir konuşmalık" sanıp
+        # siliyordu. Birleştirilip düzeltilebilir ama silinmez.
+        keep |= {f.id for f in facts if _INSTRUCTION.search(f.text)}
         now = time.time()
         listing = "\n".join(f"{f.id} [{f.kind}, {_ago(f.created, now)}, used {f.hits}x"
                             f"{', user asked to remember' if f.id in keep else ''}]: {f.text}" for f in facts)
-        data = parse_json(self.extractor(CONSOLIDATE_PROMPT.format(n=self.max_facts, facts=listing)))
+        convs = "\n".join(f"{x.id} [{datetime.fromtimestamp(x.end):%Y-%m-%d}]: {x.text}" for x in sums)
+        data = parse_json(self._synth(CONSOLIDATE_PROMPT.format(n=self.max_facts, facts=listing or "(yok)",
+                                                                   summaries=convs or "(yok)")))
         done: list[str] = []
         valid = {f.id for f in facts}
 
-        def ids(xs: Any) -> list[int]:
+        def ids(xs: Any, among: set[int] = valid) -> list[int]:
             out = []
             for x in xs or []:
                 try:
-                    if int(x) in valid:
+                    if int(x) in among:
                         out.append(int(x))
                 except (TypeError, ValueError):
                     continue
@@ -1024,10 +1107,43 @@ class LongMemory:
             if isinstance(u, dict) and isinstance(u.get("text"), str) and ids([u.get("id")]):
                 if self.update(int(u["id"]), u["text"]):
                     done.append(f"güncellendi #{u['id']}")
-        for i in ids(data.get("remove")):
-            if i not in keep and self.forget(i):
+        # Tek seferde en fazla dörtte biri: zayıf bir model bir günde bütün hafızayı silmesin.
+        for i in [i for i in ids(data.get("remove")) if i not in keep][:max(2, len(facts) // 4)]:
+            if self.forget(i):
                 done.append(f"silindi #{i}")
+        for a in (data.get("add") or [])[:3]:
+            text = a.get("text") if isinstance(a, dict) else a
+            if isinstance(text, str) and 3 <= len(text) <= 300 and not ephemeral(text) and not past_event(text):
+                fid, new = self.remember(text, (a.get("kind") if isinstance(a, dict) else None) or "fact", "toparlama")
+                if new:
+                    done.append(f"eklendi #{fid}")
+        # Özetlerin en fazla üçte biri: model bütün özetleri "değersiz" sayıp profili boşaltmıştı.
+        for i in ids(data.get("drop_summaries"), {x.id for x in sums})[:max(1, len(sums) // 3)]:
+            if self.forget_summary(i):
+                done.append(f"özet silindi #{i}")
         return done
+
+    def forget_summary(self, sid: int) -> bool:
+        with self._lock:
+            cur = self.db.execute("DELETE FROM summaries WHERE id = ?", (int(sid),))
+            self.db.execute("DELETE FROM vectors WHERE kind = 'summary' AND ref = ?", (int(sid),))
+            self.db.commit()
+            if cur.rowcount:
+                self._bump()
+        if cur.rowcount:
+            self._stale_portrait()
+        return bool(cur.rowcount)
+
+    def _synth(self, prompt: str) -> str:
+        """Günlük toparlama/tanıtım: güçlü model; o yoksa ya da hata verirse hızlı model."""
+        if self.synthesizer is not None:
+            try:
+                out = self.synthesizer(prompt)
+                if parse_json(out):
+                    return out
+            except Exception:  # noqa: BLE001 - beyin zinciri düşükse hızlı modelle dene
+                log.debug("güçlü model toparlayamadı", exc_info=True)
+        return self.extractor(prompt) if self.extractor else ""
 
     def _source(self, fid: int) -> str:
         with self._lock:
@@ -1069,7 +1185,9 @@ ALICE: {reply}"""
 DIGEST_PROMPT = """You maintain the long-term memory of ALICE, a personal assistant (like Jarvis) for one user. Below is \
 one finished conversation (it started {date}). Produce:
 1. "summary": 1-3 short Turkish sentences: what was talked about, what got done or decided, what is left. Concrete \
-(names, projects, numbers), no filler. Empty string if it was only trivial commands/small talk.
+(names, projects, numbers). Write only what happened: never sentences like "Hiçbir işlem yapılmadı", "karar \
+alınmadı", "devam eden iş kalmadı". Empty string if it was only trivial commands, small talk, testing ALICE's \
+features, or misheard noise (fragments that make no sense, other languages).
 2. "add": durable facts about the user. The summary already records what happened, so facts are rare: \
 usually zero, at most two. """ + DURABLE_RULES.replace("{", "{{").replace("}", "}}") + """
 One short Turkish sentence each, third person ("Kullanıcı ..."). kind: preference | fact | person | routine | note. \
@@ -1095,26 +1213,48 @@ Conversation:
 
 CONSOLIDATE_PROMPT = """You curate the long-term memory of ALICE, a personal assistant, the way a good human assistant \
 tidies their notebook about their boss once a day. Below is every saved memory (id [kind, age, how often it was \
-useful]: text).
+useful]: text) and the summaries of the conversations of the last 30 days (id [date]: text).
 """ + DURABLE_RULES.replace("{", "{{").replace("}", "}}") + """
 Do this:
-- "remove": ids that break the rules above (results of single conversations, paths, tests, ALICE internals, passing \
-moods, stale plans whose time has passed). Never remove ones marked "user asked to remember".
-- "merge": groups of ids that say the same or overlapping things, with one combined Turkish sentence (first id is kept).
-- "update": rewrite vague or outdated ones into one clear sentence (same id).
+- "remove": memory ids that break the rules above (results of single conversations, paths, tests, ALICE internals, \
+passing moods, stale plans whose time has passed). Never remove ones marked "user asked to remember", and never \
+remove standing instructions for ALICE: they are the most valuable memories.
+- "merge": groups of memory ids that say the same or overlapping things, with one combined Turkish sentence (first id \
+is kept).
+- "update": rewrite vague or outdated memories into one clear sentence (same id).
+- "add": at most 3 durable things the summaries show in TWO OR MORE different conversations and no memory says yet: \
+games they play, music they like, ongoing projects, people around them, recurring interests. Write only what was \
+observed, never a guess ("Kullanıcı sık sık Ankara'nın hava durumunu sorar", not "Kullanıcı Ankara'da yaşar").
+- "drop_summaries": summary ids that are worthless later because they say NOTHING about the user's life, work or \
+interests: only testing ALICE's features, commands that failed or got no answer, misheard noise. Most summaries \
+stay; if a summary also mentions something real (a song they played, a game, a person, a plan), keep it.
 Aim for at most {n} memories that really describe the user. When unsure, keep it. Turkish, third person ("Kullanıcı ...").
-Answer ONLY with JSON: {{"remove": [1], "merge": [{{"ids": [2, 3], "text": "..."}}], "update": [{{"id": 4, "text": "..."}}]}}
+Answer ONLY with JSON: {{"remove": [1], "merge": [{{"ids": [2, 3], "text": "..."}}], "update": [{{"id": 4, "text": \
+"..."}}], "add": [{{"text": "...", "kind": "preference"}}], "drop_summaries": [7]}}
 
 Memories:
-{facts}"""
+{facts}
+
+Conversation summaries:
+{summaries}"""
 
 
 PORTRAIT_PROMPT = """Write ALICE's short portrait of the one user she assists, from her saved memories and the summaries \
 of the last 30 days of conversations. It goes into her system prompt so she knows who she is talking to.
 Turkish, in the third person, short markdown sections, only those that have content, in this order:
 **Kim** (name, age, city, school/job), **Projeler ve hedefler**, **Tercihler**, **ALICE'ten istedikleri** (standing \
-instructions, keep their exact meaning), **Son zamanlarda** (what is going on in their life these weeks, from the \
-summaries; skip one-off commands). Bullet points, concrete, no filler, no guesses; at most ~900 characters.
+instructions, keep their exact meaning), **Son zamanlarda** (what is going on in their life these weeks).
+Rules:
+- Only what the memories or summaries actually say. Never guess a name, age or city (a username, a city whose \
+weather they asked about, a language they spoke are not evidence). Leave a section out rather than guess.
+- Every item appears once, in the one section where it fits best. "ALICE'ten istedikleri" is only for instructions \
+about how ALICE should behave (not in "Tercihler" too).
+- Never write that something is unknown; leave the section out.
+- "Son zamanlarda" is about the user's life and work (projects they worked on, events, things they care about), \
+2-4 bullets about themes, not individual moves or clicks ("Unciv'de yeni bir oyuna başladı", not which unit it \
+built). Never list testing ALICE, file names/paths, single commands, messages sent, failed or unanswered requests, \
+or ALICE's own behaviour.
+Bullet points, concrete, no filler; at most ~900 characters.
 Answer ONLY with JSON: {{"portrait": "..."}}
 
 Saved memories:
@@ -1122,6 +1262,19 @@ Saved memories:
 
 Conversation summaries:
 {summaries}"""
+
+
+# Özet modelinin her özete eklediği boş cümleler ("Hiçbir işlem tamamlanmadı veya karar alınmadı."): aramayı ve
+# profili dolduruyor, bir şey söylemiyordu.
+_FILLER_SENTENCE = re.compile(
+    r"[^.!?;]*\b(?:hiçbir|herhangi bir) (?:işlem|karar|iş|eylem|şey)\w*[^.!?;]*?(?:yapılmadı|alınmadı|gerçekleş\w*|"
+    r"tamamlanmadı|kalmadı|yok)\w*[^.!?;]*[.!?;]?|[^.!?;]*\bdevam eden (?:bir )?(?:iş|konu) (?:kalmadı|yok)[^.!?;]*[.!?;]?|"
+    r"[^.!?;]*\b(?:henüz )?(?:yanıt|cevap) (?:vermedi|alınmadı|verilmedi)[^.!?;]*[.!?;]?", re.I)
+
+
+def strip_filler(text: str) -> str:
+    out = re.sub(r"\s{2,}", " ", _FILLER_SENTENCE.sub("", text)).strip(" ;,")
+    return out + "." if out and out[-1] not in ".!?" else out
 
 
 def _parse_day(value: Any) -> float | None:
@@ -1156,11 +1309,11 @@ def parse_json(raw: str) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def make_extractor(options: dict[str, Any], router) -> Callable[[str], str] | None:
+def make_extractor(options: dict[str, Any], router, role: str | None = None) -> Callable[[str], str] | None:
     """Bilgi çıkarımı için mevcut ücretsiz model zincirini (varsayılan "fast" rolü) kullanan fonksiyon."""
     if router is None or not options.get("auto_extract", True):
         return None
-    role = str(options.get("extract_role", "fast"))
+    role = role or str(options.get("extract_role", "fast"))
 
     def extract(prompt: str) -> str:
         msgs = [{"role": "user", "content": prompt}]
@@ -1188,7 +1341,9 @@ def shared_memory(cfg=None, router=None) -> LongMemory | None:
                 return None
             _shared[key] = mem
         elif mem.extractor is None and router is not None and mem.auto_extract:
-            mem.extractor = make_extractor(dict((cfg.data.get("memory") if cfg is not None else None) or {}), router)
+            o = dict((cfg.data.get("memory") if cfg is not None else None) or {})
+            mem.extractor = make_extractor(o, router)
+            mem.synthesizer = make_extractor(o, router, str(o.get("synthesis_role", "brain")))
         return mem
 
 

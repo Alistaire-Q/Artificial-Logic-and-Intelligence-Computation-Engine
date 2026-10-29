@@ -16,8 +16,15 @@ from array import array
 from collections import OrderedDict
 from typing import Any
 
-BATCH = 64
+# Gemini'nin ücretsiz embedding kotası dakikada ~100 metin: 64'lük partiler ikinci partide 429 alıyor, yapılan iş de
+# kaydedilmeden atılıyordu (hafızada hiç vektör yoktu). Küçük partiler, kota dolunca bir dakika bekleme.
+BATCH = 20
 QUERY_CACHE = 64
+RATE_WAIT = 70.0  # sn: dakikalık kota dolunca bu kadar sonra yeniden dene
+
+
+class RateLimited(RuntimeError):
+    pass
 
 
 def pack(vec: list[float]) -> bytes:
@@ -95,8 +102,8 @@ class Embedder:
         try:
             for i in range(0, len(texts), BATCH):
                 out += self._post(texts[i:i + BATCH])
-        except Exception:
-            self.down_until = time.monotonic() + self.cooldown
+        except Exception as e:
+            self.down_until = time.monotonic() + (RATE_WAIT if isinstance(e, RateLimited) else self.cooldown)
             raise
         return out
 
@@ -121,6 +128,8 @@ class Embedder:
         c = self.client or httpx
         r = c.post(f"{self.base_url}/embeddings", json={"model": self.model, "input": batch},
                    headers={"Authorization": f"Bearer {self.key}"}, timeout=self.timeout)
+        if r.status_code == 429:
+            raise RateLimited(f"embedding kotası doldu: {r.text[:120]}")
         if r.status_code >= 400:
             raise RuntimeError(f"embedding HTTP {r.status_code}: {r.text[:200]}")
         data = sorted(r.json().get("data") or [], key=lambda d: d.get("index", 0))

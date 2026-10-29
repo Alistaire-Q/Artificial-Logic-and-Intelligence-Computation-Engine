@@ -282,6 +282,7 @@ class VoiceAssistant:
         self._jobs: queue.Queue = queue.Queue()
         self._answers: queue.Queue = queue.Queue()
         self._awaiting_answer = False
+        self._cut: dict[str, Any] | None = None  # araya girilince söylenemeyenler: cevaba not olarak eklenir
         self._busy = threading.Event()
         threading.Thread(target=self._worker, daemon=True, name="alice-voice-turns").start()
 
@@ -292,6 +293,7 @@ class VoiceAssistant:
                 self.speaker.stop()
                 return
             self.ui.mute()
+            self._cut = getattr(self.speaker, "last_cut", None)
             if self._busy.is_set():
                 self.agent.stop()
             self.emit("araya girildi, susuyorum")
@@ -593,6 +595,7 @@ class VoiceAssistant:
                 self.emit(f"hata: {e}")
 
     def _handle_job(self, job) -> None:
+        started = time.monotonic()  # konuşma bitti, iş sıraya girdi: buradan ilk sese kadar gecikme sayılır
         audio = job if isinstance(job, Audio) else None
         if audio is not None:
             # Live açılamazsa eski yol: önce yazıya çevir.
@@ -638,6 +641,9 @@ class VoiceAssistant:
         if self.smart_route and old_role == "voice" and needs_thinking(text):
             self.agent.role = "brain"  # bu tur için: biraz geç başlar ama doğru ve dolu cevap verir
             voice_log("düşünmesi gereken soru: beyin modeline gidiyor")
+        expect = getattr(self.speaker, "expect", None)
+        if callable(expect):
+            expect(started, lambda wait: self._latency(wait, audio is not None))
         try:
             self.ui.begin_turn()
             reply = self.agent.run_turn(with_clock(text)) or ""
@@ -653,8 +659,36 @@ class VoiceAssistant:
             tools = f" araçlar: {', '.join(self.ui.tools)}" if self.ui.tools else ""
             voice_log(f"cevap [{', '.join(dict.fromkeys(self.ui.models))}]{tools}: {reply}")
         self.speaker.wait(120)
+        if callable(expect):
+            expect(None)  # cevapta hiç ses olmadıysa sonraki bildirim yanlışlıkla ölçülmesin
+        self._note_cut()
         if not self.muted:
             self.armed_until = time.monotonic() + self.follow_up
+
+    def _latency(self, wait: float, spoken: bool) -> None:
+        from alice.voice import latency
+
+        latency.record("klasik", wait, tools=bool(self.ui.tools), stt=spoken,
+                       model=", ".join(dict.fromkeys(self.ui.models)))
+
+    def _note_cut(self) -> None:
+        """Söz kesildiyse söylenemeyen kısmı cevabın altına not et: "devam et" deyince model oradan sürdürsün,
+        baştan anlatmasın (model cevabın tamamını söylediğini sanıyordu)."""
+        cut, self._cut = self._cut, None
+        msgs = getattr(self.agent, "messages", None)
+        if not cut or not isinstance(msgs, list):
+            return
+        from alice.voice.bargein import cut_note
+
+        playing = str(cut.get("playing") or "")
+        unheard = " ".join(([f"{playing} (bu cümlenin ortasında kesildi)"] if playing else [])
+                           + [str(t) for t in cut.get("pending") or []])
+        note = cut_note(None, unheard)
+        last = next((m for m in reversed(msgs) if m.get("role") == "assistant" and isinstance(m.get("content"), str)),
+                    None)
+        if note and last is not None:
+            last["content"] = last["content"].rstrip() + "\n\n" + note
+            voice_log(f"söz kesildi, söylenemeyen kısım not edildi: {unheard[:120]}")
 
     # ------------------------------------------------------------------ döngü
     def run(self) -> None:

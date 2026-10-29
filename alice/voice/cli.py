@@ -9,6 +9,7 @@
   alice voice test                    mikrofonu 5 sn dinle, seviyeyi ve duyulanı göster
   alice voice enroll [--off]          sesini tanıt: ALICE sadece senin sesine cevap versin (--off: kapat)
   alice voice status                  motorlar, kütüphane, opsiyonel paketler
+  alice voice gecikme [--days 7]      susmandan ALICE'in ilk sesine kadar geçen süre (özet)
   alice voice models                  hesabında hangi Gemini ses modelleri var (kota harcamaz)
   alice voice install-local           yerel ses motorunu (Chatterbox) ayrı ortama kur
   alice voice on | off                çekirdek açılınca sesli asistan da açılsın / açılmasın
@@ -40,12 +41,24 @@ def _parser(prog: str):
     return TrArgumentParser(prog=prog)
 
 
+def _latency(cfg, argv) -> int:
+    from alice.voice import latency
+
+    p = _parser("alice voice gecikme")
+    p.add_argument("--days", type=float, default=7, help="kaç günlük kayıt (varsayılan 7)")
+    a = p.parse_args(argv)
+    text = latency.summary(a.days)
+    console.print(f"[bold]Sesli mod gecikmesi[/] (son {a.days:g} gün, susmandan ALICE'in ilk sesine):", highlight=False)
+    console.print(escape(text) if text else "[dim]henüz kayıt yok: sesli modu kullandıkça birikir[/]")
+    return 0
+
+
 def voice_cmd(argv: list[str]) -> int:
     sub = argv[0] if argv and not argv[0].startswith("-") else "run"
     rest = argv[1:] if argv and not argv[0].startswith("-") else argv
     cfg = load_config()
     fn = {"on": _on, "off": _off, "install-local": _install_local, "models": _models, "run": _run, "audition": _audition, "use": _use, "library": _library, "say": _say, "test": _test, "enroll": _enroll,
-          "status": _status}.get(sub)
+          "status": _status, "gecikme": _latency, "latency": _latency}.get(sub)
     if fn is None:
         console.print(f"bilinmeyen ses komutu: {sub}", markup=False)
         console.print(__doc__, markup=False)
@@ -158,6 +171,11 @@ def _status(cfg, argv) -> int:
         console.print(f"[bold]Duygu kütüphanesi:[/] [green]var[/] ({src}; {', '.join(have)}){warn}")
     else:
         console.print("[bold]Duygu kütüphanesi:[/] [dim]yok (alice voice library)[/]")
+    from alice.voice import latency
+
+    week = latency.summary(7)
+    if week:
+        console.print(f"[bold]Gecikme (7 gün):[/] {escape(week.splitlines()[0])}")
     stt = make_stt(cfg)
     console.print(f"[bold]Konuşma tanıma:[/] {', '.join(e.name for e in stt.engines) or '[red]yok[/]'}")
     console.print(f"[bold]Ses çalma:[/] {Player().backend}   [bold]Mikrofon:[/] "

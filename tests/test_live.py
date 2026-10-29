@@ -565,7 +565,7 @@ def test_no_filler_after_model_already_spoke():
     s.fillers_on = True
     s.log = lambda m: None
     played = []
-    s.fillers = lambda: SimpleNamespace(get=lambda kind: b"pcm")
+    s.fillers = lambda: SimpleNamespace(get=lambda kind, tone="calm": b"pcm")
     out = SimpleNamespace(playing=False, put=played.append)
     s._fill({"spoke": True, "asked": 1.0}, out, {"name": "weather"})
     s._fill({"spoke": False, "asked": 1.0}, out, {"name": "computer_task"})  # model zaten "başladım" diyecek
@@ -579,7 +579,7 @@ def test_fillers_generate_in_background_and_do_not_repeat(tmp_path):
     from alice.voice.fillers import Fillers
 
     made = []
-    f = Fillers("Kore", lambda text: made.append(text) or Audio(text.encode("utf-8")[:20].ljust(20, b"\0"), 24000),
+    f = Fillers("Kore", lambda text, tone="calm": made.append(text) or Audio(text.encode("utf-8")[:20].ljust(20, b"\0"), 24000),
                 tmp_path)
     assert f.get() is None  # henüz ses yok: beklemeden döner, arka planda üretir
     _wait(lambda: not f._warming and len(made) == 5)
@@ -611,3 +611,21 @@ def test_auto_screen_sends_frame_only_when_screen_is_mentioned(monkeypatch):
     assert s.wants_frame("", unknown=True)  # ilk cümle sesle gitti, ne dendiği bilinmiyor
     s.screen = "off"
     assert not s.wants_frame("ekrandaki")
+
+
+def test_dolgu_cumlesi_kullanicinin_tonuna_uyar(tmp_path):
+    from alice.voice.audio import Audio
+    from alice.voice.fillers import PHRASES, Fillers, user_tone
+
+    assert user_tone("hemen aç şunu acil") == "urgent" and user_tone("harika oldu!!") == "happy"
+    assert user_tone("hava nasıl") == "calm"
+    made = []
+    f = Fillers("Kore", lambda text, tone="calm": made.append((tone, text)) or Audio(b"\x01\x00" * 10, 24000), tmp_path)
+    for text in PHRASES["calm"]["tool"]:
+        Audio(b"\x05\x00" * 50, 24000).save(f._file(text))
+    assert f.get("tool", "urgent") is not None  # acil ses henüz yok: sakini çalınır, aciller üretilir
+    _wait(lambda: not f._warming and len(made) == 3)
+    assert {t for t, _ in made} == {"urgent"}
+    f._last = ""
+    pcm = f.get("tool", "urgent")
+    assert pcm == b"\x01\x00" * 10

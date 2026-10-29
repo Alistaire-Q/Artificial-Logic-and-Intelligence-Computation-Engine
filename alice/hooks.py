@@ -116,7 +116,9 @@ class Hooks:
         args = payload.get("args") or {}
         env = {**os.environ, "ALICE_EVENT": h.event, "ALICE_TOOL": tool,
                "ALICE_TOOL_PATH": primary_arg(args) if isinstance(args, dict) else "",
-               "ALICE_CWD": str(self.cwd or Path.cwd())}
+               "ALICE_CWD": str(self.cwd or Path.cwd()),
+               # Çıktı UTF-8 okunuyor; Windows'ta Python betikleri boruya cp1254 yazıyordu ("kullan�c�").
+               "PYTHONIOENCODING": os.environ.get("PYTHONIOENCODING", "utf-8")}
         data = json.dumps({"event": h.event, "tool": tool, "cwd": str(self.cwd or ""), **payload},
                           ensure_ascii=False, default=str)
         try:
