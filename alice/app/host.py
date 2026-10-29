@@ -149,8 +149,15 @@ class AppHost:
                 return
             self.state, self.server = state, server
         state.watch_updates(None)
+        self.publish()
+
+    def publish(self) -> None:
+        """Adresi app.json'a yaz. Telefon köprüsü ortak durumun anahtarını kendi kalıcı anahtarıyla değiştirince
+        yeniden çağrılır; açık pencere yeni adrese geçer."""
+        if self.server is None:
+            return
         try:
-            info_path().write_text(json.dumps({"url": server.url, "pid": os.getpid()}), encoding="utf-8")
+            info_path().write_text(json.dumps({"url": self.server.url, "pid": os.getpid()}), encoding="utf-8")
             restarting_path().unlink(missing_ok=True)
         except OSError:
             pass

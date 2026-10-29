@@ -57,9 +57,16 @@ def core_cmd(argv: list[str]) -> int:
         if cfg.data.get("voice", {}).get("enabled") and "--once" not in argv:
             core.voice = "listening" if voice is not None else "no-mic"
         sims = _start_sims(cfg, core) if "--once" not in argv else None
-        phone = _start_phone(cfg, core) if cfg.data.get("phone", {}).get("enabled") and "--once" not in argv else None
-        quick = _start_quick(cfg) if cfg.data.get("quick", {}).get("enabled", True) and "--once" not in argv else None
         host = _start_app(cfg, core) if (cfg.data.get("app", {}) or {}).get("in_core", True) and \
+            "--once" not in argv else None
+        # Masaüstü uygulaması, hızlı bar ve telefon tek uygulama durumunu paylaşır: üçü aynı sohbeti görür, araçlar ve
+        # MCP sunucuları bir kez kurulur.
+        shared = getattr(host, "state", None)
+        phone = _start_phone(cfg, core, shared) if cfg.data.get("phone", {}).get("enabled") and \
+            "--once" not in argv else None
+        if phone is not None and shared is not None:
+            host.publish()  # telefon ortak durumun anahtarını değiştirdi: masaüstü adresi de değişti
+        quick = _start_quick(cfg, shared) if cfg.data.get("quick", {}).get("enabled", True) and \
             "--once" not in argv else None
         try:
             if "--once" in argv:
@@ -141,11 +148,11 @@ def core_cmd(argv: list[str]) -> int:
     return 2
 
 
-def _start_phone(cfg, core):
+def _start_phone(cfg, core, state=None):
     from alice.app.phone import PhoneServer
 
     try:
-        ps = PhoneServer(cfg, core.store)
+        ps = PhoneServer(cfg, core.store, state=state)
     except OSError as e:
         console.print(f"[yellow]telefon köprüsü açılamadı:[/] {e}")
         return None
@@ -157,7 +164,9 @@ def _start_app(cfg, core):
     """Uygulama çekirdeğin içinde açık durur: `alice app` sadece pencereyi buna bağlar (alice/app/host.py)."""
     from alice.app.host import AppHost
 
-    host = AppHost(cfg, restart=core.restart).start()
+    # Hızlı bar ve telefon bu durumu paylaştığı için hemen kurulur (eskiden hızlı bar kendi kopyasını yine burada,
+    # beklemeden kuruyordu; açılış süresi aynı).
+    host = AppHost(cfg, restart=core.restart).start(background=False)
     core.busy_hook = lambda: host.busy  # sohbet sürerken güncelleme için yeniden başlama
     return host
 
@@ -169,7 +178,7 @@ def _start_sims(cfg, core):
     return SimHub(cfg.data.get("sims", {}), core.store, core.notifier, processes=lambda: core.pc.processes).start()
 
 
-def _start_quick(cfg):
+def _start_quick(cfg, state=None):
     """Hızlı bar kısayollarını çekirdekle birlikte başlat (pynput yoksa sessizce atla)."""
     import importlib.util
 
@@ -177,7 +186,7 @@ def _start_quick(cfg):
         return None
     from alice.app.quick import QuickBar
 
-    qb = QuickBar(cfg)
+    qb = QuickBar(cfg, state=state)
     if not qb.start_hotkeys():
         qb.stop()
         return None

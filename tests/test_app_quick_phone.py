@@ -17,7 +17,7 @@ from tests.conftest import patch_sleep
 
 
 class FakeServer:
-    def __init__(self, state, port=0, host="127.0.0.1"):
+    def __init__(self, state, port=0, host="127.0.0.1", owns_state=True):
         self.state, self.port, self.host = state, port, host
         self.httpd = SimpleNamespace(server_address=(host, port or 5555))
         self.stopped = False

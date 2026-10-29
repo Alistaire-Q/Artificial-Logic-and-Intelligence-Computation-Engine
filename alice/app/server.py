@@ -888,6 +888,7 @@ class AppState:
             "facts": [{"id": f.id, "kind": KINDS.get(f.kind, f.kind), "text": f.text,
                        "old": bool(OLD_ROLE_RX.search(f.text))} for f in mem.facts()],
             "followups": [{"id": f.id, "text": f.line()} for f in mem.followups()],
+            "portrait": mem._meta("portrait") or "",
             "old_role": {"facts": len(old["facts"]), "summaries": len(old["summaries"]),
                          "episodes": len(old["episodes"]),
                          "examples": [e.reply[:140] for e in old["episodes"][-3:]] + [s.text[:140] for s in old["summaries"][-2:]]},
@@ -1802,8 +1803,9 @@ def make_handler(state: AppState):
 
 
 class AppServer:
-    def __init__(self, state: AppState, port: int = 0, host: str = "127.0.0.1"):
+    def __init__(self, state: AppState, port: int = 0, host: str = "127.0.0.1", owns_state: bool = True):
         self.state = state
+        self.owns_state = owns_state  # çekirdekte hızlı bar/telefon ortak durumu kullanır: onu kapatmak sahibinin işi
         self.httpd = ThreadingHTTPServer((host, port), make_handler(state))
         self.httpd.daemon_threads = True
         self._thread = threading.Thread(target=self.httpd.serve_forever, daemon=True, name="alice-http")
@@ -1817,7 +1819,8 @@ class AppServer:
         return self
 
     def stop(self) -> None:
-        self.state.shutdown()
+        if self.owns_state:
+            self.state.shutdown()
         self.httpd.shutdown()
         self.httpd.server_close()
 

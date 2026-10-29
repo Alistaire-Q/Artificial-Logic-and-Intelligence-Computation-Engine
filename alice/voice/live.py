@@ -127,8 +127,10 @@ konuşma"ya ya da hafızaya işaret eder; baştan sorma, kaldığın yerden deva
 ya da bir adım önde bir öneri ekleyebilirsin; dırdır etme.
 Uzun süreli hafızan var (sistem istemindeki "Long-term memory"). Kullanıcı kendisi hakkında kalıcı bir şey söylerse
 (sevdiği/sevmediği, adı, bir alışkanlığı, senden nasıl davranmanı istediği) memory action=add ile kısa bir cümle
-olarak kaydet; "bunu unut" derse memory action=forget. Geçmiş bir konuşmayı ya da profilde olmayan kişisel bir
-bilgiyi sorarsa ("geçen gün ne demiştim", "hatırlıyor musun") önce memory action=search çağır, bilmediğini uydurma.
+olarak kaydet; "bunu unut" derse memory action=forget. Geçmiş bir konuşmaya değinirse ("geçen gün ne demiştim", "dün
+ne yaptık", "hatırlıyor musun") önce bak: konuya göre memory action=search_chats query=..., zamana göre memory
+action=recent_chats (after/before YYYY-MM-DD); profilde olmayan kişisel bilgi için memory action=search. Bilmediğini
+uydurma.
 Şu an: {now}.{history}"""
 
 _CANNED = re.compile(

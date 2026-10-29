@@ -36,16 +36,20 @@ class Memory(Tool):
                    "tercihleri, kişisel bilgileri, çevresindeki kişiler, alışkanlıkları, ALICE'ten nasıl davranmasını "
                    "istediği ('bunu hatırla', 'bundan sonra hep...').\n"
                    "- Bilgi değişince yenisini eklemek yerine eskisini update ile güncelle; yanlışsa forget.\n"
-                   "- Geçmiş konuşmalarda ya da kayıtlarda bir şey aramak için search ('geçen hafta ne konuşmuştuk').\n"
+                   "- Geçmiş konuşmalar her mesaja eklenmez; kullanıcı geçmişe değinince ('geçen sefer', 'dün "
+                   "konuştuğumuz', 'hani şu proje') cevaplamadan önce bak: konuya göre search_chats (query), zamana "
+                   "göre recent_chats (n, after/before: YYYY-MM-DD; 'dün ne yaptık' = after dün, before bugün). "
+                   "Bulamazsan uydurma, bulamadığını söyle. Kalıcı bilgilerde arama: search.\n"
                    "- Takip: ileride sorulacak/hatırlatılacak bir şey için followup (ör. sınav yarın: due=sınavdan sonraki "
                    "gün, 'Sınavın nasıl geçtiğini sor'); profilde 'Follow-ups due' altındakini sorunca done.\n"
                    "- Profil zaten sistem isteminde; sadece okumak için çağırma. Geçici şeyleri (o anki iş) kaydetme; "
                    "not için notes aracı.")
     parameters = obj({
-        "action": {"type": "string", "enum": ["read", "add", "update", "forget", "search", "followup", "followups",
-                                              "done"],
+        "action": {"type": "string", "enum": ["read", "add", "update", "forget", "search", "search_chats",
+                                              "recent_chats", "followup", "followups", "done"],
                    "description": "read: hepsini listele | add: note'u kaydet | update: id'li bilgiyi note ile değiştir "
-                   "| forget: id'li ya da query'ye uyan bilgiyi sil | search: query ile ara | followup: note'u takip "
+                   "| forget: id'li ya da query'ye uyan bilgiyi sil | search: query ile ara | search_chats: geçmiş "
+                   "konuşmalarda query ile ara | recent_chats: son n konuşma (after/before ile aralık) | followup: note'u takip "
                    "olarak ekle (due, kind) | followups: açık takipleri listele | done: id'li takibi kapat."},
         "note": {"type": "string", "description": "add/update için tek, kısa Türkçe cümle, ör. 'Kullanıcı kahveyi "
                  "şekersiz içer.'"},
@@ -57,6 +61,9 @@ class Memory(Tool):
         "due": {"type": "string", "description": "followup için gün, YYYY-MM-DD. kind=open ise boş."},
         "followup_kind": {"type": "string", "enum": ["ask", "remind", "open"],
                           "description": "followup türü: ask sonra sor | remind o gün hatırlat | open yarım kalan iş."},
+        "n": {"type": "integer", "description": "recent_chats için kaç konuşma (varsayılan 5, en çok 20)."},
+        "after": {"type": "string", "description": "search_chats/recent_chats: bu günden (YYYY-MM-DD, dahil) sonrası."},
+        "before": {"type": "string", "description": "search_chats/recent_chats: bu günden (YYYY-MM-DD) öncesi."},
     }, ["action"])
     risk = WRITE
 
@@ -68,8 +75,9 @@ class Memory(Tool):
 
     def run(self, ctx: ToolContext, action: str, note: str | None = None, kind: str | None = None,
             id: int | None = None, query: str | None = None, text: str | None = None, due: str | None = None,
-            followup_kind: str | None = None) -> ToolResult:
-        from alice.memory import Fact, _parse_day, shared_memory
+            followup_kind: str | None = None, n: int | None = None, after: str | None = None,
+            before: str | None = None) -> ToolResult:
+        from alice.memory import Fact, _day_start, _parse_day, shared_memory
 
         mem = ctx.state.get("memory") or shared_memory(ctx.config, ctx.router)
         if mem is None:
@@ -82,6 +90,12 @@ class Memory(Tool):
                 raise ToolError("search için query gerekli")
             hits = mem.search(query or note or "", limit=8, min_score=0.2)
             return ToolResult("\n".join(h.line() for h in hits) or "hafızada ilgili bir şey yok")
+        if action == "search_chats":
+            if not (query or note):
+                raise ToolError("search_chats için query gerekli")
+            return ToolResult(mem.search_chats(query or note or "", after=_day_start(after), before=_day_start(before)))
+        if action == "recent_chats":
+            return ToolResult(mem.recent_chats(n or 5, after=_day_start(after), before=_day_start(before)))
         if action == "add":
             if not note:
                 raise ToolError("add için note gerekli")

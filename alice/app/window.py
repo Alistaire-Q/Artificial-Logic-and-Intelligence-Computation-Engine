@@ -14,7 +14,7 @@ import threading
 import time
 import webbrowser
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from alice.config import alice_home
 
@@ -88,12 +88,24 @@ def open_window(url: str, title: str = "ALICE", prefer: str = "auto",
         for exe in _browser_candidates():
             profile = alice_home() / "app-window"
             profile.mkdir(parents=True, exist_ok=True)
-            proc = subprocess.Popen([exe, f"--app={url}", "--window-size=1320,880", f"--user-data-dir={profile}",
-                                     "--no-first-run", "--no-default-browser-check"])
+            # Uygulama modundaki pencerenin adresi dışarıdan değiştirilemiyor: çekirdek yeniden başlayınca pencere
+            # kapatılıp yeni adresle yeniden açılır.
+            box: dict[str, Any] = {"url": url, "next": None, "proc": None}
+
+            def relaunch(u: str, box: dict[str, Any] = box) -> None:
+                box["next"] = u
+                box["proc"].terminate()
+
             if watch is not None:
-                _watch(watch, proc.terminate, lambda _u: None)  # uygulama modunda adres değiştirilemiyor
-            proc.wait()
-            return "app"
+                _watch(watch, lambda box=box: box["proc"].terminate(), relaunch)
+            while True:
+                box["proc"] = subprocess.Popen([exe, f"--app={box['url']}", "--window-size=1320,880",
+                                                f"--user-data-dir={profile}", "--no-first-run",
+                                                "--no-default-browser-check"])
+                box["proc"].wait()
+                if not box["next"]:
+                    return "app"
+                box["url"], box["next"] = box["next"], None
     webbrowser.open(url)
     try:
         while True:

@@ -375,6 +375,7 @@ class LongMemory:
                 self._bump()
         if cur.rowcount:
             self.index_soon()
+            self._stale_portrait()
         return bool(cur.rowcount)
 
     def forget(self, fid: int) -> Fact | None:
@@ -387,7 +388,13 @@ class LongMemory:
             self.db.execute("DELETE FROM vectors WHERE kind = 'fact' AND ref = ?", (int(fid),))
             self.db.commit()
             self._bump()
+        self._stale_portrait()
         return Fact(*row)
+
+    def _stale_portrait(self) -> None:
+        """Silinen/değişen bilgi eski tanıtımda kalmasın: sonraki toparlamaya kadar madde listesine dön."""
+        if self._meta("portrait"):
+            self._meta("portrait", "")
 
     def old_role(self) -> dict[str, list[Any]]:
         """Eski rolden kalan izler: bilgiler, özetler ve o dönemin cevapları."""
@@ -416,6 +423,7 @@ class LongMemory:
                 self.db.execute("DELETE FROM vectors WHERE kind = 'episode' AND ref = ?", (e.id,))  # yeniden dizinlensin
             self.db.commit()
             self._bump()
+        self._stale_portrait()
         return {k: len(v) for k, v in found.items()}
 
     def forget_matching(self, query: str) -> tuple[list[Fact], list[Hit]]:
@@ -561,9 +569,88 @@ class LongMemory:
         hits.sort(key=lambda h: h.score, reverse=True)
         return hits[:limit]
 
+    # ------------------------------------------------------------------ geçmiş sohbetler (isteyince)
+    # Claude'un conversation_search / recent_chats araçları gibi: eski konuşmalar her mesaja kendiliğinden eklenmez
+    # (yanlış eşleşen bir konuşma modelin kafasını karıştırıyordu); kullanıcı geçmişe değinince model bunlarla bakar.
+    def sessions(self, after: float | None = None, before: float | None = None, limit: int = 400) -> list[list[Episode]]:
+        """Zaman aralığındaki konuşmalar, session_gap'ten uzun sessizlikle ayrılmış tur grupları (eskiden yeniye)."""
+        sql, args = "SELECT id, ts, channel, user, reply FROM episodes WHERE 1=1", []
+        if after is not None:
+            sql, args = sql + " AND ts >= ?", args + [after]
+        if before is not None:
+            sql, args = sql + " AND ts < ?", args + [before]
+        with self._lock:
+            rows = self.db.execute(sql + " ORDER BY ts DESC LIMIT ?", args + [int(limit)]).fetchall()
+        groups: list[list[Episode]] = []
+        for r in reversed(rows):
+            e = Episode(*r)
+            if groups and e.ts - groups[-1][-1].ts <= self.session_gap:
+                groups[-1].append(e)
+            else:
+                groups.append([e])
+        return groups
+
+    def _session_text(self, group: list[Episode], turns: int = 4, now: float | None = None) -> str:
+        """Bir konuşmanın kısa hâli: özeti varsa özet, ayrıca ilk ve son birkaç tur."""
+        start, end = group[0].ts, group[-1].ts
+        with self._lock:
+            row = self.db.execute("SELECT text FROM summaries WHERE start <= ? AND end >= ? ORDER BY id DESC LIMIT 1",
+                                  (end, start)).fetchone()
+        head = f"## {datetime.fromtimestamp(start):%d.%m.%Y %H:%M} ({_ago(start, now)}, {len(group)} tur)"
+        lines = [head] + ([f"Özet: {row[0]}"] if row else [])
+
+        def turn(e: Episode) -> str:
+            return f"- Kullanıcı: {_clip(e.user, 240)}" + (f"\n  ALICE: {_clip(e.reply, 240)}" if e.reply else "")
+
+        if turns <= 0:
+            return "\n".join(lines)
+        if len(group) <= turns:
+            return "\n".join(lines + [turn(e) for e in group])
+        first, last = group[: turns // 2], group[len(group) - (turns - turns // 2):]
+        return "\n".join(lines + [turn(e) for e in first] + [f"  … {len(group) - turns} tur daha …"]
+                         + [turn(e) for e in last])
+
+    def recent_chats(self, n: int = 5, after: float | None = None, before: float | None = None) -> str:
+        """Son n konuşma (ya da verilen zaman aralığındakiler), yeniden eskiye."""
+        groups = self.sessions(after, before)[-max(1, min(int(n), 20)):]
+        now = time.time()
+        return "\n\n".join(self._session_text(g, now=now) for g in reversed(groups)) or "bu aralıkta konuşma yok"
+
+    def search_chats(self, query: str, limit: int = 5, after: float | None = None,
+                     before: float | None = None) -> str:
+        """Konuya göre geçmiş konuşma arama: eşleşen turların bulunduğu konuşmalar (özet + bağlam turları)."""
+        hits = self.search(query, limit=30, facts=False, min_score=0.2)
+        picked: list[tuple[float, float]] = []  # (puan, tur zamanı)
+        for h in hits:
+            ts = h.item.ts if isinstance(h.item, Episode) else h.item.start
+            if (after is not None and ts < after) or (before is not None and ts >= before):
+                continue
+            picked.append((h.score, ts))
+        if not picked:
+            return f"geçmiş konuşmalarda '{query}' ile ilgili bir şey bulunamadı"
+        out, seen, now = [], set(), time.time()
+        for _, ts in sorted(picked, reverse=True):
+            group = next((g for g in self.sessions(ts - 6 * 3600, ts + 6 * 3600)
+                          if g[0].ts - 1 <= ts <= g[-1].ts + self.session_gap), None)
+            if not group or group[0].id in seen:
+                continue
+            seen.add(group[0].id)
+            # Eşleşen tur görünsün: konuşma uzunsa onun etrafındaki turlar.
+            i = min(range(len(group)), key=lambda k: abs(group[k].ts - ts))
+            window = group[max(0, i - 2): i + 3]
+            text = self._session_text(group, turns=0, now=now).splitlines()
+            text += [f"- Kullanıcı: {_clip(e.user, 300)}" + (f"\n  ALICE: {_clip(e.reply, 300)}" if e.reply else "")
+                     for e in window]
+            out.append("\n".join(text))
+            if len(out) >= limit:
+                break
+        return "\n\n".join(out)
+
     def recall(self, query: str, exclude_after: float | None = None) -> str:
-        """Kullanıcının sözüne eklenecek hafıza notu (boş olabilir)."""
-        hits = self.search(query, limit=self.recall_limit, exclude_after=exclude_after)
+        """Kullanıcının sözüne eklenecek hafıza notu (boş olabilir): kalıcı bilgiler ve güçlü eşleşen konuşma
+        özetleri. Tek tek eski turlar artık eklenmez; onları model search_chats / recent_chats ile kendisi bulur."""
+        hits = [h for h in self.search(query, limit=self.recall_limit + 4, exclude_after=exclude_after)
+                if isinstance(h.item, Fact) or (isinstance(h.item, Summary) and h.score >= 0.6)][: self.recall_limit]
         if not hits:
             return ""
         ids = [h.item.id for h in hits if isinstance(h.item, Fact)]
@@ -750,9 +837,15 @@ class LongMemory:
         """Sistem istemine giren blok: kullanıcıyı tanıtan bilgiler, son günlerin özeti, günü gelen takipler ve son
         birkaç konuşma."""
         chars = chars or self.profile_chars
+        portrait = self._meta("portrait") or ""
+        since = float(self._meta("portrait_at") or 0) if portrait else 0.0
         with self._lock:
-            rows = self.db.execute("SELECT id, kind, text, created, updated, hits FROM facts").fetchall()
+            # Günlük tanıtım varsa o yazıldıktan sonra eklenen/değişen bilgiler madde olarak eklenir; gerisi tanıtımda.
+            rows = self.db.execute("SELECT id, kind, text, created, updated, hits FROM facts WHERE updated > ?",
+                                   (since,)).fetchall()
         facts = [Fact(*r) for r in rows]
+        if portrait:
+            chars = max(400, chars - len(portrait))
         facts.sort(key=lambda f: (_KIND_ORDER.index(f.kind) if f.kind in _KIND_ORDER else 9, -f.hits, -f.updated))
         out, used = [], 0
         for f in facts:
@@ -764,13 +857,17 @@ class LongMemory:
         eps = self.recent(recent)
         sums = self.summaries(4, within_days=10)
         due = self.due_followups()
-        if not out and not eps and not sums and not due:
+        if not portrait and not out and not eps and not sums and not due:
             return ""
         parts = ["# Long-term memory\nWhat you know about the user from earlier conversations (stored locally). Use it "
                  "naturally to personalize answers; don't recite it. Each user message may end with a [hafızadan ...] "
-                 "note of related memories. To save something new, change or delete a memory, use the memory tool."]
+                 "note of related memories. To save something new, change or delete a memory, use the memory tool. "
+                 "Older conversations are not shown here: when the user refers to one, look it up with memory "
+                 "action=search_chats (by topic) or recent_chats (by time) before answering."]
+        if portrait:
+            parts.append(portrait)
         if out:
-            parts.append("\n".join(out))
+            parts.append(("Newer notes:\n" if portrait else "") + "\n".join(out))
         if sums:
             parts.append("Earlier conversations, summarized (continue from them naturally, e.g. ask how a thing went):\n"
                          + "\n".join(f"- {s.line()}" for s in sums))
@@ -864,8 +961,36 @@ class LongMemory:
         güncelle. Kullanıcının kendi "hatırla" dediklerine dokunulmaz. Yapılanları döndürür."""
         if self.extractor is None:
             return []
-        facts = self.facts()
         self._meta("consolidated_at", repr(time.time()))
+        done = self._tidy_facts(self.facts())
+        try:
+            self.write_portrait()
+        except Exception:  # noqa: BLE001 - profil yazılamazsa eski profil (ya da madde listesi) kalır
+            log.debug("profil yazılamadı", exc_info=True)
+        return done
+
+    def write_portrait(self) -> str:
+        """Kullanıcının kısa, başlıklı tanıtımı (Claude'un günlük hafıza sentezi gibi): kalıcı bilgiler + son 30 günün
+        konuşma özetlerinden. Sistem istemine madde listesi yerine bu girer."""
+        if self.extractor is None:
+            return ""
+        facts = self.facts()
+        sums = self.summaries(30, within_days=30)
+        if not facts and not sums:
+            return ""
+        prompt = PORTRAIT_PROMPT.format(
+            facts="\n".join(f"- ({KINDS.get(f.kind, f.kind)}) {f.text}" for f in facts) or "(yok)",
+            summaries="\n".join(f"- {s.line()}" for s in sums) or "(yok)")
+        text = parse_json(self.extractor(prompt)).get("portrait")
+        if not isinstance(text, str) or not text.strip():
+            return ""
+        text = _clip(text.strip(), self.profile_chars)
+        self._meta("portrait", text)
+        self._meta("portrait_at", repr(time.time()))
+        self._bump()
+        return text
+
+    def _tidy_facts(self, facts: list[Fact]) -> list[str]:
         if len(facts) < 2:
             return []
         keep = {f.id for f in facts if self._source(f.id) in ("kullanıcı", "araç", "memory.md")}
@@ -984,12 +1109,37 @@ Memories:
 {facts}"""
 
 
+PORTRAIT_PROMPT = """Write ALICE's short portrait of the one user she assists, from her saved memories and the summaries \
+of the last 30 days of conversations. It goes into her system prompt so she knows who she is talking to.
+Turkish, in the third person, short markdown sections, only those that have content, in this order:
+**Kim** (name, age, city, school/job), **Projeler ve hedefler**, **Tercihler**, **ALICE'ten istedikleri** (standing \
+instructions, keep their exact meaning), **Son zamanlarda** (what is going on in their life these weeks, from the \
+summaries; skip one-off commands). Bullet points, concrete, no filler, no guesses; at most ~900 characters.
+Answer ONLY with JSON: {{"portrait": "..."}}
+
+Saved memories:
+{facts}
+
+Conversation summaries:
+{summaries}"""
+
+
 def _parse_day(value: Any) -> float | None:
     """'2026-10-23' -> o günün sabahı 09:00 (yerel saat); geçersizse None."""
     if not isinstance(value, str):
         return None
     try:
         return datetime.strptime(value.strip()[:10], "%Y-%m-%d").replace(hour=9).timestamp()
+    except ValueError:
+        return None
+
+
+def _day_start(value: Any) -> float | None:
+    """'2026-10-23' -> o günün başı (00:00, yerel saat); boş ya da geçersizse None."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return datetime.strptime(value.strip()[:10], "%Y-%m-%d").timestamp()
     except ValueError:
         return None
 

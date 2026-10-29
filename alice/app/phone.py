@@ -57,7 +57,7 @@ class PhoneServer:
         self._own_store = store is None  # kendi açtığımız depoyu stop() kapatır
         self.state.watch_store = store or Store()
         self.port = int(port if port is not None else cfg.data.get("phone", {}).get("port", 8765))
-        self.server = AppServer(self.state, self.port, host="0.0.0.0").start()
+        self.server = AppServer(self.state, self.port, host="0.0.0.0", owns_state=state is None).start()
 
     @property
     def url(self) -> str:

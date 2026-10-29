@@ -1637,6 +1637,14 @@ function memoryPane(pane, data) {
     box.append(l, b);
     pane.appendChild(box);
   }
+  if (d.portrait) {
+    // Günlük toparlamada bilgilerden ve son konuşma özetlerinden yazılır; ALICE'in sistem istemine bu girer.
+    pane.appendChild(el("div", "sec", "Seni nasıl tanıyor"));
+    const p = el("div", "md mem-portrait");
+    p.innerHTML = window.DOMPurify && window.marked ? DOMPurify.sanitize(marked.parse(d.portrait)) : "";
+    if (!p.innerHTML) p.textContent = d.portrait;
+    pane.appendChild(p);
+  }
   const facts = d.facts || [];
   pane.appendChild(el("div", "sec", `Bildikleri (${facts.length})`));
   if (facts.length > 1) {

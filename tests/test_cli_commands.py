@@ -206,7 +206,7 @@ def test_start_phone_handles_port_error(monkeypatch, out):
     from alice.app import phone
 
     class Boom:
-        def __init__(self, cfg, store):
+        def __init__(self, cfg, store, state=None):
             raise OSError("adres kullanımda")
 
     monkeypatch.setattr(phone, "PhoneServer", Boom)
@@ -216,7 +216,7 @@ def test_start_phone_handles_port_error(monkeypatch, out):
     class Ok:
         url = "http://192.168.1.2:8765/"
 
-        def __init__(self, cfg, store):
+        def __init__(self, cfg, store, state=None):
             pass
 
     monkeypatch.setattr(phone, "PhoneServer", Ok)

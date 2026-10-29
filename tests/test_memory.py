@@ -166,3 +166,71 @@ def test_toparlama_birlestirir_siler_ama_hatirla_dediklerine_dokunmaz():
                      4: "Kullanıcı Unciv ve Solitaire oynar."}
     assert "user asked to remember" in seen[0] and done
     assert not m.maybe_consolidate()  # günde bir
+
+
+def _chat(m, ts, user, reply=""):
+    with m._lock:
+        m.db.execute("INSERT INTO episodes(ts, channel, user, reply, terms) VALUES (?, '', ?, ?, '')", (ts, user, reply))
+        m.db.commit()
+
+
+def test_gecmis_sohbet_arama_ve_son_sohbetler():
+    from alice.memory import terms
+
+    m = mem()
+    day = 86400
+    now = time.time()
+    for i, (u, r) in enumerate([("Unity'de silah sistemini yapıyoruz", "Raycast ile başlayalım"),
+                                ("geri tepme de ekleyelim", "Tamam, recoil eklendi")]):
+        _chat(m, now - 3 * day + i * 60, u, r)
+    _chat(m, now - day, "yarın matematik sınavım var", "Başarılar!")
+    with m._lock:  # terms sütunu: kelime araması için
+        for row in m.db.execute("SELECT id, user, reply FROM episodes").fetchall():
+            m.db.execute("UPDATE episodes SET terms = ? WHERE id = ?", (" ".join(terms(row[1] + " " + row[2])), row[0]))
+        m.db.commit()
+    found = m.search_chats("silah sistemi unity")
+    assert "Raycast" in found and "recoil" in found and "sınav" not in found
+    recent = m.recent_chats(1)
+    assert "matematik" in recent and "silah" not in recent
+    both = m.recent_chats(5)
+    assert both.index("matematik") < both.index("silah")  # yeniden eskiye
+    assert "silah" in m.recent_chats(5, before=now - 2 * day) and "matematik" not in m.recent_chats(5, before=now - 2 * day)
+    assert "bulunamadı" in m.search_chats("uzay gemisi")
+    # Eski turlar artık her mesaja kendiliğinden eklenmez; onları model search_chats ile bulur.
+    assert "Raycast" not in m.recall("unity silah sistemi")
+
+
+def test_portre_profile_girer_ve_bilgi_silinince_duser():
+    def extractor(prompt):
+        if "portrait" in prompt:
+            return json.dumps({"portrait": "**Kim**\n- Hayat, oyun geliştiriyor"})
+        return json.dumps({})
+
+    m = LongMemory(":memory:", {}, extractor)
+    fid, _ = m.remember("Kullanıcı Unity ile FPS oyunu yapıyor.", "fact", source="otomatik")
+    m.remember("Kullanıcı kahveyi şekersiz içer.", "preference", source="otomatik")
+    time.sleep(0.05)  # Windows saati ~15 ms adımlı: tanıtım bilgilerden sonra yazılmış görünsün
+    m.consolidate()
+    prof = m.profile()
+    assert "Hayat, oyun geliştiriyor" in prof and "şekersiz" not in prof  # bilgiler tanıtımda, madde değil
+    time.sleep(0.05)
+    m.remember("Kullanıcı köpek besliyor.", "fact", source="otomatik")
+    assert "köpek" in m.profile()  # tanıtımdan sonra eklenen madde olarak görünür
+    m.forget(fid)
+    assert "Hayat, oyun geliştiriyor" not in m.profile() and "şekersiz" in m.profile()
+
+
+def test_hafiza_araci_gecmis_sohbet_eylemleri(workdir):
+    m = mem()
+    _chat(m, time.time() - 60, "dün kek yaptım", "Afiyet olsun")
+    from tests.conftest import make_config
+
+    ctx = ToolContext(cwd=workdir, config=make_config({"brain": ["a:m"]}))
+    ctx.state["memory"] = m
+    assert "kek" in Memory().run(ctx, "recent_chats", n=3).text
+    import pytest
+
+    from alice.tools.base import ToolError
+
+    with pytest.raises(ToolError):
+        Memory().run(ctx, "search_chats")
