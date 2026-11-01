@@ -275,13 +275,17 @@ def coach(d: Debrief, history: list[dict[str, Any]]) -> str:
 
 
 class FlightCompanion:
-    """FlightState akışını izler, söylenecekleri say(text, severity, emotion) ile iletir."""
+    """FlightState akışını izler, söylenecekleri say(text, severity, emotion) ile iletir.
+
+    show(kind, **alanlar) verilirse tehditler ekran üstü HUD'a da ok/kenar parlaması olarak gider; uçuş kodu HUD'u
+    bilmez (bkz. alice.hud.client.show)."""
 
     def __init__(self, say: Callable[[str, str, str], None], hr_stats: Callable[[float, float], dict | None] | None = None,
                  hr_now: Callable[[], float | None] | None = None,
                  on_debrief: Callable[[Debrief], None] | None = None,
-                 approach_every: float = 4.0):
+                 approach_every: float = 4.0, show: Callable[..., Any] | None = None):
         self.say = say
+        self.show = show or (lambda kind, **kw: None)
         self.hr_stats = hr_stats or (lambda a, b: None)
         self.hr_now = hr_now or (lambda: None)
         self.on_debrief = on_debrief or (lambda d: None)
@@ -402,6 +406,19 @@ class FlightCompanion:
     def _km(m: float) -> str:
         return f"{m:.0f} metre" if m < 1000 else f"{m / 1000:.1f} kilometre".replace(".", ",")
 
+    @staticmethod
+    def _km_short(m: float) -> str:
+        return f"{m:.0f} m" if m < 1000 else f"{m / 1000:.1f} km".replace(".", ",")
+
+    def _point(self, clock: Any, text: str, severity: str, key: str, edge: bool = False, ttl: float = 4.0) -> None:
+        """Tehdidi HUD'a da göster: saat yönünde ok, acilse ekran kenarında parlama. HUD hatası anonsu bozmasın."""
+        try:
+            self.show("arrow", clock=clock, text=text, severity=severity, id=key, ttl=ttl)
+            if edge:
+                self.show("edge", clock=clock, severity=severity, id=f"{key}.edge", ttl=ttl)
+        except Exception:  # noqa: BLE001
+            pass
+
     def _contacts(self, s: FlightState) -> None:
         """RWR (DCS) ve mini harita (War Thunder) temasları: füze, kilit, yeni radar, arkadaki ve yaklaşan düşman.
 
@@ -424,8 +441,10 @@ class FlightCompanion:
                 clock, name = c.get("clock"), c.get("name") or "radar"
                 if key[0] == "m":
                     self.say(f"Füze! Saat {clock}, {name}. Chaff at, dön!", "critical", "urgent")
+                    self._point(clock, f"FÜZE · {name}", "critical", "missile", edge=True)
                 elif key[0] == "l":
                     self.say(f"Saat {clock}'den kilit: {name}.", "warn", self._urgent())
+                    self._point(clock, f"KİLİT · {name}", "warn", "lock")
                 elif name != "?" and t - self.threat_said.get(name, -1e9) > 120:
                     self.threat_said[name] = t
                     self._info(s, f"Yeni radar: {name}, saat {clock}.")
@@ -443,6 +462,7 @@ class FlightCompanion:
         if six is not None and t - self.six_last >= self.SIX_REPEAT:
             self.six_last = t
             self.say(f"Arkanda düşman, saat {six['clock']}, {self._km(six['dist_m'])}!", "warn", "urgent")
+            self._point(six["clock"], f"ARKANDA · {self._km_short(six['dist_m'])}", "critical", "six", edge=True)
             self.bandit_close = True
             return
         if near["dist_m"] <= self.MERGE_RANGE and not self.bandit_close:
@@ -467,6 +487,7 @@ class FlightCompanion:
         c = hot[0]
         self.say(f"Saat {c['clock']}'deki düşman burnunu sana çevirdi, {self._km(c['dist_m'])}. Füze gelebilir!",
                  "warn", self._urgent())
+        self._point(c["clock"], f"BURNU SANA · {self._km_short(c['dist_m'])}", "warn", "nose")
         return True
 
     def _ground_threats(self, s: FlightState, sams: list[dict]) -> None:
@@ -488,6 +509,7 @@ class FlightCompanion:
             self.sam_last[name] = s.t
             self.say(f"{name[0].upper() + name[1:]} menzilindesin: saat {c['clock']}, {self._km(c['dist_m'])}.",
                      "warn", "serious")
+            self._point(c["clock"], f"{name} · {self._km_short(c['dist_m'])}", "warn", f"sam:{name}")
 
     def _hud(self, s: FlightState) -> None:
         """War Thunder savaş kayıtları: düşürdüğün, seni vuran."""

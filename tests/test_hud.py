@@ -1,0 +1,300 @@
+from __future__ import annotations
+
+import queue
+import socket
+import time
+
+import pytest
+
+from alice.hud import client, window
+from alice.hud.model import MAX_BYTES, HudModel, clock_of, parse
+from alice.hud.supervisor import BURST, HudSupervisor
+
+
+def free_port() -> int:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+# ---------------------------------------------------------------- protokol
+def test_parse_accepts_known_kinds_and_drops_garbage():
+    assert parse(b'{"kind": "arrow", "clock": 4, "ttl": 3}') == {"kind": "arrow", "clock": 4, "ttl": 3}
+    assert parse(b'{"kind": "clear"}') == {"kind": "clear"}
+    for raw in (b"", b"not json", b"[1, 2]", b'{"kind": "explode"}', b"\xff\xfe", b'{"x": 1}',
+                b'{"kind": "label", "text": "' + b"a" * MAX_BYTES + b'"}'):
+        assert parse(raw) is None
+
+
+def test_clock_normalization():
+    assert [clock_of(v) for v in (0, 12, 3, "4", 6.4, 13, -1, None, "x")] == [12, 12, 3, 4, 6, None, None, None, None]
+
+
+def test_invalid_items_are_ignored():
+    m = HudModel()
+    for msg in ({"kind": "arrow"}, {"kind": "edge", "clock": 15}, {"kind": "box", "x": 1, "y": 2, "w": 3},
+                {"kind": "progress", "value": "x"}, {"kind": "label", "text": ""}, {"kind": "card"}):
+        assert not m.apply(msg, 0.0)
+    assert m.items == [] and m.version == 0
+
+
+def test_ttl_expiry_and_clamp():
+    m = HudModel()
+    m.apply({"kind": "arrow", "clock": 4, "ttl": 2}, 10.0)
+    m.apply({"kind": "label", "text": "uzun", "ttl": 9999}, 10.0)   # en fazla 60 sn
+    m.apply({"kind": "card", "title": "varsayılan"}, 10.0)          # ttl yok: 3 sn
+    assert not m.expire(11.9)
+    assert m.expire(12.1) and [i.kind for i in m.items] == ["label", "card"]
+    assert m.expire(13.1) and [i.kind for i in m.items] == ["label"]
+    assert m.items[0].until == 70.0
+    assert m.expire(70.0) and m.items == []
+
+
+def test_same_id_replaces_and_max_items_drops_oldest_calm_first():
+    m = HudModel(max_items=3)
+    m.apply({"kind": "arrow", "clock": 2, "id": "six", "ttl": 5}, 0.0)
+    m.apply({"kind": "arrow", "clock": 6, "id": "six", "ttl": 5}, 1.0)
+    assert len(m.items) == 1 and m.items[0].data["clock"] == 6
+    m.apply({"kind": "edge", "clock": 6, "severity": "critical"}, 2.0)
+    m.apply({"kind": "label", "text": "a"}, 3.0)
+    m.apply({"kind": "label", "text": "b"}, 4.0)
+    kinds = [(i.kind, i.data.get("text")) for i in m.items]
+    assert kinds == [("edge", None), ("label", "a"), ("label", "b")]  # en eski sakin öğe (ok) atıldı
+    assert m.items[0].data["severity"] == "critical" and m.items[1].data["severity"] == "info"
+
+
+def test_clear_and_toggle():
+    m = HudModel()
+    m.apply({"kind": "arrow", "clock": 1, "id": "a"}, 0.0)
+    m.apply({"kind": "arrow", "clock": 2, "id": "b"}, 0.0)
+    assert m.apply({"kind": "clear", "id": "a"}, 0.0) and [i.id for i in m.items] == ["b"]
+    assert not m.apply({"kind": "clear", "id": "yok"}, 0.0)
+    m.apply({"kind": "toggle"}, 0.0)
+    assert m.hidden and m.visible() == [] and len(m.items) == 1
+    m.apply({"kind": "toggle"}, 0.0)
+    assert len(m.visible()) == 1
+    assert m.apply({"kind": "clear"}, 0.0) and m.items == []
+
+
+def test_client_reaches_receiver_over_socket():
+    port = free_port()
+    sock = window.bind(port)
+    assert sock is not None
+    assert window.bind(port) is None  # ikinci HUD aynı portu alamaz
+    inbox: queue.Queue = queue.Queue()
+    rx = window.Receiver(sock, inbox).start()
+    try:
+        client.configure(port)
+        assert client.show("arrow", clock=4, text="SAM · 12 km", severity="warn", id="sam")
+        client.send({"kind": "bilinmeyen"})  # alıcı bunu yok sayar
+        assert client.clear("sam")
+        got = [inbox.get(timeout=2), inbox.get(timeout=2)]
+        assert got[0] == {"kind": "arrow", "ttl": 3.0, "clock": 4, "text": "SAM · 12 km", "severity": "warn",
+                          "id": "sam"}
+        assert got[1] == {"kind": "clear", "id": "sam"}
+        assert inbox.empty()
+    finally:
+        rx.stop()
+        client.configure(window.PORT)
+
+
+def test_client_never_blocks_when_hud_is_closed():
+    client.configure(free_port())  # kimse dinlemiyor
+    try:
+        t0 = time.monotonic()
+        for i in range(200):
+            client.show("arrow", clock=i % 12 + 1, ttl=1)
+        assert time.monotonic() - t0 < 1.0
+        assert client.send({"kind": "arrow", "clock": 1, "bad": object()}) is False  # JSON'a çevrilemez: sessiz
+    finally:
+        client.configure(window.PORT)
+
+
+def test_client_swallows_socket_errors(monkeypatch):
+    class Broken:
+        def sendto(self, *a):
+            raise ConnectionResetError(10054, "kapalı porta önceki paket")
+
+    monkeypatch.setattr(client, "_sock", Broken())
+    assert client.show("label", text="x") is False
+
+
+# ------------------------------------------------------------------ çizim
+class FakeCanvas:
+    def __init__(self):
+        self.ops: list[tuple[str, tuple, dict]] = []
+
+    def __getattr__(self, name):
+        def rec(*a, **kw):
+            self.ops.append((name, a, kw))
+
+        return rec
+
+
+def test_painter_draws_every_kind():
+    c = FakeCanvas()
+    p = window.Painter(c, 1920, 1080, origin=(0, 0))
+    m = HudModel(max_items=10)
+    for msg in ({"kind": "arrow", "clock": 3, "text": "SAM", "severity": "warn"},
+                {"kind": "edge", "clock": 6, "severity": "critical"},
+                {"kind": "label", "text": "merhaba"}, {"kind": "card", "title": "ALICE", "text": "deneme"},
+                {"kind": "box", "x": 100, "y": 100, "w": 50, "h": 40, "text": "düğme"},
+                {"kind": "progress", "value": 0.5, "text": "yükleniyor"}):
+        m.apply(msg, 0.0)
+    p.draw(m.visible(), 0.5)
+    names = [o[0] for o in c.ops]
+    assert names[0] == "delete" and "create_polygon" in names and "create_line" in names
+    poly = next(o for o in c.ops if o[0] == "create_polygon")
+    tip_x, tip_y = poly[1][0][0], poly[1][0][1]
+    assert tip_x > 960 + 200 and abs(tip_y - 540) < 1  # saat 3: sağa bakan ok
+    assert any(o[2].get("text") == "merhaba" for o in c.ops)
+
+
+def test_edge_point_and_direction():
+    assert window.edge_point(12, 1000, 500)[:2] == pytest.approx((500, 0))
+    x, y, side = window.edge_point(3, 1000, 500)
+    assert (round(x), round(y), side) == (1000, 250, True)
+    x, y, side = window.edge_point(6, 1000, 500)
+    assert (round(x), round(y), side) == (500, 500, False)
+    assert window.direction(9) == pytest.approx((-1, 0), abs=1e-9)
+
+
+class FakeWin32:
+    def __init__(self):
+        self.calls: list[tuple] = []
+
+    def style(self, hwnd):
+        self.calls.append(("style", hwnd))
+
+    def exclude_from_capture(self, hwnd):
+        self.calls.append(("capture", hwnd))
+        return True
+
+    def show(self, hwnd, visible):
+        self.calls.append(("show", visible))
+
+    def topmost(self, hwnd):
+        self.calls.append(("topmost",))
+
+
+def test_window_tick_shows_only_while_items_exist():
+    """Boşken pencere gizli (oyunun FPS'i için), öğe gelince odak almadan görünür, ttl dolunca yine gizlenir."""
+    w = window.HudWindow.__new__(window.HudWindow)
+    w.model, w.inbox, w.win32, w.hwnd = HudModel(), queue.Queue(), FakeWin32(), 42
+    w.canvas = FakeCanvas()
+    w.painter = window.Painter(w.canvas, 800, 600)
+    w.shown, w._drawn, w._topmost_at = False, -1, 0.0
+    w.tick()
+    assert w.win32.calls == []
+    w.inbox.put({"kind": "arrow", "clock": 4, "ttl": 0.2})
+    w.tick()
+    assert ("show", True) in w.win32.calls and w.shown
+    time.sleep(0.25)
+    w.tick()
+    assert w.win32.calls[-1] == ("show", False) and not w.shown
+
+
+# --------------------------------------------------------------- denetleyici
+class FakeProc:
+    def __init__(self):
+        self.code = None
+        self.terminated = False
+
+    def poll(self):
+        return self.code
+
+    def terminate(self):
+        self.terminated = True
+        self.code = 1
+
+    def wait(self, timeout=None):
+        return self.code
+
+
+def test_supervisor_restarts_crashed_hud_and_backs_off():
+    spawned: list[FakeProc] = []
+
+    def spawn(argv):
+        assert argv[1:4] == ["-m", "alice", "hud"] and "--parent" in argv
+        spawned.append(FakeProc())
+        return spawned[-1]
+
+    sv = HudSupervisor(41240, spawn=spawn)
+    sv.check(0.0)
+    sv.check(1.0)
+    assert len(spawned) == 1  # çalışıyor: dokunma
+    for i in range(1, BURST):
+        spawned[-1].code = 1  # çöktü
+        sv.check(float(i))
+    assert len(spawned) == BURST and sv.restarts == BURST - 1
+    spawned[-1].code = 1
+    sv.check(10.0)  # dakikada 5 çökme: bekle
+    sv.check(20.0)
+    assert len(spawned) == BURST
+    sv.check(41.0)
+    assert len(spawned) == BURST + 1
+    sv.stop()
+    assert spawned[-1].terminated
+
+
+# ---------------------------------------------------------- uçuş -> HUD
+def test_flight_threats_also_show_on_hud():
+    from tests.test_sims import Recorder, st
+
+    from alice.sims.flight import FlightCompanion, TouchdownTracker
+
+    r, shown = Recorder(), []
+    c = FlightCompanion(r.say, show=lambda kind, **kw: shown.append((kind, kw)))
+    tr = TouchdownTracker(c)
+    tr.feed(st(0, ias=0, agl=0.5, alt=50))
+    tr.feed(st(1, ias=80, agl=30))
+    radar = {"id": "7", "clock": 2, "name": "SA-6", "lock": True, "missile": False, "dist_m": None, "kind": "radar"}
+    tr.feed(st(2, extra={"contacts": [radar]}))
+    tr.feed(st(3, extra={"contacts": [{**radar, "missile": True}]}))
+    sam = {"id": "", "clock": 10, "dist_m": 12000.0, "kind": "sam", "name": "SAM", "range_m": 18000.0}
+    tr.feed(st(4, extra={"contacts": [sam]}))
+    bandit = {"id": "", "clock": 6, "dist_m": 1200.0, "kind": "aircraft", "name": "Fighter"}
+    tr.feed(st(5, extra={"contacts": [bandit]}))
+    hot = {"id": "", "clock": 1, "dist_m": 8000.0, "kind": "aircraft", "name": "Fighter", "aspect": 5.0}
+    for t in (40, 41, 43):
+        tr.feed(st(t, extra={"contacts": [hot]}))
+    got = [(k, kw["clock"], kw.get("text"), kw["severity"], kw["id"]) for k, kw in shown]
+    assert got == [
+        ("arrow", 2, "KİLİT · SA-6", "warn", "lock"),
+        ("arrow", 2, "FÜZE · SA-6", "critical", "missile"),
+        ("edge", 2, None, "critical", "missile.edge"),
+        ("arrow", 10, "SAM · 12,0 km", "warn", "sam:SAM"),
+        ("arrow", 6, "ARKANDA · 1,2 km", "critical", "six"),
+        ("edge", 6, None, "critical", "six.edge"),
+        ("arrow", 1, "BURNU SANA · 8,0 km", "warn", "nose"),
+    ]
+    assert all(kw["ttl"] > 0 for _, kw in shown)
+    assert any(x.startswith("Arkanda düşman") for x in r.texts())  # ses aynen devam ediyor
+
+
+def test_flight_hud_failure_does_not_break_callouts():
+    from tests.test_sims import Recorder, st
+
+    from alice.sims.flight import FlightCompanion, TouchdownTracker
+
+    def boom(kind, **kw):
+        raise RuntimeError("HUD bozuk")
+
+    r = Recorder()
+    tr = TouchdownTracker(FlightCompanion(r.say, show=boom))
+    tr.feed(st(0, ias=0, agl=0.5, alt=50))
+    tr.feed(st(1, ias=80, agl=30))
+    radar = {"id": "7", "clock": 2, "name": "SA-6", "lock": False, "missile": True, "dist_m": None, "kind": "radar"}
+    tr.feed(st(2, extra={"contacts": [radar]}))
+    assert "Füze! Saat 2, SA-6. Chaff at, dön!" in r.texts()
+
+
+def test_hub_passes_show_to_companions():
+    from alice.sims.hub import SimHub
+
+    marker = []
+    hb = SimHub({}, store=None, notifier=None, show=lambda kind, **kw: marker.append(kind))
+    hb.companion("warthunder").show("arrow", clock=1)
+    assert marker == ["arrow"]

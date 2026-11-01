@@ -243,6 +243,19 @@ dcs = true
 dcs_port = 41230
 warthunder = true
 
+# Ekran üstü HUD (`alice hud`): oyunun ve masaüstünün üstüne tehdit oku, kenar parlaması, kart çizer.
+# Tıklamalar alttaki pencereye geçer, odak almaz, ALICE'in ekran görüntülerinde görünmez. Oyuna kod enjekte etmez.
+# Özel tam ekranda (exclusive fullscreen) hiçbir pencere oyunun üstüne çizilemez: oyunu kenarlıksız pencerede aç.
+[hud]
+# true: çekirdek HUD'u başlatır, çökerse yeniden başlatır.
+enabled = false
+port = 41240
+# 0 ana monitör, 1 sonraki...
+monitor = 0
+opacity = 0.92
+# HUD'u tamamen gizle / geri getir.
+hotkey = "<ctrl>+<alt>+h"
+
 # Akıllı saat (Gadgetbridge). export_path: Gadgetbridge'in otomatik dışa aktardığı veritabanı
 # (Syncthing vb. ile bilgisayara gelen dosya ya da klasör). Boş = kapalı.
 [watch]

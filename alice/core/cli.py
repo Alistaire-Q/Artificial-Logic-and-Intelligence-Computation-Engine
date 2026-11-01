@@ -56,7 +56,8 @@ def core_cmd(argv: list[str]) -> int:
         core.greeter.voice = voice  # karşılamadan sonra "Hey Alice" demeden cevap verilebilsin
         if cfg.data.get("voice", {}).get("enabled") and "--once" not in argv:
             core.voice = "listening" if voice is not None else "no-mic"
-        sims = _start_sims(cfg, core) if "--once" not in argv else None
+        hud = _start_hud(cfg) if (cfg.data.get("hud", {}) or {}).get("enabled") and "--once" not in argv else None
+        sims = _start_sims(cfg, core, show=_hud_show(hud)) if "--once" not in argv else None
         host = _start_app(cfg, core) if (cfg.data.get("app", {}) or {}).get("in_core", True) and \
             "--once" not in argv else None
         # Masaüstü uygulaması, hızlı bar ve telefon tek uygulama durumunu paylaşır: üçü aynı sohbeti görür, araçlar ve
@@ -90,6 +91,8 @@ def core_cmd(argv: list[str]) -> int:
                 quick.stop()
             if sims is not None:
                 sims.stop()
+            if hud is not None:
+                hud.stop()
             if phone is not None:
                 phone.stop()
             service.release_lock()
@@ -171,11 +174,31 @@ def _start_app(cfg, core):
     return host
 
 
-def _start_sims(cfg, core):
+def _start_sims(cfg, core, show=None):
     """DCS ve War Thunder dinleyicilerini başlat."""
     from alice.sims.hub import SimHub
 
-    return SimHub(cfg.data.get("sims", {}), core.store, core.notifier, processes=lambda: core.pc.processes).start()
+    return SimHub(cfg.data.get("sims", {}), core.store, core.notifier, processes=lambda: core.pc.processes,
+                  show=show).start()
+
+
+def _start_hud(cfg):
+    """Ekran üstü HUD'u ayrı süreçte başlat; çökerse denetleyici yeniden başlatır."""
+    from alice.hud import PORT, client
+    from alice.hud.supervisor import HudSupervisor
+
+    port = int((cfg.data.get("hud", {}) or {}).get("port") or PORT)
+    client.configure(port)
+    return HudSupervisor(port).start()
+
+
+def _hud_show(hud):
+    """HUD açıksa uçuş tehditleri ok ve kenar parlaması olarak da çizilsin."""
+    if hud is None:
+        return None
+    from alice.hud import client
+
+    return client.show
 
 
 def _start_quick(cfg, state=None):

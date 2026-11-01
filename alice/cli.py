@@ -976,7 +976,7 @@ def package_version() -> str:
 # ------------------------------------------------------------- alt komutlar
 SUBCOMMANDS = ("init", "doctor", "models", "reflex", "app", "shortcut", "core", "rules", "tasks", "voice", "quick",
                "dcs", "watch", "phone", "notes", "brief", "report", "plugins", "update", "connect", "feeds",
-               "log", "setup", "eval")
+               "log", "setup", "eval", "hud")
 
 # Kendi argparse'ı olmayan alt komutlar: `alice <komut> --help` çalıştırmak yerine bu metni gösterir
 # (ör. `alice phone --help` köprüyü açıp beklemesin, `alice notes --help` notları listelemesin).
@@ -1193,6 +1193,10 @@ def _dispatch(argv: list[str]) -> int:
         from alice.app.quick import quick_cmd
 
         return quick_cmd(argv[1:])
+    if cmd == "hud":
+        from alice.hud.window import hud_cmd
+
+        return hud_cmd(argv[1:])
     if cmd == "voice":
         from alice.voice.cli import voice_cmd
 

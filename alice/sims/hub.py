@@ -18,8 +18,9 @@ ACTIVE: "SimHub | None" = None
 
 
 class SimHub:
-    def __init__(self, cfg: dict[str, Any], store: Store, notifier: Notifier, processes=lambda: set()):
+    def __init__(self, cfg: dict[str, Any], store: Store, notifier: Notifier, processes=lambda: set(), show=None):
         self.cfg = cfg
+        self.show = show  # HUD'a çizim (alice.hud.client.show); None ise sadece ses
         self.store = store
         self.notifier = notifier
         self.processes = processes
@@ -52,7 +53,8 @@ class SimHub:
 
     def companion(self, source: str) -> FlightCompanion:
         if source not in self.companions:
-            self.companions[source] = FlightCompanion(self._say, self._hr_stats, self._hr_now, self._debrief)
+            self.companions[source] = FlightCompanion(self._say, self._hr_stats, self._hr_now, self._debrief,
+                                                        show=self.show)
         return self.companions[source]
 
     def start(self) -> "SimHub":
