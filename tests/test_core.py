@@ -388,3 +388,10 @@ def test_core_prime_writes_mode_before_first_tick_and_hooks_get_policy(tmp_path)
     core.hooks.append(lambda pol: 1 / 0)  # çöken kanca turu bozmasın
     core.tick(1000)
     assert seen == [False]
+
+
+def test_muted_notification_recorded_once(store):
+    n, sent, _mm = make_notifier(store, mode="flight")
+    for _ in range(3):  # uçuşta susturulan rapor her turda yeniden denenir
+        assert not n.send(Notification("ALICE sağlık raporu: 2 sorun", "x", "warn", "core"))
+    assert sent == [] and len(store.events(limit=10)) == 1

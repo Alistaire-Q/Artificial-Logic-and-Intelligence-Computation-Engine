@@ -88,7 +88,8 @@ class SimHub:
             tracker = TouchdownTracker(comp)
             running = lambda: any(p.lower() == "aces.exe" for p in self.processes())  # noqa: E731
             self._parts.append(WarThunderPoller(tracker.feed, comp.session_end,
-                                                lambda rows: self.store.add_many(rows), running=running).start())
+                                                lambda rows: self.store.add_many(rows), running=running,
+                                                nick=str(self.cfg.get("warthunder_nick") or "") or None).start())
         ACTIVE = self
         return self
 

@@ -568,7 +568,8 @@ class Router:
                             self.no_thinking.add(ref)
                             self._log(f"{ref} düşünme ayarını kabul etmedi ({e}); ayarsız deneniyor")
                             kw["extra"] = {k: v for k, v in extra.items() if k not in think} or None
-                        elif e.kind == "too_large" and "max_tokens" in str(e) and out:
+                        elif (e.kind == "too_large" and "max_tokens" in str(e) and out
+                              and min(8192, max(out * 4, 1024)) > out):
                             # Düşünen model (Cerebras qwen) küçük çıktı payını düşünmeye harcayıp boş dönüyordu:
                             # girdi büyük değil, payı genişletip aynı modelde bir kez daha dene ve bunu hatırla.
                             self.out_floor[ref] = min(8192, max(out * 4, 1024))
@@ -648,7 +649,10 @@ class Router:
         elif e.kind == "not_found":
             self.dead_models.add(ref)
         elif e.kind == "too_large" and "max_tokens" in low:
-            self.cooldown_until[ref] = now + 300  # geniş payla da bitiremedi: girdi değil model sorunlu
+            # Geniş payla da bitiremedi: girdi değil model sorunlu. Sabit 5 dk'lık ceza, 20 dk'da bir çalışan işte
+            # Cerebras qwen'i her seferinde yeniden denetip 8192 token düşünmeye harcatıyordu (1 Kasım): katlanarak.
+            n = self.strikes[ref] = self.strikes.get(ref, 0) + 1
+            self.cooldown_until[ref] = now + min(300 * 2 ** min(n - 1, 6), 6 * 3600)
             self.cooldown_kind[ref] = "server"
         elif e.kind == "too_large":
             # Ör. Groq ücretsiz katmanı dakikada 8K token: bu büyüklükteki istekleri bir daha bu modele yollama.

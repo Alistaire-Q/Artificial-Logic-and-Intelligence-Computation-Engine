@@ -202,7 +202,7 @@ class Debrief:
     def summary(self) -> str:
         parts = [f"Uçuş {fmt_min(self.duration_s / 60)} sürdü."]
         parts.append(f"En yüksek {self.max_g:.1f} G, en yüksek hız {self.max_ias_kt:.0f} knot.")
-        if self.fuel_used_kg is not None:
+        if self.fuel_used_kg:  # 0: havada doğdu ya da yakıt ikmali, söylemenin anlamı yok
             parts.append(f"{self.fuel_used_kg:.0f} kilo yakıt kullandın, en az {self.min_fuel_kg:.0f} kiloya düştün.")
         if self.approach_on_speed_pct is not None:
             q = "iyiydi" if self.approach_on_speed_pct >= 70 else "biraz dalgalıydı" if self.approach_on_speed_pct >= 40 \
@@ -322,6 +322,7 @@ class FlightCompanion:
         self.last_state: FlightState | None = None
         self.takeoff: FlightState | None = None
         self.stats = {"max_g": 0.0, "max_ias": 0.0, "max_alt": 0.0, "min_fuel": None}
+        self._g_prev = 0.0
         self.series: dict[str, list] = {"t": [], "wall": [], "alt_ft": [], "g": [], "ias_kt": [], "fuel_kg": []}
         self._series_t = -1e9
         self.restricted_said = False
@@ -338,6 +339,10 @@ class FlightCompanion:
         self.threat_said: dict[str, float] = {}
         self.bandit_close = False                 # en yakın düşman 5 km içinde (7 km'de yeniden kurulur)
         self.six_last = -1e9
+        self.nose_since: float | None = None      # War Thunder: düşmanın burnu bize dönük (füze atabilir) başlangıcı
+        self.nose_last = -1e9
+        self.sam_inside: set[str] = set()         # menzilinde olduğumuz hava savunması türleri
+        self.sam_last: dict[str, float] = {}
 
     # ---------------------------------------------------------------- girişler
     def restricted(self) -> None:
@@ -380,12 +385,18 @@ class FlightCompanion:
         self._flaps(s)
         self._ext_tanks(s)
         self._contacts(s)
+        self._hud(s)
 
     # ------------------------------------------------------------------- tehditler
     SIX_REPEAT = 20.0       # arkadaki düşman uyarısı en sık
     SIX_RANGE = 2000.0
     MERGE_RANGE = 5000.0
     LOST_AFTER = 10.0       # bu kadar görünmeyen kilit/füze bitmiş sayılır
+    NOSE_ASPECT = 12.0      # War Thunder: düşmanın burnu bize bu açıdan dar dönükse "füze atabilir"
+    NOSE_RANGE = (2500.0, 14000.0)
+    NOSE_HOLD = 2.0         # bu kadar sürmeli (harita saniyede bir yenilenir, tek okuma yanıltabilir)
+    NOSE_REPEAT = 25.0
+    SAM_REPEAT = 90.0
 
     @staticmethod
     def _km(m: float) -> str:
@@ -419,9 +430,13 @@ class FlightCompanion:
                     self.threat_said[name] = t
                     self._info(s, f"Yeni radar: {name}, saat {clock}.")
                 break  # füze varsa kilit/yeni radar ayrıca söylenmez
+        self._ground_threats(s, [c for c in cs if c.get("kind") == "sam" and c.get("dist_m") is not None])
         planes = [c for c in cs if c.get("kind") == "aircraft" and c.get("dist_m") is not None]
         if not planes:
             self.bandit_close = False
+            self.nose_since = None
+            return
+        if self._nose_on(s, planes):
             return
         near = planes[0]
         six = next((c for c in planes if c["dist_m"] <= self.SIX_RANGE and c.get("clock") in (4, 5, 6, 7, 8)), None)
@@ -435,6 +450,54 @@ class FlightCompanion:
             self._info(s, f"Düşman saat {near['clock']}, {self._km(near['dist_m'])}.", "serious")
         elif near["dist_m"] > self.MERGE_RANGE + 2000:
             self.bandit_close = False
+
+    def _nose_on(self, s: FlightState, planes: list[dict]) -> bool:
+        """War Thunder RWR vermiyor: burnu bize dönük, füze menzilindeki düşman en yakın şey. Söylediyse True."""
+        lo, hi = self.NOSE_RANGE
+        hot = [c for c in planes if c.get("aspect") is not None and c["aspect"] <= self.NOSE_ASPECT
+               and lo <= c["dist_m"] <= hi]
+        if not hot:
+            self.nose_since = None
+            return False
+        if self.nose_since is None:
+            self.nose_since = s.t
+        if s.t - self.nose_since < self.NOSE_HOLD or s.t - self.nose_last < self.NOSE_REPEAT:
+            return False
+        self.nose_last = s.t
+        c = hot[0]
+        self.say(f"Saat {c['clock']}'deki düşman burnunu sana çevirdi, {self._km(c['dist_m'])}. Füze gelebilir!",
+                 "warn", self._urgent())
+        return True
+
+    def _ground_threats(self, s: FlightState, sams: list[dict]) -> None:
+        """Düşman SAM / uçaksavar / füzeli gemi menziline girince bir kez; çıkıp 3 km uzaklaşınca yeniden kurulur."""
+        near: dict[str, dict] = {}
+        for c in sams:
+            if c["name"] not in near or c["dist_m"] < near[c["name"]]["dist_m"]:
+                near[c["name"]] = c
+        for name in list(self.sam_inside):
+            c = near.get(name)
+            if c is None or c["dist_m"] > float(c.get("range_m") or 0) + 3000:
+                self.sam_inside.discard(name)
+        for name, c in near.items():
+            if name in self.sam_inside or c["dist_m"] > float(c.get("range_m") or 0):
+                continue
+            self.sam_inside.add(name)
+            if s.t - self.sam_last.get(name, -1e9) < self.SAM_REPEAT:
+                continue
+            self.sam_last[name] = s.t
+            self.say(f"{name[0].upper() + name[1:]} menzilindesin: saat {c['clock']}, {self._km(c['dist_m'])}.",
+                     "warn", "serious")
+
+    def _hud(self, s: FlightState) -> None:
+        """War Thunder savaş kayıtları: düşürdüğün, seni vuran."""
+        for kind, who in s.extra.get("hud") or []:
+            if kind == "kill":
+                self.say(f"Düşürdün: {who}.", "info", "cheerful")
+            elif kind == "fire":
+                self.say(f"Yanıyorsun! {who} vurdu.", "critical", "urgent")
+            elif kind == "hit":
+                self.say(f"Ağır hasar aldın, {who} vurdu!", "warn", "urgent")
 
     # ------------------------------------------------------------------- evre
     def _airborne(self, s: FlightState) -> bool:
@@ -463,7 +526,9 @@ class FlightCompanion:
 
     def _record(self, s: FlightState) -> None:
         st = self.stats
-        st["max_g"] = max(st["max_g"], s.g or 0)
+        g = s.g or 0
+        st["max_g"] = max(st["max_g"], min(g, self._g_prev))  # tek ölçümlük sıçrama (çarpma, ölüm) sayılmaz
+        self._g_prev = g
         st["max_ias"] = max(st["max_ias"], s.ias or 0)
         st["max_alt"] = max(st["max_alt"], s.alt or 0)
         if s.fuel_kg is not None:
@@ -578,6 +643,9 @@ class FlightCompanion:
         left = st["left_min"]
         if self.endurance0 is None and self.takeoff is not None:
             self.endurance0 = (s.t - self.takeoff.t) / 60 + left
+        pct = s.extra.get("fuel_pct")
+        if isinstance(pct, (int, float)) and pct > 35:
+            return  # 3000 kilo yakıtla art yakıcıdayken "4 dakika yeter" diyordu: depo azalmadan dakika uyarısı yok
         for limit, flag, sev in ((10, "low10", "warn"), (5, "low5", "critical")):
             if left > limit + 8:
                 self.fuel_flags.discard(flag)  # ikmal yapıldı ya da gaz azaldı: yeniden kur
@@ -775,7 +843,9 @@ class FlightCompanion:
     # --------------------------------------------------------------------- G
     def _g(self, s: FlightState) -> None:
         p = self.profile
-        if s.g is None:
+        if s.g is None or s.source == "warthunder":
+            # War Thunder'ın Ny değeri gürültülü (ölümde 48 G gördü) ve oyun bayılmayı kendisi gösteriyor: dogfight'ta
+            # her 3 dakikada "11 G üstündesin" demek sadece rahatsız ediyordu.
             return
         if s.g >= p.g_warn:
             self.g_since = s.t if self.g_since is None else self.g_since
@@ -858,6 +928,8 @@ class FlightCompanion:
         self.say(text, "info", "calm" if kind == "on" else "serious")
 
     # ------------------------------------------------------------ uçuş sonrası
+    SPEAK_DEBRIEF_S = 600  # inişle bitmeyen uçuş bundan kısaysa değerlendirme sesli söylenmez
+
     def _finish(self, s: FlightState, landed: bool) -> None:
         t0 = self.takeoff
         if t0 is None:
@@ -881,6 +953,8 @@ class FlightCompanion:
         if d.duration_s < 60:
             return
         self.on_debrief(d)
+        if not landed and d.duration_s < self.SPEAK_DEBRIEF_S:
+            return  # kayda ve sayfaya yazıldı; War Thunder'da her ölümden sonra konuşmasın
         try:
             tip = coach(d, load_history(exclude=d.start_wall))
         except Exception:  # noqa: BLE001 - karşılaştırma olmadan da değerlendirme söylensin

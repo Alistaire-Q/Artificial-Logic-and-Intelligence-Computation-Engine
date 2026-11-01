@@ -4,28 +4,46 @@ from alice.core.store import Store
 from alice.core.watchdogs import GameHealth, NetWatch, outages
 
 
-def test_game_health_waits_a_minute_names_memory_hog_and_rearms():
+def test_game_health_waits_two_minutes_names_memory_hog_and_rearms():
     st = Store(":memory:")
     sent = []
     g = GameHealth(st, lambda n: sent.append(n.body) or True)
     t = 1000.0
-    st.add("pc.proc.discord.exe.mem_mb", 1843.0, ts=t)
-    st.add("pc.proc.aces.exe.mem_mb", 6000.0, ts=t)  # oyunun kendisi önerilmez
-    for dt in (0, 30, 61):
-        st.add("pc.mem.percent", 94.0, ts=t + dt)
+    st.add("pc.proc.discord.exe.mem_mb", 1843.0, ts=t + 100)
+    st.add("pc.proc.aces.exe.mem_mb", 6000.0, ts=t + 100)  # oyunun kendisi önerilmez
+    for dt in (0, 60, 121):
+        st.add("pc.mem.percent", 96.0, ts=t + dt)
         g.check("flight", t + dt)
-    assert sent == ["RAM yüzde 94 dolu, oyun takılabilir. En çok Discord kullanıyor (1.8 GB), kapatabilirsin."]
-    st.add("pc.mem.percent", 94.0, ts=t + 200)
-    g.check("flight", t + 200)
-    assert len(sent) == 1  # 15 dk dolmadan tekrar yok
-    st.add("pc.mem.percent", 80.0, ts=t + 260)
-    g.check("flight", t + 260)  # düştü: yeniden kuruldu
-    for dt in (300, 361):
-        st.add("pc.mem.percent", 93.0, ts=t + dt)
+    assert sent == ["RAM yüzde 96 dolu, oyun takılabilir. En çok Discord kullanıyor (1.8 GB), kapatabilirsin."]
+    st.add("pc.mem.percent", 96.0, ts=t + 400)
+    g.check("flight", t + 400)
+    assert len(sent) == 1  # 30 dk dolmadan tekrar yok
+    st.add("pc.mem.percent", 80.0, ts=t + 460)
+    g.check("flight", t + 460)  # düştü: yeniden kuruldu ama 10 dk dolmadan yine susar
+    for dt in (500, 621):
+        st.add("pc.mem.percent", 97.0, ts=t + dt)
+        g.check("flight", t + dt)
+    assert len(sent) == 1
+    for dt in (700, 821):
+        st.add("pc.mem.percent", 97.0, ts=t + dt)
         g.check("flight", t + dt)
     assert len(sent) == 2
-    st.add("pc.gpu.temp", 95.0, ts=t + 400)
-    assert g.check("normal", t + 400) == [] and g.check("normal", t + 470) == []  # oyun dışında susar
+    st.add("pc.gpu.temp", 95.0, ts=t + 900)
+    assert g.check("normal", t + 900) == [] and g.check("normal", t + 1030) == []  # oyun dışında susar
+
+
+def test_game_health_quiet_at_normal_gaming_gpu_temps():
+    st = Store(":memory:")
+    sent = []
+    g = GameHealth(st, lambda n: sent.append(n.body) or True)
+    for dt in range(0, 3600, 15):  # oyunda kart saatlerce 85-90 derecede durur: kritik değil
+        st.add("pc.gpu.temp", 85.0 + dt % 6, ts=1000.0 + dt)
+        g.check("flight", 1000.0 + dt)
+    assert sent == []
+    for dt in (3600, 3700, 3730):
+        st.add("pc.gpu.temp", 94.0, ts=1000.0 + dt)
+        g.check("flight", 1000.0 + dt)
+    assert sent == ["Ekran kartı 94 derece, kritik: kart kendini yavaşlatmaya başlar."]
 
 
 def test_net_watch_announces_drop_and_return():

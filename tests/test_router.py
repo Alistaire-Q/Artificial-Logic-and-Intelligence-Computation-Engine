@@ -308,6 +308,20 @@ def test_thinking_model_out_of_budget_retries_with_bigger_max_tokens():
     assert a.calls[2]["max_tokens"] == 1024  # hatırlanır, ilk denemede geniş pay
 
 
+def test_thinking_model_at_max_budget_not_retried_and_backs_off():
+    cfg = make_config({"fast": ["a:think", "b:m"]})
+    err = lambda: ProviderError("too_large", "cevap max_tokens'a takıldı, içerik yok")  # noqa: E731
+    a = FakeProvider("a", [err(), err()])
+    b = FakeProvider("b", ["b ok", "b ok"])
+    r = router_with(cfg, {"a": a, "b": b})
+    r.out_floor["a:think"] = 8192
+    assert r.chat("fast", [{"role": "user", "content": "x"}], max_tokens=400).text == "b ok"
+    assert len(a.calls) == 1  # pay zaten en büyükte: aynı istek boşuna tekrarlanmaz
+    t = __import__("time").monotonic()
+    r._penalize("a:think", "a", err(), False, False)
+    assert round((r.cooldown_until["a:think"] - t) / 300) == 2  # ikinci başarısızlık: 10 dk
+
+
 def test_repeated_timeouts_back_off_and_reset_on_success():
     r = Router(make_config({"brain": ["a:m"]}), provider_factory=lambda pc: None, sleep=lambda s: None)
     e = ProviderError("network", "zaman aşımı (ReadTimeout)")

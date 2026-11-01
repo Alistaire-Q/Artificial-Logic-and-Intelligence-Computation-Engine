@@ -1,8 +1,10 @@
 """Çekirdeğin iki küçük nöbetçisi.
 
-GameHealth: oyun/uçuş modundayken bilgisayar zorlanıyorsa oyun takılmadan önce söyler: ekran kartı ısınması, ekran
-kartı belleği ya da RAM dolması (RAM'de en çok yer kaplayan arka plan programını da söyler: "Discord 1,8 GB"). Koşul
-bir dakika sürmeden konuşmaz, aynı uyarıyı 15 dakikada bir tekrarlar, değer sınırın 5 altına inince yeniden kurulur.
+GameHealth: oyun/uçuş modundayken bilgisayar gerçekten kritik seviyeye gelirse söyler: ekran kartı ya da işlemci
+ısınması, ekran kartı belleği ya da RAM dolması (RAM'de en çok yer kaplayan arka plan programını da söyler: "Discord
+1,8 GB"). Oyunda ekran kartı 85-88 derecede saatlerce durur (normal): 85'te konuşmak her 15 dakikada bir "ekran kartı
+86 derece" demek oluyordu (1 Kasım, 23 kez). Sınırlar artık kartın kendini yavaşlatmaya başladığı seviyede. Koşul iki
+dakika sürmeden konuşmaz, aynı uyarıyı 30 dakikada bir tekrarlar, değer sınırın 5 altına inince yeniden kurulur.
 
 NetWatch: internet bağlantısını arka planda 30 sn'de bir yoklar (1.1.1.1 ve 8.8.8.8'e TCP). 45 sn'den uzun kopmayı ve
 geri gelişi (ne kadar kesik kaldığıyla) bildirir, her kesintiyi "net" olayı olarak kaydeder; haftalık özet sayar.
@@ -19,12 +21,13 @@ from alice.core.notify import Notification
 
 # (anahtar, sınır, metin) — metin {v} ile değeri alır
 GAME_LIMITS = (
-    ("pc.gpu.temp", 85.0, "Ekran kartı {v:.0f} dereceye çıktı, uzun sürerse oyun yavaşlayabilir."),
-    ("pc.gpu.mem_percent", 95.0, "Ekran kartı belleği yüzde {v:.0f} dolu, takılma başlayabilir."),
-    ("pc.mem.percent", 92.0, "RAM yüzde {v:.0f} dolu, oyun takılabilir."),
+    ("pc.gpu.temp", 93.0, "Ekran kartı {v:.0f} derece, kritik: kart kendini yavaşlatmaya başlar."),
+    ("pc.cpu.temp", 95.0, "İşlemci {v:.0f} derece, kritik: oyun takılabilir."),
+    ("pc.gpu.mem_percent", 98.0, "Ekran kartı belleği yüzde {v:.0f} dolu, takılma başlayabilir."),
+    ("pc.mem.percent", 95.0, "RAM yüzde {v:.0f} dolu, oyun takılabilir."),
 )
-GAME_HOLD = 60.0
-GAME_REPEAT = 900.0
+GAME_HOLD = 120.0
+GAME_REPEAT = 1800.0
 GAME_PROCS = ("aces", "dcs", "robloxplayerbeta")  # RAM önerisinde oyunun kendisini söyleme
 
 
@@ -53,7 +56,10 @@ class GameHealth:
                 self.since.pop(key, None)
                 continue
             start = self.since.setdefault(key, now)
-            if now - start < GAME_HOLD or not self.armed.get(key, True) and now - self.said.get(key, 0) < GAME_REPEAT:
+            since_said = now - self.said.get(key, float("-inf"))
+            # yeniden kurulsa da 10 dk dolmadan tekrar yok: sınırda gidip gelen değer her seferinde konuşturmasın
+            if now - start < GAME_HOLD or since_said < GAME_REPEAT / 3 or (
+                    not self.armed.get(key, True) and since_said < GAME_REPEAT):
                 continue
             msg = text.format(v=v)
             if key == "pc.mem.percent":

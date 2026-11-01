@@ -11,6 +11,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from typing import Callable
 
@@ -71,18 +72,18 @@ class Notifier:
         self.policy = policy
         self.channels: list[Callable[[Notification, Policy], None]] = []
         self._toasted: dict[str, float] = {}
+        self._muted: dict[str, float] = {}
         if desktop:
             self.channels.append(self._desktop)
 
     TOAST_REPEAT = 600.0  # sn: aynı bildirim balonu bu süre içinde tekrar gösterilmez
+    MUTED_REPEAT = 1800.0  # sn: susturulan aynı bildirim bu süre içinde tekrar kaydedilmez
 
     def _desktop(self, n: Notification, pol: Policy) -> None:
         """Windows bildirim balonu. Uçuş anonsları sesli söyleniyor, oyun sırasında balon spam oluyordu: gösterme.
         Aynı bildirim 10 dk içinde tekrar gelirse de gösterme."""
         if n.kind == "flight" or n.topic == "flight":
             return
-        import time
-
         key = f"{n.title}|{n.body}"
         now = time.monotonic()
         if now - self._toasted.get(key, -1e9) < self.TOAST_REPEAT:
@@ -94,12 +95,21 @@ class Notifier:
         """Bildirimi gönder. Mod politikası susturduysa False."""
         pol = self.policy()
         ok = pol.allows(n.severity, n.topic)
-        self.store.add_event(n.kind, n.title, n.body, n.severity, n.topic, delivered=ok)
+        if ok:  # önce ses: kayıt veritabanı meşgulse uçuş anonsu beklemesin
+            for ch in self.channels:
+                try:
+                    ch(n, pol)
+                except Exception:  # bir kanal çökse de diğerleri çalışsın
+                    pass
         if not ok:
-            return False
-        for ch in self.channels:
-            try:
-                ch(n, pol)
-            except Exception:  # bir kanal çökse de diğerleri çalışsın
-                pass
-        return True
+            # Susturulan rapor her turda yeniden denenir (uçuşta sağlık raporu 10 dk'da bir): olay kaydı her denemede
+            # aynı satırla dolmasın (1 Kasım: 2 günde 36 "sağlık raporu", 24 "haftanın özeti").
+            key, now = f"{n.title}|{n.body}", time.monotonic()
+            if now - self._muted.get(key, -1e9) < self.MUTED_REPEAT:
+                return ok
+            self._muted[key] = now
+        try:
+            self.store.add_event(n.kind, n.title, n.body, n.severity, n.topic, delivered=ok)
+        except Exception:  # noqa: BLE001 - kayıt yazılamasa da bildirim gitti
+            pass
+        return ok
