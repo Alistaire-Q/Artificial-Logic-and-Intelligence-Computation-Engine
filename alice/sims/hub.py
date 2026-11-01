@@ -28,6 +28,18 @@ class SimHub:
         self.last_debrief: tuple[Debrief, str] | None = None
         self._parts: list = []
         self._briefed: str = ""  # brifingi verilen görev (yol + değişme zamanı): aynı görev için bir kez
+        self._fullscreen_said = False
+
+    def _fullscreen_check(self, game: str) -> None:
+        """HUD açıkken oyun özel tam ekrandaysa oklar görünmez: çekirdek çalıştığı sürece bir kez söyle."""
+        if self.show is None or self._fullscreen_said:
+            return
+        from alice.hud.screen import exclusive_fullscreen
+
+        if exclusive_fullscreen():
+            self._fullscreen_said = True
+            self._say(f"{game} özel tam ekranda, HUD oyunun üstüne çizemiyor. Görüntü ayarlarından kenarlıksız "
+                      "pencereye geçersen tehdit oklarını da görürsün.", "info", "calm")
 
     def _say(self, text: str, severity: str, emotion: str) -> None:
         self.notifier.send(Notification("Uçuş", text, severity, "flight", kind="flight", emotion=emotion))
@@ -73,8 +85,10 @@ class SimHub:
             tracker = TouchdownTracker(comp)
 
             def feed(s, comp=comp, tracker=tracker):
-                if comp.last_state is None and (s.ias or 0) < 30:  # yerde yeni oturum: kalkıştan önce brifing
-                    threading.Thread(target=self.brief_mission, daemon=True, name="alice-dcs-brief").start()
+                if comp.last_state is None:
+                    self._fullscreen_check("DCS")
+                    if (s.ias or 0) < 30:  # yerde yeni oturum: kalkıştan önce brifing
+                        threading.Thread(target=self.brief_mission, daemon=True, name="alice-dcs-brief").start()
                 tracker.feed(s)
 
             try:
@@ -89,7 +103,13 @@ class SimHub:
             comp = self.companion("warthunder")
             tracker = TouchdownTracker(comp)
             running = lambda: any(p.lower() == "aces.exe" for p in self.processes())  # noqa: E731
-            self._parts.append(WarThunderPoller(tracker.feed, comp.session_end,
+
+            def wt_feed(s, comp=comp, tracker=tracker):
+                if comp.last_state is None:  # yeni oturum (maç)
+                    self._fullscreen_check("War Thunder")
+                tracker.feed(s)
+
+            self._parts.append(WarThunderPoller(wt_feed, comp.session_end,
                                                 lambda rows: self.store.add_many(rows), running=running,
                                                 nick=str(self.cfg.get("warthunder_nick") or "") or None).start())
         ACTIVE = self

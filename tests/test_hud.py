@@ -298,3 +298,86 @@ def test_hub_passes_show_to_companions():
     hb = SimHub({}, store=None, notifier=None, show=lambda kind, **kw: marker.append(kind))
     hb.companion("warthunder").show("arrow", clock=1)
     assert marker == ["arrow"]
+
+
+def test_hud_arrow_follows_threat_without_repeating_speech():
+    """Arkadaki düşman dönerken saat 6'dan 4'e geçer: ses bir kez, ok yeni yönü gösterir; izleme sınırlı sürer."""
+    from tests.test_sims import Recorder, st
+
+    from alice.sims.flight import FlightCompanion, TouchdownTracker
+
+    r, shown = Recorder(), []
+    c = FlightCompanion(r.say, show=lambda kind, **kw: shown.append((kind, kw)))
+    tr = TouchdownTracker(c)
+    tr.feed(st(0, ias=0, agl=0.5, alt=50))
+    tr.feed(st(1, ias=80, agl=30))
+    bandit = {"id": "", "clock": 6, "dist_m": 1200.0, "kind": "aircraft", "name": "Fighter"}
+    tr.feed(st(2, extra={"contacts": [bandit]}))
+    tr.feed(st(2.2, extra={"contacts": [{**bandit, "clock": 5}]}))   # çok sık: gönderilmez
+    tr.feed(st(3, extra={"contacts": [{**bandit, "clock": 4, "dist_m": 900.0}]}))
+    tr.feed(st(15, extra={"contacts": [{**bandit, "clock": 5}]}))
+    tr.feed(st(22, extra={"contacts": [{**bandit, "clock": 7}]}))     # 20 sn sonra: yeni anons
+    tr.feed(st(42.5, extra={"contacts": [{**bandit, "clock": 8, "dist_m": 3000.0}]}))  # menzil dışı: izleme yok
+    arrows = [(kw["clock"], kw["text"], kw["ttl"]) for k, kw in shown if k == "arrow"]
+    assert arrows == [(6, "ARKANDA · 1,2 km", 4.0), (4, "ARKANDA · 900 m", 2.5), (5, "ARKANDA · 1,2 km", 2.5),
+                      (7, "ARKANDA · 1,2 km", 4.0)]
+    assert [x for x in r.texts() if x.startswith("Arkanda")] == ["Arkanda düşman, saat 6, 1,2 kilometre!",
+                                                                 "Arkanda düşman, saat 7, 1,2 kilometre!"]
+
+
+def test_hud_follow_stops_after_window():
+    from tests.test_sims import Recorder, st
+
+    from alice.sims.flight import FlightCompanion, TouchdownTracker
+
+    shown = []
+    c = FlightCompanion(Recorder().say, show=lambda kind, **kw: shown.append(kw["id"]))
+    tr = TouchdownTracker(c)
+    tr.feed(st(0, ias=0, agl=0.5, alt=50))
+    tr.feed(st(1, ias=80, agl=30))
+    sam = {"id": "", "clock": 2, "dist_m": 10000.0, "kind": "sam", "name": "SAM", "range_m": 18000.0}
+    for t in (2, 3, 10, 22, 30):
+        tr.feed(st(t, extra={"contacts": [sam]}))
+    assert shown == ["sam:SAM", "sam:SAM", "sam:SAM", "sam:SAM"]  # 2 anons, 3 ve 10 izleme, 22-2 > 20: bitti
+    assert len(shown) == 4
+
+
+def test_exclusive_fullscreen_said_once_only_with_hud(monkeypatch):
+    from alice.hud import screen
+    from alice.sims.hub import SimHub
+
+    monkeypatch.setattr(screen, "exclusive_fullscreen", lambda: True)
+    said = []
+    quiet = SimHub({}, store=None, notifier=None)
+    monkeypatch.setattr(quiet, "_say", lambda *a: said.append(a))
+    quiet._fullscreen_check("War Thunder")
+    assert said == []  # HUD kapalı: söylenecek bir şey yok
+    hb = SimHub({}, store=None, notifier=None, show=lambda kind, **kw: None)
+    monkeypatch.setattr(hb, "_say", lambda *a: said.append(a))
+    hb._fullscreen_check("War Thunder")
+    hb._fullscreen_check("War Thunder")
+    assert len(said) == 1 and said[0][0].startswith("War Thunder özel tam ekranda")
+
+
+def test_exclusive_fullscreen_reads_notification_state(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    from alice.hud import screen
+
+    if sys.platform != "win32":
+        assert screen.exclusive_fullscreen() is False
+        return
+
+    def fake(value, ret=0):
+        def q(ref):
+            ref._obj.value = value
+            return ret
+
+        return SimpleNamespace(shell32=SimpleNamespace(SHQueryUserNotificationState=q))
+
+    import ctypes
+
+    for value, ret, want in ((3, 0, True), (2, 0, False), (3, 1, False)):
+        monkeypatch.setattr(ctypes, "windll", fake(value, ret))
+        assert screen.exclusive_fullscreen() is want
