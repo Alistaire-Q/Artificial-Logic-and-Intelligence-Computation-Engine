@@ -256,7 +256,7 @@ def test_flight_threats_also_show_on_hud():
     sam = {"id": "", "clock": 10, "dist_m": 12000.0, "kind": "sam", "name": "SAM", "range_m": 18000.0}
     tr.feed(st(4, extra={"contacts": [sam]}))
     bandit = {"id": "", "clock": 6, "dist_m": 1200.0, "kind": "aircraft", "name": "Fighter"}
-    tr.feed(st(5, extra={"contacts": [bandit]}))
+    tr.feed(st(20, extra={"contacts": [bandit]}))  # SAM'dan 12 sn sonra: ses sırası gelmiş
     hot = {"id": "", "clock": 1, "dist_m": 8000.0, "kind": "aircraft", "name": "Fighter", "aspect": 5.0}
     for t in (40, 41, 43):
         tr.feed(st(t, extra={"contacts": [hot]}))
@@ -300,8 +300,8 @@ def test_hub_passes_show_to_companions():
     assert marker == ["arrow"]
 
 
-def test_hud_arrow_follows_threat_without_repeating_speech():
-    """Arkadaki düşman dönerken saat 6'dan 4'e geçer: ses bir kez, ok yeni yönü gösterir; izleme sınırlı sürer."""
+def test_hud_arrow_follows_threat_while_voice_stays_quiet():
+    """Dönerken saat 6'daki düşman saat 4'e geçer: ses seyrek, ok yeni yönü gösterir (ses susturulsa da)."""
     from tests.test_sims import Recorder, st
 
     from alice.sims.flight import FlightCompanion, TouchdownTracker
@@ -315,31 +315,35 @@ def test_hud_arrow_follows_threat_without_repeating_speech():
     tr.feed(st(2, extra={"contacts": [bandit]}))
     tr.feed(st(2.2, extra={"contacts": [{**bandit, "clock": 5}]}))   # çok sık: gönderilmez
     tr.feed(st(3, extra={"contacts": [{**bandit, "clock": 4, "dist_m": 900.0}]}))
-    tr.feed(st(15, extra={"contacts": [{**bandit, "clock": 5}]}))
-    tr.feed(st(22, extra={"contacts": [{**bandit, "clock": 7}]}))     # 20 sn sonra: yeni anons
-    tr.feed(st(42.5, extra={"contacts": [{**bandit, "clock": 8, "dist_m": 3000.0}]}))  # menzil dışı: izleme yok
-    arrows = [(kw["clock"], kw["text"], kw["ttl"]) for k, kw in shown if k == "arrow"]
-    assert arrows == [(6, "ARKANDA · 1,2 km", 4.0), (4, "ARKANDA · 900 m", 2.5), (5, "ARKANDA · 1,2 km", 2.5),
-                      (7, "ARKANDA · 1,2 km", 4.0)]
+    for t in range(5, 24, 2):  # sürekli arkada: 20 sn'den sonra ok susar
+        tr.feed(st(t, extra={"contacts": [{**bandit, "clock": 5}]}))
+    tr.feed(st(30, extra={"contacts": [{**bandit, "clock": 8}]}))    # kaybolup döndü: ses yok, ok var
+    tr.feed(st(48, extra={"contacts": [{**bandit, "clock": 7}]}))    # 45 sn geçti: yeniden söylenir
+    arrows = [(kw["clock"], kw["ttl"]) for k, kw in shown if k == "arrow"]
+    assert arrows[:3] == [(6, 4.0), (4, 2.5), (5, 2.5)]
+    assert arrows[3:-2] == [(5, 2.5)] * 8  # 5..21: görülmenin ilk 20 sn'si
+    assert arrows[-2:] == [(8, 2.5), (7, 4.0)]
     assert [x for x in r.texts() if x.startswith("Arkanda")] == ["Arkanda düşman, saat 6, 1,2 kilometre!",
                                                                  "Arkanda düşman, saat 7, 1,2 kilometre!"]
 
 
-def test_hud_follow_stops_after_window():
+def test_hud_shows_threats_the_voice_skipped():
+    """Gemi grubunda yalnız en yakını söylenir; diğeri sesle değil, HUD'da okla görünür."""
     from tests.test_sims import Recorder, st
 
     from alice.sims.flight import FlightCompanion, TouchdownTracker
 
-    shown = []
-    c = FlightCompanion(Recorder().say, show=lambda kind, **kw: shown.append(kw["id"]))
+    r, shown = Recorder(), []
+    c = FlightCompanion(r.say, show=lambda kind, **kw: shown.append(kw["id"]))
     tr = TouchdownTracker(c)
     tr.feed(st(0, ias=0, agl=0.5, alt=50))
     tr.feed(st(1, ias=80, agl=30))
-    sam = {"id": "", "clock": 2, "dist_m": 10000.0, "kind": "sam", "name": "SAM", "range_m": 18000.0}
-    for t in (2, 3, 10, 22, 30):
-        tr.feed(st(t, extra={"contacts": [sam]}))
-    assert shown == ["sam:SAM", "sam:SAM", "sam:SAM", "sam:SAM"]  # 2 anons, 3 ve 10 izleme, 22-2 > 20: bitti
-    assert len(shown) == 4
+    ships = [{"id": "", "clock": 11, "dist_m": 7200.0, "kind": "sam", "name": "füzeli muhrip", "range_m": 9000.0},
+             {"id": "", "clock": 10, "dist_m": 8200.0, "kind": "sam", "name": "fırkateyn", "range_m": 9000.0}]
+    tr.feed(st(2, extra={"contacts": ships}))
+    tr.feed(st(3, extra={"contacts": ships}))
+    assert [x for x in r.texts() if "menzilindesin" in x] == ["Füzeli muhrip menzilindesin: saat 11, 7,2 kilometre."]
+    assert shown == ["sam:füzeli muhrip", "sam:füzeli muhrip", "sam:fırkateyn"]
 
 
 def test_exclusive_fullscreen_said_once_only_with_hud(monkeypatch):

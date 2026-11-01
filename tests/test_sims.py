@@ -722,14 +722,14 @@ def test_threat_callouts_once_and_six_warning():
     assert "Füze! Saat 2, SA-6. Chaff at, dön!" in said
     bandit = {"id": "", "clock": 6, "dist_m": 1200.0, "kind": "aircraft", "name": "Fighter", "lock": False,
               "missile": False}
-    for t in (30, 31, 45, 52):
+    for t in (30, 31, 45, 52, 76):
         tr.feed(st(t, extra={"contacts": [bandit]}))
     six = [x for x in r.texts() if x.startswith("Arkanda")]
-    assert six == ["Arkanda düşman, saat 6, 1,2 kilometre!"] * 2  # 20 sn'de bir
+    assert six == ["Arkanda düşman, saat 6, 1,2 kilometre!"] * 2  # 45 sn'de bir
     far = {**bandit, "clock": 1, "dist_m": 4000.0}
-    tr.feed(st(80, extra={"contacts": [{**far, "dist_m": 9000.0}]}))
-    tr.feed(st(81, extra={"contacts": [far]}))
-    tr.feed(st(99, extra={"contacts": [far]}))
+    tr.feed(st(100, extra={"contacts": [{**far, "dist_m": 9000.0}]}))
+    tr.feed(st(101, extra={"contacts": [far]}))
+    tr.feed(st(119, extra={"contacts": [far]}))
     assert r.texts().count("Düşman saat 1, 4,0 kilometre.") == 1
 
 
@@ -822,3 +822,26 @@ def test_warthunder_crash_is_not_a_landing_and_takeoff_is_not_approach():
     for t in range(200, 210):  # öldü: enkaz yerde, teker kapalı
         tr.feed(st(t, ias=0, alt=40, vv=0.0, **wt))
     assert r.debriefs and not any(x.startswith("Uçuş ") for x in r.texts())
+
+
+def test_threat_voices_share_a_gap_and_survive_respawn():
+    """Dalaşta ALICE susmuyordu: tehdit sesleri arasında ortak boşluk, gemi grubu tek anons, doğunca baştan sayılmaz."""
+    c, tr, r = make()
+    wt = dict(source="warthunder", aircraft="su_30mkk", x=None, z=None)
+    tr.feed(st(0, ias=0, agl=0.5, alt=50, **wt))
+    tr.feed(st(1, ias=80, agl=30, **wt))
+    ships = [{"id": "", "clock": 11, "dist_m": 7200.0, "kind": "sam", "name": "füzeli muhrip", "range_m": 9000.0},
+             {"id": "", "clock": 11, "dist_m": 8200.0, "kind": "sam", "name": "fırkateyn", "range_m": 9000.0}]
+    bandit = {"id": "", "clock": 2, "dist_m": 3600.0, "kind": "aircraft", "name": "Fighter"}
+    tr.feed(st(2, extra={"contacts": ships + [bandit]}, **wt))
+    tr.feed(st(5, extra={"contacts": ships + [{**bandit, "clock": 5, "dist_m": 900.0}]}, **wt))
+    said = r.texts()
+    assert said == ["Füzeli muhrip menzilindesin: saat 11, 7,2 kilometre."]  # fırkateyn, düşman ve arkadaki: sus
+    tr.feed(st(15, extra={"contacts": [{**bandit, "clock": 6, "dist_m": 900.0}]}, **wt))
+    assert r.texts()[-1] == "Arkanda düşman, saat 6, 900 metre!"  # 12 sn boşluktan sonra
+    c.session_end()  # öldü, yeniden doğdu: aynı gemiler yeniden sayılmaz
+    tr.feed(st(60, ias=0, agl=0.5, alt=50, **wt))
+    tr.feed(st(61, ias=80, agl=30, **wt))
+    n = len(r.texts())
+    tr.feed(st(80, extra={"contacts": ships}, **wt))
+    assert len(r.texts()) == n
