@@ -67,6 +67,74 @@ Buraya kadarki her şey "iyi bir asistan". Bundan sonrası ALICE'i sıradan bir 
 6. **Kanat adamı koçluğu, duygusal zekâ**
 7. **Her yerde aynı ALICE, zaman makinesi hafıza, DCS kanat adamları**
 
+Aşağıda ilk üç madde için nasıl yapılacağı yazılı. Diğerlerinin ayrıntısı sırası gelince eklenir.
+
+### 1. Ekran üstü HUD motoru
+
+**Nasıl yapılır.**
+* **Ayrı süreç:** HUD ayrı ve küçük bir süreç olur (`alice hud`). Çekirdek onu başlatır, çökerse yeniden başlatır. HUD çökse de ALICE konuşmaya devam eder.
+* **Pencere:** tkinter ile çizilen, saydam, çerçevesiz, her zaman en üstte bir pencere. Win32 ayarlarıyla tıklamaları altındaki pencereye geçirir (`WS_EX_TRANSPARENT`, `WS_EX_LAYERED`), odak almaz ve görev çubuğunda görünmez (`WS_EX_NOACTIVATE`, `WS_EX_TOOLWINDOW`). Yeni paket gerekmez.
+* **Ekran görüntüsü dışı:** `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` ile ekran görüntülerinden hariç tutulur. Yoksa ALICE ekrana baktığında kendi çizdiği oku görüp onu tehdit sanar.
+* **Haberleşme:** çekirdek ve sesli mod HUD'a yerel bir soket üzerinden kısa komutlar yollar: `{"kind": "arrow", "clock": 4, "text": "SAM 12 km", "ttl": 3}`. Kodun geri kalanı yalnızca "göster" der; nasıl çizileceğini HUD bilir.
+* **Öğeler:** ok (saat yönü), kenar parlaması, etiket, kart, çerçeve (ekran koordinatıyla), ilerleme çubuğu. Her öğenin bir ömrü (ttl) vardır, süresi dolunca kaybolur. Aynı anda en fazla birkaç öğe görünür.
+* **Ayar ve kısayol:** tek kısayolla tamamen gizlenir. `[hud]` ayarlarıyla açılıp kapanır, hangi ekranda ve ne kadar saydam çizileceği seçilir.
+
+**İlk adım.** Masaüstünde sabit bir ok ve kart çizen deneme. Ardından War Thunder kenarlıksız penceredeyken aynı deneme yapılır ve odak ile FPS ölçülür.
+
+**Bitti sayılır.**
+* War Thunder'da, kenarlıksız pencerede, tehdit oku veri geldikten sonra en geç 0,3 saniyede görünür.
+* Oyunun FPS'i yüzde 2'den fazla düşmez, odak bir saat boyunca hiç kaymaz.
+* ALICE'in kendi ekran görüntülerinde HUD görünmez.
+* HUD çökünce çekirdek 5 saniye içinde yeniden başlatır.
+
+**Riskler.**
+* Özel tam ekranda (exclusive fullscreen) hiçbir pencere oyunun üstüne çizilemez. Çözüm oyunu kenarlıksız pencerede açmak. ALICE bunu fark edip bir kez söyler. Olmazsa oyunda yalnızca sesli kalınır.
+* Hile koruması: ALICE oyuna kod enjekte etmez ve belleğini okumaz. Sadece kendi penceresini çizer, Discord ya da OBS katmanı gibi. Bu sınır kesindir.
+* Birden fazla monitör ve DPI ölçeği: koordinatlar Windows'un DPI farkındalığıyla hesaplanmalı (bilgisayar kullanımı kodunda bu zaten çözülmüştü).
+
+### 2. Ekrandan füze görme
+
+**Nasıl yapılır.**
+* **Yakalama:** sadece uçuş modunda, ekranın yalnızca ilgili küçük bölgesi (RWR göstergesi ve füze uyarısı) işlemcide saniyede 10 kez yakalanır (`mss`). Tüm ekran yakalanmaz.
+* **Tanıma:** önce kurallarla yapılır: renk eşiği ve şablon eşleme (`numpy`, gerekirse OpenCV; ikisi de kurulu). RWR dairesi üzerindeki işaretin açısından saat yönü çıkar. Yanıp sönen uyarı birkaç karede doğrulanır, tek karelik yanlış alarm olmaz.
+* **Sonuç:** mevcut temas listesine `missile: True` olarak eklenir. Böylece bugünkü "Füze! Saat 4, chaff at" anonsu ve HUD'daki ok hiçbir değişiklik gerekmeden çalışır.
+* **Ayar:** bölge koordinatları ve renkler uçağa ya da HUD düzenine göre değişebilir. Bir kerelik bir "kalibrasyon" komutu olur: ALICE bölgeyi ekran görüntüsünde gösterir, sen onaylarsın.
+
+**İlk adım (seni bekliyor).** War Thunder'da füze uyarısının ve RWR'ın göründüğü anlardan 10-20 ekran görüntüsü. Aynısını uyarı yokken de birkaç tane. Bunlar olmadan uyarının nerede ve hangi renkte göründüğü tahmin edilir, ölçülmez.
+
+**Bitti sayılır.**
+* Kaydedilmiş oyun görüntülerinde füze uyarılarının en az yüzde 90'ı yakalanır.
+* Bir saatlik normal uçuşta en fazla bir yanlış "Füze!" olur.
+* Uyarı ekranda belirdikten sonra en geç 0,3 saniyede söylenir.
+* Bir işlemci çekirdeğinin yüzde 3'ünden azını kullanır, ekran kartına hiç dokunmaz.
+
+**Riskler.**
+* Özel tam ekranda yakalama siyah görüntü dönebilir. Çözüm HUD'daki gibi kenarlıksız pencere.
+* Oyun güncellemesi HUD görünümünü değiştirirse tanıma bozulur. Gece döngüsü "bu maçta hiç füze görmedim ama ölüm kaydında füze var" gibi tutarsızlıkları yakalayıp kalibrasyonu yenilemeyi önerir.
+* Kokpit görünümü ile dış görünüm farklı göstergeler kullanır. İlk sürüm tek bir görünümle başlar.
+
+### 3. Kendi aracını yazan ALICE
+
+**Nasıl yapılır.**
+* **Araç:** ALICE'in zaten bir eklenti sistemi var (`~/.alice/plugins/`, bkz. `docs/PLUGINS.md`). Kendi yazdığı araç bir eklenti olarak oraya düşer, çekirdek koda dokunulmaz. Yeni araç `make_tool` olur: ihtiyacı alır, eklentiyi ve testini yazar.
+* **Deneme:** yazılan test mevcut kum havuzunda (Windows'ta düşük bütünlük seviyesi) çalışır: sadece geçici klasöre yazabilir, süre sınırı vardır.
+* **Bildirge:** her eklentinin başında neye erişeceği yazar (internet adresleri, klasörler, hangi uygulama). ALICE bunu ve kodun kısa özetini gösterip onay ister. Bildirgede olmayan bir şeye erişen kod reddedilir.
+* **Onaydan sonra:** eklenti yüklenir. İlk kullanımlarda sonucu kontrol edilir. Üç kez hata veren araç kendiliğinden kapanır ve gece döngüsüne düşer.
+* **Kayıt:** bütün yazılan araçlar bir listede durur: ne zaman yazıldı, kaç kez kullanıldı, son hata ne. "Hangi araçları kendin yazdın?" diye sorulabilir.
+
+**İlk adım.** Küçük ve zararsız bir hedefle uçtan uca deneme. Örneğin "Steam'deki son oynanan oyunları listeleyen araç": ihtiyaç, yazma, test, onay, yükleme ve kullanma.
+
+**Bitti sayılır.**
+* ALICE yapamadığı bir işi fark edip araç önerir, yazar, testini kum havuzunda geçirir.
+* Onaydan sonra aynı konuşmada aracı kullanıp işi bitirir.
+* Onay verilmezse hiçbir dosya eklenti klasörüne girmez.
+* Bozuk bir araç ALICE'i çökertmez.
+
+**Riskler.**
+* En hassas madde bu: onaylanan eklenti ALICE'in içinde ALICE'in yetkileriyle çalışır. Bu yüzden onay ekranı kısa ve anlaşılır olmalı. Kod değiştiren, para harcayan, mesaj gönderen ya da bir şey silen araçlar her kullanımda ayrıca onay ister.
+* Windows kum havuzunda ağ açık. Test sırasında dışarı veri gönderilmemesi için testler mümkün olduğunca sahte servislerle yazılır. Ağ isteyen test ayrıca belirtilir.
+* Model yanlış ya da gereksiz araç yazabilir. Var olan bir araç ya da bağlantı (connect) işi görüyorsa yenisi yazılmaz.
+
 ### Sınırlar
 
 * War Thunder'ın verdiği veriler sınırlı. Ekrandan okuma yapılmadıkça "füze geliyor" kesin olmaz.
