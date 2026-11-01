@@ -105,7 +105,10 @@ def _desktop_corners() -> list[tuple[int, int]]:
         return []
     import ctypes
 
-    m = ctypes.windll.user32.GetSystemMetrics
+    windll = getattr(ctypes, "windll", None)  # testte platform win32 diye taklit edilince yok
+    if windll is None:
+        return []
+    m = windll.user32.GetSystemMetrics
     left, top, w, h = m(76), m(77), m(78), m(79)  # SM_X/YVIRTUALSCREEN, SM_CX/CYVIRTUALSCREEN
     if w <= 0 or h <= 0:
         return []
