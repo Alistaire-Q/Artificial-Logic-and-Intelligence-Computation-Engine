@@ -517,7 +517,9 @@ class FlightCompanion:
         if stopped:
             self.slow_since = self.slow_since if self.slow_since is not None else s.t
             if s.t - self.slow_since >= 5:
-                self._finish(s, landed=True)
+                # Teker kapalıyken durmak iniş değil düşüş: War Thunder'da ölünce enkaz yerde durup her ölümden
+                # sonra "Uçuş 2 dakika sürdü..." söyletiyordu (1 Kasım, 21 kez)
+                self._finish(s, landed=s.gear is None or s.gear >= 0.9)
                 home = self.home
                 self.reset()
                 self.home = home
@@ -880,7 +882,10 @@ class FlightCompanion:
     def in_approach(self, s: FlightState) -> bool:
         low = s.agl is not None and 1.0 < s.agl < 600  # teker yere değdikten sonra yaklaşma bitti
         slow = 30 < (s.ias or 1e9) < self.profile.approach_ias_max
-        return (s.gear or 0) > 0.9 and slow and (low or s.agl is None)
+        # Kalkışta teker henüz açıkken hızlanmak yaklaşma değil: radar irtifası olmayan uçakta (War Thunder) her
+        # kalkıştan sonra "Hızlısın." deniyordu (1 Kasım, 21 kez)
+        departing = (self.takeoff is not None and s.t - self.takeoff.t < 60) or (s.vv is not None and s.vv > 3)
+        return (s.gear or 0) > 0.9 and slow and (low or s.agl is None) and not departing
 
     APPR_MARGIN = 2.0   # derece: on speed bandının bu kadar dışına çıkmadan "hızlı/yavaş" deme
     APPR_STABLE = 1.5   # sn: durum bu kadar sürmeden söyleme (anlık salınımlar susar)

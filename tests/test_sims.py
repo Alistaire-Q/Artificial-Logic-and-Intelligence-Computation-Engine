@@ -808,3 +808,17 @@ def test_warthunder_hud_parse_and_nick_learning():
     kill = [{"msg": "=R1N= Sgt_Hi_Ping (␗Su-30MKK) shot down [SSQS] BlackBurn01 (☢MiG-29SMT)"}]
     assert hud_events(msgs + kill, "=R1N= Sgt_Hi_Ping") == [("fire", "Su-30MK"), ("kill", "MiG-29SMT")]
     assert hud_events(kill, "") == []
+
+
+def test_warthunder_crash_is_not_a_landing_and_takeoff_is_not_approach():
+    c, tr, r = make()
+    wt = dict(source="warthunder", aircraft="su_30mkk", x=None, z=None, agl=None)
+    tr.feed(st(0, ias=0, alt=50, gear=1.0, **wt))
+    for t in range(1, 20):  # piste kalkış: teker açık, hızlanıyor, tırmanıyor
+        tr.feed(st(t, ias=60 + 3 * t, alt=50 + 10 * t, vv=8.0, aoa=1.0, gear=1.0, **wt))
+    assert "Hızlısın." not in r.texts()
+    for t in range(20, 200):
+        tr.feed(st(t, ias=250, alt=2000, **wt))
+    for t in range(200, 210):  # öldü: enkaz yerde, teker kapalı
+        tr.feed(st(t, ias=0, alt=40, vv=0.0, **wt))
+    assert r.debriefs and not any(x.startswith("Uçuş ") for x in r.texts())

@@ -112,6 +112,9 @@ class Store:
         self._db.executescript(_SCHEMA)
         try:
             self._db.execute("PRAGMA journal_mode=WAL")
+            # WAL dosyası bir kez büyüyünce o boyutta kalıyordu (1 Kasım: core.db 70 MB, core.db-wal 70 MB):
+            # checkpoint'ten sonra 16 MB'a kırpılsın
+            self._db.execute("PRAGMA journal_size_limit=16777216")
         except sqlite3.DatabaseError:
             pass
 
@@ -183,9 +186,8 @@ class Store:
             db.execute("INSERT OR REPLACE INTO meta VALUES ('thinned_until', ?)", (str(end),))
             db.commit()
             after = db.execute("SELECT COUNT(*) FROM _thin").fetchone()[0]
-            free = db.execute("PRAGMA freelist_count").fetchone()[0] * db.execute("PRAGMA page_size").fetchone()[0]
-            if free > 50 * 2**20 and str(self.path) != ":memory:":
-                db.execute("VACUUM")  # silinen yer dosyaya geri verilsin
+            # VACUUM yapılmaz: 130 MB'lık dosyada depo kilidini onlarca saniye tutuyor, o sırada uçuş anonsları bile
+            # bekliyordu. Boşalan sayfaları yeni ölçümler kullanır, dosya bir daha büyümez.
         return before - after
 
     # ----------------------------------------------------------------- okuma
