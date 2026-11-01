@@ -286,6 +286,9 @@ class FlightCompanion:
         self.hr_now = hr_now or (lambda: None)
         self.on_debrief = on_debrief or (lambda d: None)
         self.approach_every = approach_every
+        # Tehdit seslerinin son zamanları ölünce/yeniden doğunca sıfırlanmaz: War Thunder'da her doğuşta aynı
+        # gemiler, aynı uçaksavarlar yeniden "menzilindesin" diye sayılıyordu.
+        self.threat_mem: dict[str, float] = {}
         self.reset()
 
     def reset(self) -> None:
@@ -338,11 +341,8 @@ class FlightCompanion:
         self.threat_seen: dict[str, float] = {}   # RWR yayıcı/kilit/füze anahtarı -> son görüldüğü an
         self.threat_said: dict[str, float] = {}
         self.bandit_close = False                 # en yakın düşman 5 km içinde (7 km'de yeniden kurulur)
-        self.six_last = -1e9
         self.nose_since: float | None = None      # War Thunder: düşmanın burnu bize dönük (füze atabilir) başlangıcı
-        self.nose_last = -1e9
         self.sam_inside: set[str] = set()         # menzilinde olduğumuz hava savunması türleri
-        self.sam_last: dict[str, float] = {}
 
     # ---------------------------------------------------------------- girişler
     def restricted(self) -> None:
@@ -388,19 +388,33 @@ class FlightCompanion:
         self._hud(s)
 
     # ------------------------------------------------------------------- tehditler
-    SIX_REPEAT = 20.0       # arkadaki düşman uyarısı en sık
+    SIX_REPEAT = 45.0       # arkadaki düşman uyarısı en sık (20 sn'de bir it dalaşında hiç susmuyordu)
     SIX_RANGE = 2000.0
     MERGE_RANGE = 5000.0
     LOST_AFTER = 10.0       # bu kadar görünmeyen kilit/füze bitmiş sayılır
     NOSE_ASPECT = 12.0      # War Thunder: düşmanın burnu bize bu açıdan dar dönükse "füze atabilir"
     NOSE_RANGE = (2500.0, 14000.0)
     NOSE_HOLD = 2.0         # bu kadar sürmeli (harita saniyede bir yenilenir, tek okuma yanıltabilir)
-    NOSE_REPEAT = 25.0
-    SAM_REPEAT = 90.0
+    NOSE_REPEAT = 60.0
+    SAM_REPEAT = 300.0      # aynı tür hava savunması (aynı maçta yeniden doğunca da)
+    SAM_ANY = 45.0          # herhangi bir hava savunması (gemi grubundaki muhrip + fırkateyn tek anons)
+    MERGE_REPEAT = 90.0     # "Düşman saat 2, 3 kilometre"
+    THREAT_GAP = 12.0       # arkadaki / burnu dönük / yaklaşan düşman ve SAM sesleri arasında en az (füze, kilit hariç)
 
     @staticmethod
     def _km(m: float) -> str:
         return f"{m:.0f} metre" if m < 1000 else f"{m / 1000:.1f} kilometre".replace(".", ",")
+
+    def _may_say(self, t: float, key: str, every: float) -> bool:
+        """Tehdit sesine izin: bu anahtar en sık 'every' sn'de bir, bütün tehdit sesleri arasında en az THREAT_GAP.
+        İzin verirse zamanı yazar. Füze ve kilit bundan geçmez, her zaman söylenir."""
+        m = self.threat_mem
+        if any(v > t + 5 for v in m.values()):  # yeni görev: sim zamanı başa döndü
+            m.clear()
+        if t - m.get(key, -1e9) < every or t - m.get("threat", -1e9) < self.THREAT_GAP:
+            return False
+        m[key] = m["threat"] = t
+        return True
 
     def _contacts(self, s: FlightState) -> None:
         """RWR (DCS) ve mini harita (War Thunder) temasları: füze, kilit, yeni radar, arkadaki ve yaklaşan düşman.
@@ -440,14 +454,14 @@ class FlightCompanion:
             return
         near = planes[0]
         six = next((c for c in planes if c["dist_m"] <= self.SIX_RANGE and c.get("clock") in (4, 5, 6, 7, 8)), None)
-        if six is not None and t - self.six_last >= self.SIX_REPEAT:
-            self.six_last = t
+        if six is not None and self._may_say(t, "six", self.SIX_REPEAT):
             self.say(f"Arkanda düşman, saat {six['clock']}, {self._km(six['dist_m'])}!", "warn", "urgent")
             self.bandit_close = True
             return
         if near["dist_m"] <= self.MERGE_RANGE and not self.bandit_close:
             self.bandit_close = True
-            self._info(s, f"Düşman saat {near['clock']}, {self._km(near['dist_m'])}.", "serious")
+            if self._may_say(t, "merge", self.MERGE_REPEAT):
+                self._info(s, f"Düşman saat {near['clock']}, {self._km(near['dist_m'])}.", "serious")
         elif near["dist_m"] > self.MERGE_RANGE + 2000:
             self.bandit_close = False
 
@@ -461,9 +475,8 @@ class FlightCompanion:
             return False
         if self.nose_since is None:
             self.nose_since = s.t
-        if s.t - self.nose_since < self.NOSE_HOLD or s.t - self.nose_last < self.NOSE_REPEAT:
+        if s.t - self.nose_since < self.NOSE_HOLD or not self._may_say(s.t, "nose", self.NOSE_REPEAT):
             return False
-        self.nose_last = s.t
         c = hot[0]
         self.say(f"Saat {c['clock']}'deki düşman burnunu sana çevirdi, {self._km(c['dist_m'])}. Füze gelebilir!",
                  "warn", self._urgent())
@@ -479,13 +492,18 @@ class FlightCompanion:
             c = near.get(name)
             if c is None or c["dist_m"] > float(c.get("range_m") or 0) + 3000:
                 self.sam_inside.discard(name)
+        fresh = []
         for name, c in near.items():
             if name in self.sam_inside or c["dist_m"] > float(c.get("range_m") or 0):
                 continue
             self.sam_inside.add(name)
-            if s.t - self.sam_last.get(name, -1e9) < self.SAM_REPEAT:
-                continue
-            self.sam_last[name] = s.t
+            if s.t - self.threat_mem.get(f"sam:{name}", -1e9) >= self.SAM_REPEAT:
+                fresh.append(c)
+        if fresh and self._may_say(s.t, "sam", self.SAM_ANY):
+            for f in fresh:  # aynı anda menziline girilenler (gemi grubu) ayrıca söylenmez
+                self.threat_mem[f"sam:{f['name']}"] = s.t
+            c = min(fresh, key=lambda f: f["dist_m"])
+            name = c["name"]
             self.say(f"{name[0].upper() + name[1:]} menzilindesin: saat {c['clock']}, {self._km(c['dist_m'])}.",
                      "warn", "serious")
 
