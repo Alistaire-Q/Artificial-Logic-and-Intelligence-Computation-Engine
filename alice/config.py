@@ -295,6 +295,11 @@ monitor = 0
 opacity = 0.92
 # HUD'u tamamen gizle / geri getir.
 hotkey = "<ctrl>+<alt>+h"
+# Ne kadar şey görünsün: auto (oyunda yalnız tehdit ve uyarılar, masaüstünde hepsi) | all | game | quiet (yalnız
+# kritik). mode_hotkey sırayla değiştirir; history_hotkey kaçırılan son bildirimleri gösterir.
+mode = "auto"
+mode_hotkey = "<ctrl>+<alt>+k"
+history_hotkey = "<ctrl>+<alt>+j"
 
 # Akıllı saat (Gadgetbridge). export_path: Gadgetbridge'in otomatik dışa aktardığı veritabanı
 # (Syncthing vb. ile bilgisayara gelen dosya ya da klasör). Boş = kapalı.

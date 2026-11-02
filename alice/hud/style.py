@@ -53,7 +53,9 @@ TRACKING = -0.022                # em: apple.com'da 17 px yazıda -0,374 px; sı
 SS = 3                           # kenar yumuşatma için büyütme
 
 FADE_IN, FADE_OUT, TURN = 0.22, 0.18, 0.2   # sn
-PULSE = 1.6                                 # sn: kritik nefes
+PULSE = 1.6                                 # sn: kritik nefes (0,6 Hz: saniyede 3 yanıp sönme sınırının çok altı)
+LISTEN_PULSE = 2.4                          # sn: dinlerken camın parıltısı (kritikten yavaş, sakin)
+WAVE_SPEED = 7.0                            # dalga evresi / sn
 PRIORITY = {"critical": 0, "warn": 1, "info": 2}
 
 
@@ -228,6 +230,25 @@ def glyph(img: Image.Image, name: str, cx: float, cy: float, s: float, rgb: tupl
     elif name == "cursor":  # cursorarrow
         pts = [(0, -1), (0.0, 0.62), (0.3, 0.32), (0.55, 0.92), (0.72, 0.84), (0.48, 0.25), (0.88, 0.25)]
         d.polygon([(X(cx - h * 0.4 + a * h), X(cy + b * h)) for a, b in pts], fill=col)
+    elif name == "radar":  # dot.radiowaves: yönü bilinmeyen tehdit (ok yerine; ok yanlış yön gösterirdi)
+        r = s * 0.13
+        d.ellipse([X(cx - r), X(cy - r), X(cx + r), X(cy + r)], fill=col)
+        for rr in (0.5, 0.9):
+            for a0 in (-50, 130):
+                d.arc([X(cx - h * rr), X(cy - h * rr), X(cx + h * rr), X(cy + h * rr)], a0, a0 + 100, fill=col,
+                      width=round(X(s * 0.1)))
+    elif name == "wave":  # waveform: ALICE dinliyor/konuşuyor; angle burada evre (her karede biraz kayar)
+        n, bw = 4, s * 0.13
+        for i in range(n):
+            amp = 0.3 + 0.7 * abs(math.sin(math.radians(angle) + i * 0.95))
+            x = cx + (i - (n - 1) / 2) * s * 0.24
+            d.rounded_rectangle([X(x - bw / 2), X(cy - h * amp), X(x + bw / 2), X(cy + h * amp)],
+                                radius=X(bw / 2), fill=col)
+    elif name == "clock":  # clock: geçmiş bildirimler
+        w = round(X(s * 0.11))
+        d.ellipse([X(cx - h), X(cy - h), X(cx + h), X(cy + h)], outline=col, width=w)
+        d.line([(X(cx), X(cy - h * 0.55)), (X(cx), X(cy)), (X(cx + h * 0.4), X(cy + h * 0.25))], fill=col, width=w,
+               joint="curve")
     elif name == "gauge":  # gauge.with.needle: halka
         d.arc([X(cx - h), X(cy - h), X(cx + h), X(cy + h)], 150, 390, fill=col, width=round(X(s * 0.13)))
         d.line([(X(cx), X(cy)), (X(cx + h * 0.55), X(cy - h * 0.4))], fill=col, width=round(X(s * 0.12)))
@@ -288,8 +309,9 @@ def entries(items: list[Item]) -> list[Entry]:
         sev = d.get("severity", "info")
         if it.kind == "arrow":
             title, value = _split(d.get("text") or "Tehdit")
-            out.append(Entry(key, "status", "arrow", title, value, severity=sev,
-                             angle=(clock_of(d.get("clock")) or 12) % 12 * 30.0, seq=it.seq))
+            c = clock_of(d.get("clock"))
+            out.append(Entry(key, "status", "arrow" if c else "radar", title, value, severity=sev,
+                             angle=(c or 12) % 12 * 30.0 if c else 0.0, seq=it.seq))
         elif it.kind == "label":
             title, value = _split(d.get("text") or "")
             g = d.get("icon") or ("drop" if re.search(r"yak[ıi]t", title, re.I) else
@@ -300,7 +322,7 @@ def entries(items: list[Item]) -> list[Entry]:
             g = d.get("icon") or ("thermometer" if "°" in (d.get("text") or "") else "gauge")
             out.append(Entry(key, "status", g, title, value, severity=sev, seq=it.seq,
                              progress=max(0.0, min(1.0, float(d.get("value") or 0)))))
-        elif it.kind == "box" and d.get("text"):
+        elif it.kind in ("box", "cursor") and d.get("text"):
             out.append(Entry(key, "status", "cursor", tr_sentence(str(d["text"])), severity="info", seq=it.seq))
         elif it.kind == "card":
             title = str(d.get("title") or "ALICE")
@@ -349,7 +371,7 @@ def _ss_mask(W: int, H: int, box: tuple, r: float) -> Image.Image:
 
 
 @lru_cache(maxsize=64)
-def _glass_parts(w: int, h: int, r: int, crit: bool, pulse_q: float, k: float) -> tuple:
+def _glass_parts(w: int, h: int, r: int, crit: bool | str, pulse_q: float, k: float) -> tuple:
     """Buzlu cam parçaları (boyut başına bir kez): (gölge ya da ışıma, şekil maskesi, kılcal çizgi + ışık)."""
     m = round(MARGIN * k)
     W, H = w + 2 * m, h + 2 * m
@@ -357,10 +379,16 @@ def _glass_parts(w: int, h: int, r: int, crit: bool, pulse_q: float, k: float) -
     q = 4  # bulanıklık çeyrek çözünürlükte: aynı görünür, 16 kat ucuz
     under = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     small = Image.new("RGBA", (max(1, W // q), max(1, H // q)), (0, 0, 0, 0))
+    listen = crit == "listen"
+    crit = bool(crit) and not listen
     if crit:  # kritik: nefes alan kırmızı ışıma
         g = (3 + 3 * pulse_q) * k
         poly = squircle((box[0] - g, box[1] - g, box[2] + g, box[3] + g), r + g)
         fill, blur = (*GLOW["critical"], int(80 + 70 * (1 - pulse_q))), 9 * k
+    elif listen:  # dinliyor: Siri/Gemini gibi yumuşak mavi parıltı, kritikten sakin
+        g = (2 + 3 * pulse_q) * k
+        poly = squircle((box[0] - g, box[1] - g, box[2] + g, box[3] + g), r + g)
+        fill, blur = (*BRAND_BLUE, int(55 + 45 * pulse_q)), 11 * k
     else:  # Liquid Glass gibi çok hafif gölge: açık gökyüzünde de cam seçilsin
         poly = squircle((box[0], box[1] + 3 * k, box[2], box[3] + 3 * k), r)
         fill, blur = (0, 0, 0, 46), 10 * k
@@ -388,7 +416,7 @@ def _glass_parts(w: int, h: int, r: int, crit: bool, pulse_q: float, k: float) -
     return under, mask, over
 
 
-def _glass(w: int, h: int, r: int, crit: bool, pulse_q: float, k: float, behind: Image.Image | None) -> Image.Image:
+def _glass(w: int, h: int, r: int, crit: bool | str, pulse_q: float, k: float, behind: Image.Image | None) -> Image.Image:
     """Bir cam yüzey: arkadaki (bulanık) ekran + açık tül, şekle kırpılmış; üstte kılcal çizgi ve ışık."""
     under, mask, over = _glass_parts(w, h, r, crit, pulse_q, k)
     img = under.copy()
@@ -460,10 +488,10 @@ def draw_island(img: Image.Image, e: Entry | None, box: tuple, r: float, k: floa
                 pulse: float = 0.0, backdrop: Image.Image | None = None) -> None:
     x0, y0, x1, y1 = box
     w, h = max(1, round(x1 - x0)), max(1, round(y1 - y0))
-    crit = e is not None and e.severity == "critical"
+    glow = "critical" if e is not None and e.severity == "critical" else "listen" if e is not None and         e.glyph == "wave" else ""
     m = round(MARGIN * k)
     px, py = round(x0) - m, round(y0) - m
-    body = _glass(w, h, round(min(r, h / 2)), crit, round(pulse * 6) / 6 if crit else 0.0, k,
+    body = _glass(w, h, round(min(r, h / 2)), glow, round(pulse * 6) / 6 if glow else 0.0, k,
                   _behind(backdrop, px, py, w + 2 * m, h + 2 * m))
     img.alpha_composite(body, (px, py))
     if e is None or content_alpha <= 0.01:
@@ -583,6 +611,12 @@ class Island:
         self.calm = False
         if self.current is not None and self.current.severity == "critical":
             pulse = 0.5 + 0.5 * math.sin((now - self.started) * 2 * math.pi / PULSE)
+            self.calm = not moving
+            moving = True
+        elif self.current is not None and self.current.glyph == "wave":  # dinlerken dalga oynar, cam hafif parlar
+            pulse = 0.5 + 0.5 * math.sin((now - self.started) * 2 * math.pi / LISTEN_PULSE)
+            if content is self.current:
+                content = replace(content, angle=round(now * WAVE_SPEED) % 8 * 45.0)  # 8 evre: önbellek tutar
             self.calm = not moving
             moving = True
         img = Image.new("RGBA", (self.cw, self.ch), (0, 0, 0, 0))
@@ -762,6 +796,113 @@ class Anim:
             if self.gone_at is None:  # sönerken nabız "hareket" sayılmaz: yoksa ışık hiç kapanmıyordu
                 moving = True
         return alpha, grow, pulse, moving
+
+
+# ------------------------------------------------------------------ ALICE'in imleci
+CLICKS = ("click", "double_click", "right_click", "middle_click")
+GLIDE_MIN, GLIDE_MAX = 0.16, 0.34  # sn: kayma süresi mesafeyle artar; tıklama önizlemesi (0,4 sn) bitmeden oturur
+RIPPLE = 0.55                      # sn: tıklanan yerde yayılıp sönen halka
+POINTER_IDLE = 1.5                 # sn: son hareketten sonra bu kadar durur, sonra söner
+
+
+class Pointer:
+    """ALICE'in kendi imleci (gerçek imleçten ayrı, yalnız görsel): yeni hedefe ışınlanmaz, eğri bir yoldan kayar;
+    tıklamada halka dalgası yayılır; boşta kalınca söner. Pencere imlecin ucuyla birlikte taşınır, resim küçük."""
+
+    def __init__(self, sh: int):
+        self.k = scale_for(sh)
+        self.size = round(120 * self.k)
+        self.seq = -1
+        self.start = self.end = self.ctrl = (0.0, 0.0)
+        self.t0, self.dur = -1e9, 0.0
+        self.click = False
+        self.shown_at: float | None = None
+        self.gone_at: float | None = None
+
+    @property
+    def active(self) -> bool:
+        return self.shown_at is not None
+
+    def go(self, x: float, y: float, action: str, now: float, origin: tuple[float, float] | None = None) -> None:
+        """Yeni hedef. Görünürken bulunduğu yerden, değilse gerçek imlecin yerinden (bilinmiyorsa hedefte belirir)."""
+        if self.active and self.gone_at is None:
+            start = self.at(now)
+        else:
+            start = origin if origin is not None else (x, y)
+            self.shown_at = now
+        self.gone_at = None
+        dx, dy = x - start[0], y - start[1]
+        dist = math.hypot(dx, dy)
+        bend = min(0.18 * dist, 140 * self.k)  # elle yapılan hareket gibi hafif kavis
+        mx, my = (start[0] + x) / 2, (start[1] + y) / 2
+        nx, ny = (-dy / dist, dx / dist) if dist > 1 else (0.0, 0.0)
+        self.start, self.end, self.ctrl = start, (x, y), (mx + nx * bend, my + ny * bend)
+        self.t0, self.dur = now, 0.0 if dist < 2 else min(GLIDE_MAX, GLIDE_MIN + dist / (5000 * self.k))
+        self.click = action in CLICKS
+
+    def leave(self, now: float) -> None:
+        if self.active and self.gone_at is None:
+            self.gone_at = now
+
+    def _t(self, now: float) -> float:
+        return 1.0 if self.dur <= 0 else min(1.0, max(0.0, (now - self.t0) / self.dur))
+
+    def at(self, now: float) -> tuple[float, float]:
+        u = self._t(now)
+        u = u * u * (3 - 2 * u)  # yumuşak kalkış ve duruş
+        (x0, y0), (cx, cy), (x1, y1) = self.start, self.ctrl, self.end
+        a, b, c = (1 - u) ** 2, 2 * (1 - u) * u, u * u
+        return a * x0 + b * cx + c * x1, a * y0 + b * cy + c * y1
+
+    def frame(self, now: float) -> tuple[Image.Image | None, float, float, bool]:
+        """(resim ya da None: tamamen söndü, sol üst x, y, hareket ediyor mu)."""
+        if self.shown_at is None:
+            return None, 0.0, 0.0, False
+        k, S = self.k, self.size
+        x, y = self.at(now)
+        alpha = ease_out((now - self.shown_at) / 0.18)
+        if self.gone_at is not None:
+            t_out = (now - self.gone_at) / FADE_OUT
+            if t_out >= 1:
+                self.shown_at = self.gone_at = None
+                return None, 0.0, 0.0, False
+            alpha *= 1 - ease_out(t_out)
+        landed = self.t0 + self.dur
+        tr = (now - landed) / RIPPLE
+        moving = self._t(now) < 1 or (self.click and tr < 1) or self.gone_at is not None or alpha < 0.999
+        img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+        c = S / 2
+        if self.click and 0 <= tr < 1:  # tıklandı: halka yayılıp söner
+            big = _big(img.size)
+            d = ImageDraw.Draw(big)
+            rr = (7 + 34 * ease_out(tr)) * k
+            d.ellipse([(c - rr) * SS, (c - rr) * SS, (c + rr) * SS, (c + rr) * SS],
+                      outline=(*BRAND_BLUE, int(210 * (1 - tr))), width=round(2.6 * k * SS))
+            img.alpha_composite(_down(big, img.size))
+        _pointer_glyph(img, c, c, 26 * k, k)
+        return _with_alpha(img, alpha), x - c, y - c, moving
+
+
+@lru_cache(maxsize=4)
+def _pointer_layer(size: int, s: float, k: float) -> Image.Image:
+    """Ucu (cx, cy) noktasında duran mavi ok: beyaz kenarlı, hafif gölgeli (her zeminde seçilsin)."""
+    pts = [(0, 0), (0, 0.78), (0.21, 0.6), (0.36, 0.95), (0.5, 0.89), (0.35, 0.55), (0.62, 0.55)]
+    c = size / 2
+    poly = [(c + a * s, c + b * s) for a, b in pts]
+    shadow = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    ImageDraw.Draw(shadow).polygon([(x + 1.5 * k, y + 2.5 * k) for x, y in poly], fill=(0, 0, 0, 90))
+    out = shadow.filter(ImageFilter.GaussianBlur(3 * k))
+    big = _big((size, size))
+    d = ImageDraw.Draw(big)
+    d.polygon([(x * SS, y * SS) for x, y in poly], fill=(*BRAND_BLUE, 255), outline=(255, 255, 255, 255),
+              width=round(2.2 * k * SS))
+    out.alpha_composite(_down(big, (size, size)))
+    return out
+
+
+def _pointer_glyph(img: Image.Image, cx: float, cy: float, s: float, k: float) -> None:
+    layer = _pointer_layer(img.width, s, k)
+    img.alpha_composite(layer, (round(cx - img.width / 2), round(cy - img.height / 2)))
 
 
 def blur_backdrop(img: Image.Image, k: float = 1.0) -> Image.Image:

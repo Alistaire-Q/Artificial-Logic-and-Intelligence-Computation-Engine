@@ -13,7 +13,7 @@ import time
 from alice.hud import client
 
 CARD_TTL = {"critical": 12.0, "warn": 9.0, "info": 7.0}
-CLICK_PREVIEW = 0.35  # sn: tıklamadan önce hedefin çerçevesi bu kadar görünür (ne yapacağını önceden gör)
+CLICK_PREVIEW = 0.4  # sn: ALICE'in imleci hedefe kayıp oturur, sonra gerçek tıklama (ne yapacağını önceden gör)
 _LIST = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+(.+)$")
 
 
@@ -55,12 +55,13 @@ def speech(text: str) -> bool:
 
 
 def click_target(x: float, y: float, action: str = "click", wait: bool = True) -> bool:
-    """Bilgisayar kullanımında tıklanacak yeri önceden çerçevele (fiziksel ekran pikseli)."""
+    """Bilgisayar kullanımında ALICE'in imleci tıklanacak yere kayar, tıklamada halka yayılır (fiziksel piksel)."""
     if not client.active:
         return False
     label = {"double_click": "çift tıklıyorum", "right_click": "sağ tıklıyorum", "drag": "sürüklüyorum",
              "move": "buraya gidiyorum", "scroll": "kaydırıyorum", "type": "yazıyorum"}.get(action, "tıklıyorum")
-    ok = client.show("box", x=x - 28, y=y - 28, w=56, h=56, text=label, severity="info", ttl=1.5, id="computer")
+    ok = client.show("cursor", x=round(x), y=round(y), action=action, text=label, severity="info", ttl=1.5,
+                     id="computer")
     if ok and wait:
         time.sleep(CLICK_PREVIEW)
     return ok
@@ -79,6 +80,33 @@ def task_step(step: int) -> bool:
 
 def task_end() -> bool:
     return client.clear("task") if client.active else False
+
+
+VOICE = {"listen": ("Dinliyorum", "wave"), "think": ("Düşünüyorum", "sparkle"), "speak": ("Konuşuyorum", "wave"),
+         "work": ("Çalışıyorum", "sparkle")}
+VOICE_TTL, VOICE_REFRESH = 30.0, 20.0  # takılıp kalırsa kendiliğinden söner; uzun dinlemede tazelenir
+_voice: dict = {"state": None, "detail": "", "at": 0.0}
+
+
+def voice_state(state: str | None, detail: str = "") -> bool:
+    """ALICE'in sesli oturumunun hali Adada: dinliyor (dalga + mavi parıltı), düşünüyor, konuşuyor, bir iş yapıyor.
+    Aynı hal tekrar gelirse göndermez (her döngüde çağrılabilir)."""
+    if not client.active:
+        return False
+    now = time.monotonic()
+    if state == _voice["state"] and detail == _voice["detail"] and (state is None or now - _voice["at"] < VOICE_REFRESH):
+        return False
+    _voice.update(state=state, detail=detail, at=now)
+    if state not in VOICE:
+        return client.clear("voice")
+    text, icon = VOICE[state]
+    return client.show("label", text=f"{text} · {detail}" if detail else text, icon=icon, severity="info",
+                       ttl=VOICE_TTL, id="voice")
+
+
+def game_context(in_game: bool) -> bool:
+    """Oyundayken HUD yalnız tehdit ve uyarıları gösterir (ayar: [hud] mode)."""
+    return client.send({"kind": "context", "game": bool(in_game)}) if client.active else False
 
 
 def system_gauge(name: str, value: float, limit: float, unit: str, warn: float | None = None,

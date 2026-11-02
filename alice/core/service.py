@@ -287,6 +287,12 @@ class Core:
         # Mod her turda yazılır: aralık hesapları servis kapalıyken bile doğru kalsın diye
         # kapanışta "off" yazılır, ama arada kayıp olursa son mod sonsuza uzamasın.
         self.store.add(MODE_KEY, text=mode, ts=now)
+        try:  # her turda: HUD yeniden başlasa da oyunda olduğunu bilsin (oyunda yalnız tehdit ve uyarılar)
+            from alice.hud import views
+
+            views.game_context(mode == "flight")
+        except Exception:  # noqa: BLE001
+            pass
         if changed:
             self.store.add_event("mode", f"Mod: {MODE_NAMES.get(mode, mode)}", severity="info", topic="mode")
             try:  # maçta Windows bildirim balonları susar, bitince eski haline

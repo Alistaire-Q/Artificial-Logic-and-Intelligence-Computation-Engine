@@ -37,6 +37,9 @@ def read_only(name: str, args: dict[str, Any]) -> bool:
         return True
     return name == "run_command" and bool(_READ_COMMAND.match(str(args.get("command", ""))))
 LIVE_GROUPS = {"desktop", "browser", "personal", "system", "automation"}
+# Araç çalışırken Adada "Çalışıyorum · ..." ayrıntısı
+HUD_TOOLS = {"reflex": "ekranda", "computer_task": "ekranda", "computer": "ekranda", "ui_act": "ekranda",
+             "browser": "tarayıcıda", "windows": "pencerelerde", "web_search": "arıyorum", "web_fetch": "okuyorum"}
 # live_screen = "auto": kullanıcı ekrandakinden söz ediyorsa ("şuna tıkla", "ekrandaki", "bu ne") kare gider.
 SCREEN_WORDS = re.compile(
     r"\b(ekran\w*|şu(nu|na|nda|ndaki|raya|rada|radaki)?|bu(nu|na|nda|ndaki|raya|rada|radaki)?|"
@@ -738,6 +741,17 @@ class LiveSession:
                  "pending": True}
         self.hushed = False
         self.log(f"live açıldı [{self.model}]")
+        state["hud"], state["hud_detail"] = "listen", ""
+
+        def hud() -> None:  # Adada dinliyor/konuşuyor/çalışıyor; HUD hatası konuşmayı bozmasın
+            try:
+                from alice.hud import views
+
+                views.voice_state(state["hud"], state["hud_detail"])
+            except Exception:  # noqa: BLE001
+                pass
+
+        hud()
         if getattr(self, "fillers_on", False):
             threading.Thread(target=lambda: self.fillers().warm(), daemon=True, name="alice-live-warm").start()
 
@@ -784,6 +798,7 @@ class LiveSession:
                                     state["play0"] = getattr(out, "played", 0)
                                 state["recv"] = state.get("recv", 0) + len(pcm)
                                 out.put(pcm)
+                                state["hud"], state["hud_detail"] = "speak", ""
                                 touch()
                         if (t := (sc.get("inputTranscription") or {}).get("text")):
                             if not state["framed"] and self.wants_frame(state["cur"] + t):
@@ -823,6 +838,7 @@ class LiveSession:
                             state["recv"] = 0
                             if sc.get("turnComplete"):
                                 state["cur"], state["pending"] = "", False
+                                state["hud"], state["hud_detail"] = "listen", ""
                     if msg.get("toolCall"):
                         for fc in msg["toolCall"].get("functionCalls", []):
                             calls.put(fc)
@@ -889,10 +905,15 @@ class LiveSession:
                 except queue.Empty:
                     fc = None
                 if fc is not None:
+                    state["hud"], state["hud_detail"] = "work", HUD_TOOLS.get(fc.get("name"), "")
+                    hud()
                     self._fill(state, out, fc)
                     self._run_call(ws, fc)
                     touch()
                     continue
+                if state["hud"] == "speak" and not out.playing:
+                    state["hud"], state["hud_detail"] = "listen", ""
+                hud()
                 if out.playing or self._bg:
                     touch()
                 elif state["pending"] and time.monotonic() - state.get("asked", 0) < self.ANSWER_WAIT:
@@ -919,6 +940,8 @@ class LiveSession:
                 task_state.pop("task_hooks", None)
             if getattr(out, "dead", None) is not None:
                 self.log(f"live ses çıkışı açılamadı: {out.dead}")
+            state["hud"] = None
+            hud()
             self.log("live kapandı")
 
     TOOL_TIMEOUT = 25.0  # sn: araç takılırsa modele hata dön, konuşma kilitlenmesin

@@ -38,10 +38,12 @@ HWND_TOPMOST = -1
 SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE, SWP_SHOWWINDOW = 0x1, 0x2, 0x10, 0x40
 ULW_ALPHA = 0x2
 
+HOTKEYS = {"mode_hotkey": "<ctrl>+<alt>+k", "history_hotkey": "<ctrl>+<alt>+j"}  # yoğunluk modu, son bildirimler
 TICK_MS = 16            # animasyon karesi ve komut kuyruğu; sadece hareket eden öğe yeniden basılır
 TOPMOST_EVERY = 2.0     # kenarlıksız oyun öne geçerse en üstte olmayı yeniden iste (odak almadan)
 EXIT_BUSY = 3           # port başka bir HUD'da: çıkış kodu (denetleyici bunu çökme saymaz)
 ISLAND_KEY = "__ada__"  # Adanın penceresi
+POINTER_KEY = "__imlec__"  # ALICE'in imlecinin penceresi
 BACKDROP_EVERY = 0.12   # sn: buzlu camın arkası bu sıklıkla yenilenir (oyunda arka plan akarken cam da akar)
 CALM_EVERY = 1 / 15     # sn: yalnız nabız atarken Ada en sık bu kadar çizilir
 
@@ -194,6 +196,13 @@ class Win32:
     def topmost(self, hwnd: int) -> None:
         self.user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
 
+    def cursor_pos(self) -> tuple[int, int] | None:
+        """Gerçek imlecin yeri (fiziksel piksel): ALICE'in imleci ilk kez buradan kalkar."""
+        pt = self.wt.POINT()
+        if not self.user32.GetCursorPos(self.ctypes.byref(pt)):
+            return None
+        return pt.x, pt.y
+
     def update_layered(self, hwnd: int, img, x: int, y: int) -> bool:
         """RGBA resmi pencereye piksel başı saydamlıkla bas ve pencereyi (x, y)'ye taşı."""
         ct, wt, g, u = self.ctypes, self.wt, self.gdi32, self.user32
@@ -277,6 +286,7 @@ class HudWindow:
         self.win32 = win32 if win32 is not None else (Win32() if IS_WIN else None)
         self.make_slot = make_slot
         self.island = style.Island(self.w, self.h)
+        self.pointer = style.Pointer(self.h)
         if isinstance(self.win32, Win32):  # gerçek ekranda: camın arkası gerçekten bulanıklaşsın
             self.island.backdrop = self._backdrop_source()
         self._island_painted = 0.0
@@ -380,6 +390,47 @@ class HudWindow:
                 self.win32.show(slot.hwnd, True)
         slot.visible = True
 
+    def _paint_pointer(self, items: list, now: float) -> None:
+        """ALICE'in imleci: en yeni imleç komutuna kayar; komut kalmayınca söner."""
+        cur = max((i for i in items if i.kind == "cursor"), key=lambda i: i.seq, default=None)
+        p = self.pointer
+        if cur is not None and cur.seq != p.seq:
+            p.seq = cur.seq
+            origin = None
+            pos = getattr(self.win32, "cursor_pos", None)
+            if pos is not None:
+                try:
+                    real = pos()
+                    origin = None if real is None else (real[0] - self.ox, real[1] - self.oy)
+                except Exception:  # noqa: BLE001
+                    origin = None
+            p.go(float(cur.data["x"]), float(cur.data["y"]), str(cur.data.get("action") or ""), now, origin)
+        elif cur is None:
+            p.leave(now)
+        slot = self.slots.get(POINTER_KEY)
+        if not p.active:
+            if slot is not None:
+                self._drop(POINTER_KEY)
+            return
+        img, x, y, moving = p.frame(now)
+        if img is None:
+            if slot is not None:
+                self._drop(POINTER_KEY)
+            return
+        if slot is None:
+            slot = self.slots[POINTER_KEY] = self._new_slot(now)
+        sig = (round(x), round(y), moving)
+        if not moving and slot.last == sig:
+            return
+        slot.last = sig
+        if self.opacity < 0.999:
+            img = style.adjust(img, self.opacity)
+        if self.win32 is not None and slot.hwnd:
+            self.win32.update_layered(slot.hwnd, img, self.ox + round(x), self.oy + round(y))
+            if not slot.visible:
+                self.win32.show(slot.hwnd, True)
+        slot.visible = True
+
     def tick(self) -> None:
         now = time.monotonic()
         while True:
@@ -398,15 +449,16 @@ class HudWindow:
                 slot = self.slots[key] = self._new_slot(now)
             slot.sprite = sp
         for key, slot in self.slots.items():
-            if key != ISLAND_KEY and key not in sprites and slot.anim.gone_at is None:
+            if key not in (ISLAND_KEY, POINTER_KEY) and key not in sprites and slot.anim.gone_at is None:
                 slot.anim.gone_at = now  # kaybolurken solsun
         for key, slot in list(self.slots.items()):
-            if key == ISLAND_KEY:
+            if key in (ISLAND_KEY, POINTER_KEY):
                 continue
             moving = self._paint(slot, now)
             if slot.anim.gone_at is not None and not moving:
                 self._drop(key)
         self._paint_island(now)
+        self._paint_pointer(self.model.visible(), now)
         self.shown = bool(self.slots)
         if self.shown and self.win32 is not None and now - self._topmost_at > TOPMOST_EVERY:
             self._topmost_at = now
@@ -493,7 +545,7 @@ def run(port: int, hud: dict[str, Any], alive: Callable[[], bool] = lambda: True
         inbox.put(m)
     rx = Receiver(sock, inbox).start()
     end = time.monotonic() + seconds if seconds else 0.0
-    win = HudWindow(HudModel(), inbox, monitor=int(hud.get("monitor", 0) or 0),
+    win = HudWindow(HudModel(mode=str(hud.get("mode", "auto") or "auto")), inbox, monitor=int(hud.get("monitor", 0) or 0),
                     opacity=float(hud.get("opacity", 0.95) or 0.95),
                     alive=lambda: alive() and (not end or time.monotonic() < end))
     keys = None
@@ -501,7 +553,12 @@ def run(port: int, hud: dict[str, Any], alive: Callable[[], bool] = lambda: True
     if IS_WIN and combo:
         from alice.hotkeys import WinHotkeys
 
-        keys = WinHotkeys({combo: lambda: inbox.put({"kind": "toggle"})})
+        binds = {combo: lambda: inbox.put({"kind": "toggle"})}
+        for key, kind in (("mode_hotkey", "mode"), ("history_hotkey", "history")):
+            extra = str(hud.get(key, HOTKEYS[key]) or "")
+            if extra and extra not in binds:
+                binds[extra] = lambda kind=kind: inbox.put({"kind": kind})
+        keys = WinHotkeys(binds)
         keys.start()
     try:
         win.run()
