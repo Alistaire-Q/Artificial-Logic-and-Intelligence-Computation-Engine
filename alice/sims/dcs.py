@@ -1,6 +1,7 @@
 """DCS World bağlantısı.
 
-  install()       -> Saved Games\\DCS*\\Scripts altına alice_export.lua koyar, Export.lua'ya bir satır ekler
+  install()       -> Saved Games\\DCS*\\Scripts altına alice_export.lua koyar, Export.lua'ya bir satır ekler;
+                     Scripts\\Hooks altına kanat adamı hook'unu koyar (bkz. alice/sims/wingmen.py)
   DCSListener     -> betiğin UDP ile gönderdiği veriyi alır, FlightState'e çevirir
   read_mission()  -> .miz görev dosyasından oyuncunun grubunu, frekansını ve waypoint'lerini çıkarır
 """
@@ -33,14 +34,39 @@ def saved_games_dirs() -> list[Path]:
     return [p for p in (base / "DCS", base / "DCS.openbeta") if p.is_dir()]
 
 
-def install(dirs: list[Path] | None = None, port: int = PORT) -> list[Path]:
-    """Betiği kur. Export.lua'da satır zaten varsa tekrar eklemez. Kurulan klasörleri döndürür."""
+WINGMEN_PORT = 41231
+HOOK = Path(__file__).with_name("alice_wingmen_hook.lua")
+
+
+def _export_lua(port: int) -> str:
+    return SCRIPT.read_text(encoding="utf-8").replace('"127.0.0.1", 41230,', f'"127.0.0.1", {port},')
+
+
+def _lua_str(text: str) -> str:
+    """Python metni -> güvenli Lua string sabiti (tırnak, ters bölü kaçışlı; kontrol karakterleri atılır)."""
+    clean = "".join(ch for ch in str(text) if ch >= " " and ch != "\x7f")[:60]
+    return '"' + clean.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def hook_lua(port: int = WINGMEN_PORT, names: list[str] | None = None) -> str:
+    """Kanat adamı hook'unun kurulacak içeriği: port ve isteğe bağlı sabit grup listesi ([sims] dcs_wingmen)."""
+    table = "{" + ", ".join(_lua_str(n) for n in (names or []) if str(n).strip()) + "}"
+    return (HOOK.read_text(encoding="utf-8")
+            .replace("local ALICE_PORT = 41231", f"local ALICE_PORT = {int(port)}", 1)
+            .replace("local ALICE_NAMES = {}", f"local ALICE_NAMES = {table}", 1))
+
+
+def install(dirs: list[Path] | None = None, port: int = PORT, wingmen_port: int = WINGMEN_PORT,
+            wingmen: list[str] | None = None) -> list[Path]:
+    """Betiği ve kanat hook'unu kur. Export.lua'da satır zaten varsa tekrar eklemez. Kurulan klasörleri döndürür."""
     done = []
-    lua = SCRIPT.read_text(encoding="utf-8").replace('"127.0.0.1", 41230,', f'"127.0.0.1", {port},')
+    lua, hook = _export_lua(port), hook_lua(wingmen_port, wingmen)
     for d in dirs if dirs is not None else saved_games_dirs():
         scripts = d / "Scripts"
         scripts.mkdir(parents=True, exist_ok=True)
         (scripts / "alice_export.lua").write_text(lua, encoding="utf-8")
+        (scripts / "Hooks").mkdir(exist_ok=True)
+        (scripts / "Hooks" / HOOK.name).write_text(hook, encoding="utf-8")
         export = scripts / "Export.lua"
         text = export.read_text(encoding="utf-8", errors="replace") if export.exists() else ""
         if "alice_export.lua" not in text:
@@ -49,17 +75,19 @@ def install(dirs: list[Path] | None = None, port: int = PORT) -> list[Path]:
     return done
 
 
-def ensure_installed(dirs: list[Path] | None = None, port: int = PORT) -> list[Path]:
-    """Kurulu değilse ya da betik değişmişse kur (çekirdek açılışta çağırır). Kurulan klasörleri döndürür."""
-    lua = SCRIPT.read_text(encoding="utf-8").replace('"127.0.0.1", 41230,', f'"127.0.0.1", {port},')
+def ensure_installed(dirs: list[Path] | None = None, port: int = PORT, wingmen_port: int = WINGMEN_PORT,
+                     wingmen: list[str] | None = None) -> list[Path]:
+    """Kurulu değilse ya da betik/hook değişmişse kur (çekirdek açılışta çağırır). Kurulan klasörleri döndürür."""
+    lua, hook = _export_lua(port), hook_lua(wingmen_port, wingmen)
+    read = lambda p: p.read_text(encoding="utf-8", errors="replace") if p.exists() else None  # noqa: E731
     todo = []
     for d in dirs if dirs is not None else saved_games_dirs():
-        script, export = d / "Scripts" / "alice_export.lua", d / "Scripts" / "Export.lua"
-        ok = (script.exists() and script.read_text(encoding="utf-8", errors="replace") == lua and export.exists()
-              and "alice_export.lua" in export.read_text(encoding="utf-8", errors="replace"))
+        export = read(d / "Scripts" / "Export.lua")
+        ok = (read(d / "Scripts" / "alice_export.lua") == lua and export is not None and "alice_export.lua" in export
+              and read(d / "Scripts" / "Hooks" / HOOK.name) == hook)
         if not ok:
             todo.append(d)
-    return install(todo, port) if todo else []
+    return install(todo, port, wingmen_port, wingmen) if todo else []
 
 
 def uninstall(dirs: list[Path] | None = None) -> list[Path]:
@@ -72,9 +100,11 @@ def uninstall(dirs: list[Path] | None = None) -> list[Path]:
             if len(kept) != len(lines):
                 export.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
                 done.append(d)
-        script = d / "Scripts" / "alice_export.lua"
-        if script.exists():
-            script.unlink()
+        for script in (d / "Scripts" / "alice_export.lua", d / "Scripts" / "Hooks" / HOOK.name):
+            if script.exists():
+                script.unlink()
+                if d not in done:
+                    done.append(d)
     return done
 
 
@@ -495,8 +525,13 @@ def dcs_cmd(argv: list[str]) -> int:
         console.print("[red]DCS Saved Games klasörü bulunamadı[/] (DCS bir kez açılmış olmalı)")
         return 1
     if sub == "install":
-        for d in install(dirs):
+        from alice.config import load_config
+        from alice.sims.wingmen import settings as wingmen_settings
+
+        wport, wnames = wingmen_settings(load_config().data.get("sims", {}) or {})
+        for d in install(dirs, wingmen_port=wport, wingmen=wnames):
             console.print(f"[green]kuruldu:[/] {d / 'Scripts' / 'alice_export.lua'}")
+            console.print(f"[green]kuruldu:[/] {d / 'Scripts' / 'Hooks' / HOOK.name} (kanat adamı komutları)")
         console.print("DCS'i yeniden başlat. Veri, çekirdek açıkken (alice core run) işlenir.")
         return 0
     if sub == "uninstall":

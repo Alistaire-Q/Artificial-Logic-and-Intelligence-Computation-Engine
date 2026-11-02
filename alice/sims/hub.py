@@ -76,9 +76,12 @@ class SimHub:
         global ACTIVE
         if self.cfg.get("dcs", True):
             from alice.sims.dcs import PORT, DCSListener, ensure_installed
+            from alice.sims.wingmen import settings as wingmen_settings
 
             try:  # betik kurulu değilse ya da eskiyse kur: kurulmadan DCS hiç veri göndermiyor
-                for d in ensure_installed(port=int(self.cfg.get("dcs_port", PORT))):
+                wport, wnames = wingmen_settings(self.cfg)
+                for d in ensure_installed(port=int(self.cfg.get("dcs_port", PORT)), wingmen_port=wport,
+                                          wingmen=wnames):
                     self.store.add_event("info", "DCS veri betiği kuruldu", f"{d} (DCS'i yeniden başlat)", "info",
                                          "flight")
             except OSError as e:

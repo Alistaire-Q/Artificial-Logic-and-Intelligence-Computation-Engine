@@ -249,6 +249,11 @@ follow_up = 5
 [sims]
 dcs = true
 dcs_port = 41230
+# Sesle kanat adamı yönetimi ("İkinci, sağdaki SAM'i bastır"): DCS'in Scripts\Hooks altına kurulan hook bu portu
+# sadece 127.0.0.1'de dinler; yalnızca tek oyunculuda ya da sunucu sensen çalışır. Kanat adamları boşsa oyuncuya
+# en yakın dost AI uçak grupları; sabit sıra için grup adlarını yaz (İkinci = ilk ad, Üçüncü = ikinci ad...).
+dcs_wingmen_port = 41231
+# dcs_wingmen = ["Uzi 2", "Uzi 3"]
 warthunder = true
 # Ekrandan füze görme (War Thunder füzeyi API'de vermiyor, ekranda gösteriyor). Sadece uçuşta, ekranın yalnızca
 # RWR bölgesi işlemcide saniyede 10 kez yakalanır; oyuna dokunmaz. Önce bölgeyi ayarla:

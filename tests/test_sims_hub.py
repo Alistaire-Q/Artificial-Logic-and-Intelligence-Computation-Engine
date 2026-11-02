@@ -162,7 +162,7 @@ def fake_sims(monkeypatch):
     FakePart.instances = []
     installs = []
 
-    def ensure(port=dcs.PORT, dirs=None):
+    def ensure(port=dcs.PORT, dirs=None, **kw):
         installs.append(port)
         return [Path("Saved Games/DCS/Scripts")]
 
@@ -208,7 +208,7 @@ def test_start_respects_disabled_sources(fake_sims):
 
 
 def test_start_logs_install_and_listener_errors(monkeypatch, fake_sims):
-    def bad_install(port=dcs.PORT, dirs=None):
+    def bad_install(port=dcs.PORT, dirs=None, **kw):
         raise PermissionError("erişim yok")
 
     class BadListener(FakePart):
