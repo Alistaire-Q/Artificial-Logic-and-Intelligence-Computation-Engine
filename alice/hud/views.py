@@ -1,6 +1,7 @@
-"""HUD'da ne, nasıl görünür: bildirim kartı, konuşmanın yazılı özeti, tıklamadan önce hedef çerçevesi.
+"""HUD'da ne, nasıl görünür: bildirim kartı, konuşmanın yazılı özeti, tıklamadan önce hedef çerçevesi,
+tarayıcıda üzerinde çalışılan ya da kullanıcıya gösterilen öğenin çerçevesi.
 
-Çağıranlar (bildirimler, ses, bilgisayar kullanımı) yalnızca bunları çağırır. HUD açık değilse hiçbiri bir şey
+Çağıranlar (bildirimler, ses, bilgisayar kullanımı, tarayıcı) yalnızca bunları çağırır. HUD açık değilse hiçbiri bir şey
 yapmaz ve beklemez.
 """
 
@@ -60,6 +61,21 @@ def click_target(x: float, y: float, action: str = "click", wait: bool = True) -
     label = {"double_click": "çift tıklıyorum", "right_click": "sağ tıklıyorum", "drag": "sürüklüyorum",
              "move": "buraya gidiyorum", "scroll": "kaydırıyorum"}.get(action, "tıklıyorum")
     ok = client.show("box", x=x - 28, y=y - 28, w=56, h=56, text=label, severity="info", ttl=1.5, id="computer")
+    if ok and wait:
+        time.sleep(CLICK_PREVIEW)
+    return ok
+
+
+PAGE_TTL = 1.5  # sn: tarayıcıda tıklanan/yazılan öğenin çerçevesi
+SHOW_TTL = 6.0  # sn: kullanıcıya gösterilen öğe (browser action=highlight) daha uzun kalır
+
+
+def page_target(x: float, y: float, w: float, h: float, label: str = "", ttl: float = PAGE_TTL,
+                wait: bool = False) -> bool:
+    """Tarayıcıdaki bir öğeyi ekranda çerçevele (fiziksel ekran pikseli, x/y sol üst köşe)."""
+    if not client.active or w < 2 or h < 2:
+        return False
+    ok = client.show("box", x=x, y=y, w=w, h=h, text=label[:40], severity="info", ttl=ttl, id="browser")
     if ok and wait:
         time.sleep(CLICK_PREVIEW)
     return ok
