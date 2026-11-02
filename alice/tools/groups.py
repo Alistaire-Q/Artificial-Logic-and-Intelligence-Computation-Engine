@@ -64,8 +64,9 @@ GROUPS: dict[str, tuple[set[str], str, str]] = {
     "timeline": ({"timeline"}, "zaman makinesi hafıza: ekranda daha önce görülen yazıları ara",
                  r"ekranda gör|geçen (hafta|gün).*(link|bağlantı|yazı|mesaj)|o linki bul|zaman çizgisi|"
                  r"daha önce gördü|okuduğum o"),
-    "flight": ({"flight"}, "DCS / War Thunder uçuş verisi ve kneeboard",
-               r"dcs|war ?thunder|uçuş|uçak|kneeboard|pist|iniş|kalkış|simülasyon|sim\b"),
+    "flight": ({"flight", "dcs_wingman"}, "DCS / War Thunder uçuş verisi, kneeboard, DCS kanat adamlarına emir",
+               r"dcs|war ?thunder|uçuş|uçak|kneeboard|pist|iniş|kalkış|simülasyon|sim\b|kanat adam|wingman|"
+               r"\bsam\b|bastır|üsse dön"),
     "connect": (set(),  # araçlar çalışma anında tanımlardan gelir (alice/connect)
                 "bağlı servisler: Spotify, Steam, Discord, YouTube, eklediğin API'lar",
                 r"spotify|müzik|şark[ıi]|parça|çal\b|duraklat|steam|oyun kütüphanesi|discord|sunucu|kanal|"

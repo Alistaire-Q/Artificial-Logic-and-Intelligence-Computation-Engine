@@ -158,7 +158,57 @@ class Flight(Tool):
         return ToolResult(f"kneeboard güncellendi ({len(written)} sayfa; {what}).")
 
 
-TOOLS = [Flight()]
+class DcsWingman(Tool):
+    name = "dcs_wingman"
+    description = ("DCS tek oyunculu görevde dost yapay zekâ kanat adamlarına sesli emir: saldır/bastır, yanıma gel, "
+                   "bekle (tur at), üsse dön. Ör. 'İkinci, sağdaki SAM'i bastır', 'Üçüncü eve dön', 'hepsi toplan'.\n"
+                   "- Kullanıcının sözünü olduğu gibi command'a koy; ALICE çözer. Ya da verb/index/target/direction "
+                   "alanlarını doldur.\n"
+                   "- Sıra: oyuncu lider (1); İkinci = en yakın kanat adamı, Üçüncü = sonraki, 0 = hepsi.\n"
+                   "- Sonuç oyunda ekranda yazı olarak görünür (ör. 'İkinci: SAM'e saldırıyor'); burada sadece "
+                   "gönderildiği söylenir. DCS kapalıysa ya da çok oyunculuda başkasının sunucusundaysan hiçbir şey "
+                   "olmaz.")
+    parameters = obj({
+        "command": {"type": "string", "description": "Kullanıcının sözü, ör. 'İkinci, sağdaki SAM'i bastır'. "
+                    "Verilirse diğer alanlar boşsa buradan çıkarılır."},
+        "verb": {"type": "string", "enum": ["attack", "rejoin", "hold", "rtb"],
+                 "description": "attack: hedefe saldır | rejoin: oyuncuyu takip et | hold: bulunduğu yerde tur at | "
+                 "rtb: en yakın dost üsse in."},
+        "index": {"type": "integer", "description": "Kanat adamı sırası: 2 = İkinci (en yakın), 3 = Üçüncü, 0 = hepsi."},
+        "target": {"type": "string", "enum": ["sam", "air", "ground", "ship", "any"],
+                   "description": "attack için hedef türü: sam (hava savunma), air (uçak), ground (kara), ship, any."},
+        "direction": {"type": "string", "enum": ["right", "left", "front", "behind", "any"],
+                      "description": "attack için hedefin oyuncunun burnuna göre yönü."},
+    })
+    risk = READ
+
+    def run(self, ctx: ToolContext, command: str = "", verb: str = "", index: Any = None, target: str = "",
+            direction: str = "") -> ToolResult:
+        from alice.sims import wingmen as wm
+
+        cmd = wm.parse(command) if command else None
+        if cmd is None:
+            if not verb:
+                raise ToolError("komut anlaşılmadı: verb (attack/rejoin/hold/rtb) ver ya da command'ı netleştir")
+            cmd = wm.Command(verb)
+        if verb:
+            cmd.verb = verb
+        n = _number(index)
+        if n is not None:
+            cmd.index = int(n)
+        cmd.target = target or cmd.target
+        cmd.direction = direction or cmd.direction
+        port, _ = wm.settings((ctx.config.data.get("sims", {}) if ctx and ctx.config else {}) or {})
+        try:
+            ok = wm.send(cmd, port)
+        except ValueError as e:
+            raise ToolError(str(e)) from e
+        if not ok:
+            return ToolResult(f"gönderilemedi ({cmd.describe()}): yerel UDP hatası")
+        return ToolResult(f"gönderildi: {cmd.describe()}. Sonuç DCS'te ekranda yazı olarak görünür.")
+
+
+TOOLS = [Flight(), DcsWingman()]
 
 
 def _number(value: Any) -> float | None:
