@@ -1,18 +1,28 @@
-"""HUD'un görünümü: her öğe ekranda kendi küçük, kenarı yumuşatılmış, yarı saydam resmi (sprite).
+"""HUD'un görünümü. Apple'ın Dynamic Island ve Live Activities kurallarına göre (developer.apple.com/design/human-
+interface-guidelines/live-activities, /materials, /color):
 
-Dil macOS'in koyu HUD panelleri: yarı saydam koyu cam, ince açık kenar, yumuşak gölge, iOS sistem renkleri,
-Segoe UI. Süs yok: renk sadece önem için (mavi bilgi, turuncu uyarı, kırmızı kritik). Animasyonlar kısa ve sakin:
-belirirken 220 ms solma ve hafif büyüme, kaybolurken 180 ms solma, kritik öğede yavaş nefes alan bir hale, yönü
-değişen ok yeni yönüne döner (zıplamaz).
+  * Tek yüzey, "Ada": ekranın üst ortasında opak siyah tek bir kapsül. Tehdit, yakıt, sıcaklık, bildirim, konuşma
+    hep onun içinde; birden fazla şey varsa en önemlisi Adada, diğerleri yanında küçük dairelerde (minimal görünüm).
+    Ayrı ayrı yüzen paneller yok: HIG yarı saydam katmanları üst üste koymamayı ve tek yüzeyde dönüşümlü göstermeyi
+    söylüyor.
+  * Renk sadece içerikte ve sadece anlam için: beyaz yazı, değer ve simge durum rengiyle (iOS koyu mod sistem
+    renkleri). Kritikte Adanın etrafında ince renkli çizgi (HIG "key line"). Renkli nokta, renkli çerçeve yok.
+  * Yazı büyük ve en az orta kalınlıkta (HIG: "large, heavier-weight text"). Segoe UI Variable'ın Display/Text optik
+    boyutları SF'nin Windows'taki en yakın karşılığı. Simgeler SF Symbols gibi tek renk, yazıyla aynı ağırlıkta.
+  * Eş merkezli kenar boşlukları: içerik kenara sıkı, iç köşeler dış köşeyle uyumlu; köşeler Apple'ın sürekli köşesi
+    (squircle, n=5 süper elips).
+  * Hareket: Ada boyut değiştirirken yay gibi büyür/küçülür, içerik değişince eskisi söner yenisi belirir; hiçbir
+    animasyon 2 sn'yi geçmez.
 
-Bu modül Windows'a dokunmaz: `layout` ekrandaki yerleri, `render` resmi verir. Pencereye basmak window.py'nin işi.
-Şekiller 3 kat büyük çizilip küçültülür (kenar yumuşatma), yazı son boyutta çizilir (keskin kalsın).
+Ada dışında yalnızca iki şey çizilir: kritik tehdidin yönünde ekran kenarında yumuşak ışık, tıklanacak yerin etrafında
+macOS odak halkası. Bu modül Windows'a dokunmaz; pencereye basmak window.py'nin işi.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
 
@@ -20,79 +30,93 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from alice.hud.model import Item, clock_of
 
-# iOS koyu mod sistem renkleri
-COLORS = {"info": (10, 132, 255), "warn": (255, 159, 10), "critical": (255, 69, 58)}
-GLASS = (28, 28, 30, 196)        # panel dolgusu
-STROKE = (255, 255, 255, 34)     # panelin ince kenarı
-TEXT = (255, 255, 255, 245)
-TEXT_2 = (235, 235, 245, 168)    # ikincil yazı (iOS secondaryLabel)
+# iOS koyu mod sistem renkleri (HIG Color, 2025)
+RED, ORANGE, YELLOW = (255, 66, 69), (255, 146, 48), (255, 214, 0)
+GREEN, BLUE, GRAY = (48, 209, 88), (0, 145, 255), (142, 142, 147)
+COLORS = {"info": BLUE, "warn": ORANGE, "critical": RED}
+WHITE = (245, 245, 247)          # apple.com'un koyu bölümlerindeki yazı rengi (saf beyaz değil)
+LABEL_2 = (134, 134, 139, 255)   # apple.com ikincil yazı (#86868B)
+TRACKING = -0.022                # em: apple.com'da 17 px yazıda -0,374 px; sıkı, tok görünüm
+ISLAND = (0, 0, 0, 255)          # Dynamic Island: opak siyah
+KEYLINE = (255, 255, 255, 34)    # Adayı zeminden ayıran ince çizgi (gölge yerine)
 SS = 3                           # kenar yumuşatma için büyütme
 
 FADE_IN, FADE_OUT, TURN = 0.22, 0.18, 0.2   # sn
-PULSE = 1.6                                 # sn: kritik halenin nefesi
-
-
-@dataclass
-class Sprite:
-    key: str
-    item: Item
-    x: int
-    y: int
-    w: int
-    h: int
-    angle: float = 0.0   # ok: ekranda derece (0 yukarı, saat yönünde)
+PULSE = 1.6                                 # sn: kritik nefes
+PRIORITY = {"critical": 0, "warn": 1, "info": 2}
 
 
 def scale_for(screen_h: int) -> float:
-    """1080p'de 1; 1440p'de 1,33; 4K'da 2. Yazı ve şekiller ekranla birlikte büyür."""
+    """1080p'de 1; 1440p'de 1,33; 4K'da 2."""
     return max(1.0, min(2.0, screen_h / 1080))
 
 
-@lru_cache(maxsize=32)
-def font(size: int, weight: str = "regular") -> ImageFont.FreeTypeFont:
-    names = {"semibold": ("seguisb.ttf", "segoeuib.ttf"), "regular": ("segoeui.ttf",)}[weight]
-    for name in (*names, "arial.ttf", "DejaVuSans.ttf"):
-        for base in ("C:/Windows/Fonts/", ""):
-            try:
-                return ImageFont.truetype(base + name, size)
-            except OSError:
-                continue
+# ------------------------------------------------------------------ yazı
+@lru_cache(maxsize=64)
+def font(size: int, weight: int = 600, display: bool = True) -> ImageFont.FreeTypeFont:
+    """Segoe UI Variable: weight 300-700, optik boyut (display büyük başlık, text gövde). Yoksa Segoe UI."""
+    for path in ("C:/Windows/Fonts/SegUIVar.ttf",):
+        try:
+            f = ImageFont.truetype(path, size)
+            f.set_variation_by_axes([weight, 36 if display else 10])
+            return f
+        except (OSError, ValueError, AttributeError):
+            continue
+    for name in (("seguisb.ttf", "segoeuib.ttf") if weight >= 600 else ("segoeui.ttf",)) + ("arial.ttf",):
+        try:
+            return ImageFont.truetype("C:/Windows/Fonts/" + name, size)
+        except OSError:
+            continue
     return ImageFont.load_default()
 
 
-def ease_out(t: float) -> float:
-    t = min(1.0, max(0.0, t))
-    return 1 - (1 - t) ** 3
+def _tw(s: str, f: ImageFont.FreeTypeFont, tracking: float = TRACKING) -> int:
+    """Harf aralığıyla birlikte yazı genişliği."""
+    return int(math.ceil(f.getlength(s) + tracking * f.size * max(0, len(s) - 1)))
 
 
-def color(item: Item) -> tuple[int, int, int]:
-    c = item.data.get("color")
-    if isinstance(c, str) and len(c) == 7 and c.startswith("#"):
-        try:
-            return int(c[1:3], 16), int(c[3:5], 16), int(c[5:7], 16)
-        except ValueError:
-            pass
-    return COLORS.get(item.data.get("severity", "info"), COLORS["info"])
+def text(d: ImageDraw.ImageDraw, xy: tuple[float, float], s: str, f: ImageFont.FreeTypeFont, fill: tuple,
+         anchor: str = "lm", tracking: float = TRACKING) -> None:
+    """Negatif harf aralıklı yazı (PIL'de yok: harf harf, çiftlerin kendi aralığı korunarak çizilir).
+    anchor: l/r/m yatay + m/a dikey (lm, rm, la)."""
+    if not s:
+        return
+    width = _tw(s, f, tracking)
+    x, y = xy
+    if anchor[0] == "r":
+        x -= width
+    elif anchor[0] == "m":
+        x -= width / 2
+    v = anchor[1]
+    pos = x
+    for i, ch in enumerate(s):
+        d.text((pos, y), ch, font=f, fill=fill, anchor="l" + v)
+        pair = f.getlength(s[i:i + 2]) - f.getlength(s[i + 1]) if i + 1 < len(s) else f.getlength(ch)
+        pos += pair + tracking * f.size
 
 
-def angle_of(clock: int) -> float:
-    return (clock % 12) * 30.0
+def tr_sentence(s: str) -> str:
+    """'ARKANDA · 900 m' -> 'Arkanda · 900 m' (Türkçe İ/ı ile). Büyük harfle bağırmak Apple dili değil."""
+    def low(w: str) -> str:
+        return w.replace("I", "ı").replace("İ", "i").lower()
+
+    parts = s.split(" ")
+    out = []
+    for p in parts:
+        letters = [c for c in p if c.isalpha()]
+        # kısaltmalar (SAM, GPU, DCS) kalır; bağıran kelimeler (ARKANDA, YAKIT) küçülür
+        out.append(low(p) if len(letters) > 3 and all(c.isupper() for c in letters) else p)
+    t = " ".join(out)
+    if t and t[0] == "i":
+        return "İ" + t[1:]
+    return t[:1].upper() + t[1:]
 
 
-def direction(deg: float) -> tuple[float, float]:
-    a = math.radians(deg)
-    return math.sin(a), -math.cos(a)
-
-
-def _text_w(s: str, f: ImageFont.FreeTypeFont) -> int:
-    return int(math.ceil(f.getlength(s)))
-
-
-def _wrap(s: str, f: ImageFont.FreeTypeFont, width: int, max_lines: int = 4) -> list[str]:
+def _wrap(s: str, f: ImageFont.FreeTypeFont, width: int, max_lines: int = 3) -> list[str]:
     words, lines, cur = s.split(), [], ""
     for w in words:
         t = f"{cur} {w}".strip()
-        if cur and _text_w(t, f) > width:
+        if cur and _tw(t, f) > width:
             lines.append(cur)
             cur = w
         else:
@@ -102,167 +126,515 @@ def _wrap(s: str, f: ImageFont.FreeTypeFont, width: int, max_lines: int = 4) -> 
     if len(lines) > max_lines:
         lines = lines[:max_lines]
         last = lines[-1]
-        while last and _text_w(last + "…", f) > width:
+        while last and _tw(last + "…", f) > width:
             last = last[:-1]
         lines[-1] = last.rstrip() + "…"
     return lines
 
 
-# ------------------------------------------------------------------ yerleşim
-def _arrow_size(item: Item, k: float) -> tuple[int, int, int]:
-    disc = round(46 * k)
-    label = str(item.data.get("text") or "")
-    pill_w = _text_w(label, font(round(13 * k), "semibold")) + round(34 * k) if label else 0
-    w = max(disc, pill_w) + round(28 * k)  # gölge payı
-    h = disc + (round(30 * k) + round(8 * k) if label else 0) + round(28 * k)
-    return w, h, disc
+# ------------------------------------------------------------------ şekil
+def squircle(box: tuple[float, float, float, float], r: float, n: float = 5.0, steps: int = 14) -> list[tuple]:
+    """Apple'ın sürekli köşeli dikdörtgeni: köşeler süper elips (n=5), dairesel köşeden daha yumuşak geçer.
+    r yükseklik/2'ye eşitse kapsül olur."""
+    x0, y0, x1, y1 = box
+    w, h = x1 - x0, y1 - y0
+    r = max(0.0, min(r, w / 2, h / 2))
+    if r < 0.5:
+        return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+    if r >= min(w, h) / 2 - 0.5:  # kapsül/daire: uçlar tam yarım daire (süper elips burada kutu gibi duruyordu)
+        n, e = 2.0, min(w, h) / 2
+    else:
+        e = min(r * 1.28, w / 2, h / 2)  # süper elips köşe, aynı görünen yarıçap için biraz daha uzun
+    pts = []
+    for cx, cy, a0 in ((x1 - e, y0 + e, -90), (x1 - e, y1 - e, 0), (x0 + e, y1 - e, 90), (x0 + e, y0 + e, 180)):
+        for i in range(steps + 1):
+            a = math.radians(a0 + 90 * i / steps)
+            ca, sa = math.cos(a), math.sin(a)
+            px = math.copysign(abs(ca) ** (2 / n), ca) * e
+            py = math.copysign(abs(sa) ** (2 / n), sa) * e
+            pts.append((cx + px, cy + py))
+    return pts
 
 
-def _card_size(item: Item, k: float) -> tuple[int, int]:
-    w = round(340 * k)
-    body = " ".join(str(item.data.get("text") or "").split())
-    lines = _wrap(body, font(round(13 * k)), w - round(48 * k)) if body else []
-    h = round(46 * k) + len(lines) * round(19 * k) + round(14 * k)
-    return w + round(32 * k), h + round(32 * k)
+def _big(size: tuple[int, int]) -> Image.Image:
+    return Image.new("RGBA", (size[0] * SS, size[1] * SS), (0, 0, 0, 0))
+
+
+def _down(big: Image.Image, size: tuple[int, int]) -> Image.Image:
+    return big.resize(size, Image.LANCZOS)
+
+
+def _shape(img: Image.Image, box: tuple, r: float, fill: tuple, outline: tuple | None = None, width: float = 1.0) -> None:
+    big = _big(img.size)
+    pts = [(x * SS, y * SS) for x, y in squircle(box, r)]
+    d = ImageDraw.Draw(big)
+    d.polygon(pts, fill=fill)
+    if outline:
+        d.line(pts + [pts[0]], fill=outline, width=max(1, round(width * SS)), joint="curve")
+    img.alpha_composite(_down(big, img.size))
+
+
+def _shadow(img: Image.Image, box: tuple, r: float, k: float, alpha: int = 120) -> None:
+    sh = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    x0, y0, x1, y1 = box
+    ImageDraw.Draw(sh).polygon(squircle((x0, y0 + 6 * k, x1, y1 + 6 * k), r), fill=(0, 0, 0, alpha))
+    img.alpha_composite(sh.filter(ImageFilter.GaussianBlur(12 * k)))
+
+
+# ------------------------------------------------------------------ simgeler (SF Symbols gibi, tek renk)
+def glyph(img: Image.Image, name: str, cx: float, cy: float, s: float, rgb: tuple, angle: float = 0.0) -> None:
+    """s: simgenin kutu boyu (yazı yüksekliği kadar). Hepsi 3 kat çizilip küçültülür."""
+    big = _big(img.size)
+    d = ImageDraw.Draw(big)
+    col = (*rgb, 255)
+    X = lambda v: v * SS  # noqa: E731
+    h = s / 2
+    if name == "arrow":  # location.north.fill: yönü olan dolu ok
+        dx, dy = math.sin(math.radians(angle)), -math.cos(math.radians(angle))
+        px, py = -dy, dx
+        shape = ((0.0, -1.0), (0.56, 0.7), (0.0, 0.34), (-0.56, 0.7))  # ucu kanatlardan uzak: yönü belli
+        d.polygon([(X(cx + (px * a - dx * b) * h), X(cy + (py * a - dy * b) * h)) for a, b in shape], fill=col)
+    elif name == "warning":  # exclamationmark.triangle.fill
+        tri = [(cx, cy - h * 0.95), (cx + h, cy + h * 0.8), (cx - h, cy + h * 0.8)]
+        d.polygon([(X(x), X(y)) for x, y in tri], fill=col)
+        d.line([(X(cx), X(cy - h * 0.35)), (X(cx), X(cy + h * 0.25))], fill=(0, 0, 0, 255), width=round(X(s * 0.11)))
+        r = s * 0.07
+        d.ellipse([X(cx - r), X(cy + h * 0.5 - r), X(cx + r), X(cy + h * 0.5 + r)], fill=(0, 0, 0, 255))
+    elif name == "drop":  # drop.fill (yakıt)
+        r = h * 0.62
+        d.ellipse([X(cx - r), X(cy + h * 0.3 - r), X(cx + r), X(cy + h * 0.3 + r)], fill=col)
+        d.polygon([(X(cx), X(cy - h)), (X(cx + r * 0.92), X(cy + h * 0.12)), (X(cx - r * 0.92), X(cy + h * 0.12))],
+                  fill=col)
+    elif name == "thermometer":
+        w = s * 0.2
+        d.rounded_rectangle([X(cx - w / 2), X(cy - h), X(cx + w / 2), X(cy + h * 0.4)], radius=X(w / 2), fill=col)
+        r = s * 0.24
+        d.ellipse([X(cx - r), X(cy + h * 0.55 - r), X(cx + r), X(cy + h * 0.55 + r)], fill=col)
+    elif name == "check":  # checkmark.circle.fill
+        d.ellipse([X(cx - h), X(cy - h), X(cx + h), X(cy + h)], fill=col)
+        pts = [(cx - h * 0.45, cy + h * 0.02), (cx - h * 0.1, cy + h * 0.38), (cx + h * 0.5, cy - h * 0.35)]
+        d.line([(X(x), X(y)) for x, y in pts], fill=(0, 0, 0, 255), width=round(X(s * 0.13)), joint="curve")
+    elif name == "cursor":  # cursorarrow
+        pts = [(0, -1), (0.0, 0.62), (0.3, 0.32), (0.55, 0.92), (0.72, 0.84), (0.48, 0.25), (0.88, 0.25)]
+        d.polygon([(X(cx - h * 0.4 + a * h), X(cy + b * h)) for a, b in pts], fill=col)
+    elif name == "gauge":  # gauge.with.needle: halka
+        d.arc([X(cx - h), X(cy - h), X(cx + h), X(cy + h)], 150, 390, fill=col, width=round(X(s * 0.13)))
+        d.line([(X(cx), X(cy)), (X(cx + h * 0.55), X(cy - h * 0.4))], fill=col, width=round(X(s * 0.12)))
+    else:  # sparkle: ALICE'in işareti (dört köşeli yıldız)
+        k = 0.22
+        pts = [(0, -1), (k, -k), (1, 0), (k, k), (0, 1), (-k, k), (-1, 0), (-k, -k)]
+        d.polygon([(X(cx + a * h), X(cy + b * h)) for a, b in pts], fill=col)
+    img.alpha_composite(_down(big, img.size))
+
+
+def ring(img: Image.Image, cx: float, cy: float, r: float, value: float, rgb: tuple, k: float) -> None:
+    """Küçük ilerleme halkası (Saat uygulamasının kalan süre halkası gibi)."""
+    big = _big(img.size)
+    d = ImageDraw.Draw(big)
+    w = round(2.6 * k * SS)
+    box = [(cx - r) * SS, (cy - r) * SS, (cx + r) * SS, (cy + r) * SS]
+    d.ellipse(box, outline=(*rgb, 70), width=w)
+    if value > 0:
+        d.arc(box, -90, -90 + 360 * min(1.0, value), fill=(*rgb, 255), width=w)
+    img.alpha_composite(_down(big, img.size))
+
+
+# ------------------------------------------------------------------ içerik
+@dataclass
+class Entry:
+    """Adada gösterilecek tek şey."""
+    key: str
+    kind: str              # status | card
+    glyph: str
+    title: str
+    value: str = ""
+    body: str = ""
+    severity: str = "info"
+    angle: float = 0.0
+    progress: float | None = None
+    seq: int = 0
+
+    @property
+    def rgb(self) -> tuple:
+        return COLORS.get(self.severity, BLUE)
+
+
+def _split(text: str) -> tuple[str, str]:
+    t = tr_sentence(" ".join(str(text or "").split()))
+    if " · " in t:
+        a, b = t.split(" · ", 1)
+        return a, b
+    m = re.match(r"^(.*?)\s+(~?[\d.,]+\s*\S*)$", t)  # "Yakıt ~4 dk" -> ("Yakıt", "~4 dk")
+    return (m.group(1), m.group(2)) if m and m.group(1) else (t, "")
+
+
+def entries(items: list[Item]) -> list[Entry]:
+    """HUD komutları -> Ada içerikleri, önem sırasıyla (kritik önce, aynı önemde yeni olan önce). Kenar ışığı ve
+    odak halkası ayrıca çizilir; odak halkasının yazısı Adaya gelir."""
+    out: list[Entry] = []
+    for it in items:
+        d, key = it.data, it.id or f"#{it.seq}"
+        sev = d.get("severity", "info")
+        if it.kind == "arrow":
+            title, value = _split(d.get("text") or "Tehdit")
+            out.append(Entry(key, "status", "arrow", title, value, severity=sev,
+                             angle=(clock_of(d.get("clock")) or 12) % 12 * 30.0, seq=it.seq))
+        elif it.kind == "label":
+            title, value = _split(d.get("text") or "")
+            g = d.get("icon") or ("drop" if re.search(r"yak[ıi]t", title, re.I) else
+                                  "warning" if sev != "info" else "sparkle")
+            out.append(Entry(key, "status", g, title, value, severity=sev, seq=it.seq))
+        elif it.kind == "progress":
+            title, value = _split(d.get("text") or "")
+            g = d.get("icon") or ("thermometer" if "°" in (d.get("text") or "") else "gauge")
+            out.append(Entry(key, "status", g, title, value, severity=sev, seq=it.seq,
+                             progress=max(0.0, min(1.0, float(d.get("value") or 0)))))
+        elif it.kind == "box" and d.get("text"):
+            out.append(Entry(key, "status", "cursor", tr_sentence(str(d["text"])), severity="info", seq=it.seq))
+        elif it.kind == "card":
+            title = str(d.get("title") or "ALICE")
+            g = d.get("icon") or ("check" if title.lower().startswith("düşürdün") else
+                                  "warning" if sev in ("warn", "critical") else "sparkle")
+            out.append(Entry(key, "card", g, title, body=" ".join(str(d.get("text") or "").split()), severity=sev,
+                             seq=it.seq))
+    out.sort(key=lambda e: (PRIORITY.get(e.severity, 2), -e.seq))
+    return out
+
+
+# ------------------------------------------------------------------ Ada
+@dataclass
+class Layout:
+    w: float
+    h: float
+    r: float
+
+
+def island_layout(e: Entry | None, k: float) -> Layout:
+    """İçeriğin istediği Ada boyutu. Kompakt: 38 pt yüksek kapsül; genişletilmiş (kart): 400 pt genişlik, köşe 26."""
+    if e is None:
+        return Layout(126 * k, 38 * k, 19 * k)  # boşta: küçük kapsül (gösterilmez)
+    if e.kind == "card":  # HIG: sadece içeriğin gerektirdiği kadar yer; en fazla 400 pt
+        fb = font(round(14 * k), 400, False)
+        need = 72 * k + max(_tw(e.title, font(round(16 * k), 600)), _tw(e.body, fb) if e.body else 0)
+        w = min(400 * k, max(240 * k, need))
+        lines = _wrap(e.body, fb, round(w - 72 * k)) if e.body else []
+        h = (20 + 22 + (6 + 19 * len(lines) if lines else 0) + 18) * k
+        return Layout(w, max(h, 64 * k), 26 * k)
+    ft = font(round(15 * k), 600)
+    w = 14 * k + 20 * k + 9 * k + _tw(e.title, ft) + (10 * k + _tw(e.value, ft) if e.value else 0) + 16 * k
+    if e.progress is not None:
+        w += 26 * k
+    return Layout(max(w, 112 * k), 38 * k, 19 * k)
+
+
+MARGIN = 48  # gölge ve ışıma payı (k cinsinden): bulanıklık kesilmesin (26'da dikdörtgen kenar görünüyordu)
+
+
+@lru_cache(maxsize=64)
+def _body(w: int, h: int, r: int, crit: bool, pulse_q: float, k: float) -> Image.Image:
+    """Adanın gövdesi (kritikte ışıma + siyah sürekli köşeli şekil + key line). Boyut başına bir kez."""
+    m = round(MARGIN * k)
+    W, H = w + 2 * m, h + 2 * m
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    box = (m, m, m + w, m + h)
+    q = 4  # ışıma çeyrek çözünürlükte bulanıklaştırılır: aynı görünür, 16 kat ucuz
+    if crit:
+        small = Image.new("RGBA", (max(1, W // q), max(1, H // q)), (0, 0, 0, 0))
+        g = (3 + 3 * pulse_q) * k
+        poly = squircle((box[0] - g, box[1] - g, box[2] + g, box[3] + g), r + g)
+        fill, blur = (*RED, int(70 + 60 * (1 - pulse_q))), 8 * k
+        ImageDraw.Draw(small).polygon([(x / q, y / q) for x, y in poly], fill=fill)
+        img.alpha_composite(small.filter(ImageFilter.GaussianBlur(blur / q)).resize((W, H), Image.BILINEAR))
+    # Gölge yok: apple.com'da da Dynamic Island'da da gölge kullanılmıyor (box-shadow: none); ayrımı key line yapar.
+    _shape(img, box, r, ISLAND, (*RED, 210) if crit else KEYLINE, 1.5 * k if crit else 1.0 * k)
+    return img
+
+
+@lru_cache(maxsize=64)
+def _content(sig: tuple, w: int, h: int, k: float) -> Image.Image:
+    """Adanın içeriği (simge, yazı, değer), hedef boyutta bir kez çizilir."""
+    kind, gname, title, value, body, sev, angle, progress = sig
+    rgb = COLORS.get(sev, BLUE)
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    if kind == "card":
+        pad = 20 * k
+        glyph(img, gname, pad + 9 * k, 31 * k, 20 * k, WHITE if gname == "sparkle" else rgb)
+        d = ImageDraw.Draw(img)
+        tx = pad + 30 * k
+        text(d, (tx, 31 * k), title, font(round(16 * k), 600), WHITE, "lm")
+        if body:
+            fb = font(round(14 * k), 400, False)
+            y = 48 * k
+            for ln in _wrap(body, fb, round(w - tx - pad)):
+                text(d, (tx, y), ln, fb, LABEL_2, "la", tracking=-0.01)
+                y += 19 * k
+        return img
+    cy = h / 2
+    glyph(img, gname, 24 * k, cy, 18 * k, rgb, float(angle))
+    d = ImageDraw.Draw(img)
+    ft = font(round(15 * k), 600)
+    text(d, (43 * k, cy), title, ft, WHITE, "lm")
+    right = w - 16 * k
+    if progress is not None:
+        ring(img, right - 8 * k, cy, 8 * k, progress, rgb, k)
+        right -= 26 * k
+    if value:
+        text(d, (right, cy), value, ft, (*rgb, 255), "rm")
+    return img
+
+
+def _sig(e: Entry) -> tuple:
+    return (e.kind, e.glyph, e.title, e.value, e.body, e.severity, round(e.angle),
+            None if e.progress is None else round(e.progress, 2))
+
+
+def _fade(img: Image.Image, a: float) -> Image.Image:
+    if a >= 0.999:
+        return img
+    out = img.copy()
+    out.putalpha(img.getchannel("A").point(lambda v: int(v * max(0.0, a))))
+    return out
+
+
+def draw_island(img: Image.Image, e: Entry | None, box: tuple, r: float, k: float, content_alpha: float,
+                pulse: float = 0.0) -> None:
+    x0, y0, x1, y1 = box
+    w, h = max(1, round(x1 - x0)), max(1, round(y1 - y0))
+    crit = e is not None and e.severity == "critical"
+    body = _body(w, h, round(min(r, h / 2)), crit, round(pulse * 6) / 6 if crit else 0.0, k)
+    m = round(MARGIN * k)
+    img.alpha_composite(body, (round(x0) - m, round(y0) - m))
+    if e is None or content_alpha <= 0.01:
+        return
+    lay = island_layout(e, k)
+    c = _content(_sig(e), round(lay.w), round(lay.h), k)
+    if c.width > w or c.height > h:  # yay henüz açılmadı: taşan kısmı gösterme
+        c = c.crop((0, 0, min(c.width, w), min(c.height, h)))
+    img.alpha_composite(_fade(c, content_alpha), (round(x0), round(y0)))
+
+
+@lru_cache(maxsize=32)
+def _minimal(gname: str, sev: str, angle: int, d_: int, k: float) -> Image.Image:
+    m = round(MARGIN * k)
+    img = _body(d_, d_, d_ // 2, False, 0.0, k).copy()
+    if sev == "critical":
+        _shape(img, (m, m, m + d_, m + d_), d_ / 2, (0, 0, 0, 0), (*RED, 210), 1.5 * k)
+    glyph(img, gname, m + d_ / 2, m + d_ / 2, 16 * k, COLORS.get(sev, BLUE), float(angle))
+    return img
+
+
+def draw_minimal(img: Image.Image, e: Entry, cx: float, cy: float, d_: float, k: float, alpha: float) -> None:
+    """Ada yanında ayrık küçük daire: ikinci/üçüncü içeriğin yalnızca simgesi (HIG minimal görünüm)."""
+    d = max(2, round(d_))
+    m = round(MARGIN * k)
+    img.alpha_composite(_fade(_minimal(e.glyph, e.severity, round(e.angle), d, k), alpha),
+                        (round(cx - d / 2) - m, round(cy - d / 2) - m))
+
+
+class Spring:
+    """Sönümlü yay (hafif aşıp oturur): Adanın boyutu içeriğe göre böyle değişir."""
+
+    def __init__(self, value: float, stiffness: float = 260.0, damping: float = 24.0):
+        self.x, self.v, self.target = value, 0.0, value
+        self.k, self.c = stiffness, damping
+
+    def step(self, dt: float) -> bool:
+        """Bir kare ilerlet; hâlâ hareket ediyorsa True."""
+        dt = min(dt, 1 / 30)
+        for _ in range(4):
+            h = dt / 4
+            a = self.k * (self.target - self.x) - self.c * self.v
+            self.v += a * h
+            self.x += self.v * h
+        if abs(self.target - self.x) < 0.3 and abs(self.v) < 3:
+            self.x, self.v = self.target, 0.0
+            return False
+        return True
+
+
+class Island:
+    """Adanın canlı durumu: hangi içerik, boyut yayları, içerik geçişi. Her karede `frame` resmi verir."""
+
+    MAX_W, MAX_H, MINIMALS = 420, 170, 2
+
+    def __init__(self, sw: int, sh: int, top: float = 10.0):
+        self.k = scale_for(sh)
+        k = self.k
+        self.sw, self.sh = sw, sh
+        self.cw, self.ch = round((self.MAX_W + 2 * 60 + 2 * 46 + 2 * MARGIN) * k), round((self.MAX_H + 40 + MARGIN) * k)
+        self.x, self.y = round(sw / 2 - self.cw / 2), 0
+        self.top = top * k
+        idle = island_layout(None, k)
+        self.w, self.h, self.r = Spring(idle.w), Spring(idle.h), Spring(idle.r)
+        self.shown = 0.0           # 0-1: Adanın kendisi görünür mü (boşken söner)
+        self.current: Entry | None = None
+        self.prev: Entry | None = None
+        self.changed_at = -1e9
+        self.minimals: list[Entry] = []
+        self.started = -1e9
+        self.last_t: float | None = None
+
+    def update(self, ents: list[Entry], now: float) -> bool:
+        """Yeni içerik listesi. Görünecek bir şey varsa True."""
+        top = ents[0] if ents else None
+        cur = self.current
+        if top is not None and (cur is None or top.key != cur.key or (top.title, top.value, top.body, top.angle,
+                                                                        top.progress) !=
+                                (cur.title, cur.value, cur.body, cur.angle, cur.progress)):
+            same = cur is not None and top.key == cur.key
+            if not same:
+                self.prev, self.changed_at = cur, now
+            if cur is None:
+                self.started = now
+            self.current = top
+        elif top is None and cur is not None:
+            self.prev, self.current, self.changed_at = cur, None, now
+        self.minimals = ents[1:1 + self.MINIMALS]
+        lay = island_layout(self.current or self.prev, self.k)
+        self.w.target, self.h.target, self.r.target = lay.w, lay.h, lay.r
+        return self.current is not None or self.shown > 0.01
+
+    def frame(self, now: float) -> tuple[Image.Image, bool]:
+        """(resim, hâlâ hareket ediyor mu)."""
+        dt = 1 / 60 if self.last_t is None else now - self.last_t
+        self.last_t = now
+        moving = any([self.w.step(dt), self.h.step(dt), self.r.step(dt)])
+        target_shown = 1.0 if self.current is not None else 0.0
+        if abs(self.shown - target_shown) > 0.001:
+            self.shown += (target_shown - self.shown) * min(1.0, dt / (FADE_IN if target_shown else FADE_OUT) * 2.2)
+            if abs(self.shown - target_shown) < 0.01:
+                self.shown = target_shown
+            moving = True
+        t = (now - self.changed_at) / 0.32  # içerik geçişi: eski söner, yeni belirir
+        content = self.current if t >= 0.4 or self.prev is None else self.prev
+        content_alpha = (min(1.0, (t - 0.4) / 0.6) if t < 1 else 1.0) if content is self.current else max(0.0, 1 - t / 0.4)
+        if t < 1:
+            moving = True
+        pulse = 0.0
+        if self.current is not None and self.current.severity == "critical":
+            pulse = 0.5 + 0.5 * math.sin((now - self.started) * 2 * math.pi / PULSE)
+            moving = True
+        img = Image.new("RGBA", (self.cw, self.ch), (0, 0, 0, 0))
+        k = self.k
+        if self.shown > 0.005:
+            cx, top = self.cw / 2, self.top
+            w, h = self.w.x, self.h.x
+            grow = 0.86 + 0.14 * self.shown  # belirirken küçükten
+            w, h = w * grow, h * grow
+            box = (cx - w / 2, top, cx + w / 2, top + h)
+            draw_island(img, content, box, min(self.r.x, h / 2), k, content_alpha, pulse)
+            x = box[2] + 6 * k
+            for e in self.minimals:  # sağda ayrık küçük daireler
+                d_ = 38 * k * grow
+                draw_minimal(img, e, x + d_ / 2, top + d_ / 2, d_, k, 1.0)
+                x += d_ + 6 * k
+            if self.shown < 0.999:
+                img.putalpha(img.getchannel("A").point(lambda v: int(v * self.shown)))
+        return img, moving
+
+
+# ------------------------------------------------------------------ kenar ışığı ve odak halkası
+@dataclass
+class Sprite:
+    key: str
+    item: Item
+    x: int
+    y: int
+    w: int
+    h: int
+    angle: float = 0.0
 
 
 def layout(items: list[Item], sw: int, sh: int) -> list[Sprite]:
-    """Görünür öğeler -> ekrandaki yerleri (monitörün sol üstüne göre piksel). Yerleşim sabit kurallarla:
-    oklar merkezin çevresinde bir halkada, kartlar sağ üstte alt alta, göstergeler altta, yazı üst ortada."""
+    """Ada dışında çizilenler: kritik/uyarı tehdidin kenar ışığı ve tıklanacak yerin odak halkası."""
     k = scale_for(sh)
-    cx, cy = sw / 2, sh / 2
-    ring = min(sw, sh) * 0.24
     out: list[Sprite] = []
-    card_y, gauge_y = round(16 * k), sh - round(72 * k)
     for it in items:
         key = it.id or f"#{it.seq}"
-        if it.kind == "arrow":
-            ang = angle_of(clock_of(it.data.get("clock")) or 12)
-            w, h, disc = _arrow_size(it, k)
-            dx, dy = direction(ang)
-            px, py = cx + dx * ring, cy + dy * ring  # diskin merkezi
-            pad = round(14 * k)
-            out.append(Sprite(key, it, round(px - w / 2), round(py - disc / 2 - pad), w, h, ang))
-        elif it.kind == "edge":
+        if it.kind == "edge":
             out.append(_edge_sprite(key, it, sw, sh, k))
-        elif it.kind == "card":
-            w, h = _card_size(it, k)
-            out.append(Sprite(key, it, sw - w - round(8 * k), card_y, w, h))
-            card_y += h - round(22 * k)
-        elif it.kind == "label":
-            text = str(it.data.get("text") or "")
-            w = _text_w(text, font(round(15 * k), "semibold")) + round(46 * k) + round(28 * k)
-            h = round(38 * k) + round(28 * k)
-            x = it.data.get("x")
-            y = it.data.get("y")
-            lx = sw / 2 if x is None else float(x)
-            ly = sh * 0.1 if y is None else float(y)
-            out.append(Sprite(key, it, round(lx - w / 2), round(ly - h / 2), w, h))
         elif it.kind == "box":
             d = it.data
-            pad = round(24 * k)
-            label = str(d.get("text") or "")
-            top = round(34 * k) if label else 0
-            bw, bh = float(d["w"]), float(d["h"])
-            lw = _text_w(label, font(round(12 * k), "semibold")) + round(28 * k) if label else 0
-            out.append(Sprite(key, it, round(float(d["x"])) - pad, round(float(d["y"])) - pad - top,
-                              round(max(bw, lw)) + 2 * pad, round(bh) + 2 * pad + top))
-        elif it.kind == "progress":
-            w, h = round(320 * k) + round(28 * k), round(48 * k) + round(28 * k)
-            out.append(Sprite(key, it, round(cx - w / 2), gauge_y - h, w, h))
-            gauge_y -= h - round(18 * k)
+            pad = round(16 * k)
+            out.append(Sprite(key, it, round(float(d["x"])) - pad, round(float(d["y"])) - pad,
+                              round(float(d["w"])) + 2 * pad, round(float(d["h"])) + 2 * pad))
     return out
 
 
 def _edge_sprite(key: str, it: Item, sw: int, sh: int, k: float) -> Sprite:
-    """Kenar parlaması: ışının değdiği kenarda yumuşak bir ışık; köşeye yakınsa köşede yuvarlak bir ışık
-    (saat 4 gibi yönlerde ince bir şerit kayboluyordu)."""
-    ang = angle_of(clock_of(it.data.get("clock")) or 12)
-    dx, dy = direction(ang)
+    """Işının değdiği kenarda yumuşak ışık; köşeye yakınsa köşede yuvarlak ışık."""
+    ang = (clock_of(it.data.get("clock")) or 12) % 12 * 30.0
+    dx, dy = math.sin(math.radians(ang)), -math.cos(math.radians(ang))
     tx = (sw / 2) / abs(dx) if abs(dx) > 1e-6 else math.inf
     ty = (sh / 2) / abs(dy) if abs(dy) > 1e-6 else math.inf
     t = min(tx, ty)
     ex, ey = sw / 2 + dx * t, sh / 2 + dy * t
-    depth = round(90 * k)
-    corner = min(ex, sw - ex) < sw * 0.14 and min(ey, sh - ey) < sh * 0.14
-    if corner:
-        r = round(300 * k)
-        x = 0 if ex < sw / 2 else sw - r
-        y = 0 if ey < sh / 2 else sh - r
-        return Sprite(key, it, x, y, r, r, ang)
-    if tx <= ty:  # sol/sağ kenar
-        length = round(sh * 0.42)
-        x = 0 if ex < sw / 2 else sw - depth
-        return Sprite(key, it, x, round(min(max(0, ey - length / 2), sh - length)), depth, length, ang)
-    length = round(sw * 0.3)
-    y = 0 if ey < sh / 2 else sh - depth
-    return Sprite(key, it, round(min(max(0, ex - length / 2), sw - length)), y, length, depth, ang)
+    depth = round(110 * k)
+    if min(ex, sw - ex) < sw * 0.14 and min(ey, sh - ey) < sh * 0.14:
+        r = round(320 * k)
+        return Sprite(key, it, 0 if ex < sw / 2 else sw - r, 0 if ey < sh / 2 else sh - r, r, r, ang)
+    if tx <= ty:
+        length = round(sh * 0.5)
+        return Sprite(key, it, 0 if ex < sw / 2 else sw - depth, round(min(max(0, ey - length / 2), sh - length)),
+                      depth, length, ang)
+    length = round(sw * 0.34)
+    return Sprite(key, it, round(min(max(0, ex - length / 2), sw - length)), 0 if ey < sh / 2 else sh - depth,
+                  length, depth, ang)
 
 
-# ------------------------------------------------------------------ çizim
-def _panel(img: Image.Image, box: tuple[float, float, float, float], radius: float, k: float,
-           fill: tuple[int, int, int, int] = GLASS, stroke: tuple[int, int, int, int] = STROKE,
-           shadow: bool = True) -> None:
-    """Gölgeli, ince kenarlı, yuvarlak köşeli cam panel (3 kat çizilip küçültülür)."""
-    W, H = img.size
-    if shadow:  # gölge son boyutta: bulanıklaştırma 3 kat resimde 9 kat pahalı
-        sh = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        ImageDraw.Draw(sh).rounded_rectangle((box[0], box[1] + 4 * k, box[2], box[3] + 4 * k), radius,
-                                             fill=(0, 0, 0, 110))
-        img.alpha_composite(sh.filter(ImageFilter.GaussianBlur(10 * k)))
-    big = Image.new("RGBA", (W * SS, H * SS), (0, 0, 0, 0))
-    b = tuple(v * SS for v in box)
-    ImageDraw.Draw(big).rounded_rectangle(b, radius * SS, fill=fill, outline=stroke, width=max(1, round(1 * k * SS)))
-    img.alpha_composite(big.resize((W, H), Image.LANCZOS))
+@lru_cache(maxsize=16)
+def _edge_mask(w: int, h: int, left: bool, top: bool) -> Image.Image:
+    sx, sy = max(2, w // 4), max(2, h // 4)
+    mask = Image.new("L", (sx, sy), 0)
+    px = mask.load()
+    square = abs(w - h) < 4
+    for j in range(sy):
+        for i in range(sx):
+            u, v = (i + 0.5) / sx, (j + 0.5) / sy
+            if square:
+                val = max(0.0, 1 - math.hypot(u if left else 1 - u, v if top else 1 - v)) ** 2.4
+            elif w < h:
+                val = max(0.0, 1 - (u if left else 1 - u)) ** 2.2 * math.exp(-((v - 0.5) ** 2) / 0.05)
+            else:
+                val = max(0.0, 1 - (v if top else 1 - v)) ** 2.2 * math.exp(-((u - 0.5) ** 2) / 0.05)
+            px[i, j] = int(255 * val)
+    return mask.resize((w, h), Image.BICUBIC).filter(ImageFilter.GaussianBlur(3))
 
 
-def _dot(d: ImageDraw.ImageDraw, x: float, y: float, r: float, rgb: tuple[int, int, int], a: int = 255) -> None:
-    d.ellipse((x - r, y - r, x + r, y + r), fill=(*rgb, a))
-
-
-def _pill(img: Image.Image, cx: float, cy: float, text: str, rgb: tuple[int, int, int], size: int, k: float) -> None:
-    f = font(size, "semibold")
-    tw = _text_w(text, f)
-    h = round(30 * k * size / 13)
-    w = tw + round(34 * k)
-    box = (cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
-    _panel(img, box, h / 2, k)
-    d = ImageDraw.Draw(img)
-    _dot(d, box[0] + 14 * k, cy, 3.5 * k, rgb)
-    d.text((box[0] + 24 * k, cy), text, font=f, fill=TEXT, anchor="lm")
+def render(sp: Sprite, sh: int, alpha: float = 1.0, grow: float = 1.0, pulse: float = 0.0) -> Image.Image:
+    k = scale_for(sh)
+    img = Image.new("RGBA", (max(1, sp.w), max(1, sp.h)), (0, 0, 0, 0))
+    sev = sp.item.data.get("severity", "info")
+    rgb = COLORS.get(sev, BLUE)
+    if sp.item.kind == "edge":
+        peak = (0.5 + 0.35 * (1 - pulse)) if sev == "critical" else 0.5
+        mask = _edge_mask(img.width, img.height, sp.x <= 0, sp.y <= 0).point(lambda v: int(v * peak))
+        glow = Image.new("RGBA", img.size, (*rgb, 0))
+        glow.putalpha(mask)
+        img.alpha_composite(glow)
+    elif sp.item.kind == "box":  # macOS odak halkası: mavi, eş merkezli sürekli köşe, yumuşak dış ışık
+        d = sp.item.data
+        pad = 16 * k
+        bw, bh = float(d["w"]), float(d["h"])
+        r = min(10 * k, bh / 3, bw / 3)
+        g = 3 * k
+        box = (pad - g, pad - g, pad + bw + g, pad + bh + g)
+        halo = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        ImageDraw.Draw(halo).line(squircle(box, r + g) + [squircle(box, r + g)[0]], fill=(*BLUE, 150),
+                                  width=round(6 * k))
+        img.alpha_composite(halo.filter(ImageFilter.GaussianBlur(5 * k)))
+        _shape(img, box, r + g, (0, 0, 0, 0), (*BLUE, 235), 3 * k)
+    return adjust(img, alpha, grow)
 
 
 def _with_alpha(img: Image.Image, a: float) -> Image.Image:
     if a >= 0.999:
         return img
     r, g, b, al = img.split()
-    al = al.point(lambda v: int(v * max(0.0, a)))
-    return Image.merge("RGBA", (r, g, b, al))
-
-
-def render(sp: Sprite, sh: int, alpha: float = 1.0, grow: float = 1.0, pulse: float = 0.0) -> Image.Image:
-    """Sprite'ın resmi. alpha: solma (0-1); grow: belirirken büyüme (1 = son boyut); pulse: kritik nefes (0-1)."""
-    k = scale_for(sh)
-    img = Image.new("RGBA", (max(1, sp.w), max(1, sp.h)), (0, 0, 0, 0))
-    it, rgb = sp.item, color(sp.item)
-    kind = it.kind
-    if kind == "arrow":
-        _arrow(img, sp, rgb, k, pulse)
-    elif kind == "edge":
-        _edge(img, sp, rgb, pulse)
-    elif kind == "card":
-        _card(img, it, rgb, k)
-    elif kind == "label":
-        _pill(img, sp.w / 2, sp.h / 2, str(it.data.get("text") or ""), rgb, round(15 * k), k)
-    elif kind == "box":
-        _box(img, sp, rgb, k)
-    elif kind == "progress":
-        _progress(img, it, rgb, k)
-    return adjust(img, alpha, grow)
+    return Image.merge("RGBA", (r, g, b, al.point(lambda v: int(v * max(0.0, a)))))
 
 
 def adjust(img: Image.Image, alpha: float = 1.0, grow: float = 1.0) -> Image.Image:
-    """Hazır resme animasyonun o anki solmasını ve büyümesini uygula (her karede yeniden çizmek yerine)."""
     if abs(grow - 1.0) > 1e-3:
         W, H = img.size
         w, h = max(1, round(W * grow)), max(1, round(H * grow))
@@ -277,129 +649,12 @@ def adjust(img: Image.Image, alpha: float = 1.0, grow: float = 1.0) -> Image.Ima
     return _with_alpha(img, alpha)
 
 
-def _arrow(img: Image.Image, sp: Sprite, rgb: tuple[int, int, int], k: float, pulse: float) -> None:
-    disc = round(46 * k)
-    pad = round(14 * k)
-    cx, cy = sp.w / 2, pad + disc / 2
-    r = disc / 2
-    if sp.item.data.get("severity") == "critical":  # nefes alan hale
-        big = Image.new("RGBA", (img.width * SS, img.height * SS), (0, 0, 0, 0))
-        hr = (r + (4 + 5 * pulse) * k) * SS
-        ImageDraw.Draw(big).ellipse((cx * SS - hr, cy * SS - hr, cx * SS + hr, cy * SS + hr),
-                                    outline=(*rgb, int(70 + 90 * (1 - pulse))), width=round(2 * k * SS))
-        img.alpha_composite(big.resize(img.size, Image.LANCZOS))
-    _panel(img, (cx - r, cy - r, cx + r, cy + r), r, k)
-    # dolu yön oku (Apple'ın konum okuna benzer): eninden uzun, arkası çentikli, yönü sp.angle
-    big = Image.new("RGBA", (img.width * SS, img.height * SS), (0, 0, 0, 0))
-    dx, dy = direction(sp.angle)
-    px, py = -dy, dx
-    shape = ((0.0, -0.62), (0.30, 0.34), (0.0, 0.12), (-0.30, 0.34))  # (yana, ileri tersi) r cinsinden
-    pts = [((cx + (px * a - dx * b) * r) * SS, (cy + (py * a - dy * b) * r) * SS) for a, b in shape]
-    ImageDraw.Draw(big).polygon(pts, fill=(*rgb, 255))
-    img.alpha_composite(big.resize(img.size, Image.LANCZOS))
-    label = str(sp.item.data.get("text") or "")
-    if label:
-        _pill(img, cx, cy + r + 8 * k + 15 * k, label, rgb, round(13 * k), k)
+def ease_out(t: float) -> float:
+    t = min(1.0, max(0.0, t))
+    return 1 - (1 - t) ** 3
 
 
-@lru_cache(maxsize=16)
-def _edge_mask(w: int, h: int, left: bool, top: bool) -> Image.Image:
-    """Kenar ışığının şekli (en parlak 255). Boyut ve kenar aynı kaldıkça bir kez hesaplanır."""
-    sx, sy = max(2, w // 4), max(2, h // 4)
-    mask = Image.new("L", (sx, sy), 0)
-    px = mask.load()
-    square = abs(w - h) < 4
-    for j in range(sy):
-        for i in range(sx):
-            u, v = (i + 0.5) / sx, (j + 0.5) / sy
-            if square:  # köşe: köşeden uzaklık
-                val = max(0.0, 1 - math.hypot(u if left else 1 - u, v if top else 1 - v)) ** 2.2
-            elif w < h:  # sol/sağ kenar
-                val = max(0.0, 1 - (u if left else 1 - u)) ** 2 * math.exp(-((v - 0.5) ** 2) / 0.06)
-            else:  # üst/alt kenar
-                val = max(0.0, 1 - (v if top else 1 - v)) ** 2 * math.exp(-((u - 0.5) ** 2) / 0.06)
-            px[i, j] = int(255 * val)
-    return mask.resize((w, h), Image.BICUBIC).filter(ImageFilter.GaussianBlur(2))
-
-
-def _edge(img: Image.Image, sp: Sprite, rgb: tuple[int, int, int], pulse: float) -> None:
-    """Yumuşak kenar ışığı: kenarda en parlak, içeri ve uçlara doğru söner; kritikte yavaşça nefes alır."""
-    crit = sp.item.data.get("severity") == "critical"
-    peak = (0.55 + 0.35 * (1 - pulse)) if crit else 0.6
-    mask = _edge_mask(img.width, img.height, sp.x <= 0, sp.y <= 0).point(lambda v: int(v * peak))
-    glow = Image.new("RGBA", img.size, (*rgb, 0))
-    glow.putalpha(mask)
-    img.alpha_composite(glow)
-
-
-def _card(img: Image.Image, it: Item, rgb: tuple[int, int, int], k: float) -> None:
-    pad = round(16 * k)
-    box = (pad, pad, img.width - pad, img.height - pad)
-    _panel(img, box, 14 * k, k)
-    d = ImageDraw.Draw(img)
-    x0 = box[0] + 16 * k
-    _dot(d, x0 + 4 * k, box[1] + 25 * k, 4 * k, rgb)
-    title = str(it.data.get("title") or "")
-    d.text((x0 + 16 * k, box[1] + 25 * k), title, font=font(round(14 * k), "semibold"), fill=TEXT, anchor="lm")
-    body = " ".join(str(it.data.get("text") or "").split())
-    if body:
-        f = font(round(13 * k))
-        y = box[1] + 46 * k
-        for ln in _wrap(body, f, round(box[2] - box[0] - 32 * k)):
-            d.text((x0, y), ln, font=f, fill=TEXT_2, anchor="la")
-            y += 19 * k
-
-
-def _box(img: Image.Image, sp: Sprite, rgb: tuple[int, int, int], k: float) -> None:
-    d = sp.item.data
-    pad = round(24 * k)
-    label = str(d.get("text") or "")
-    top = round(34 * k) if label else 0
-    x0, y0 = pad, pad + top
-    x1, y1 = x0 + float(d["w"]), y0 + float(d["h"])
-    big = Image.new("RGBA", (img.width * SS, img.height * SS), (0, 0, 0, 0))
-    glow = Image.new("RGBA", big.size, (0, 0, 0, 0))
-    rad = min(10 * k, (x1 - x0) / 3, (y1 - y0) / 3) * SS
-    b = (x0 * SS, y0 * SS, x1 * SS, y1 * SS)
-    ImageDraw.Draw(glow).rounded_rectangle(b, rad, outline=(*rgb, 150), width=round(6 * k * SS))
-    big = Image.alpha_composite(big, glow.filter(ImageFilter.GaussianBlur(6 * k * SS)))
-    ImageDraw.Draw(big).rounded_rectangle(b, rad, outline=(*rgb, 255), width=round(2 * k * SS))
-    img.alpha_composite(big.resize(img.size, Image.LANCZOS))
-    if label:
-        f = font(round(12 * k), "semibold")
-        w = _text_w(label, f) + round(22 * k)
-        h = round(24 * k)
-        bx = (x0, y0 - h - 8 * k, x0 + w, y0 - 8 * k)
-        _panel(img, bx, h / 2, k)
-        ImageDraw.Draw(img).text((bx[0] + 11 * k, (bx[1] + bx[3]) / 2), label, font=f, fill=TEXT, anchor="lm")
-
-
-def _progress(img: Image.Image, it: Item, rgb: tuple[int, int, int], k: float) -> None:
-    pad = round(14 * k)
-    box = (pad, pad, img.width - pad, img.height - pad)
-    h = box[3] - box[1]
-    _panel(img, box, h / 2, k)
-    d = ImageDraw.Draw(img)
-    label = str(it.data.get("text") or "")
-    x0, x1 = box[0] + 18 * k, box[2] - 18 * k
-    d.text((x0, box[1] + h * 0.36), label, font=font(round(12 * k), "semibold"), fill=TEXT, anchor="lm")
-    value = min(1.0, max(0.0, float(it.data.get("value") or 0)))
-    by = box[1] + h * 0.70
-    bh = 4 * k
-    big = Image.new("RGBA", (img.width * SS, img.height * SS), (0, 0, 0, 0))
-    bd = ImageDraw.Draw(big)
-    bd.rounded_rectangle((x0 * SS, (by - bh / 2) * SS, x1 * SS, (by + bh / 2) * SS), bh / 2 * SS,
-                         fill=(255, 255, 255, 40))
-    if value > 0:
-        xe = x0 + (x1 - x0) * value
-        bd.rounded_rectangle((x0 * SS, (by - bh / 2) * SS, max(xe, x0 + bh) * SS, (by + bh / 2) * SS), bh / 2 * SS,
-                             fill=(*rgb, 255))
-    img.alpha_composite(big.resize(img.size, Image.LANCZOS))
-
-
-# ------------------------------------------------------------------ animasyon
 def spring(t: float) -> float:
-    """Hafifçe aşıp oturan yay (Dynamic Island gibi): t=0'da 0, t>=1'de 1, arada en fazla ~%4 aşma."""
     if t <= 0:
         return 0.0
     if t >= 1:
@@ -409,47 +664,31 @@ def spring(t: float) -> float:
 
 @dataclass
 class Anim:
-    """Bir sprite'ın animasyon durumu (window.py her kare için okur)."""
+    """Kenar ışığı ve odak halkasının animasyonu."""
     shown_at: float
     gone_at: float | None = None
-    angle: float | None = None       # şu an çizilen açı (ok döner, zıplamaz)
-    angle_from: float = 0.0
-    angle_to: float = 0.0
-    turn_at: float = -1e9
+    angle: float | None = None
+    extra: dict[str, Any] = field(default_factory=dict)
 
     def frame(self, now: float, sp: Sprite) -> tuple[float, float, float, bool]:
-        """(alpha, grow, pulse, hâlâ hareket ediyor mu)."""
         t_in = (now - self.shown_at) / FADE_IN
         alpha = ease_out(t_in)
-        moving = t_in < 1.5  # yay kısa bir süre daha oturur
+        moving = t_in < 1.5
         if self.gone_at is not None:
             t_out = (now - self.gone_at) / FADE_OUT
             alpha *= 1 - ease_out(t_out)
             moving = t_out < 1
-        grow = 1.0
-        if sp.item.kind in ("arrow", "label"):      # küçükten yerine oturur
-            grow = 0.9 + 0.1 * spring(t_in / 1.5)
-        elif sp.item.kind == "box":                 # odak halkası gibi dışarıdan içeri
-            grow = 1.1 - 0.1 * spring(t_in / 1.5)
+        grow = 1.08 - 0.08 * spring(t_in / 1.5) if sp.item.kind == "box" else 1.0  # odak halkası dışarıdan oturur
         pulse = 0.0
-        if sp.item.data.get("severity") == "critical" and sp.item.kind in ("arrow", "edge"):
+        if sp.item.kind == "edge" and sp.item.data.get("severity") == "critical":
             pulse = 0.5 + 0.5 * math.sin((now - self.shown_at) * 2 * math.pi / PULSE)
             moving = True
-        if sp.item.kind == "arrow":
-            if self.angle is None:
-                self.angle = self.angle_from = self.angle_to = sp.angle
-            elif abs(((sp.angle - self.angle_to) + 180) % 360 - 180) > 0.5:
-                self.angle_from, self.angle_to, self.turn_at = self.angle, sp.angle, now
-            tt = (now - self.turn_at) / TURN
-            diff = ((self.angle_to - self.angle_from) + 180) % 360 - 180
-            self.angle = (self.angle_from + diff * ease_out(tt)) % 360
-            moving = moving or tt < 1
         return alpha, grow, pulse, moving
 
 
 def preview(items: list[dict[str, Any]], sw: int = 1920, sh: int = 1080,
             background: Image.Image | None = None) -> Image.Image:
-    """Komut listesinin son halini tek resimde göster (rapor ve deneme için; pencere açmaz)."""
+    """Komutların son halini tek resimde göster (rapor ve deneme için; pencere açmaz)."""
     from alice.hud.model import HudModel
 
     m = HudModel()
@@ -459,4 +698,9 @@ def preview(items: list[dict[str, Any]], sw: int = 1920, sh: int = 1080,
            else Image.new("RGBA", (sw, sh), (0, 0, 0, 0)))
     for sp in layout(m.visible(), sw, sh):
         img.alpha_composite(render(sp, sh, pulse=0.3), (sp.x, sp.y))
+    isl = Island(sw, sh)
+    isl.update(entries(m.visible()), 0.0)
+    for t in range(0, 120):  # yaylar ve geçişler otursun
+        frame, _ = isl.frame(t / 60)
+    img.alpha_composite(frame, (isl.x, isl.y))
     return img

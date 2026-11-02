@@ -75,7 +75,7 @@ Hepsi main'de: #157-#167 birlikte #168 ile, ses/ElevenLabs işi #169 ile, DCS ka
 
 | Madde | Durum | Senden beklenen |
 |---|---|---|
-| HUD motoru (#158, yeniden tasarım) | macOS HUD dili: yarı saydam cam, yumuşak gölge, iOS renkleri, yay gibi animasyon, dönen yön oku, köşede kenar ışığı. Öğe başına küçük katmanlı pencere (UpdateLayeredWindow, ~1 ms) | War Thunder'da FPS ve odak ölçümü |
+| HUD motoru (Ada) | Apple'ın Dynamic Island kurallarıyla: üst ortada tek opak siyah "Ada"; tehdit, yakıt, sıcaklık, bildirim hep onun içinde, ikinci/üçüncü şey yanında küçük dairede. Gölge yok, renk sadece içerikte, kritikte renkli key line. Segoe UI Variable (SF'nin karşılığı), -0,022 em harf aralığı, sürekli köşe, yay animasyonu. Ada dışında sadece kenar ışığı ve macOS odak halkası | War Thunder'da FPS ve odak ölçümü |
 | Ekrandan füze görme (#159) | Yakalama, kurallı tanıma, kalibrasyon ve örnek toplama hazır; eşikler gerçek görüntüyle ölçülmedi | `alice vision record` ile 10-20 örnek, `alice vision region` |
 | Kendi aracını yazan ALICE (#160) | make_tool: bildirge denetimi, kum havuzunda test, onayla ekleme, 3 hatada kapanma | "Steam'de son oynadığım oyunlar" ile dene |
 | Gece döngüsü ve rüya modu (#161) | Gece raporu, sabah sorusu, bağlantılar; kendiliğinden kod değiştirmez | Sabah sorusuna evet/hayır |

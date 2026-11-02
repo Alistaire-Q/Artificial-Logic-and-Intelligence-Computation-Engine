@@ -41,6 +41,7 @@ ULW_ALPHA = 0x2
 TICK_MS = 16            # animasyon karesi ve komut kuyruğu; sadece hareket eden öğe yeniden basılır
 TOPMOST_EVERY = 2.0     # kenarlıksız oyun öne geçerse en üstte olmayı yeniden iste (odak almadan)
 EXIT_BUSY = 3           # port başka bir HUD'da: çıkış kodu (denetleyici bunu çökme saymaz)
+ISLAND_KEY = "__ada__"  # Adanın penceresi
 
 
 # ------------------------------------------------------------------------- ağ
@@ -273,6 +274,7 @@ class HudWindow:
         self.ox, self.oy, self.w, self.h = rect
         self.win32 = win32 if win32 is not None else (Win32() if IS_WIN else None)
         self.make_slot = make_slot
+        self.island = style.Island(self.w, self.h)
         self.slots: dict[str, Slot] = {}
         self.shown = False
         self._topmost_at = 0.0
@@ -298,8 +300,6 @@ class HudWindow:
         """Bu karede pencereyi güncelle; öğe hâlâ hareket ediyorsa True."""
         sp = slot.sprite
         alpha, grow, pulse, moving = slot.anim.frame(now, sp)
-        if sp.item.kind == "arrow" and slot.anim.angle is not None:
-            sp.angle = slot.anim.angle
         pulse = round(pulse * 8) / 8  # nefes 9 basamak: önbellek tutsun
         key = (sp.item.seq, sp.w, sp.h, round(sp.angle), pulse)
         if slot.base is None or slot.base[0] != key:
@@ -316,6 +316,30 @@ class HudWindow:
                 self.win32.show(slot.hwnd, True)
         slot.visible = True
         return moving
+
+    def _paint_island(self, now: float) -> None:
+        """Ada: tek pencere, içerik ve boyut style.Island'da. Hareket yokken yeniden basılmaz."""
+        visible = self.island.update(style.entries(self.model.visible()), now)
+        slot = self.slots.get(ISLAND_KEY)
+        if not visible:
+            if slot is not None:
+                self._drop(ISLAND_KEY)
+            return
+        if slot is None:
+            slot = self.slots[ISLAND_KEY] = self._new_slot(now)
+        sig = (self.island.current and style._sig(self.island.current),
+               tuple(style._sig(e) for e in self.island.minimals))
+        img, moving = self.island.frame(now)
+        if not moving and slot.last == sig:
+            return
+        slot.last = sig if not moving else None
+        if self.opacity < 0.999:
+            img = style.adjust(img, self.opacity)
+        if self.win32 is not None and slot.hwnd:
+            self.win32.update_layered(slot.hwnd, img, self.ox + self.island.x, self.oy + self.island.y)
+            if not slot.visible:
+                self.win32.show(slot.hwnd, True)
+        slot.visible = True
 
     def tick(self) -> None:
         now = time.monotonic()
@@ -335,12 +359,15 @@ class HudWindow:
                 slot = self.slots[key] = self._new_slot(now)
             slot.sprite = sp
         for key, slot in self.slots.items():
-            if key not in sprites and slot.anim.gone_at is None:
+            if key != ISLAND_KEY and key not in sprites and slot.anim.gone_at is None:
                 slot.anim.gone_at = now  # kaybolurken solsun
         for key, slot in list(self.slots.items()):
+            if key == ISLAND_KEY:
+                continue
             moving = self._paint(slot, now)
             if slot.anim.gone_at is not None and not moving:
                 self._drop(key)
+        self._paint_island(now)
         self.shown = bool(self.slots)
         if self.shown and self.win32 is not None and now - self._topmost_at > TOPMOST_EVERY:
             self._topmost_at = now
