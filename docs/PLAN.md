@@ -71,7 +71,7 @@ Aşağıda ilk üç madde için nasıl yapılacağı yazılı. Diğerlerinin ayr
 
 ### Durum (2 Kasım 2026)
 
-Her madde ayrı bir PR'da. PR'lar birbirinin üstüne kurulu, bu sırayla birleşir: #157 → #158 → #159 → #160 → #161 → #162 → #163 → zaman makinesi.
+Hepsi main'de: #157-#167 birlikte #168 ile, ses/ElevenLabs işi #169 ile, DCS kanat adamları #170 ile birleşti.
 
 | Madde | Durum | Senden beklenen |
 |---|---|---|
@@ -83,7 +83,7 @@ Her madde ayrı bir PR'da. PR'lar birbirinin üstüne kurulu, bu sırayla birle�
 | Koçluk ve duygusal zekâ (#163) | Ölüm desenleri, maç içi öğüt, tilt'te daha az konuşma, mola önerisi | — |
 | Zaman makinesi hafıza | Şifreli (DPAPI) yerel zaman çizgisi, arama, silme; varsayılan kapalı | Açmak istersen `[timeline] enabled = true` |
 | Her yerde aynı ALICE | Bilgisayar, telefon ve hızlı bar zaten aynı sohbeti paylaşıyor | Saat için Gadgetbridge dışa aktarması |
-| DCS kanat adamları | Yapılmadı: DCS görev betiğinin güvenlik ayarını (`MissionScripting.lua`) gevşetmek gerekiyor | Karar senin |
+| DCS kanat adamları (#170) | Sesle AI gruplarına saldır, yanıma gel, bekle, eve dön. `MissionScripting.lua` değişmedi; sabit komut kabul eden bir DCS hook dosyası kullanılıyor, çekirdek başlarken kurulur. DCS'te denenmedi | Tek oyunculu bir görevde ilk komutu dene; çalışmazsa `dcs.log`'daki `ALICE` satırları |
 
 ### 1. Ekran üstü HUD motoru
 
