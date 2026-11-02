@@ -340,6 +340,8 @@ class FlightCompanion:
         self.alt_alert_above: bool | None = None  # kurulduğunda hedefin üstünde miydik
         self.fuel_alert_kg: float | None = None
         self.ground_last_warn = -1e9
+        self.ground_armed = True                 # yer uyarısı kurulu mu (söyleyince güvenli dönüşe kadar susar)
+        self.ground_safe_since: float | None = None
         self.flaps_since: float | None = None
         self.flaps_said = False
         self.ext_last: float | None = None
@@ -445,6 +447,13 @@ class FlightCompanion:
             self.show("arrow", clock=clock, text=text, severity=severity, id=key, ttl=ttl)
             if edge:
                 self.show("edge", clock=clock, severity=severity, id=f"{key}.edge", ttl=ttl)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _label(self, text: str, severity: str, key: str, ttl: float) -> None:
+        """HUD'a kısa yazı (yakıt gibi); konum verilmez, HUD üst-ortaya çizer."""
+        try:  # HUD hatası anonsu bozmasın
+            self.show("label", text=text, severity=severity, id=key, ttl=ttl)
         except Exception:  # noqa: BLE001
             pass
 
@@ -589,6 +598,10 @@ class FlightCompanion:
         for kind, who in s.extra.get("hud") or []:
             if kind == "kill":
                 self.say(f"Düşürdün: {who}.", "info", "cheerful")
+                try:  # HUD hatası anonsu bozmasın
+                    self.show("card", title="Düşürdün", text=str(who), severity="info", ttl=4.0, id="kill")
+                except Exception:  # noqa: BLE001
+                    pass
             elif kind == "fire":
                 self.say(f"Yanıyorsun! {who} vurdu.", "critical", "urgent")
             elif kind == "hit":
@@ -751,6 +764,7 @@ class FlightCompanion:
             if self._held(flag, left <= limit, s.t, 20) and flag not in self.fuel_flags:
                 self.fuel_flags.update({flag} | ({"low10"} if flag == "low5" else set()))
                 self.say(f"Yakıt yaklaşık {fmt_min(left)} yeter.", sev, self._urgent())
+                self._label(f"YAKIT ~{max(0, round(left))} dk", sev, "fuel", 6.0)
 
     def _bingo(self, s: FlightState, bingo: float) -> None:
         """Bingo: eve dönüş + rezerv kadar yakıt kaldı. Joker: bingo'dan bir pay önce, bir kez haber."""
@@ -849,16 +863,30 @@ class FlightCompanion:
             self.fuel_alert_kg = None
 
     GROUND_TTI = 5.0     # sn: bu kadar sürede yere çarpacaksa uyar
-    GROUND_REPEAT = 8.0
+    GROUND_REPEAT = 8.0  # sn: iki uyarı arası en az (yeniden kurulmuş olsa bile)
+    GROUND_SAFE_AGL = 300.0  # m: bunun üstü ya da
+    GROUND_SAFE_VV = -2.0    # m/s: bundan yavaş alçalma güvenli sayılır
+    GROUND_REARM = 3.0       # sn: uyarı yeniden kurulsun diye güvenli durumda kalma süresi
 
     def _ground(self, s: FlightState) -> None:
-        """Yere hızla yaklaşma (kendi GPWS'i olmayan uçaklarda). İniş yaklaşmasında susar."""
-        if self.profile.has_gpws or s.agl is None or s.vv is None or s.vv >= -8 or s.agl > 600:
+        """Yere hızla yaklaşma (kendi GPWS'i olmayan uçaklarda). İniş yaklaşmasında susar.
+        Alçakta dalaşırken art arda söylenmesin (War Thunder'da 10 dakikada 13 kez): söyledikten sonra uçak
+        en az GROUND_REARM sn güvenli duruma dönmeden tekrar etmez."""
+        if self.profile.has_gpws or s.agl is None or s.vv is None:
+            return
+        if s.agl > self.GROUND_SAFE_AGL or s.vv > self.GROUND_SAFE_VV:
+            self.ground_safe_since = s.t if self.ground_safe_since is None else self.ground_safe_since
+            if s.t - self.ground_safe_since >= self.GROUND_REARM:
+                self.ground_armed = True
+        else:
+            self.ground_safe_since = None
+        if s.vv >= -8 or s.agl > 600:
             return
         if (s.gear or 0) > 0.9 and (s.ias or 1e9) < self.profile.approach_ias_max * 1.2:
             return  # teker açık, yaklaşma hızında: inişe geliyor
-        if s.agl / -s.vv < self.GROUND_TTI and s.t - self.ground_last_warn >= self.GROUND_REPEAT:
-            self.ground_last_warn = s.t
+        if s.agl / -s.vv < self.GROUND_TTI and self.ground_armed \
+                and s.t - self.ground_last_warn >= self.GROUND_REPEAT:
+            self.ground_last_warn, self.ground_armed, self.ground_safe_since = s.t, False, None
             self.say("Yere yaklaşıyorsun, burnu kaldır!", "critical", "urgent")
 
     def _flaps(self, s: FlightState) -> None:

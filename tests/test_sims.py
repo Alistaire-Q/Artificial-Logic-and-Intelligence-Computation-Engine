@@ -517,6 +517,30 @@ def test_ground_proximity_only_without_own_gpws():
     assert len(r.texts()) == 1
 
 
+def test_ground_warning_rearms_only_after_recovery():
+    """Alçakta dalaşırken art arda söylenmez; güvenli duruma dönüp yeniden dalınca tekrar söyler."""
+    c, tr, r = make()
+    c.phase, c.profile = "air", profile_for("P-51D")
+    c.profile = c.profile.__class__("uçak")  # kendi GPWS'i yok
+    warn = "Yere yaklaşıyorsun, burnu kaldır!"
+    c._ground(st(0, agl=200, vv=-50))
+    for t in range(1, 60):  # bir dakika hep alçakta, alçalıp yükselerek dalaşıyor: kısa toparlanmalar
+        dive = t % 4 != 0
+        c._ground(st(t, agl=150 if dive else 250, vv=-40 if dive else 5))
+    assert r.texts() == [warn]
+    for t in range(60, 64):  # 3 sn'den uzun güvenli: yükseldi
+        c._ground(st(t, agl=500, vv=10))
+    c._ground(st(64, agl=200, vv=-50))
+    assert r.texts() == [warn, warn]
+    # Güvenli dönüş olsa bile GROUND_REPEAT dolmadan tekrar yok
+    for t in (65, 66, 67, 68):
+        c._ground(st(t, agl=200, vv=0))
+    c._ground(st(69, agl=200, vv=-50))
+    assert r.texts() == [warn, warn]
+    c._ground(st(72.5, agl=200, vv=-50))
+    assert r.texts() == [warn, warn, warn]
+
+
 def test_flaps_forgotten_and_external_tanks():
     c, tr, r = make()
     c.phase = "air"
