@@ -217,3 +217,47 @@ def test_closing_bridge_refuses_new_clients_and_reports_unhealthy():
     req = SimpleNamespace(path="/alice-bridge")
     assert bb._health(Conn(), req, bridge)[0] == 503
     assert bb._health(Conn(), req)[0] == 200
+
+
+def test_neutralize_keeps_users_downloads_and_theme():
+    """Canlı kayıt: Opera'da ALICE bağlanınca indirmeler GUID adıyla Playwright'ın geçici klasörüne iniyordu ve bazı
+    siteler açık temaya dönüyordu. Bu komutlar kullanıcının tarayıcısına gitmemeli."""
+    assert bb.neutralize({"id": 3, "method": "Browser.setDownloadBehavior",
+                          "params": {"behavior": "allowAndName", "downloadPath": "C:/tmp/pw"}}) is None
+    assert bb.neutralize({"id": 4, "sessionId": "S", "method": "Emulation.setEmulatedMedia", "params": {
+        "media": "", "features": [{"name": "prefers-color-scheme", "value": "light"}]}}) is None
+    kept = bb.neutralize({"id": 5, "method": "Emulation.setEmulatedMedia", "params": {
+        "media": "print", "features": [{"name": "prefers-color-scheme", "value": "light"}]}})
+    assert kept["params"] == {"media": "print", "features": []}
+    click = {"id": 6, "method": "Input.dispatchMouseEvent", "params": {}}
+    assert bb.neutralize(click) is click
+
+
+def test_bridge_answers_blocked_commands_itself_and_resets_downloads():
+    pytest.importorskip("websockets")
+    from websockets.asyncio.client import connect
+    from websockets.asyncio.server import serve
+
+    seen: list[dict] = []
+
+    async def browser(ws):
+        async for raw in ws:
+            msg = json.loads(raw)
+            seen.append(msg)
+            await ws.send(json.dumps({"id": msg["id"], "result": {}}))
+
+    async def main():
+        async with serve(browser, "127.0.0.1", 0) as up:
+            port = up.sockets[0].getsockname()[1]
+            bridge = bb.Bridge(find_upstream=lambda: f"ws://127.0.0.1:{port}", heartbeat=0)
+            async with serve(bridge.handle, "127.0.0.1", 0, process_request=bb._health) as srv:
+                url = f"ws://127.0.0.1:{srv.sockets[0].getsockname()[1]}{bb.PATH}"
+                async with connect(url) as c:
+                    await c.send(json.dumps({"id": 7, "method": "Browser.setDownloadBehavior",
+                                             "params": {"behavior": "allowAndName", "downloadPath": "x"}}))
+                    return json.loads(await asyncio.wait_for(c.recv(), 3))
+
+    reply = asyncio.run(main())
+    assert reply == {"id": 7, "result": {}}  # Playwright beklemesin
+    downloads = [m for m in seen if m["method"] == "Browser.setDownloadBehavior"]
+    assert downloads and all(m["params"] == {"behavior": "default"} for m in downloads)  # yalnız sıfırlama gitti

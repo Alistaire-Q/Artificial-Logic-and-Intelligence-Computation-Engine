@@ -31,6 +31,29 @@ HEARTBEAT_EVERY = 15.0  # saniye
 HEARTBEAT_TIMEOUT = 20.0  # bu kadar cevap yoksa tarayıcı bağlantısı ölü sayılır
 
 
+# Playwright bağlanınca kullanıcının tarayıcısını kendi test tarayıcısı gibi ayarlıyor. Kullanıcının kendi tarayıcısında
+# bunlar zarar: indirmeler Playwright'ın geçici klasörüne GUID adıyla iniyor (sonra siliniyor), sayfalar açık temaya
+# zorlanıyor. Köprü bu komutları tarayıcıya iletmez, istemciye "oldu" der.
+BLOCKED = {"Browser.setDownloadBehavior"}
+MEDIA_FEATURES = {"prefers-color-scheme", "prefers-reduced-motion", "forced-colors", "prefers-contrast"}
+
+
+def neutralize(msg: dict[str, Any]) -> dict[str, Any] | None:
+    """İstemciden gelen komut tarayıcıya gitmeli mi? Gitmemeliyse None (köprü sahte başarı döner); gerekirse
+    zararsız haline çevrilmiş komut."""
+    method = msg.get("method", "")
+    if method in BLOCKED:
+        return None
+    if method == "Emulation.setEmulatedMedia":
+        params = dict(msg.get("params") or {})
+        feats = [f for f in params.get("features") or [] if f.get("name") not in MEDIA_FEATURES]
+        if not feats and not params.get("media"):
+            return None
+        params["features"] = feats
+        return {**msg, "params": params}
+    return msg
+
+
 def endpoint(port: int = DEFAULT_PORT) -> str:
     return f"ws://127.0.0.1:{port}{PATH}"
 
@@ -159,7 +182,9 @@ class Bridge:
                                       for s in self.sessions]
         cmds += [{"method": "Target.setAutoAttach", "params": {"autoAttach": False, "waitForDebuggerOnStart": False,
                                                                 "flatten": True}},
-                 {"method": "Target.setDiscoverTargets", "params": {"discover": False}}]
+                 {"method": "Target.setDiscoverTargets", "params": {"discover": False}},
+                 # eski sürüm köprü/istemci indirmeleri geçici klasöre yönlendirdiyse tarayıcının kendi ayarına dön
+                 {"method": "Browser.setDownloadBehavior", "params": {"behavior": "default"}}]
         self.sessions = set()
         for i, c in enumerate(cmds):
             c["id"] = CLEANUP_BASE + i
@@ -192,7 +217,15 @@ class Bridge:
         self.log("istemci bağlandı")
         try:
             async for raw in ws:
-                msg = json.loads(raw)
+                msg = neutralize(json.loads(raw))
+                if msg is None:  # tarayıcıya gitmez: istemci beklemesin
+                    orig = json.loads(raw)
+                    if "id" in orig:
+                        reply = {"id": orig["id"], "result": {}}
+                        if orig.get("sessionId"):
+                            reply["sessionId"] = orig["sessionId"]
+                        await ws.send(json.dumps(reply))
+                    continue
                 if "id" in msg:
                     bid = self.next_id
                     self.next_id += 1
