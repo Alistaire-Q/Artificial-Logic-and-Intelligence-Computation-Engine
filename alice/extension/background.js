@@ -120,6 +120,24 @@ const METHODS = {
     const t = await focusTab(tabId);
     return chrome.tabs.captureVisibleTab(t.windowId, {format: "png"});
   },
+  // Dosyayı doğrudan indir: "nereye kaydedilsin" penceresi açılmaz (Opera'da o ayar açıkken ALICE Farklı Kaydet'te
+  // takılıyordu), İndirilenler'e iner. Bitene (ya da süre dolana) kadar bekler, son durumu döner.
+  async download({url, timeout}) {
+    const name = decodeURIComponent(url.split("?")[0].split("/").pop() || "").replace(/[^\w.\- ]/g, "_");
+    const opts = {url, saveAs: false, conflictAction: "uniquify"};
+    if (name) opts.filename = name;
+    const id = await chrome.downloads.download(opts);
+    const end = Date.now() + (timeout || 240000);
+    let d = null;
+    while (Date.now() < end) {
+      [d] = await chrome.downloads.search({id});
+      if (!d || d.state !== "in_progress") break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    if (!d) throw new Error("indirme kayboldu");
+    return {file: d.filename, url: d.finalUrl || d.url, state: d.state, error: d.error || "",
+            bytes: d.bytesReceived, total: d.totalBytes, started: d.startTime};
+  },
   async downloads({limit}) {
     const items = await chrome.downloads.search({orderBy: ["-startTime"], limit: limit || 5});
     return items.map((d) => ({file: d.filename, url: d.finalUrl || d.url, state: d.state, error: d.error || "",

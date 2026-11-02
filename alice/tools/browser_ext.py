@@ -27,6 +27,7 @@ from alice.tools.base import ToolError
 EXT_PORT = 9340
 PATH = "/alice-ext"
 CALL_TIMEOUT = 15.0
+DOWNLOAD_WAIT = 240.0  # sn: indirme bitene kadar en fazla bu kadar beklenir (sonra durum "in_progress" döner)
 EXT_ORIGINS = ("chrome-extension://",)  # web sayfaları yerel sunucuya bağlanamasın: yalnız eklentiler
 # Playwright tuş adı -> pyautogui/press_keys adı
 _OS_KEYS = {"control": "ctrl", "meta": "win", "arrowup": "up", "arrowdown": "down", "arrowleft": "left",
@@ -527,6 +528,10 @@ class ExtBrowserSession:
 
     def downloads(self, limit: int = 5) -> list[dict[str, Any]]:
         return list(self.hub.call("downloads", limit=limit) or [])
+
+    def download(self, url: str, wait: float = DOWNLOAD_WAIT) -> dict[str, Any]:
+        """Kaydetme penceresi açmadan İndirilenler'e indir; bitene ya da `wait` sn dolana kadar bekle."""
+        return dict(self.hub.call("download", wait + 10, url=url, timeout=int(wait * 1000)) or {})
 
     def close(self) -> None:
         pass  # kullanıcının tarayıcısı: hiçbir şey kapatılmaz

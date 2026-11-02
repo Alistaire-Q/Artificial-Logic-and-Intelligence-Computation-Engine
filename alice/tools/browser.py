@@ -551,7 +551,7 @@ def connection_lost(e: BaseException) -> bool:
 # Bir eylemin en uzun süresi (sn). Playwright'ın bazı çağrıları (CDP komutları, ölü bağlantıdaki istekler) süre
 # sınırı tanımıyor; süre dolunca sürücü öldürülür ki ALICE dakikalarca "çalışıyor" diye takılı kalmasın.
 ROOT_AGAIN = 60.0  # sn: bu sürede aynı sitenin ana sayfası yine istenirse açık sekmeyi ana sayfaya götür
-ACTION_BUDGET = {"goto": 120.0, "back": 60.0, "screenshot": 40.0}
+ACTION_BUDGET = {"goto": 120.0, "back": 60.0, "screenshot": 40.0, "download": 270.0}
 DEFAULT_BUDGET = 45.0
 CONNECT_BUDGET = 70.0  # yeni bağlantı: tarayıcı kullanıcıdan izin isteyebilir (connect_over_cdp 60 sn bekler)
 STOPPED = "durduruldu (kullanıcı kesti)"
@@ -654,20 +654,25 @@ class Browser(Tool):
         "- goto, site zaten bir sekmede açıksa o sekmeyi kullanır; yeni sekme açmaz.\n"
         "- Sayfanın içeriğini okumak için text, görsel düzen için screenshot.\n"
         "- Kullanıcıya sayfadaki bir yeri göstermek için highlight (ekranda çerçevelenir).\n"
+        "- Dosya/kurulum indirmek için download url=<dosyanın bağlantısı>: Farklı Kaydet penceresi çıkmaz, bitince "
+        "tam yolu döner; kurulumu o yolla aç. İndirme bağlantısını adres çubuğunda (goto, windows open) açma: Opera "
+        "kaydetme penceresi açıp orada bekler.\n"
         "- 'Bağlanılamıyor' derse ayrı pencere açma: windows switch_tab/navigate + ui_elements/ui_act ile kullanıcının "
         "sekmelerinde çalış.\n"
         "- Ekrandaki bir şeye tek tıklama/yazma için reflex daha hızlı; birçok adımlı iş için run_plan."
     )
     parameters = obj({
         "action": {"type": "string", "enum": ["goto", "snapshot", "click", "type", "select", "press", "scroll", "back",
-                                              "text", "screenshot", "eval", "tabs", "switch_tab", "highlight", "downloads",
+                                              "text", "screenshot", "eval", "tabs", "switch_tab", "highlight", "download",
+                                              "downloads",
                                               "close"],
                    "description": "goto: url'ye git | snapshot: tıklanabilir öğeleri [ID] ile listele | click: "
                    "element_id'ye tıkla | type: element_id alanına text yaz (submit=true Enter'a basar) | select: "
                    "açılır listede text seçeneğini seç | press: keys tuşuna bas | scroll: amount piksel kaydır | "
                    "back: geri | text: sayfanın düz metni | screenshot: sayfa görüntüsü | eval: js çalıştır | tabs: açık "
                    "sekmeler | switch_tab: index'li sekmeye geç | highlight: element_id'yi kullanıcıya göster (text "
-                   "etiket olur) | downloads: son indirmeler (dosya, durum; indirme bitti mi diye bak) | close. "
+                   "etiket olur) | download: url'deki dosyayı İndirilenler'e indir (kaydetme penceresi açılmaz, "
+                   "bitene kadar bekler, dosyanın tam yolunu döner) | downloads: son indirmeler (dosya, durum) | close. "
                    "goto/click/type/press/scroll sonrası güncel "
                    "snapshot otomatik döner."},
         "url": {"type": "string", "description": "goto için adres, ör. 'https://mail.google.com' ya da 'github.com'."},
@@ -687,7 +692,7 @@ class Browser(Tool):
         a = args.get("action")
         if a in ("snapshot", "text", "screenshot", "tabs", "highlight", "downloads"):
             return READ
-        if a == "goto":
+        if a in ("goto", "download"):
             return NETWORK
         return COMPUTER
 
@@ -864,13 +869,20 @@ class Browser(Tool):
         if action == "tabs":
             rows = [f"{i}: {b.title_of(p)} - {p.url}{'  <- aktif' if p is b.page else ''}" for i, p in enumerate(b.ctx.pages)]
             return ToolResult("\n".join(rows))
+        if action == "download":
+            if not url:
+                raise ToolError("download için url gerekli (dosyanın bağlantısı)")
+            from alice.tools import fetch_file
+
+            return ToolResult(fetch_file.describe(fetch_file.download(url)))
         if action == "downloads":
-            if not getattr(b, "extension", False):
-                raise ToolError("indirme listesi ALICE tarayıcı eklentisiyle görülür; İndirilenler klasörüne list_dir "
-                                "ile bak")
+            from alice.tools import fetch_file
+
             rows = []
-            for d in b.downloads():
+            for d in fetch_file.jobs() + (b.downloads() if getattr(b, "extension", False) else []):
                 row = f"{d.get('file') or d.get('url')} | {d.get('state')}"
+                if not d.get("file") and d.get("state") == "in_progress":
+                    row += " | kaydetme penceresi bekliyor olabilir (download action'ı bu pencereyi açmaz)"
                 if d.get("error"):
                     row += f" | hata: {d['error']}"
                 elif d.get("state") != "complete" and d.get("total"):

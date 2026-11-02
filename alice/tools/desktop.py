@@ -160,6 +160,8 @@ def _shortcut_roots() -> list[Path]:
 SHORTCUT_SUFFIXES = (".lnk", ".url", ".appref-ms")
 # URI (ms-settings:, mailto:, steam://...); şema en az iki harf, yani "C:\..." sürücü harfi eşleşmez
 URI_RX = re.compile(r"^[a-z][a-z0-9+.-]+:", re.I)
+# Tarayıcıda açılınca indirilen dosyalar (kurulumlar, arşivler): adres çubuğu yerine eklentiyle indirilir
+DOWNLOAD_RX = re.compile(r"\.(exe|msi|msix|zip|7z|rar|dmg|appimage|deb|iso)$", re.I)
 SHORTCUT_TTL = 60.0  # sn: kısayol listesi bu kadar önbellekte
 _shortcut_cache: dict[tuple[str, ...], tuple[float, list[Path]]] = {}
 
@@ -428,6 +430,12 @@ def open_app(target: str) -> str:
     target = (target or "").strip()
     if not target:  # Windows'ta Path("") "." olur: boş hedef çalışma klasörünü açıyordu
         raise ToolError("açılacak hedef boş")
+    if re.match(r"https?://", target, re.I) and DOWNLOAD_RX.search(target.split("?", 1)[0]):
+        # Kurulum/arşiv bağlantısı: tarayıcıda açılınca Opera "Farklı Kaydet" penceresi açıp orada bekliyordu
+        # (ALICE dosya inmeden kurulumu çalıştırmaya kalktı). Doğrudan İndirilenler'e indir.
+        from alice.tools import fetch_file
+
+        return fetch_file.describe(fetch_file.download(target), opened=True)
     if IS_WIN:
         if URI_RX.match(target):
             # ms-settings:nightlight, mailto:, steam:// ... doğrudan: aramaya sokulunca Ayarlar sayfası 42 sn'de açılmıştı.

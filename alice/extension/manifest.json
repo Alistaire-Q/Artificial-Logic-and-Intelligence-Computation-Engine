@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ALICE",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "ALICE'in tarayıcıyı senin sekmelerinde kullanması için (uzaktan hata ayıklama ve izin penceresi olmadan).",
   "minimum_chrome_version": "116",
   "background": {"service_worker": "background.js"},

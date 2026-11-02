@@ -249,3 +249,60 @@ def test_browser_own_pages_get_a_clear_message(ext):
     fh.call = deny
     with pytest.raises(ToolError, match="tarayıcının kendi sayfası"):
         b.snapshot()
+
+
+@pytest.fixture
+def files_server(tmp_path):
+    import http.server
+    import socketserver
+
+    web = tmp_path / "web"
+    web.mkdir()
+    (web / "Sonora-Setup.exe").write_bytes(b"MZ" + b"\0" * 300_000)
+    (web / "login.html").write_text("<html>giriş yap</html>", encoding="utf-8")
+
+    class H(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *a, **k):
+            super().__init__(*a, directory=str(web), **k)
+
+        def log_message(self, *a):
+            pass
+
+    srv = socketserver.TCPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{srv.server_address[1]}"
+    srv.shutdown()
+    srv.server_close()
+
+
+def test_download_skips_save_as_and_returns_path(ext, files_server, tmp_path, monkeypatch):
+    """Canlı kayıt: Opera'da "her indirmede sor" açık; kurulum bağlantısı tarayıcıda açılınca Farklı Kaydet'te
+    takıldı. Eklentinin downloads.download'u da (saveAs=false, dosya adı verilse bile) aynı pencereyi açıyor.
+    download eylemi dosyayı tarayıcısız, doğrudan İndirilenler'e indirir ve tam yolu döner."""
+    from alice.tools import fetch_file
+    from alice.tools.desktop import open_app
+
+    fh, ctx = ext
+    dl = tmp_path / "Downloads"
+    monkeypatch.setattr(fetch_file, "downloads_dir", lambda: dl)
+    url = f"{files_server}/Sonora-Setup.exe"
+    r = browser.Browser().run(ctx, "download", url=url)
+    assert r.text == f"indirildi: {dl / 'Sonora-Setup.exe'}, 0.3 MB — kurulumu/dosyayı bu yolla aç"
+    assert (dl / "Sonora-Setup.exe").read_bytes()[:2] == b"MZ" and not list(dl.glob("*.part"))
+    assert browser.Browser().risk_for({"action": "download"}) == "network"
+    assert not any(c == "download" for c, _ in fh.calls)  # tarayıcıya hiç gitmedi
+    # windows open ile açılan kurulum bağlantısı da tarayıcıya gitmez; ikinci kopya üzerine yazmaz
+    assert open_app(url).startswith(f"indirildi (açılmadı): {dl / 'Sonora-Setup (1).exe'}")
+    assert "Sonora-Setup (1).exe | complete" in browser.Browser().run(ctx, "downloads").text
+
+
+def test_download_needing_login_falls_back_to_browser(ext, files_server, tmp_path, monkeypatch):
+    from alice.tools import fetch_file
+
+    fh, ctx = ext
+    monkeypatch.setattr(fetch_file, "downloads_dir", lambda: tmp_path)
+    orig = fh.call
+    fh.call = lambda m, _timeout=15.0, **p: ({"file": "", "url": p["url"], "state": "in_progress", "bytes": 0,
+                                              "total": 0} if m == "download" else orig(m, _timeout, **p))
+    r = browser.Browser().run(ctx, "download", url=f"{files_server}/login.html")  # sayfa: giriş gerekiyor
+    assert "kaydetme penceresi açık olabilir" in r.text
