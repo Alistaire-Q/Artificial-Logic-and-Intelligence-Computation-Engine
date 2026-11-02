@@ -169,10 +169,10 @@ def different(prev: Any, cur: Any) -> bool:
     """İki küçük gri görüntü belirgin farklı mı (ekran değişmediyse OCR boşuna çalışmasın)."""
     if prev is None or cur is None or prev.size != cur.size:
         return True
-    import numpy as np
+    from PIL import ImageChops
 
-    a, b = np.asarray(prev, dtype=np.int16), np.asarray(cur, dtype=np.int16)
-    return float((abs(a - b) > 24).mean()) >= SAME
+    hist = ImageChops.difference(prev, cur).histogram()  # gri: 256 kutu, numpy gerekmez
+    return sum(hist[25:]) / max(1, sum(hist)) >= SAME
 
 
 def _foreground() -> tuple[str, str, tuple[int, int, int, int] | None]:
