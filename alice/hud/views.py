@@ -59,7 +59,7 @@ def click_target(x: float, y: float, action: str = "click", wait: bool = True) -
     if not client.active:
         return False
     label = {"double_click": "çift tıklıyorum", "right_click": "sağ tıklıyorum", "drag": "sürüklüyorum",
-             "move": "buraya gidiyorum", "scroll": "kaydırıyorum"}.get(action, "tıklıyorum")
+             "move": "buraya gidiyorum", "scroll": "kaydırıyorum", "type": "yazıyorum"}.get(action, "tıklıyorum")
     ok = client.show("box", x=x - 28, y=y - 28, w=56, h=56, text=label, severity="info", ttl=1.5, id="computer")
     if ok and wait:
         time.sleep(CLICK_PREVIEW)
