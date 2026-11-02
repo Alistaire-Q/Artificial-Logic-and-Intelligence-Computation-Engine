@@ -523,8 +523,12 @@ class LiveSession:
         if callable(sync):
             sync()  # yüklenebilir araçların listesi
         history = self.history_text()
+        from alice.now import voice_line
+
+        state = voice_line()  # mod, oyun, bugünün uçuşları, nabız
         system = self.agent.messages[0]["content"] + "\n\n" + LIVE_PROMPT.format(
-            now=f"{now:%d.%m.%Y %H:%M} ({spoken_time(now.hour, now.minute)})", names=", ".join(self.names()),
+            now=f"{now:%d.%m.%Y %H:%M} ({spoken_time(now.hour, now.minute)})" + (f"; durum: {state}" if state else ""),
+            names=", ".join(self.names()),
             monitors=monitor_layout(),
             history=("\n# Az önceki konuşma (aynı sohbetin devamı)\n" + history) if history else "")
         enabled = self.agent.ctx.state.setdefault("tool_groups", set())

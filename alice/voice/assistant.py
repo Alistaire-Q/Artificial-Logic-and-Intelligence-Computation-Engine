@@ -70,10 +70,13 @@ def with_clock(text: str) -> str:
     "saat kaç" gibi sorular komut çalıştırmadan cevaplansın."""
     from datetime import datetime
 
+    from alice.now import voice_line
+
     days = ["Pazartesi", "Salı", "Çarşamba", "Perşembe", "Cuma", "Cumartesi", "Pazar"]
     now = datetime.now()
+    state = voice_line()  # mod, oyun, bugünün uçuşları, nabız: "nasılım?" gibi sorular bağlamla cevaplansın
     return (f"{text}\n\n[şu an: {now:%d.%m.%Y} {days[now.weekday()]}, saat {now:%H:%M}, "
-            f"söylenişi: {spoken_time(now.hour, now.minute)}]")
+            f"söylenişi: {spoken_time(now.hour, now.minute)}" + (f"; durum: {state}" if state else "") + "]")
 
 
 NUMS = ["", "bir", "iki", "üç", "dört", "beş", "altı", "yedi", "sekiz", "dokuz", "on", "on bir", "on iki"]

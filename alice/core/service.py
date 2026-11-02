@@ -195,6 +195,9 @@ class Core:
         self.running_tasks: set[str] = set()
         # Her turda mod politikasıyla çağrılır (ör. ses: DCS açılınca modelleri ekran kartından çıkar).
         self.hooks: list[Callable[[Policy], None]] = []
+        from alice.now import Anticipator
+
+        self.anticipator = Anticipator(self.store)  # beklenen oyundan önce hazırlık (ses modülü kanca ekler)
         self._last_prune = 0.0
         self._last_files: float | None = None  # None: dosyalar henüz hiç kontrol edilmedi
         self._lock = threading.Lock()
@@ -334,6 +337,7 @@ class Core:
             ("haftalık özet", lambda: self._weekly(mem)),
             ("e-posta tarihleri", lambda: self._mail_dates(mem)),
             ("gece döngüsü", lambda: self._night(mem)),
+            ("önsezi", self.anticipator.check),
         ]
         for name, fn in steps:
             try:

@@ -265,6 +265,9 @@ def _start_voice(cfg, core):
                                kwargs={"limit": int(v.get("prewarm_per_start", 12)), "log": voice_log})
         warm.daemon = True
         warm.start()
+        # Önsezi: alışkanlığa göre War Thunder açılmadan ~20 dk önce kalan uçuş seslerini de hazırla.
+        core.anticipator.hooks.append(lambda: speaker.prewarm(callouts(), limit=int(v.get("prewarm_per_start", 12)),
+                                                              log=voice_log))
     if not mic_available():
         console.print("[yellow]mikrofon yok;[/] ALICE sadece bildirimleri seslendirecek")
         return None
