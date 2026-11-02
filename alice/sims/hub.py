@@ -104,9 +104,16 @@ class SimHub:
             tracker = TouchdownTracker(comp)
             running = lambda: any(p.lower() == "aces.exe" for p in self.processes())  # noqa: E731
 
+            vision = self._missile_vision()
+
             def wt_feed(s, comp=comp, tracker=tracker):
                 if comp.last_state is None:  # yeni oturum (maç)
                     self._fullscreen_check("War Thunder")
+                if vision is not None:  # ekrandan görülen füze uyarısı temas listesine
+                    vision.poke()
+                    seen = vision.contacts()
+                    if seen:
+                        s.extra["contacts"] = list(s.extra.get("contacts") or []) + seen
                 tracker.feed(s)
 
             self._parts.append(WarThunderPoller(wt_feed, comp.session_end,
@@ -114,6 +121,22 @@ class SimHub:
                                                 nick=str(self.cfg.get("warthunder_nick") or "") or None).start())
         ACTIVE = self
         return self
+
+    def _missile_vision(self):
+        """[sims] missile_vision açık ve RWR bölgesi ayarlıysa ekrandan füze görme (alice/sims/vision.py)."""
+        if not self.cfg.get("missile_vision"):
+            return None
+        from alice.sims.vision import MissileWatcher, region_of
+
+        region = region_of(self.cfg)
+        if region is None:
+            self.store.add_event("info", "Ekrandan füze görme kapalı",
+                                 "RWR bölgesi ayarlı değil: alice vision region X Y GENİŞLİK YÜKSEKLİK", "info",
+                                 "flight")
+            return None
+        w = MissileWatcher(region, self.cfg.get("vision") or {})
+        self._parts.append(w)
+        return w
 
     def stop(self) -> None:
         global ACTIVE

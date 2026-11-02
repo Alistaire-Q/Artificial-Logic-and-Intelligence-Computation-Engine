@@ -480,7 +480,10 @@ class FlightCompanion:
                     elif key[0] == "l":
                         self._follow(t, clock, f"KİLİT · {name}", "warn", "lock")
                     continue
-                if key[0] == "m":
+                if key[0] == "m" and c.get("vision"):  # ekrandan görüldü: türü bilinmiyor
+                    self.say(f"Füze! Saat {clock}. Chaff at, dön!", "critical", "urgent")
+                    self._point(t, clock, "FÜZE", "critical", "missile", edge=True)
+                elif key[0] == "m":
                     self.say(f"Füze! Saat {clock}, {name}. Chaff at, dön!", "critical", "urgent")
                     self._point(t, clock, f"FÜZE · {name}", "critical", "missile", edge=True)
                 elif key[0] == "l":

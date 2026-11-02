@@ -242,6 +242,12 @@ follow_up = 5
 dcs = true
 dcs_port = 41230
 warthunder = true
+# Ekrandan füze görme (War Thunder füzeyi API'de vermiyor, ekranda gösteriyor). Sadece uçuşta, ekranın yalnızca
+# RWR bölgesi işlemcide saniyede 10 kez yakalanır; oyuna dokunmaz. Önce bölgeyi ayarla:
+# alice vision region X Y GENİŞLİK YÜKSEKLİK, örnek topla: alice vision record, dene: alice vision test <klasör>
+missile_vision = false
+# vision_region = [x, y, genişlik, yükseklik]
+# Renk eşikleri ve doğrulama: [sims.vision] red_min, red_margin, min_pixels, confirm, window, hold, fps
 
 # Ekran üstü HUD (`alice hud`): oyunun ve masaüstünün üstüne tehdit oku, kenar parlaması, kart çizer.
 # Tıklamalar alttaki pencereye geçer, odak almaz, ALICE'in ekran görüntülerinde görünmez. Oyuna kod enjekte etmez.
