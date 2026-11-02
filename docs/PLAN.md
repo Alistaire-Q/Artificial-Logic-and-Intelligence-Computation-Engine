@@ -69,6 +69,22 @@ Buraya kadarki her şey "iyi bir asistan". Bundan sonrası ALICE'i sıradan bir 
 
 Aşağıda ilk üç madde için nasıl yapılacağı yazılı. Diğerlerinin ayrıntısı sırası gelince eklenir.
 
+### Durum (2 Kasım 2026)
+
+Her madde ayrı bir PR'da. PR'lar birbirinin üstüne kurulu, bu sırayla birleşir: #157 → #158 → #159 → #160 → #161 → #162 → #163 → zaman makinesi.
+
+| Madde | Durum | Senden beklenen |
+|---|---|---|
+| HUD motoru (#158) | Oyunda tehdit oku ve kenar parlaması, bildirim kartı, konuşmanın yazılı özeti, tıklamadan önce hedef çerçevesi | `[hud] enabled = true`, War Thunder'da FPS ve odak ölçümü |
+| Ekrandan füze görme (#159) | Yakalama, kurallı tanıma, kalibrasyon ve örnek toplama hazır; eşikler gerçek görüntüyle ölçülmedi | `alice vision record` ile 10-20 örnek, `alice vision region` |
+| Kendi aracını yazan ALICE (#160) | make_tool: bildirge denetimi, kum havuzunda test, onayla ekleme, 3 hatada kapanma | "Steam'de son oynadığım oyunlar" ile dene |
+| Gece döngüsü ve rüya modu (#161) | Gece raporu, sabah sorusu, bağlantılar; kendiliğinden kod değiştirmez | Sabah sorusuna evet/hayır |
+| Şu an durumu ve önsezi (#162) | Sesli cevaplara durum, `now` aracı, oyundan önce ses hazırlığı | — |
+| Koçluk ve duygusal zekâ (#163) | Ölüm desenleri, maç içi öğüt, tilt'te daha az konuşma, mola önerisi | — |
+| Zaman makinesi hafıza | Şifreli (DPAPI) yerel zaman çizgisi, arama, silme; varsayılan kapalı | Açmak istersen `[timeline] enabled = true` |
+| Her yerde aynı ALICE | Bilgisayar, telefon ve hızlı bar zaten aynı sohbeti paylaşıyor | Saat için Gadgetbridge dışa aktarması |
+| DCS kanat adamları | Yapılmadı: DCS görev betiğinin güvenlik ayarını (`MissionScripting.lua`) gevşetmek gerekiyor | Karar senin |
+
 ### 1. Ekran üstü HUD motoru
 
 **Nasıl yapılır.**

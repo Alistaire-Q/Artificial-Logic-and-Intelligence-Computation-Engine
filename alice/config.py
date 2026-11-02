@@ -255,6 +255,15 @@ missile_vision = false
 [night]
 enabled = true
 
+# Zaman makinesi hafıza: ekranda gördüğün yazılar yerelde, şifreli (Windows DPAPI) ve aranabilir bir zaman çizgisine
+# yazılır ("geçen hafta Discord'da paylaşılan linki bul"). Görüntü saklanmaz, sadece yazı. Oyunda, şifre
+# yöneticilerinde ve gizli tarayıcı pencerelerinde kayıt yok. Silmek: alice timeline wipe.
+[timeline]
+enabled = false
+every = 30          # saniye
+keep_days = 30
+# exclude = ["whatsapp", "banka"]   # program adı ya da başlıkta geçen sözler
+
 # Ekran üstü HUD (`alice hud`): oyunun ve masaüstünün üstüne tehdit oku, kenar parlaması, kart çizer.
 # Tıklamalar alttaki pencereye geçer, odak almaz, ALICE'in ekran görüntülerinde görünmez. Oyuna kod enjekte etmez.
 # Özel tam ekranda (exclusive fullscreen) hiçbir pencere oyunun üstüne çizilemez: oyunu kenarlıksız pencerede aç.

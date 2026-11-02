@@ -976,7 +976,7 @@ def package_version() -> str:
 # ------------------------------------------------------------- alt komutlar
 SUBCOMMANDS = ("init", "doctor", "models", "reflex", "app", "shortcut", "core", "rules", "tasks", "voice", "quick",
                "dcs", "watch", "phone", "notes", "brief", "report", "plugins", "update", "connect", "feeds",
-               "log", "setup", "eval", "hud", "vision", "night")
+               "log", "setup", "eval", "hud", "vision", "night", "timeline")
 
 # Kendi argparse'ı olmayan alt komutlar: `alice <komut> --help` çalıştırmak yerine bu metni gösterir
 # (ör. `alice phone --help` köprüyü açıp beklemesin, `alice notes --help` notları listelemesin).
@@ -986,7 +986,7 @@ _SUB_DOCS: dict[str, tuple[str, str | None]] = {
     "notes": ("alice.extras.cli", None), "brief": ("alice.extras.cli", None), "report": ("alice.extras.cli", None),
     "watch": ("alice.app.phone", "watch_cmd"), "phone": ("alice.app.phone", "phone_cmd"),
     "dcs": ("alice.sims.dcs", "dcs_cmd"), "vision": ("alice.sims.vision", None),
-    "night": ("alice.night", None), "plugins": ("alice.plugins", "plugins_cmd"), "quick": ("", None),
+    "night": ("alice.night", None), "timeline": ("alice.timeline", None), "plugins": ("alice.plugins", "plugins_cmd"), "quick": ("", None),
 }
 
 _HELP_ARGS = ("-h", "--help", "help")
@@ -1206,6 +1206,10 @@ def _dispatch(argv: list[str]) -> int:
         from alice.night import night_cmd
 
         return night_cmd(argv[1:])
+    if cmd == "timeline":
+        from alice.timeline import timeline_cmd
+
+        return timeline_cmd(argv[1:])
     if cmd == "voice":
         from alice.voice.cli import voice_cmd
 

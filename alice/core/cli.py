@@ -58,6 +58,7 @@ def core_cmd(argv: list[str]) -> int:
             core.voice = "listening" if voice is not None else "no-mic"
         hud = _start_hud(cfg, core) if (cfg.data.get("hud", {}) or {}).get("enabled") and "--once" not in argv else None
         sims = _start_sims(cfg, core, show=_hud_show(hud)) if "--once" not in argv else None
+        tl = _start_timeline(cfg, core) if (cfg.data.get("timeline", {}) or {}).get("enabled") and             "--once" not in argv else None
         host = _start_app(cfg, core) if (cfg.data.get("app", {}) or {}).get("in_core", True) and \
             "--once" not in argv else None
         # Masaüstü uygulaması, hızlı bar ve telefon tek uygulama durumunu paylaşır: üçü aynı sohbeti görür, araçlar ve
@@ -93,6 +94,8 @@ def core_cmd(argv: list[str]) -> int:
                 sims.stop()
             if hud is not None:
                 hud.stop()
+            if tl is not None:
+                tl.stop()
             if phone is not None:
                 phone.stop()
             service.release_lock()
@@ -195,6 +198,17 @@ def _start_hud(cfg, core):
         notifier.channels.remove(notifier._desktop)
     notifier.channels.append(lambda n, pol: views.notification(n))
     return HudSupervisor(port).start()
+
+
+def _start_timeline(cfg, core):
+    """Zaman makinesi hafıza: öndeki pencerenin yazısını şifreli zaman çizgisine yaz (uçuş modunda durur)."""
+    from alice.timeline import Recorder, Timeline
+
+    try:
+        return Recorder(Timeline(), cfg.data.get("timeline", {}) or {}, mode=lambda: core.modes.current).start()
+    except Exception as e:  # noqa: BLE001 - kayıt açılamasa da çekirdek çalışsın
+        core.store.add_event("error", "Zaman çizgisi başlamadı", str(e)[:200], "warn", "core")
+        return None
 
 
 def _hud_show(hud):
