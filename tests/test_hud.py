@@ -510,6 +510,18 @@ def test_start_hud_replaces_windows_toast_with_card(monkeypatch):
         sv = core_cli._start_hud(cfg, core)
         assert sv.port == 41277 and client.active
         assert nt._desktop not in nt.channels and len(nt.channels) == 1
+        from alice.core import notify
+        from alice.core.notify import Notification
+
+        toasts, sent = [], []
+        monkeypatch.setattr(notify, "desktop_notify", lambda n: toasts.append(n.body) or True)
+        monkeypatch.setattr(client, "send", lambda msg: sent.append(msg) or True)
+        sv.proc = SimpleNamespace(poll=lambda: 1)  # HUD çöktü: kart değil, Windows balonu gelsin
+        nt.channels[0](Notification("ALICE", "GPU 95°C", "critical", "pc"), None)
+        assert sent == [] and toasts == ["GPU 95°C"]
+        sv.proc = SimpleNamespace(poll=lambda: None)  # HUD çalışıyor: kart
+        nt.channels[0](Notification("ALICE", "RAM %96", "critical", "pc"), None)
+        assert sent[0]["kind"] == "card" and toasts == ["GPU 95°C"]
     finally:
         client.configure(window.PORT, on=False)
 

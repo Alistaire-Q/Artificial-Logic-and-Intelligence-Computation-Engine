@@ -19,8 +19,9 @@ from typing import Any
 WINDOW = 15 * 60.0
 QUICK_DEATH = 120.0      # bu kadar sürmeden biten uçuş "çabuk düştü"
 HR_HIGH = 120.0
-SWEAR = re.compile(r"\b(amk|aq|siktir\w*|sik\w*|lan|of+ be|kahretsin|lanet|yeter ya|bıktım|salak|aptal oyun|"
-                   r"hile|hileci|ne biçim|saçma(lık)?)\b", re.I)
+# "lan", "saçma", "ne biçim" gündelik sohbette de geçiyor: tek başına öfke sayılmaz.
+SWEAR = re.compile(r"\b(amk|aq|siktir\w*|sik\w*|of+ be|kahretsin|lanet|yeter ya|bıktım|salak|aptal oyun|"
+                   r"hile|hileci)\b", re.I)
 
 
 @dataclass

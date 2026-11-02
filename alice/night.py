@@ -307,10 +307,17 @@ def maybe_run(store: Any, mem: Any, now: float | None = None, **kw: Any) -> dict
     now = time.time() if now is None else now
     t = datetime.fromtimestamp(now)
     day = t.strftime("%Y-%m-%d")
-    if not NIGHT_HOURS[0] <= t.hour < NIGHT_HOURS[1] or _state().get("ran") == day:
+    st = _state()
+    if not NIGHT_HOURS[0] <= t.hour < NIGHT_HOURS[1] or st.get("ran") == day:
         return None
+    tries = int(st.get("tries", 0)) + 1 if st.get("tried") == day else 1
+    try:
+        report = run(store, mem, now, **kw)
+    except Exception:
+        # bozuk bir kayıt yüzünden gece kaybolmasın: 3 kez denenir, sonra o gece bırakılır
+        _save_state(tried=day, tries=tries, **({"ran": day} if tries >= 3 else {}))
+        raise
     _save_state(ran=day)
-    report = run(store, mem, now, **kw)
     store.add_event("info", "Gece raporu hazır", report["path"], "info", "night")
     return report
 

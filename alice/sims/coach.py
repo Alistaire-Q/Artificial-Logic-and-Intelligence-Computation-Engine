@@ -31,7 +31,7 @@ _TENS = {10: "u", 20: "si", 30: "u", 40: "ı", 50: "si", 60: "ı", 70: "i", 80: 
 
 def ek(n: int) -> str:
     """Sayının iyelik eki: 7 -> "7'si", 3 -> "3'ü", 10 -> "10'u". Bulunma için sonuna "nde": "7'sinde"."""
-    tail = _LAST.get(n % 10) or _TENS.get(n % 100) or "ü"
+    tail = "ı" if n == 0 else _LAST.get(n % 10) or _TENS.get(n % 100) or "ü"
     return f"{n}'{tail}"
 
 

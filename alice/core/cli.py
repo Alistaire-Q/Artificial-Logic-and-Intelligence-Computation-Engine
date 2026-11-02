@@ -194,9 +194,18 @@ def _start_hud(cfg, core):
     port = int((cfg.data.get("hud", {}) or {}).get("port") or PORT)
     client.configure(port)
     notifier = core.notifier
-    if notifier._desktop in notifier.channels:
-        notifier.channels.remove(notifier._desktop)
-    notifier.channels.append(lambda n, pol: views.notification(n))
+    sv = HudSupervisor(port)
+    desktop = notifier._desktop if notifier._desktop in notifier.channels else None
+    if desktop is not None:
+        notifier.channels.remove(desktop)
+
+    def card(n, pol) -> None:
+        if sv.alive():
+            views.notification(n)
+        elif desktop is not None:  # HUD çöktü/yeniden başlıyor: bildirim kaybolmasın, balon gelsin
+            desktop(n, pol)
+
+    notifier.channels.append(card)
     # Kritik sınıra yaklaşan sıcaklık/RAM köşede küçük çubuk olarak görünsün (konuşmadan). Kanca sadece HUD açıkken
     # eklenir: HUD kapalıysa çekirdek turuna hiç maliyeti yok.
     hooks = getattr(core, "hooks", None)
@@ -204,7 +213,7 @@ def _start_hud(cfg, core):
         from alice.core.watchdogs import SystemGauges
 
         hooks.append(SystemGauges(core.store, getattr(core, "interval", 15.0)))
-    return HudSupervisor(port).start()
+    return sv.start()
 
 
 def _start_timeline(cfg, core):

@@ -45,8 +45,9 @@ def test_patterns_need_share_and_count():
 
 
 def test_turkish_number_suffix():
-    assert [coach.ek(n) for n in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 40)] == [
-        "1'i", "2'si", "3'ü", "4'ü", "5'i", "6'sı", "7'si", "8'i", "9'u", "10'u", "20'si", "40'ı"]
+    assert [coach.ek(n) for n in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 40)] == [
+        "0'ı", "1'i", "2'si", "3'ü", "4'ü", "5'i", "6'sı", "7'si", "8'i", "9'u", "10'u", "20'si", "40'ı"]
+    assert mood.read([], ["lan bu ne saçma", "ne biçim harita"], None, 0.0).swears == 0  # gündelik söz
 
 
 def test_mood_levels():
@@ -54,7 +55,7 @@ def test_mood_levels():
     quick = [{"end_wall": now - 60 * i, "duration_s": 70, "touchdown_vv_ms": None} for i in range(3)]
     assert mood.read([], [], None, now).level == "sakin"
     assert mood.read(quick, [], None, now).level == "gergin"
-    m = mood.read(quick, ["amk ya yine mi", "siktir", "lan bu ne"], 125.0, now)
+    m = mood.read(quick, ["amk ya yine mi", "siktir", "kahretsin"], 125.0, now)
     assert m.level == "tilt" and m.swears == 3 and "nabız 125" in m.reasons
     old = [{"end_wall": now - 3600, "duration_s": 70, "touchdown_vv_ms": None}] * 5
     assert mood.read(old, [], None, now).quick_deaths == 0  # 15 dakikadan eski

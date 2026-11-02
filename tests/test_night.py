@@ -92,6 +92,22 @@ def test_run_writes_report_and_morning_flow(tmp_path, monkeypatch):
     assert json.loads((night.reports_dir() / "2026-10-30.json").read_text(encoding="utf-8"))["date"] == "2026-10-30"
 
 
+def test_failed_night_is_retried_three_times(monkeypatch):
+    calls = []
+
+    def boom(*a, **k):
+        calls.append(1)
+        raise ValueError("bozuk kayıt")
+
+    monkeypatch.setattr(night, "run", boom)
+    for i in range(4):
+        try:
+            night.maybe_run(Store([]), None, now=ts(29, 4, i * 10))
+        except ValueError:
+            pass
+    assert len(calls) == 3  # 3 denemeden sonra o gece bırakılır
+
+
 def test_render_when_all_is_well():
     assert "Her şey yolunda" in night.render({"date": "x", "findings": [], "insights": [], "tomorrow": []})
     assert night.morning_text({"findings": [], "insights": [], "tomorrow": []}) == ""
