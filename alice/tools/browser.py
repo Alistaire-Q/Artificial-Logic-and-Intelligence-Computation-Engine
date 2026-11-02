@@ -654,11 +654,9 @@ class Browser(Tool):
         "- goto, site zaten bir sekmede açıksa o sekmeyi kullanır; yeni sekme açmaz.\n"
         "- Sayfanın içeriğini okumak için text, görsel düzen için screenshot.\n"
         "- Kullanıcıya sayfadaki bir yeri göstermek için highlight (ekranda çerçevelenir).\n"
-        "- Dosya/kurulum indirmek için download url=<dosyanın bağlantısı>: Farklı Kaydet penceresi çıkmaz, bitince "
-        "tam yolu döner; kurulumu o yolla aç. İndirme bağlantısını adres çubuğunda (goto, windows open) açma: Opera "
-        "kaydetme penceresi açıp orada bekler.\n"
-        "- 'Bağlanılamıyor' derse ayrı pencere açma: windows switch_tab/navigate + ui_elements/ui_act ile kullanıcının "
-        "sekmelerinde çalış.\n"
+        "- Dosya/kurulum indirmek için download url=<dosya bağlantısı>: kaydetme penceresi çıkmaz, tam yolu döner; "
+        "kurulumu o yolla aç. Dosya bağlantısını goto ile açma.\n"
+        "- 'Bağlanılamıyor' derse ayrı pencere açma: windows switch_tab/navigate + ui_act ile çalış.\n"
         "- Ekrandaki bir şeye tek tıklama/yazma için reflex daha hızlı; birçok adımlı iş için run_plan."
     )
     parameters = obj({
