@@ -261,3 +261,49 @@ def test_bridge_answers_blocked_commands_itself_and_resets_downloads():
     assert reply == {"id": 7, "result": {}}  # Playwright beklemesin
     downloads = [m for m in seen if m["method"] == "Browser.setDownloadBehavior"]
     assert downloads and all(m["params"] == {"behavior": "default"} for m in downloads)  # yalnız sıfırlama gitti
+
+
+def test_bridge_survives_one_late_heartbeat():
+    """Meşgul tarayıcı bir kez geç cevap verdi diye bağlantı kopmasın: her kopuş Opera'da yeniden izin demek."""
+
+    class FlakyUp:
+        def __init__(self):
+            self.n = 0
+            self.queue: asyncio.Queue = asyncio.Queue()
+            self.closed = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raw = await self.queue.get()
+            if raw is None:
+                raise StopAsyncIteration
+            return raw
+
+        async def send(self, raw):
+            msg = json.loads(raw)
+            if msg.get("id") == bb.HEARTBEAT_ID:
+                self.n += 1
+                if self.n != 1:  # ilki kaçırılır
+                    await self.queue.put(json.dumps({"id": msg["id"], "result": {}}))
+
+        async def close(self):
+            self.closed = True
+            await self.queue.put(None)
+
+    up = FlakyUp()
+
+    async def fake_connect(url, **kw):
+        return up
+
+    async def main():
+        bridge = bb.Bridge(find_upstream=lambda: "ws://x", connect=fake_connect, heartbeat=0.05,
+                           heartbeat_timeout=0.1)
+        await bridge._upstream()
+        await asyncio.sleep(0.6)
+        alive = not bridge.closed.is_set()
+        await up.close()
+        return alive
+
+    assert asyncio.run(main()) and up.n >= 3

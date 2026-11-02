@@ -28,7 +28,9 @@ PATH = "/devtools/browser/alice-bridge"
 CLEANUP_BASE = 2_000_000_000  # köprünün kendi komutlarının kimlikleri
 HEARTBEAT_ID = CLEANUP_BASE - 1  # kalp atışı komutunun kimliği (istemci kimlikleri 1'den sayar, çakışmaz)
 HEARTBEAT_EVERY = 15.0  # saniye
-HEARTBEAT_TIMEOUT = 20.0  # bu kadar cevap yoksa tarayıcı bağlantısı ölü sayılır
+HEARTBEAT_TIMEOUT = 20.0  # bu kadar cevap yoksa bir kaçırma sayılır
+HEARTBEAT_MISSES = 2  # üst üste bu kadar kaçırma: ölü. Tek gecikmede koparmak Opera'ya her seferinde yeniden izin
+                      # sordurtuyordu (meşgul tarayıcı bir kez geç cevap verebilir; 2026-11-02'de görüldü)
 
 
 # Playwright bağlanınca kullanıcının tarayıcısını kendi test tarayıcısı gibi ayarlıyor. Kullanıcının kendi tarayıcısında
@@ -100,7 +102,9 @@ class Bridge:
         return self.up
 
     async def _heartbeat(self, up) -> None:
-        """Tarayıcı hâlâ cevap veriyor mu? Vermiyorsa bağlantıyı kapat (yoksa istemci sonsuza dek bekler)."""
+        """Tarayıcı hâlâ cevap veriyor mu? Üst üste cevap vermezse bağlantıyı kapat (yoksa istemci sonsuza dek
+        bekler)."""
+        misses = 0
         while self.up is up:
             await asyncio.sleep(self.heartbeat)
             if self.up is not up:
@@ -110,8 +114,13 @@ class Bridge:
                 await asyncio.wait_for(up.send(json.dumps({"id": HEARTBEAT_ID, "method": "Browser.getVersion"})),
                                        self.heartbeat_timeout)
                 await asyncio.wait_for(self._pong.wait(), self.heartbeat_timeout)
-            except Exception:  # noqa: BLE001 - zaman aşımı ya da kopuk soket: ikisi de ölü bağlantı
-                self.log(f"tarayıcı {self.heartbeat_timeout:.0f} sn cevap vermedi; bağlantı ölü sayılıyor")
+                misses = 0
+            except Exception:  # noqa: BLE001 - zaman aşımı ya da kopuk soket
+                misses += 1
+                if misses < HEARTBEAT_MISSES:
+                    self.log(f"tarayıcı {self.heartbeat_timeout:.0f} sn cevap vermedi; bir kez daha bekleniyor")
+                    continue
+                self.log(f"tarayıcı üst üste {misses} kez cevap vermedi; bağlantı ölü sayılıyor")
                 await self._shutdown(up)
                 return
 
