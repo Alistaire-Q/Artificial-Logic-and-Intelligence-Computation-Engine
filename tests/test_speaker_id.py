@@ -45,11 +45,12 @@ def test_someone_elses_voice_does_not_wake_alice():
 def test_push_to_talk_and_hush_skip_the_voice_check():
     agent = FakeAgent()
     va = VoiceAssistant(agent, FakeSpeaker(), stt=CloudSTT(), speaker_gate=gate())
-    va.handle_audio(Audio(b"\2\0" * 16000, 16000), direct=True)  # tuşa basan kullanıcıdır
+    va.handle_audio(Audio(b"\2\0" * 16000, 16000), direct=True, ptt=True)  # tuşa basan kullanıcıdır
     assert wait_for(lambda: agent.turns == ["saat kaç?"])
     va2 = VoiceAssistant(FakeAgent(), FakeSpeaker(), stt=CloudSTT("Alice sus"), speaker_gate=gate())
     va2.handle_audio(Audio(b"\2\0" * 16000, 16000), direct=False)
-    assert va2.muted  # susturmak zararsız: kim derse desin
+    # Açık mikrofonda başkasının sesi yazıya bile dökülmez ("sadece benim sesimi alsın"): susturma da dahil
+    assert not va2.muted
 
 
 def test_short_or_broken_audio_is_not_rejected():
@@ -373,3 +374,129 @@ def test_enroll_skip_sentence_continues_to_next(tmp_path, monkeypatch):
     s._thread.join(20)
     v = s.view()
     assert v["state"] == "done" and len(v["takes"]) == len(sid.ENROLL_SENTENCES) - 1
+
+
+class CountingSTT(CloudSTT):
+    def __init__(self, text="Hey Alice, saat kaç?"):
+        super().__init__(text)
+        self.calls = 0
+
+    def transcribe(self, audio):
+        self.calls += 1
+        return self.text
+
+
+def test_only_users_voice_reaches_stt_short_audio_left_to_wake_check():
+    stt = CountingSTT()
+    va = VoiceAssistant(FakeAgent(), FakeSpeaker(), stt=stt, speaker_gate=gate())
+    va.handle_audio(Audio(bytes([2, 0]) * 16000, 16000), direct=False)  # başkası: yazıya hiç dökülmez
+    assert stt.calls == 0
+    # 0,55 sn: hızlı söylenen "Alice naber" bu kadar kısa olabiliyor; ses izi karar veremez, uyandırma kontrolüne kalır
+    va.handle_audio(Audio(bytes([1, 0]) * 8800, 16000), direct=False)
+    assert stt.calls == 1
+
+
+def test_barge_in_waits_for_users_voice():
+    sp = FakeSpeaker()
+    va = VoiceAssistant(FakeAgent(), sp, stt=CountingSTT("bir dakika"), speaker_gate=gate())
+    cut = []
+    va._interrupt = lambda: cut.append(1)
+    sp.speaking = True
+    va._on_speech_start()
+    assert cut == []  # ses başladı ama kimin olduğu belli değil: susma
+    va.handle_audio(Audio(b"\2\0" * 16000, 16000), direct=False)
+    assert cut == []  # başkasıydı
+    va._on_speech_start()
+    va.handle_audio(Audio(b"\1\0" * 16000, 16000), direct=False)
+    assert cut == [1]  # kullanıcı: şimdi sus
+
+
+def test_second_ear_finds_missed_wake_word():
+    class Gate:
+        last_conf = 0.0
+        model_name = "base"
+        last_seconds = 0.1
+
+        def heard(self, audio):
+            return "Ayşe nabe"  # küçük model "Alice naber"i kaçırdı
+
+    class Scribe:
+        name = "eleven:scribe_v2"
+
+        def transcribe(self, audio):
+            return "Alice naber?"
+
+    class STT:
+        wake_gate = Gate()
+        engines = [Scribe()]
+
+        def transcribe(self, audio):
+            return "Alice naber?"
+
+    agent = FakeAgent()
+    va = VoiceAssistant(agent, FakeSpeaker(), stt=STT(), speaker_gate=gate())
+    va.handle_audio(Audio(bytes([1, 0]) * 16000, 16000), direct=False)
+    assert wait_for(lambda: agent.turns == ["naber?"])
+
+
+def test_paused_alice_then_naber_joined_for_second_ear():
+    # "Alice" ... "naber" arada duraklayınca iki cümle oluyordu; "Alice" tek başına "Altyazı" diye duyulup atılıyordu
+    alice, naber = Audio(bytes([1, 0]) * 6400, 16000), Audio(bytes([1, 0]) * 9600, 16000)
+
+    class Gate:
+        last_conf, model_name, last_seconds = 0.0, "base", 0.1
+
+        def heard(self, audio):
+            return "Altyazı." if audio.seconds < 0.5 else "Nabeş."
+
+    class Groq:
+        name = "groq:x"
+
+        def __init__(self):
+            self.heard = []
+
+        def transcribe(self, audio):
+            self.heard.append(round(audio.seconds, 2))
+            return "Ali? Ne haber?" if audio.seconds > 1.0 else "Altyazı M.K."
+
+    groq = Groq()
+
+    class STT:
+        wake_gate = Gate()
+        engines = [groq]
+
+        def transcribe(self, audio):
+            return groq.transcribe(audio)
+
+    agent = FakeAgent()
+    va = VoiceAssistant(agent, FakeSpeaker(), stt=STT(), speaker_gate=gate(),
+                        social=lambda: "Discord sesli konuşmada")
+    va.handle_audio(alice, direct=False)
+    assert agent.turns == []
+    va.handle_audio(naber, direct=False)
+    assert wait_for(lambda: agent.turns == ["Ne haber?"])
+    assert 1.15 in groq.heard  # 0,4 + 0,15 boşluk + 0,6: iki cümle birlikte dinlendi
+
+
+def test_social_mode_takes_sentence_right_after_bare_wake():
+    # Discord'da "Alice" deyip ALICE "Evet, söyle" dedikten sonra gelen cümle cevapsız kalıyordu
+    class STT:
+        wake_gate = None
+
+        def __init__(self):
+            self.texts = iter(["Alice.", "Naber?", "Ahmet gel buraya"])
+
+        def transcribe(self, audio):
+            return next(self.texts)
+
+    agent, sp = FakeAgent(), FakeSpeaker()
+    va = VoiceAssistant(agent, sp, stt=STT(), speaker_gate=gate(), social=lambda: "Discord sesli konuşmada")
+    one = Audio(bytes([1, 0]) * 16000, 16000)
+    va.handle_audio(one, direct=False)
+    assert sp.said  # kısa tepki
+    va.handle_audio(one, direct=va._armed())
+    assert wait_for(lambda: agent.turns == ["Naber?"])
+    va._called_until = 0.0  # pencere kapandı: arkadaşa söylenen cümle gitmez
+    va.handle_audio(one, direct=va._armed())
+    time.sleep(0.2)
+    assert agent.turns == ["Naber?"]

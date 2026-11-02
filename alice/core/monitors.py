@@ -62,6 +62,31 @@ def foreground_process() -> str | None:
         return None
 
 
+def _win_proc_stats() -> list[tuple[int, str, int, float]] | None:
+    """Windows: (pid, ad, rss bayt, kullanıcı+çekirdek işlemci sn); erişilemeyen süreçler atlanır. Başka
+    platformda ya da psutil'in iç yapısı değişmişse None (yavaş genel yol kullanılır)."""
+    if sys.platform != "win32":
+        return None
+    try:
+        from psutil import _psplatform
+
+        mem_info, times = _psplatform.cext.proc_memory_info, _psplatform.cext.proc_times
+    except (ImportError, AttributeError):
+        return None
+    out = []
+    for p in psutil.process_iter(["name"]):  # adlar tek anlık görüntüden gelir: hızlı
+        name = p.info.get("name") or ""
+        if not name:
+            continue
+        try:
+            rss = mem_info(p.pid)[2]  # psutil'de de rss = WorkingSetSize = 3. alan
+            user, system, _created = times(p.pid)
+        except Exception:  # noqa: BLE001 - korumalı süreç (erişim yok) ya da süreç kapandı: atla
+            continue
+        out.append((p.pid, name, int(rss), float(user) + float(system)))
+    return out
+
+
 class PCMonitor:
     name = "pc"
 
@@ -163,14 +188,30 @@ class PCMonitor:
         mem: dict[str, float] = {}
         cpu: dict[str, float] = {}
         names: set[str] = set()
-        for p in psutil.process_iter(["name", "memory_info", "cpu_percent"]):
-            name = p.info.get("name") or ""
-            if not name:
-                continue
-            names.add(name)
-            mi = p.info.get("memory_info")
-            mem[name] = mem.get(name, 0.0) + (mi.rss / 2**20 if mi else 0.0)
-            cpu[name] = cpu.get(name, 0.0) + (p.info.get("cpu_percent") or 0.0)
+        fast = _win_proc_stats()
+        if fast is not None:
+            # Windows: psutil erişilemeyen (korumalı) süreçte bütün sistemin anlık görüntüsünü alıp yeniden deniyor
+            # ve bunu GIL'i bırakmadan yapıyor. 465 süreçte tarama 17 sn sürüyordu (15 sn'de bir): sesli asistanın
+            # dinleme döngüsü GIL bekleyip mikrofon sesini kaybediyor, "Alice naber" hiç duyulmuyordu (30 Ekim,
+            # py-spy ile görüldü). Korumalı süreçleri atlayan yol 0,02 sn.
+            now = time.monotonic()
+            prev, self._cpu_prev = getattr(self, "_cpu_prev", {}), {}
+            for pid, name, rss, busy in fast:
+                names.add(name)
+                mem[name] = mem.get(name, 0.0) + rss / 2**20
+                self._cpu_prev[pid] = (busy, now)
+                if pid in prev and now > prev[pid][1]:
+                    pct = 100 * (busy - prev[pid][0]) / (now - prev[pid][1])
+                    cpu[name] = cpu.get(name, 0.0) + max(0.0, pct)
+        else:
+            for p in psutil.process_iter(["name", "memory_info", "cpu_percent"]):
+                name = p.info.get("name") or ""
+                if not name:
+                    continue
+                names.add(name)
+                mi = p.info.get("memory_info")
+                mem[name] = mem.get(name, 0.0) + (mi.rss / 2**20 if mi else 0.0)
+                cpu[name] = cpu.get(name, 0.0) + (p.info.get("cpu_percent") or 0.0)
         self.processes = names
         out: list[Row] = []
         for name in sorted(mem, key=mem.get, reverse=True)[: self.top_n]:

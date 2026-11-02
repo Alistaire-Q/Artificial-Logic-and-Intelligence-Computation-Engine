@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import subprocess
+import sys
+import time
 from types import SimpleNamespace
 
 import psutil
@@ -105,6 +107,7 @@ def fake_ps(monkeypatch):
 
     monkeypatch.setattr(monitors.psutil, "sensors_temperatures", temps, raising=False)
     monkeypatch.setattr(monitors.psutil, "process_iter", lambda attrs=None: list(state.procs))
+    monkeypatch.setattr(monitors, "_win_proc_stats", lambda: None)  # Windows hızlı yolu ayrı testte
     monkeypatch.setattr(monitors.shutil, "which", lambda name: None)
     monkeypatch.setattr(monitors, "foreground_process", lambda: None)
 
@@ -274,6 +277,32 @@ def test_procs_updates_process_set_each_collect(fake_ps):
     fake_ps.procs = []
     mon.collect()
     assert mon.processes == set()
+
+
+def test_procs_windows_fast_path_cpu_from_deltas(fake_ps, monkeypatch):
+    # psutil'in genel yolu Windows'ta 465 süreçte 17 sn GIL tutuyordu; hızlı yol işlemci yüzdesini iki tur
+    # arasındaki işlemci süresi farkından hesaplar
+    clock = [1000.0]
+    monkeypatch.setattr(monitors.time, "monotonic", lambda: clock[0])
+    stats = [[(1, "aces.exe", 2 * 2**30, 10.0), (2, "chrome.exe", 2**29, 1.0), (3, "chrome.exe", 2**29, 1.0)]]
+    monkeypatch.setattr(monitors, "_win_proc_stats", lambda: stats[0])
+    mon = make_mon(top_n=2)
+    assert mon._procs() == [("pc.proc.aces.exe.mem_mb", 2048.0, None), ("pc.proc.chrome.exe.mem_mb", 1024.0, None)]
+    clock[0] += 2.0
+    stats[0] = [(1, "aces.exe", 2 * 2**30, 13.0), (2, "chrome.exe", 2**29, 1.5), (4, "new.exe", 1, 9.0)]
+    rows = mon._procs()
+    assert ("pc.proc.aces.exe.cpu", pytest.approx(150.0), None) in rows
+    assert ("pc.proc.chrome.exe.cpu", pytest.approx(25.0), None) in rows
+    assert "pc.proc.new.exe.cpu" not in keys(rows)  # ilk görülen süreç: fark yok
+    assert mon.processes == {"aces.exe", "chrome.exe", "new.exe"}
+
+
+def test_windows_proc_stats_is_fast():
+    if sys.platform != "win32":
+        pytest.skip("Windows")
+    t = time.monotonic()
+    stats = monitors._win_proc_stats()
+    assert stats and time.monotonic() - t < 2.0
 
 
 def test_real_psutil_smoke():

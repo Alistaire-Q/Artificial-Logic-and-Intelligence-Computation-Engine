@@ -238,6 +238,11 @@ class SpeakerGate:
             self.log("ses tanıma: " + why)
         return False
 
+    def usable(self) -> bool:
+        """Profil var ve model açılabiliyor: ses gerçekten karşılaştırılabilir."""
+        self.refresh()
+        return self.active and self._ensure_embedder()
+
     def check(self, pcm: bytes, rate: int = 16000) -> bool:
         """True: kullanıcının sesi (ya da profil yok / karar verilemeyecek kadar kısa)."""
         self.refresh()

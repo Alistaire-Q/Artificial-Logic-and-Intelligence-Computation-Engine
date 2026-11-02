@@ -42,6 +42,10 @@ class Speaker:
         with self._cv:
             self._expect = (since, on_first) if since is not None and on_first is not None else None
 
+    # Uçuş anonsu bu kadar saniye içinde çalmaya başlayamazsa atılır: "Düşman saat 2" yarım dakika sonra yanlış.
+    STALE = {"critical": 12.0, "warn": 10.0, "info": 8.0}
+    STALE_LONG = 45.0  # uzun bilgi (iniş değerlendirmesi)
+
     def say(self, text: str, emotion: str | None = None, severity: str = "", topic: str = "") -> bool:
         """Kuyruğa ekle. Ses kapalıysa (ör. sessiz mod) False."""
         text = for_speech(text)
@@ -49,11 +53,35 @@ class Speaker:
         text = drop_emoji(text)
         if not text or not self.enabled():
             return False
+        deadline = None
+        if topic == "flight":
+            ttl = self.STALE_LONG if len(text) > 90 else self.STALE.get(severity, self.STALE["info"])
+            deadline = time.monotonic() + ttl
+            if severity in ("critical", "warn"):
+                self._drop_queued_flight_info()  # acil uyarı önce: sıradaki önemsiz anonslar atılır
         with self._cv:
             self._pending += 1
             gen = self._gen
-        self._synth_q.put((gen, text, emotion))
+        self._synth_q.put((gen, text, emotion, deadline, severity if topic == "flight" else ""))
         return True
+
+    def _drop_queued_flight_info(self) -> None:
+        kept, dropped = [], 0
+        try:
+            while True:
+                item = self._synth_q.get_nowait()
+                if item[4] == "info":
+                    dropped += 1
+                else:
+                    kept.append(item)
+        except queue.Empty:
+            pass
+        for item in kept:
+            self._synth_q.put(item)
+        if dropped:
+            with self._cv:
+                self._pending = max(0, self._pending - dropped)
+                self._cv.notify_all()
 
     def stop(self) -> None:
         """Sus: kuyruğu boşalt, çalanı kes. Söylenemeyenler last_cut'a yazılır."""
@@ -66,7 +94,7 @@ class Speaker:
         making = self._making
         pending: list[tuple[int, str]] = []
         # Söylenme sırası: sentezlenip çalınmayı bekleyenler, sentezlenmekte olan, sentez sırasındakiler.
-        for q in (self._play_q, None, self._synth_q):
+        for q in (self._play_q, None, self._synth_q):  # öğeler (gen, metin, ...)
             if q is None:
                 pending += [making] if making is not None else []
                 continue
@@ -128,17 +156,50 @@ class Speaker:
             return self._cv.wait_for(lambda: self._pending == 0 and not self._playing, timeout)
 
     # ---------------------------------------------------------------- thread'ler
-    def _done_one(self, gen: int) -> None:
+    def _done_one(self, gen: int, n: int = 1) -> None:
         with self._cv:
             if gen == self._gen and self._pending > 0:
-                self._pending -= 1
+                self._pending = max(0, self._pending - n)
             self._cv.notify_all()
+
+    MERGE_CHARS = 300  # sırada bekleyen cümleler tek seferde üretilir: her cümle ayrı istek arada boşluk bırakıyordu
+
+    def _merge_queued(self, gen: int, text: str, emotion: str) -> tuple[str, int]:
+        """Sentez sırasında aynı tonda bekleyen (uçuş anonsu olmayan) cümleleri bu cümleye ekle."""
+        n = 1
+        held = []
+        try:
+            while len(text) < self.MERGE_CHARS:
+                item = self._synth_q.get_nowait()
+                fits = len(text) + len(item[1]) <= self.MERGE_CHARS
+                if item[0] != gen or item[2] != emotion or item[3] is not None or not fits:
+                    held.append(item)
+                    break
+                text, n = f"{text} {item[1]}", n + 1
+        except queue.Empty:
+            pass
+        if held:  # sırayı bozmadan geri koy
+            rest = []
+            try:
+                while True:
+                    rest.append(self._synth_q.get_nowait())
+            except queue.Empty:
+                pass
+            for item in held + rest:
+                self._synth_q.put(item)
+        return text, n
 
     def _synth_loop(self) -> None:
         while True:
-            gen, text, emotion = self._synth_q.get()
+            gen, text, emotion, deadline, _sev = self._synth_q.get()
             if gen != self._gen:
                 continue
+            if deadline is not None and time.monotonic() > deadline:
+                self._done_one(gen)  # bayatladı: hiç üretme
+                continue
+            n = 1
+            if deadline is None:
+                text, n = self._merge_queued(gen, text, emotion)
             self._making = (gen, text)
             try:
                 audio: Audio | None = self.tts.synth(text, emotion)
@@ -150,14 +211,17 @@ class Speaker:
             if gen != self._gen:
                 continue
             if audio is None:
-                self._done_one(gen)
+                self._done_one(gen, n)
                 continue
-            self._play_q.put((gen, text, audio))
+            self._play_q.put((gen, text, audio, deadline, n))
 
     def _play_loop(self) -> None:
         while True:
-            gen, text, audio = self._play_q.get()
+            gen, text, audio, deadline, n = self._play_q.get()
             if gen != self._gen:
+                continue
+            if deadline is not None and time.monotonic() > deadline + 3:
+                self._done_one(gen, n)  # sesi üretilirken bayatladı
                 continue
             with self._cv:
                 self._playing = True
@@ -175,4 +239,4 @@ class Speaker:
             finally:
                 with self._cv:
                     self._playing = False
-                self._done_one(gen)
+                self._done_one(gen, n)

@@ -17,7 +17,8 @@ from typing import Any, Callable
 
 from alice.tools.base import ToolResult
 from alice.voice.audio import Audio, Microphone
-from alice.voice.listen import FOLLOW_MAX, VAD, PushToTalk, WakeWord, is_hush, is_yes, strip_wake, utterances
+from alice.voice.listen import (FOLLOW_MAX, PushToTalk, WakeWord, is_hush, is_yes, make_vad, strip_wake,
+                               utterances)
 from alice.voice.speaker import Speaker
 from alice.voice.stt import STTError, is_hallucination
 from alice.voice.tone import SentenceSplitter
@@ -237,6 +238,19 @@ def trim_history(messages: list[dict[str, Any]], keep_turns: int) -> list[dict[s
     return messages[:1] + messages[starts[-keep_turns]:]
 
 
+def _wake_like(text: str) -> bool:
+    """İlk kelime "Alice"e biraz benziyor mu ("Ayşe nabe", "Alessandra", "Elis")? İkinci kulağa (ücretli) sadece
+    bunlar gider; arkadaşına söylenen sıradan cümleler gitmez."""
+    import difflib
+
+    words = re.findall(r"\w+", text.lower())[:2]
+    for w in words:
+        if w in ("hey", "hay", "ey"):
+            continue
+        return w[:2] in ("al", "el", "ay", "ey", "ai", "ei") or difflib.SequenceMatcher(None, w[:5], "alice").ratio() >= 0.5
+    return False
+
+
 class VoiceAssistant:
     def __init__(self, agent, speaker: Speaker, stt, mic_factory: Callable[[], Microphone] = Microphone,
                  ptt_key: str = "", wake_model: str = "", wake_phrase: bool = True, barge_in: bool = True,
@@ -244,12 +258,17 @@ class VoiceAssistant:
                  keep_turns: int = 4, idle_reset: float = 300.0, live=None, end_silence: float = 0.5,
                  live_text_min: float | None = -0.7, live_text_wait: float = 1.5, live_follow: float = FOLLOW_MAX,
                  full_text_max: float = 8.0, live_gate: bool = True, smart_route: bool = True, speaker_gate=None,
-                 social: Callable[[], str] | None = None):
+                 social: Callable[[], str] | None = None, social_ptt: bool = False):
         self.agent = agent
         # Kullanıcının ses izi (alice voice enroll): varsa sadece onun sesi uyandırır (bkz. speaker_id.py).
         self.speaker_gate = speaker_gate
         # Seçici uyanma (Discord'da konuşuyor, oyun açık): nedeni döner, boşsa normal mod (bkz. social.py).
         self.social = social or (lambda: "")
+        # social_ptt (ayar social_mode = "ptt"): Discord'da/oyunda mikrofon ALICE'e hiç gitmez, sadece bas-konuş.
+        # Varsayılan kapalı: ses izi her cümleyi zaten süzüyor, "Alice naber" de cevapsız kalıyordu.
+        self.social_ptt = social_ptt and bool(ptt_key)
+        self.keep_recent = False  # çekirdek açar (testlerde diske yazılmasın)
+        self._social_noted = ""
         self._acks: list[str] = []  # son kısa tepkiler ("Evet?", "Söyle."): art arda aynısı söylenmesin
         self.smart_route = smart_route  # düşünmesi gereken soruyu hızlı ses modeli yerine beyin modeline ver
         # İlk cümlenin yerel dökümü bu güvenin (ortalama log olasılık) üstündeyse Live'a ses yerine yazı gider.
@@ -283,7 +302,7 @@ class VoiceAssistant:
         self.emit = emit
         self.ui: VoiceUI = agent.ui if isinstance(agent.ui, VoiceUI) else VoiceUI(speaker, agent.ui)
         agent.ui = self.ui
-        self.vad = VAD()
+        self.vad = make_vad()  # Silero: tık/nefes/oyun sesi konuşma sayılmasın
         self.stop_event = threading.Event()
         self.armed_until = 0.0      # bu ana kadar "Hey Alice" gerekmez
         self._jobs: queue.Queue = queue.Queue()
@@ -309,14 +328,22 @@ class VoiceAssistant:
         self._speech_at = time.monotonic()
         if self.speaker.speaking and not self.muted:
             self.armed_until = max(self.armed_until, self._speech_at)  # Alice konuşurken söze girmek de ona söylenmiştir
-        if self.barge_in and self.speaker.speaking:
+        self._barge = self.barge_in and self.speaker.speaking and not self.social()
+        if self._barge and not self._gate_ready():
+            # Ses izi yoksa eski davranış: konuşma başlar başlamaz sus. Varsa handle_audio sesin kullanıcıya ait
+            # olduğunu görünce keser: tık, nefes, arkadaşın ALICE'i yarıda kesmesin.
             self._interrupt()
 
     def _armed(self, at: float | None = None) -> bool:
         """'Alice' demeden konuşulabilir mi? Konuşmanın başladığı ana bakılır: pencere içinde başlayıp dışında biten
         cümle sayılır, pencere kapandıktan sonra başlayan sayılmaz."""
-        if self.muted or self.social():
-            return False  # Discord'da/oyunda arkadaşına söylenen cümle ALICE'e gitmesin: hep "Alice" denmeli
+        if self.muted:
+            return False
+        if self.social():
+            # Discord'da/oyunda arkadaşına söylenen cümle ALICE'e gitmesin: hep "Alice" denmeli. Tek istisna: az önce
+            # sadece "Alice" denip ALICE "Evet, söyle" dediyse arkasından gelen cümle ona söylenmiştir ("Alice" ...
+            # "naber" cevapsız kalıyordu, 30 Ekim).
+            return (at or time.monotonic()) <= getattr(self, "_called_until", 0.0)
         return (at or time.monotonic()) <= self.armed_until
 
     def _strict(self) -> bool:
@@ -385,16 +412,87 @@ class VoiceAssistant:
                 self._jobs.put("")  # canlı konuşmayı aç, kullanıcı söyleyecek
                 return
             self.speaker.wait(5)  # pencere kısa tepki bittikten sonra başlasın
-            self.armed_until = time.monotonic() + self.follow_up
+            self.armed_until = self._called_until = time.monotonic() + self.follow_up
             return
         if self._busy.is_set():
             self.ui.mute()
             self.agent.stop()
         self._jobs.put(text)
 
-    def handle_audio(self, audio: Audio, direct: bool, started: float | None = None) -> None:
+    def _second_ear(self, audio: Audio, head: str = "") -> str:
+        """Uyandırma kaçtıysa: önce Groq (ücretsiz, ~0,5 sn), gerekirse ElevenLabs Scribe ("" = bulunamadı)."""
+        def ask(ear) -> str:
+            try:
+                return ear.transcribe(audio) if ear is not None else ""
+            except Exception:  # noqa: BLE001 - ikinci kulak düşerse eski karar geçerli
+                return ""
+
+        engines = getattr(self.stt, "engines", [])
+        groq = next((e for e in engines if str(getattr(e, "name", "")).startswith("groq:")), None)
+        text = ask(groq)
+        if text and strip_wake(text, strict=self._strict()) is not None:
+            return text
+        scribe = getattr(self.stt, "second_ear", None) or next(
+            (e for e in engines if str(getattr(e, "name", "")).startswith("eleven:")), None)
+        if scribe is not None and (_wake_like(text) or _wake_like(head)):
+            return ask(scribe)
+        return text
+
+    JOIN_MAX = 2.0  # sn: bu kadar kısa uyandırmasız cümle sonrakiyle birleştirilebilir ("Alice" ... "naber")
+    JOIN_GAP = 2.5  # sn: önceki cümlenin bitişinden bu kadar sonra gelen cümleyle
+
+    def _take_unwoken(self) -> Audio | None:
+        """Az önce gelen, uyandırması olmayan kısa cümle (bir kez verilir)."""
+        prev, self._unwoken = getattr(self, "_unwoken", None), None
+        if prev is None or time.monotonic() - prev[1] > self.JOIN_GAP + self.JOIN_MAX + 1.0:
+            return None
+        return prev[0]
+
+    def _gate_ready(self) -> bool:
+        gate = self.speaker_gate
+        return bool(gate is not None and getattr(gate, "active", False) and getattr(gate, "usable", lambda: True)())
+
+    def _voice_first(self, audio: Audio, started: float | None) -> bool:
+        """Açık mikrofondan gelen her cümle önce ses iziyle karşılaştırılır (~20 ms, yazıya dökmeden önce):
+        başkasının sesi ve gürültü hiç işlenmez. Çok kısa ses (tık, nefes, 0,6 sn altı) sadece ALICE cevap
+        bekliyorken ("evet") ya da takip penceresindeyken alınır; Whisper bunlardan "Altyazı M.K." uyduruyordu."""
+        if not self._gate_ready():
+            return True
+        from alice.voice.speaker_id import MIN_SECONDS
+
+        if audio.seconds < MIN_SECONDS:
+            # Ses izi bu kadar kısa seste güvenilmez: karar uyandırma kontrolüne kalır. Önceden atılıyordu ama hızlı
+            # söylenen "Alice naber" (0,55 sn) de bu yüzden hiç cevap almıyordu.
+            return True
+        ok = self._is_user(audio)
+        self._verified = id(audio) if ok else None
+        return ok
+
+    RECENT_KEEP = 30
+
+    def _keep_recent(self, audio: Audio) -> None:
+        """Son 30 cümlenin sesi ~/.alice/voice/recent'e: "cevap vermedi" denince gerçek ses üzerinde test edilsin."""
+        try:
+            from alice.config import alice_home
+
+            d = alice_home() / "voice" / "recent"
+            d.mkdir(parents=True, exist_ok=True)
+            audio.save(d / f"{time.strftime('%Y%m%d-%H%M%S')}-{int(time.monotonic() * 1000) % 1000:03d}.wav")
+            for old in sorted(d.glob("*.wav"))[:-self.RECENT_KEEP]:
+                old.unlink()
+        except Exception:  # noqa: BLE001 - kayıt yazılamasa da dinleme sürsün
+            pass
+
+    def handle_audio(self, audio: Audio, direct: bool, started: float | None = None, ptt: bool = False) -> None:
         if audio.seconds < 0.3:
             return
+        if self.keep_recent:
+            self._keep_recent(audio)
+        if not ptt and not self._voice_first(audio, started):
+            return
+        if not ptt and getattr(self, "_barge", False) and self._gate_ready():
+            self._barge = False
+            self._interrupt()  # kullanıcının sesi doğrulandı: şimdi sus
         gate = getattr(self.stt, "wake_gate", None)
         if not direct and not self._awaiting_answer and gate is not None and self.wake_phrase:
             pre = self._live_ready() and not self._busy.is_set() and audio.seconds >= 0.6
@@ -410,6 +508,19 @@ class VoiceAssistant:
             follow = (armed and len(head.strip()) > 1 and not is_hallucination(head) and conf > -1.2
                       if head is not None else False)
             woke = head is not None and (strip_wake(head, strict=self._strict()) is not None or follow)
+            prev = self._take_unwoken() if head is not None and not woke else None
+            if head is not None and not woke and audio.seconds <= 3.0 and (head.strip() or prev is not None):
+                # Bilgisayardaki küçük model "Alice naber"i "Ya anlanan bir an mıydı?" diye duyabiliyor: kısa cümlede
+                # önce ücretsiz Groq'a, o da "Alice"e benzer ama emin olmayan bir şey duyarsa Scribe'a (ücretli) sor.
+                # Kısa seste küçük model "Altyazı" uyduruyor: bu da gürültü sayılıp atlanmasın, ikinci kulağa gitsin.
+                # "Alice ... naber" arada duraklayınca iki cümleye bölünüyor; az önceki uyandırmasız kısa cümle
+                # bununla birleştirilip dinlenir ("Alice" tek başına "Ay" diye duyulup atılıyordu, 30 Ekim).
+                ear = prev + Audio.silence(0.15, audio.rate) + audio if prev is not None else audio
+                better = self._second_ear(ear, head)
+                if better and strip_wake(better, strict=self._strict()) is not None:
+                    voice_log(f"uyandırmayı ikinci kulak buldu{' (önceki cümleyle)' if prev is not None else ''}: "
+                              f"{head!r} -> {better!r}")
+                    head, woke, full, audio = better, True, None, ear
             if pre and not woke:
                 self.live.discard()
             if head is not None and woke and is_hush(head):
@@ -426,6 +537,8 @@ class VoiceAssistant:
                 voice_log("susturma kalktı")
             if head is not None:
                 if not woke:
+                    if audio.seconds <= self.JOIN_MAX:
+                        self._unwoken = (audio, time.monotonic())
                     if audio.seconds >= 0.6:
                         voice_log(f"uyandırma yok [{getattr(gate, 'model_name', '?')} {getattr(gate, 'last_seconds', 0):.2f}sn]: {head}")
                     return  # uyandırma yok: sesi buluta hiç gönderme
@@ -462,6 +575,8 @@ class VoiceAssistant:
         gate = self.speaker_gate
         if gate is None:
             return True
+        if getattr(self, "_verified", None) == id(audio):
+            return True  # bu ses az önce doğrulandı
         ok = gate.check(audio.pcm, audio.rate)
         if not getattr(gate, "active", True):
             return True  # henüz ses tanıtılmadı: herkes kabul, kayıt da yok
@@ -768,7 +883,7 @@ class VoiceAssistant:
                     except Exception as e:  # noqa: BLE001 - bas-konuş sırasında mikrofon düştü: döngü ölmesin
                         mic_failed(e)
                         continue
-                    threading.Thread(target=self.handle_audio, args=(audio, True), daemon=True).start()
+                    threading.Thread(target=self.handle_audio, args=(audio, True, None, True), daemon=True).start()
                     continue
                 try:
                     frame = mic.read()
@@ -797,11 +912,22 @@ class VoiceAssistant:
         gate = getattr(self.stt, "wake_gate", None)
         if gate is not None and hasattr(gate, "warm_up"):
             gate.warm_up()
+        # preroll 20 kare (0,6 sn): konuşma algılanmadan hemen önce söylenen kısık "Alice" de cümleye girsin
         for audio in utterances(frames(), self.vad, stop=self.stop_event.is_set, end_silence=self.end_silence,
-                                on_start=self._on_speech_start):
+                                on_start=self._on_speech_start, preroll=20):
+            if self._social_skip():
+                continue
             started = self._speech_at or None
             direct = self._armed(started)
             threading.Thread(target=self.handle_audio, args=(audio, direct, started), daemon=True).start()
+
+    def _social_skip(self) -> bool:
+        """Discord/oyun: açık mikrofondan gelen cümle ALICE'e gitmez (sadece bas-konuş)."""
+        why = self.social() if self.social_ptt else ""
+        if why and why != self._social_noted:
+            voice_log(f"{why}: mikrofon ALICE'e kapalı, sadece bas-konuş ({self.ptt_key})")
+        self._social_noted = why
+        return bool(why)
 
     def _mic_health(self, frame: bytes) -> bool:
         """Mikrofon tamamen sessizse (sessize alınmış, kapalı kulaklık) ALICE hiçbir şey duymaz ve kimse nedenini

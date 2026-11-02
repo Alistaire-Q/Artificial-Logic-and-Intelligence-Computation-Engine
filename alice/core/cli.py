@@ -306,7 +306,9 @@ def _start_voice(cfg, core):
                         barge_in=v.get("barge_in", True), follow_up=float(v.get("follow_up", 5)),
                         live=make_live(cfg, agent),
                         end_silence=float(v.get("end_silence", 0.5)), **live_text_options(v),
-                        speaker_gate=SpeakerGate.load(cfg, log=voice_log), social=SocialWatch(cfg, log=voice_log).reason)
+                        speaker_gate=SpeakerGate.load(cfg, log=voice_log), social=SocialWatch(cfg, log=voice_log).reason,
+                        social_ptt=v.get("social_mode", "wake") == "ptt")
+    va.keep_recent = bool(v.get("keep_recent_audio", True))
     threading.Thread(target=va.run, daemon=True, name="alice-voice").start()
     voice_log(f"ses modülü başladı: {time.monotonic() - t0:.1f} sn")
     return va

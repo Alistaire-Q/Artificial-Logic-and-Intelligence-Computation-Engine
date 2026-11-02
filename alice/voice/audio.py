@@ -210,6 +210,10 @@ class Microphone:
 
     TARGET_PEAK = 0.35  # otomatik kazanç: konuşmanın tepe seviyesi bu civara getirilir
     MAX_GAIN = 16.0
+    # Aygıt arabelleği (sn). Varsayılan "low" 0,06 sn: dinleme döngüsü bundan uzun takılınca (oyun işlemciyi
+    # yerken) ses hata vermeden kayboluyordu; "Alice naber"in "Ali"si gidip "Ne hayır?" kalıyordu (30 Ekim,
+    # ölçüldü: 0,4 sn takılmada ~0,3 sn ses yok). 0,5 sn'de kayıp yok, okuma beklemesi aynı (30 ms): gecikme eklemez.
+    LATENCY = 0.5
 
     def __init__(self, device: int | str | None = None, auto_gain: bool = True):
         import sounddevice as sd
@@ -230,13 +234,14 @@ class Microphone:
             if wasapi is not None:
                 try:
                     st = sd.RawInputStream(samplerate=self.RATE, channels=1, dtype="int16", blocksize=self.FRAME,
-                                           device=wasapi, extra_settings=sd.WasapiSettings(auto_convert=True))
+                                           device=wasapi, extra_settings=sd.WasapiSettings(auto_convert=True),
+                                           latency=self.LATENCY)
                     self.name = f"{sd.query_devices(wasapi)['name']} (WASAPI)"
                     return st
                 except Exception:  # noqa: BLE001 - açılmazsa varsayılan
                     pass
         st = sd.RawInputStream(samplerate=self.RATE, channels=1, dtype="int16", blocksize=self.FRAME,
-                               device=self.device)
+                               device=self.device, latency=self.LATENCY)
         try:
             self.name = str(sd.query_devices(self.device, "input")["name"])
         except Exception:  # noqa: BLE001
