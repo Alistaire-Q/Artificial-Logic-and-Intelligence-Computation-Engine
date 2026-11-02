@@ -74,6 +74,9 @@ class HudSupervisor:
         except OSError:
             self.proc = None
 
+    def alive(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
+
     def _run(self) -> None:
         while not self._stop.wait(self.check_every):
             self.check()

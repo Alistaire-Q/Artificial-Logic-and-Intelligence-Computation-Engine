@@ -76,7 +76,8 @@ class Receiver:
             except OSError:
                 if self._stop.is_set():
                     return
-                continue  # Windows: ConnectionResetError gibi geçici hatalar dinlemeyi bitirmesin
+                self._stop.wait(0.2)  # geçici hata dinlemeyi bitirmesin, kalıcı hata da çekirdeği yemesin
+                continue
             msg = parse(raw)
             if msg is not None:
                 self.out.put(msg)
