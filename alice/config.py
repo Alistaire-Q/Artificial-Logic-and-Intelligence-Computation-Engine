@@ -249,6 +249,12 @@ missile_vision = false
 # vision_region = [x, y, genişlik, yükseklik]
 # Renk eşikleri ve doğrulama: [sims.vision] red_min, red_margin, min_pixels, confirm, window, hold, fps
 
+# Gece döngüsü ve rüya modu: gece 03-07 arası kendi kayıtlarını okur (tekrarlayan hata, gereksiz anons, yanlış
+# uyanma, bozulan araç), bağlantıları arar; sabah bir kez "şunları buldum, düzelteyim mi?" der. Kod değiştirmez.
+# Elle: alice night. Rapor: ~/.alice/night/
+[night]
+enabled = true
+
 # Ekran üstü HUD (`alice hud`): oyunun ve masaüstünün üstüne tehdit oku, kenar parlaması, kart çizer.
 # Tıklamalar alttaki pencereye geçer, odak almaz, ALICE'in ekran görüntülerinde görünmez. Oyuna kod enjekte etmez.
 # Özel tam ekranda (exclusive fullscreen) hiçbir pencere oyunun üstüne çizilemez: oyunu kenarlıksız pencerede aç.
