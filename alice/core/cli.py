@@ -197,6 +197,13 @@ def _start_hud(cfg, core):
     if notifier._desktop in notifier.channels:
         notifier.channels.remove(notifier._desktop)
     notifier.channels.append(lambda n, pol: views.notification(n))
+    # Kritik sınıra yaklaşan sıcaklık/RAM köşede küçük çubuk olarak görünsün (konuşmadan). Kanca sadece HUD açıkken
+    # eklenir: HUD kapalıysa çekirdek turuna hiç maliyeti yok.
+    hooks = getattr(core, "hooks", None)
+    if hooks is not None and getattr(core, "store", None) is not None:
+        from alice.core.watchdogs import SystemGauges
+
+        hooks.append(SystemGauges(core.store, getattr(core, "interval", 15.0)))
     return HudSupervisor(port).start()
 
 

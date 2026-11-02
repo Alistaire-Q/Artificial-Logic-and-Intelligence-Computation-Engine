@@ -63,3 +63,19 @@ def click_target(x: float, y: float, action: str = "click", wait: bool = True) -
     if ok and wait:
         time.sleep(CLICK_PREVIEW)
     return ok
+
+
+def system_gauge(name: str, value: float, limit: float, unit: str, warn: float | None = None,
+                 ttl: float = 25.0) -> bool:
+    """Kritik sınıra yaklaşan bilgisayar değeri köşede küçük bir çubuk: "GPU 89°C". Sınırın altında (varsayılan
+    %90'ı) hiçbir şey göndermez; değer normale dönünce gönderim durur ve çubuk kısa ttl ile kendiliğinden kaybolur.
+    Aynı ad hep aynı kimlikle gider: HUD her turda yeni çubuk açmaz, mevcut olanı yeniler."""
+    if not client.active or limit <= 0:
+        return False
+    warn = 0.9 * limit if warn is None else warn
+    if value < warn:
+        return False
+    sev = "critical" if value >= limit else "warn"
+    text = f"{name} %{value:.0f}" if unit == "%" else f"{name} {value:.0f}{unit}"
+    return client.show("progress", value=round(min(1.0, value / limit), 3), text=text, severity=sev, ttl=ttl,
+                       id=f"sys:{name}")

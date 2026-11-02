@@ -475,3 +475,76 @@ def test_start_hud_replaces_windows_toast_with_card(monkeypatch):
         assert nt._desktop not in nt.channels and len(nt.channels) == 1
     finally:
         client.configure(window.PORT, on=False)
+
+
+# ------------------------------------------------------- sistem göstergesi
+def test_system_gauge_below_and_above_limit(hud_on):
+    from alice.hud import views
+
+    assert not views.system_gauge("GPU", 80, 93, "°C")  # %90'ın altı: sessiz
+    assert views.system_gauge("GPU", 87, 93, "°C", ttl=20)
+    assert views.system_gauge("RAM", 96, 95, "%")
+    assert not views.system_gauge("GPU", 87, 93, "°C", warn=88)  # özel başlangıç değeri
+    assert hud_on == [
+        {"kind": "progress", "ttl": 20, "value": 0.935, "text": "GPU 87°C", "severity": "warn", "id": "sys:GPU"},
+        {"kind": "progress", "ttl": 25.0, "value": 1.0, "text": "RAM %96", "severity": "critical", "id": "sys:RAM"},
+    ]
+
+
+def test_system_gauge_silent_when_hud_is_off(monkeypatch):
+    from alice.core.watchdogs import SystemGauges
+    from alice.hud import views
+
+    monkeypatch.setattr(client, "active", False)
+    monkeypatch.setattr(client, "send", lambda msg: pytest.fail("HUD kapalıyken gönderilmemeli"))
+
+    class NoStore:
+        def last(self, key):
+            pytest.fail("HUD kapalıyken depoya bakılmamalı")
+
+    assert not views.system_gauge("GPU", 99, 93, "°C")
+    assert SystemGauges(NoStore())(None) == []
+
+
+class GaugeStore:
+    def __init__(self, values, ts=1000.0):
+        self.values, self.ts = values, ts
+
+    def last(self, key):
+        return (self.ts, self.values[key], None) if key in self.values else None
+
+
+def test_system_gauges_hook_refreshes_same_id_and_fades(hud_on):
+    from alice.core.watchdogs import SystemGauges
+
+    store = GaugeStore({"pc.gpu.temp": 89.0, "pc.mem.percent": 85.0, "pc.cpu.temp": 70.0})
+    hook = SystemGauges(store, interval=15, clock=lambda: 1005.0)
+    assert hook(None) == ["GPU"] and hook(None) == ["GPU"]  # her turda yeni paket, aynı kimlik
+    assert [m["id"] for m in hud_on] == ["sys:GPU", "sys:GPU"]
+    assert hud_on[0]["ttl"] == 27.5 and hud_on[0]["severity"] == "warn"
+    store.values["pc.mem.percent"] = 96.0
+    assert hook(None) == ["GPU", "RAM"] and hud_on[-1]["severity"] == "critical"
+    store.values.update({"pc.gpu.temp": 75.0, "pc.mem.percent": 60.0})
+    n = len(hud_on)
+    assert hook(None) == [] and len(hud_on) == n  # normale döndü: gönderim durur, çubuk ttl ile söner
+    store.values["pc.gpu.temp"] = 99.0
+    store.ts = 800.0  # bayat ölçüm çubuk açmaz
+    assert hook(None) == []
+
+
+def test_start_hud_adds_system_gauge_hook(monkeypatch):
+    from types import SimpleNamespace
+
+    from alice.core import cli as core_cli
+    from alice.core.notify import Notifier
+    from alice.core.watchdogs import SystemGauges
+    from alice.hud import supervisor
+
+    monkeypatch.setattr(supervisor.HudSupervisor, "start", lambda self: self)
+    core = SimpleNamespace(notifier=Notifier(store=None, policy=lambda: None), hooks=[], store=GaugeStore({}),
+                           interval=10.0)
+    try:
+        core_cli._start_hud(SimpleNamespace(data={"hud": {"enabled": True, "port": 41278}}), core)
+        assert len(core.hooks) == 1 and isinstance(core.hooks[0], SystemGauges) and core.hooks[0].ttl == 20.0
+    finally:
+        client.configure(window.PORT, on=False)

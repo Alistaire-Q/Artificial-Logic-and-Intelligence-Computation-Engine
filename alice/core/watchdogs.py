@@ -8,6 +8,9 @@ dakika sürmeden konuşmaz, aynı uyarıyı 30 dakikada bir tekrarlar, değer s�
 
 NetWatch: internet bağlantısını arka planda 30 sn'de bir yoklar (1.1.1.1 ve 8.8.8.8'e TCP). 45 sn'den uzun kopmayı ve
 geri gelişi (ne kadar kesik kaldığıyla) bildirir, her kesintiyi "net" olayı olarak kaydeder; haftalık özet sayar.
+
+SystemGauges: HUD açıkken aynı sınırlara yaklaşan değeri köşede küçük bir çubuk olarak gösterir (konuşmaz). Sesli
+uyarıların yerine geçmez, onlara eklenir; HUD kapalıyken çekirdeğe hiç bağlanmaz.
 """
 
 from __future__ import annotations
@@ -29,6 +32,14 @@ GAME_LIMITS = (
 GAME_HOLD = 120.0
 GAME_REPEAT = 1800.0
 GAME_PROCS = ("aces", "dcs", "robloxplayerbeta")  # RAM önerisinde oyunun kendisini söyleme
+# HUD çubuğu: (anahtar, ad, birim, görünmeye başladığı değer). Sınır GAME_LIMITS'ten gelir. Sıcaklıkta sınırın %90'ı
+# (GPU 84°C) oyunda normal seviye (85-88): çubuk orada hep açık kalırdı, o yüzden sınırın birkaç derece altından başlar.
+GAUGES = (
+    ("pc.gpu.temp", "GPU", "°C", 88.0),
+    ("pc.cpu.temp", "CPU", "°C", 90.0),
+    ("pc.gpu.mem_percent", "VRAM", "%", 95.0),
+    ("pc.mem.percent", "RAM", "%", 90.0),
+)
 
 
 class GameHealth:
@@ -83,6 +94,33 @@ class GameHealth:
             if last and last[1] is not None and (best is None or last[1] > best[1]):
                 best = (name.removesuffix(".exe").capitalize(), float(last[1]))
         return best if best and best[1] >= 700 else None
+
+
+class SystemGauges:
+    """Çekirdek kancası (her tur çağrılır): sınıra yaklaşan değer için HUD'a çubuk gönderir. Her turda aynı kimlikle
+    yeniden gönderilir; değer düşünce gönderim durur ve çubuk ttl dolunca (yaklaşık bir buçuk tur) kendiliğinden
+    kaybolur."""
+
+    def __init__(self, store, interval: float = 15.0, clock: Callable[[], float] = time.time):
+        self.store = store
+        self.ttl = max(5.0, 1.5 * interval + 5)
+        self.clock = clock
+        self.limits = {key: limit for key, limit, _ in GAME_LIMITS}
+
+    def __call__(self, policy=None) -> list[str]:
+        from alice.hud import client, views
+
+        if not client.active:
+            return []
+        now = self.clock()
+        shown = []
+        for key, name, unit, start in GAUGES:
+            last = self.store.last(key)
+            if not last or last[1] is None or now - last[0] >= 120:  # bayat ölçüm çubuk açmasın
+                continue
+            if views.system_gauge(name, float(last[1]), self.limits[key], unit, warn=start, ttl=self.ttl):
+                shown.append(name)
+        return shown
 
 
 def _online(hosts=(("1.1.1.1", 443), ("8.8.8.8", 53)), timeout: float = 2.0) -> float | None:
