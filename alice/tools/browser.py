@@ -610,6 +610,15 @@ def get_browser(ctx: ToolContext, separate: bool = False) -> BrowserSession:
     if b is not None and not b.alive():  # bağlantı ölmüş: her araç çağrısı "browser has been closed" demesin
         drop_browser(ctx)
         b = None
+    from alice.tools import browser_ext
+
+    hub = None if separate else browser_ext.hub()
+    if hub is not None:  # ALICE eklentisi bağlı: uzaktan hata ayıklama yok, Opera izin sormaz
+        if not getattr(b, "extension", False):
+            drop_browser(ctx)
+            b = ctx.state["browser"] = browser_ext.ExtBrowserSession(hub)
+        b.ensure_page()
+        return b
     if b is None:
         a = ctx.config.agent
         allow = separate or bool(a.get("browser_headless", False)) or bool(a.get("browser_allow_separate", False))
@@ -651,13 +660,15 @@ class Browser(Tool):
     )
     parameters = obj({
         "action": {"type": "string", "enum": ["goto", "snapshot", "click", "type", "select", "press", "scroll", "back",
-                                              "text", "screenshot", "eval", "tabs", "switch_tab", "highlight", "close"],
+                                              "text", "screenshot", "eval", "tabs", "switch_tab", "highlight", "downloads",
+                                              "close"],
                    "description": "goto: url'ye git | snapshot: tıklanabilir öğeleri [ID] ile listele | click: "
                    "element_id'ye tıkla | type: element_id alanına text yaz (submit=true Enter'a basar) | select: "
                    "açılır listede text seçeneğini seç | press: keys tuşuna bas | scroll: amount piksel kaydır | "
                    "back: geri | text: sayfanın düz metni | screenshot: sayfa görüntüsü | eval: js çalıştır | tabs: açık "
                    "sekmeler | switch_tab: index'li sekmeye geç | highlight: element_id'yi kullanıcıya göster (text "
-                   "etiket olur) | close. goto/click/type/press/scroll sonrası güncel "
+                   "etiket olur) | downloads: son indirmeler (dosya, durum; indirme bitti mi diye bak) | close. "
+                   "goto/click/type/press/scroll sonrası güncel "
                    "snapshot otomatik döner."},
         "url": {"type": "string", "description": "goto için adres, ör. 'https://mail.google.com' ya da 'github.com'."},
         "element_id": {"type": "integer", "description": "click/type/select/highlight için son snapshot'taki [ID]."},
@@ -674,7 +685,7 @@ class Browser(Tool):
 
     def risk_for(self, args: dict[str, Any]) -> str:
         a = args.get("action")
-        if a in ("snapshot", "text", "screenshot", "tabs", "highlight"):
+        if a in ("snapshot", "text", "screenshot", "tabs", "highlight", "downloads"):
             return READ
         if a == "goto":
             return NETWORK
@@ -853,6 +864,19 @@ class Browser(Tool):
         if action == "tabs":
             rows = [f"{i}: {b.title_of(p)} - {p.url}{'  <- aktif' if p is b.page else ''}" for i, p in enumerate(b.ctx.pages)]
             return ToolResult("\n".join(rows))
+        if action == "downloads":
+            if not getattr(b, "extension", False):
+                raise ToolError("indirme listesi ALICE tarayıcı eklentisiyle görülür; İndirilenler klasörüne list_dir "
+                                "ile bak")
+            rows = []
+            for d in b.downloads():
+                row = f"{d.get('file') or d.get('url')} | {d.get('state')}"
+                if d.get("error"):
+                    row += f" | hata: {d['error']}"
+                elif d.get("state") != "complete" and d.get("total"):
+                    row += f" | %{100 * int(d.get('bytes') or 0) // int(d['total'])}"
+                rows.append(row)
+            return ToolResult("\n".join(rows) or "indirme yok")
         if action == "switch_tab":
             pages = b.ctx.pages
             if index is None or not 0 <= index < len(pages):

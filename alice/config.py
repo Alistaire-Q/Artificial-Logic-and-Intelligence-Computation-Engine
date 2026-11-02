@@ -82,6 +82,9 @@ browser_cdp = "http://127.0.0.1:9222"
 # Kullanıcının tarayıcısına (opera://inspect "Allow remote debugging") ALICE'ten bağımsız küçük bir köprü süreci
 # bağlanır; çekirdek yeniden başlasa da tarayıcı izni tekrar sormaz. 0 = köprü yok, doğrudan bağlan.
 browser_bridge_port = 9339
+# ALICE tarayıcı eklentisi (alice/extension, opera://extensions'ta "paketlenmemiş yükle") bu porta bağlanır. Bağlıyken
+# yukarıdaki uzaktan hata ayıklama hiç kullanılmaz: izin penceresi yok, indirmeler/tema ellenmez. 0 = kapalı.
+browser_ext_port = 9340
 # true: rol zincirinde "auto" yazmasan da ölçülen en iyi ücretsiz modeller zincirin sonuna eklenir.
 auto_models = true
 # Arayüzde gizlenen modeller ya da sağlayıcılar ("groq" ya da "groq:model"): otomatik zincirlerde kullanılmaz.

@@ -56,6 +56,8 @@ def core_cmd(argv: list[str]) -> int:
         core.greeter.voice = voice  # karşılamadan sonra "Hey Alice" demeden cevap verilebilsin
         if cfg.data.get("voice", {}).get("enabled") and "--once" not in argv:
             core.voice = "listening" if voice is not None else "no-mic"
+        if "--once" not in argv:
+            _start_browser_ext(cfg)
         hud = _start_hud(cfg, core) if (cfg.data.get("hud", {}) or {}).get("enabled") and "--once" not in argv else None
         sims = _start_sims(cfg, core, show=_hud_show(hud)) if "--once" not in argv else None
         tl = _start_timeline(cfg, core) if (cfg.data.get("timeline", {}) or {}).get("enabled") and             "--once" not in argv else None
@@ -183,6 +185,20 @@ def _start_sims(cfg, core, show=None):
 
     return SimHub(cfg.data.get("sims", {}), core.store, core.notifier, processes=lambda: core.pc.processes,
                   show=show).start()
+
+
+def _start_browser_ext(cfg) -> None:
+    """ALICE tarayıcı eklentisinin bağlanacağı yerel sunucu. Eklenti bağlıyken tarayıcı aracı uzaktan hata ayıklamayı
+    hiç kullanmaz (Opera her açılışta izin sormaz). websockets yoksa ya da port doluysa sessizce eski yol."""
+    port = int(cfg.agent.get("browser_ext_port", 9340) or 0)
+    if not port:
+        return
+    try:
+        from alice.tools import browser_ext
+
+        browser_ext.start_hub(port)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _start_hud(cfg, core):

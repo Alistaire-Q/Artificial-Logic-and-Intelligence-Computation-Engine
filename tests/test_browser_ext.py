@@ -1,0 +1,237 @@
+"""ALICE tarayıcı eklentisi: uzaktan hata ayıklama olmadan kullanıcının sekmelerinde çalışma."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import re
+import socket
+import threading
+from pathlib import Path
+
+import pytest
+
+from alice.tools import browser, browser_ext
+from alice.tools.base import ToolContext, ToolError
+from tests.conftest import make_config
+
+EXT = Path(browser_ext.__file__).resolve().parent.parent / "extension"
+
+
+def free_port() -> int:
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+# ------------------------------------------------------------------ eklenti dosyaları
+def test_extension_manifest_and_snapshot_match_python():
+    m = json.loads((EXT / "manifest.json").read_text(encoding="utf-8"))
+    assert m["manifest_version"] == 3 and m["background"]["service_worker"] == "background.js"
+    assert {"tabs", "scripting", "downloads"} <= set(m["permissions"])
+    for f in ("background.js", "popup.html", "popup.js", "icon.png"):
+        assert (EXT / f).exists()
+    js = (EXT / "background.js").read_text(encoding="utf-8")
+    assert f"ws://127.0.0.1:{browser_ext.EXT_PORT}{browser_ext.PATH}" in js
+    # Öğe seçicisi ve ID'ler Playwright yoluyla birebir aynı: aynı sayfada aynı [ID]'ler
+    sel = re.compile(r"const sel = ('[^;]+);", re.S)
+    norm = lambda s: re.sub(r"'\s*\+\s*'", "", re.sub(r"\s+", " ", s))  # noqa: E731
+    assert norm(sel.search(js).group(1)) == norm(sel.search(browser.SNAPSHOT_JS).group(1))
+    for fn in ("snapshot", "place", "fill", "click", "select", "key", "scroll", "reveal", "outline", "text"):
+        # sayfaya metin olarak kopyalanır: kısa yöntem "ad(...) {}" orada çalışmıyor, sessizce boş dönüyordu
+        assert re.search(rf"\n  {fn}: function \(", js), fn
+    assert not re.search(r"\n  \w+\([^)]*\) \{", js.split("const PAGE = {", 1)[1])
+
+
+# ------------------------------------------------------------------ yerel sunucu
+def _fake_extension(port: int, origin: str, handler, ready: threading.Event, stop: threading.Event):
+    from websockets.asyncio.client import connect
+
+    async def main():
+        async with connect(f"ws://127.0.0.1:{port}{browser_ext.PATH}", origin=origin) as ws:
+            await ws.send(json.dumps({"hello": {"version": "1.0.0"}}))
+            ready.set()
+            while not stop.is_set():
+                try:
+                    raw = await asyncio.wait_for(ws.recv(), 0.1)
+                except asyncio.TimeoutError:
+                    continue
+                msg = json.loads(raw)
+                try:
+                    reply = {"id": msg["id"], "result": handler(msg["method"], msg["params"])}
+                except Exception as e:  # noqa: BLE001
+                    reply = {"id": msg["id"], "error": str(e)}
+                await ws.send(json.dumps(reply))
+
+    asyncio.run(main())
+
+
+def test_hub_talks_to_extension_and_rejects_web_pages():
+    pytest.importorskip("websockets")
+    port = free_port()
+    h = browser_ext.ExtHub(port).start()
+    assert not h.connected
+    with pytest.raises(ConnectionError):
+        h.call("tabs")
+    ready, stop = threading.Event(), threading.Event()
+
+    def handler(method, params):
+        if method == "boom":
+            raise RuntimeError("olmadı")
+        return {"echo": method, "params": params}
+
+    t = threading.Thread(target=_fake_extension, args=(port, "chrome-extension://abc", handler, ready, stop),
+                         daemon=True)
+    t.start()
+    assert ready.wait(5)
+    for _ in range(100):
+        if h.connected and h.info:
+            break
+        threading.Event().wait(0.02)
+    assert h.connected and h.info == {"version": "1.0.0"}
+    assert h.call("tabs", tabId=3) == {"echo": "tabs", "params": {"tabId": 3}}
+    with pytest.raises(ToolError, match="olmadı"):
+        h.call("boom")
+    # Web sayfası (http kökenli) yerel sunucuya bağlanıp tarayıcıyı yönetemesin
+    from websockets.asyncio.client import connect
+    from websockets.exceptions import InvalidStatus
+
+    async def evil():
+        async with connect(f"ws://127.0.0.1:{port}{browser_ext.PATH}", origin="https://evil.example"):
+            pass
+
+    with pytest.raises(InvalidStatus):
+        asyncio.run(evil())
+    stop.set()
+    t.join(3)
+    for _ in range(100):
+        if not h.connected:
+            break
+        threading.Event().wait(0.02)
+    assert not h.connected
+
+
+# ------------------------------------------------------------------ Playwright taklidi
+class FakeHub:
+    """Eklentinin yerine: sekmeler ve sayfa işlevleri bellekte."""
+
+    connected = True
+
+    def __init__(self):
+        self.tabs = [{"id": 1, "windowId": 9, "title": "YouTube", "url": "https://www.youtube.com/watch?v=x",
+                      "active": True},
+                     {"id": 2, "windowId": 9, "title": "Sonora", "url": "https://sonorahq.org/", "active": False}]
+        self.calls: list[tuple[str, dict]] = []
+        self.visible = False  # pencere arkada: sayfa içi olaylara düşülür
+        self.elements = {1: {"id": 1, "tag": "a", "role": "", "type": "", "text": "Install", "placeholder": "",
+                             "value": "", "href": "#install", "inView": True},
+                         2: {"id": 2, "tag": "input", "role": "", "type": "text", "text": "", "placeholder": "Ara",
+                             "value": "", "href": "", "inView": True}}
+
+    def tab(self, tid):
+        return next(t for t in self.tabs if t["id"] == tid)
+
+    def call(self, method, _timeout=15.0, **p):
+        self.calls.append((method, p))
+        if method == "tabs":
+            return {"tabs": self.tabs, "focusedWindow": 9}
+        if method == "tab":
+            return self.tab(p["tabId"])
+        if method == "focus":
+            for t in self.tabs:
+                t["active"] = t["id"] == p["tabId"]
+            return self.tab(p["tabId"])
+        if method == "wait":
+            return self.tab(p["tabId"])
+        if method == "navigate":
+            self.tab(p["tabId"])["url"] = p["url"]
+            return self.tab(p["tabId"])
+        if method == "create":
+            t = {"id": 10 + len(self.tabs), "windowId": 9, "title": "", "url": p.get("url") or "about:blank",
+                 "active": True}
+            self.tabs.append(t)
+            return t
+        if method == "downloads":
+            return [{"file": "C:\\Users\\k\\Downloads\\Sonora-Setup.exe", "url": "u", "state": "in_progress",
+                     "error": "", "bytes": 50, "total": 200}]
+        if method == "run":
+            fn, args = p["fn"], p["args"]
+            if fn == "snapshot":
+                return list(self.elements.values())
+            if fn == "place":
+                if args[0] is not None and args[0] not in self.elements:
+                    raise ToolError("öğe yok")
+                return {"left": 10, "top": 20, "width": 100, "height": 30, "sx": 0, "sy": 0, "ow": 1000, "oh": 800,
+                        "iw": 1000, "ih": 720, "dpr": 1.0, "visible": self.visible}
+            if fn == "text":
+                return "Sonora metni"
+            return True
+        raise AssertionError(method)
+
+
+@pytest.fixture
+def ext(monkeypatch, tmp_path):
+    fh = FakeHub()
+    monkeypatch.setattr(browser_ext, "_HUB", fh)
+    monkeypatch.setattr(browser_ext, "_os_ok", lambda: False)  # testte gerçek fare/klavye yok
+    ctx = ToolContext(cwd=tmp_path, config=make_config({"brain": ["a:m"]}, tool_output_chars=4000))
+    return fh, ctx
+
+
+def test_get_browser_prefers_extension_over_cdp(ext):
+    fh, ctx = ext
+    b = browser.get_browser(ctx)
+    assert isinstance(b, browser_ext.ExtBrowserSession) and b.attached
+    assert b.page.tab_id == 1  # öndeki penceredeki etkin sekme
+    assert browser.get_browser(ctx) is b
+
+
+def test_browser_tool_works_through_extension(ext):
+    fh, ctx = ext
+    tool = browser.Browser()
+    r = tool.run(ctx, "goto", url="sonorahq.org/download")
+    assert "açıldı" in r.text and "[1] a 'Install'" in r.text
+    assert ("focus", {"tabId": 2}) in fh.calls  # açık Sonora sekmesi kullanıldı, yeni sekme açılmadı
+    assert any(c == "navigate" and p["tabId"] == 2 for c, p in fh.calls)
+    r = tool.run(ctx, "type", element_id=2, text="nükleer", submit=True)
+    assert ("run", {"tabId": 2, "fn": "fill", "args": [2, "nükleer"]}) in fh.calls
+    assert ("run", {"tabId": 2, "fn": "key", "args": ["Enter"]}) in fh.calls  # pencere arkada: sayfa içi Enter
+    tool.run(ctx, "click", element_id=1)
+    assert ("run", {"tabId": 2, "fn": "click", "args": [1, "left", 1]}) in fh.calls
+    with pytest.raises(ToolError, match="öğe bulunamadı"):
+        tool.run(ctx, "click", element_id=99)
+    assert "Sonora metni" in tool.run(ctx, "text").text
+    tabs = tool.run(ctx, "tabs").text
+    assert "1: Sonora - https://sonorahq.org/download  <- aktif" in tabs
+    dl = tool.run(ctx, "downloads").text
+    assert "Sonora-Setup.exe | in_progress | %25" in dl
+
+
+def test_extension_clicks_with_real_mouse_when_window_is_in_front(ext, monkeypatch):
+    fh, ctx = ext
+    fh.visible = True
+    monkeypatch.setattr(browser_ext, "_os_ok", lambda: True)
+    clicks = []
+    from alice.tools import computer
+
+    monkeypatch.setattr(computer, "_dpi_aware", lambda: None)
+    monkeypatch.setattr(computer, "_pyautogui", lambda: type("PG", (), {"click": staticmethod(
+        lambda *a, **k: clicks.append((a, k)))})())
+    monkeypatch.setattr(browser_ext.time, "sleep", lambda s: None)
+    b = browser.get_browser(ctx)
+    b.locator(1).click()
+    assert clicks and clicks[0][0] == (60, 115)  # öğenin ekrandaki ortası (sol 10+50, üst 80 araç çubuğu+20+15)
+    assert not any(c == "run" and p["fn"] == "click" for c, p in fh.calls)
+
+
+def test_reflex_browser_observer_runs_on_extension(ext):
+    from alice.reflex.observers import BrowserObserver
+
+    fh, ctx = ext
+    obs = BrowserObserver(ctx)
+    ob = obs.observe()
+    assert ob.location.startswith("https://www.youtube.com") and [e.label for e in ob.elements] == ["Install", "Ara"]
+    obs.type(2, "merhaba", submit=False)
+    assert ("run", {"tabId": 1, "fn": "fill", "args": [2, "merhaba"]}) in fh.calls

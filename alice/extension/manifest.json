@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "ALICE",
+  "version": "1.0.0",
+  "description": "ALICE'in tarayıcıyı senin sekmelerinde kullanması için (uzaktan hata ayıklama ve izin penceresi olmadan).",
+  "minimum_chrome_version": "116",
+  "background": {"service_worker": "background.js"},
+  "permissions": ["tabs", "scripting", "downloads", "alarms", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "action": {"default_title": "ALICE", "default_popup": "popup.html"},
+  "icons": {"128": "icon.png"}
+}
