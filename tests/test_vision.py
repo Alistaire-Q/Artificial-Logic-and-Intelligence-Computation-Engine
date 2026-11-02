@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import math
 
-import numpy as np
 import pytest
 
-from alice.sims import vision
-from alice.sims.vision import Confirmer, Detection, MissileWatcher, detect, region_of
+np = pytest.importorskip("numpy")  # ekrandan füze görme numpy ister; CI'da kurulu değil
+
+from alice.sims import vision  # noqa: E402
+from alice.sims.vision import Confirmer, Detection, MissileWatcher, detect, region_of  # noqa: E402
 
 
 def frame(clock: int | None = None, color=(255, 40, 30), size=120, blob=6, extra=None):
