@@ -274,6 +274,43 @@ def test_flight_threats_also_show_on_hud():
     assert any(x.startswith("Arkanda düşman") for x in r.texts())  # ses aynen devam ediyor
 
 
+def test_flight_fuel_and_kill_show_on_hud():
+    from tests.test_sims import Recorder, st
+
+    from alice.sims.flight import FlightCompanion, TouchdownTracker
+
+    r, shown = Recorder(), []
+    c = FlightCompanion(r.say, show=lambda kind, **kw: shown.append((kind, kw)))
+    tr = TouchdownTracker(c)
+    tr.feed(st(0, ias=80, agl=30, x=None, z=None))
+    fuel = 2400.0
+    for i in range(1, 2400):
+        fuel -= 1.0
+        tr.feed(st(i, fuel_kg=fuel, burn_kgs=None, x=None, z=None))
+        if fuel <= 150:
+            break
+    tr.feed(st(2400, x=None, z=None, extra={"hud": [("kill", "MiG-29SMT")]}))
+    fuel_lbl = [(kw["text"], kw["severity"], kw["ttl"]) for k, kw in shown if k == "label" and kw["id"] == "fuel"]
+    assert fuel_lbl == [("YAKIT ~10 dk", "warn", 6.0), ("YAKIT ~5 dk", "critical", 6.0)]
+    cards = [kw for k, kw in shown if k == "card"]
+    assert cards == [{"title": "Düşürdün", "text": "MiG-29SMT", "severity": "info", "ttl": 4.0, "id": "kill"}]
+
+
+def test_flight_fuel_and_kill_hud_failure_keeps_speech():
+    from tests.test_sims import Recorder, st
+
+    from alice.sims.flight import FlightCompanion
+
+    def boom(kind, **kw):
+        raise RuntimeError("HUD bozuk")
+
+    r = Recorder()
+    c = FlightCompanion(r.say, show=boom)
+    c._hud(st(1, extra={"hud": [("kill", "Bf 109")]}))
+    c._label("YAKIT ~5 dk", "critical", "fuel", 6.0)
+    assert r.texts() == ["Düşürdün: Bf 109."]
+
+
 def test_flight_hud_failure_does_not_break_callouts():
     from tests.test_sims import Recorder, st
 
