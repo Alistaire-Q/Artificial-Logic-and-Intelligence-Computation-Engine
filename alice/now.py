@@ -129,7 +129,9 @@ def snapshot(store: Any, now: float | None = None, flights: list[dict[str, Any]]
 def advise(s: Snapshot) -> list[str]:
     out = []
     if s.recent >= 3 and s.shot_from_six >= max(2, s.recent // 2 + 1):
-        out.append(f"Son {s.recent} uçuşunun {s.shot_from_six}'ünde düşmeden önce arkanda düşman vardı: dönüşlerde "
+        from alice.sims.coach import ek
+
+        out.append(f"Son {s.recent} uçuşunun {ek(s.shot_from_six)}nde düşmeden önce arkanda düşman vardı: dönüşlerde "
                    "arkanı kontrol et, alçakta uzun dönme.")
     if s.avg_min_today and s.avg_min_usual and s.flights_today >= 3 and s.avg_min_today < s.avg_min_usual * 0.7:
         out.append(f"Bugün uçuşların ortalama {s.avg_min_today:.1f} dakika sürüyor, normalde {s.avg_min_usual:.1f}.")
@@ -152,7 +154,9 @@ def line(s: Snapshot) -> str:
     if s.flights_today:
         parts.append(f"bugün {s.flights_today} uçuş" + (f", ort {s.avg_min_today:.1f} dk" if s.avg_min_today else ""))
     if s.recent and s.shot_from_six:
-        parts.append(f"son {s.recent} uçuşun {s.shot_from_six}'ünde arkadan")
+        from alice.sims.coach import ek
+
+        parts.append(f"son {s.recent} uçuşun {ek(s.shot_from_six)}nde arkadan")
     if s.hr is not None:
         parts.append(f"nabız {s.hr:.0f}")
     return ", ".join(parts)

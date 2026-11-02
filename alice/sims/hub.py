@@ -29,6 +29,9 @@ class SimHub:
         self._parts: list = []
         self._briefed: str = ""  # brifingi verilen görev (yol + değişme zamanı): aynı görev için bir kez
         self._fullscreen_said = False
+        self._coach_said: dict[str, str] = {}  # desen -> söylendiği gün
+        self._coach_last = 0.0
+        self._break_last = 0.0
 
     def _fullscreen_check(self, game: str) -> None:
         """HUD açıkken oyun özel tam ekrandaysa oklar görünmez: çekirdek çalıştığı sürece bir kez söyle."""
@@ -92,7 +95,7 @@ class SimHub:
                 tracker.feed(s)
 
             try:
-                self._parts.append(DCSListener(feed, comp.restricted, comp.session_end,
+                self._parts.append(DCSListener(feed, comp.restricted, lambda c=comp: self._session_end(c),
                                                lambda rows: self.store.add_many(rows),
                                                port=int(self.cfg.get("dcs_port", PORT))).start())
             except OSError as e:
@@ -116,11 +119,46 @@ class SimHub:
                         s.extra["contacts"] = list(s.extra.get("contacts") or []) + seen
                 tracker.feed(s)
 
-            self._parts.append(WarThunderPoller(wt_feed, comp.session_end,
+            self._parts.append(WarThunderPoller(wt_feed, lambda c=comp: self._session_end(c),
                                                 lambda rows: self.store.add_many(rows), running=running,
                                                 nick=str(self.cfg.get("warthunder_nick") or "") or None).start())
         ACTIVE = self
         return self
+
+    COACH_GAP = 20 * 60.0   # iki koçluk cümlesi arası en az (sn)
+    BREAK_GAP = 45 * 60.0   # "ara ver" önerisi en sık
+
+    def _session_end(self, comp: FlightCompanion) -> None:
+        """Ölüm / maç sonu: uçuşu kapat, sonra ölüm desenlerine ve ruh haline arka planda bak."""
+        comp.session_end()
+        threading.Thread(target=self._after_death, args=(comp,), daemon=True, name="alice-coach").start()
+
+    def _after_death(self, comp: FlightCompanion, now: float | None = None) -> None:
+        from datetime import date
+
+        from alice import mood
+        from alice.sims import coach
+
+        now = time.time() if now is None else now
+        try:
+            flights = coach.load_flights(limit=40)
+            events = self.store.events(since=now - 6 * 3600, kind="flight", limit=5000)
+            found = coach.patterns(coach.contexts(flights, events))
+            m = mood.current(self.store, now, flights=flights)
+        except Exception:  # noqa: BLE001 - koçluk uçuşu bozmasın
+            return
+        comp.coach_flags = set(found)
+        comp.calm = m.level == "tilt"
+        if m.level == "tilt" and now - self._break_last >= self.BREAK_GAP:
+            self._break_last = now
+            self._say("Üst üste düştün. Bir maç ara vermek iyi gelebilir.", "info", "calm")
+            return
+        today = date.fromtimestamp(now).isoformat()
+        for key, text in found.items():
+            if self._coach_said.get(key) != today and now - self._coach_last >= self.COACH_GAP:
+                self._coach_said[key], self._coach_last = today, now
+                self._say(text, "info", "calm")
+                break
 
     def _missile_vision(self):
         """[sims] missile_vision açık ve RWR bölgesi ayarlıysa ekrandan füze görme (alice/sims/vision.py)."""

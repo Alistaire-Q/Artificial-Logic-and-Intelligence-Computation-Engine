@@ -293,6 +293,8 @@ class FlightCompanion:
         # Tehdit seslerinin son zamanları ölünce/yeniden doğunca sıfırlanmaz: War Thunder'da her doğuşta aynı
         # gemiler, aynı uçaksavarlar yeniden "menzilindesin" diye sayılıyordu.
         self.threat_mem: dict[str, float] = {}
+        self.coach_flags: set[str] = set()  # ölüm desenleri (alice/sims/coach.py): maç içinde bir kez öğüt
+        self.calm = False                   # tilt (alice/mood.py): daha az konuş
         self.reset()
 
     def reset(self) -> None:
@@ -347,6 +349,7 @@ class FlightCompanion:
         self.bandit_close = False                 # en yakın düşman 5 km içinde (7 km'de yeniden kurulur)
         self.nose_since: float | None = None      # War Thunder: düşmanın burnu bize dönük (füze atabilir) başlangıcı
         self.sam_inside: set[str] = set()         # menzilinde olduğumuz hava savunması türleri
+        self.coached: set[str] = set()            # bu oturumda verilen öğütler
         self.hud_on: dict[str, float] = {}        # HUD oku kimliği -> bu görülmenin başladığı an
         self.hud_seen: dict[str, float] = {}      # tehdidin son görüldüğü an (ara verip dönerse yeni görülme)
         self.hud_sent: dict[str, float] = {}
@@ -445,13 +448,24 @@ class FlightCompanion:
         except Exception:  # noqa: BLE001
             pass
 
+    def _hint(self, *keys: str) -> str:
+        """Ölüm desenine uyan kısa öğüt, oturumda bir kez (anons değil koçluk)."""
+        from alice.sims.coach import HINTS
+
+        for k in keys:
+            if k in self.coach_flags and k not in self.coached:
+                self.coached.add(k)
+                return " " + HINTS[k]
+        return ""
+
     def _may_say(self, t: float, key: str, every: float) -> bool:
         """Tehdit sesine izin: bu anahtar en sık 'every' sn'de bir, bütün tehdit sesleri arasında en az THREAT_GAP.
         İzin verirse zamanı yazar. Füze ve kilit bundan geçmez, her zaman söylenir."""
         m = self.threat_mem
         if any(v > t + 5 for v in m.values()):  # yeni görev: sim zamanı başa döndü
             m.clear()
-        if t - m.get(key, -1e9) < every or t - m.get("threat", -1e9) < self.THREAT_GAP:
+        gap = self.THREAT_GAP * (2 if self.calm else 1)  # sinirliyken daha az konuş
+        if t - m.get(key, -1e9) < every or t - m.get("threat", -1e9) < gap:
             return False
         m[key] = m["threat"] = t
         return True
@@ -504,7 +518,8 @@ class FlightCompanion:
         near = planes[0]
         six = next((c for c in planes if c["dist_m"] <= self.SIX_RANGE and c.get("clock") in (4, 5, 6, 7, 8)), None)
         if six is not None and self._may_say(t, "six", self.SIX_REPEAT):
-            self.say(f"Arkanda düşman, saat {six['clock']}, {self._km(six['dist_m'])}!", "warn", "urgent")
+            self.say(f"Arkanda düşman, saat {six['clock']}, {self._km(six['dist_m'])}!"
+                     + self._hint("low_turn_six", "six"), "warn", "urgent")
             self._point(t, six["clock"], f"ARKANDA · {self._km_short(six['dist_m'])}", "critical", "six", edge=True)
             self.bandit_close = True
             return
@@ -564,7 +579,8 @@ class FlightCompanion:
                 self.threat_mem[f"sam:{f['name']}"] = s.t
             c = min(fresh, key=lambda f: f["dist_m"])
             name = c["name"]
-            self.say(f"{name[0].upper() + name[1:]} menzilindesin: saat {c['clock']}, {self._km(c['dist_m'])}.",
+            self.say(f"{name[0].upper() + name[1:]} menzilindesin: saat {c['clock']}, {self._km(c['dist_m'])}."
+                     + self._hint("sam"),
                      "warn", "serious")
             self._point(s.t, c["clock"], f"{name} · {self._km_short(c['dist_m'])}", "warn", f"sam:{name}")
 
@@ -814,7 +830,7 @@ class FlightCompanion:
 
     def _info(self, s: FlightState, text: str, emotion: str = "calm") -> None:
         """Önemsiz anons: bir öncekinin üstüne binmesin, sıkışırsa söylenmeden geçilsin."""
-        if s.t - self.info_last < self.INFO_GAP:
+        if self.calm or s.t - self.info_last < self.INFO_GAP:  # tilt'te önemsiz anons yok
             return
         self.info_last = s.t
         self.say(text, "info", emotion)
