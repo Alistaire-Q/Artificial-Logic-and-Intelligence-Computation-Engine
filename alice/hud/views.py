@@ -1,6 +1,7 @@
-"""HUD'da ne, nasıl görünür: bildirim kartı, konuşmanın yazılı özeti, tıklamadan önce hedef çerçevesi.
+"""HUD'da ne, nasıl görünür: bildirim kartı, konuşmanın yazılı özeti, tıklamadan önce hedef çerçevesi,
+tarayıcıda üzerinde çalışılan ya da kullanıcıya gösterilen öğenin çerçevesi.
 
-Çağıranlar (bildirimler, ses, bilgisayar kullanımı) yalnızca bunları çağırır. HUD açık değilse hiçbiri bir şey
+Çağıranlar (bildirimler, ses, bilgisayar kullanımı, tarayıcı) yalnızca bunları çağırır. HUD açık değilse hiçbiri bir şey
 yapmaz ve beklemez.
 """
 
@@ -79,3 +80,18 @@ def system_gauge(name: str, value: float, limit: float, unit: str, warn: float |
     text = f"{name} %{value:.0f}" if unit == "%" else f"{name} {value:.0f}{unit}"
     return client.show("progress", value=round(min(1.0, value / limit), 3), text=text, severity=sev, ttl=ttl,
                        id=f"sys:{name}")
+
+
+PAGE_TTL = 1.5  # sn: tarayıcıda tıklanan/yazılan öğenin çerçevesi
+SHOW_TTL = 6.0  # sn: kullanıcıya gösterilen öğe (browser action=highlight) daha uzun kalır
+
+
+def page_target(x: float, y: float, w: float, h: float, label: str = "", ttl: float = PAGE_TTL,
+                wait: bool = False) -> bool:
+    """Tarayıcıdaki bir öğeyi ekranda çerçevele (fiziksel ekran pikseli, x/y sol üst köşe)."""
+    if not client.active or w < 2 or h < 2:
+        return False
+    ok = client.show("box", x=x, y=y, w=w, h=h, text=label[:40], severity="info", ttl=ttl, id="browser")
+    if ok and wait:
+        time.sleep(CLICK_PREVIEW)
+    return ok
