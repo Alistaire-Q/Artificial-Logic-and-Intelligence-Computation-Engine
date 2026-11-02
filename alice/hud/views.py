@@ -66,6 +66,21 @@ def click_target(x: float, y: float, action: str = "click", wait: bool = True) -
     return ok
 
 
+TASK_TTL = 45.0  # sn: ekran görevi her adımda yeniler; görev takılıp ölürse durum kendiliğinden kaybolur
+
+
+def task_step(step: int) -> bool:
+    """Ekran görevi sürerken Adada durum: model adımlar arasında 5-15 sn düşünüyor, HUD boş kalmasın."""
+    if not client.active:
+        return False
+    text = f"Ekran görevi · {step}. adım" if step else "Ekran görevi · başlıyor"
+    return client.show("label", text=text, icon="cursor", severity="info", ttl=TASK_TTL, id="task")
+
+
+def task_end() -> bool:
+    return client.clear("task") if client.active else False
+
+
 def system_gauge(name: str, value: float, limit: float, unit: str, warn: float | None = None,
                  ttl: float = 25.0) -> bool:
     """Kritik sınıra yaklaşan bilgisayar değeri köşede küçük bir çubuk: "GPU 89°C". Sınırın altında (varsayılan

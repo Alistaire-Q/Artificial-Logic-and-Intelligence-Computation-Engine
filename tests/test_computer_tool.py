@@ -455,6 +455,46 @@ def test_computer_task_runs_agent(ctx, fake_agent_mod):
     assert not ca._RUNNING.locked()
 
 
+def test_computer_task_shows_progress_on_hud(ctx, fake_agent_mod, monkeypatch):
+    """Canlı kayıt: ekran görevi sürerken HUD'da hiçbir şey yoktu (adım arası 5-20 sn boş)."""
+    from alice.hud import client
+
+    sent = []
+    monkeypatch.setattr(client, "active", True)
+    monkeypatch.setattr(client, "send", lambda m: sent.append(m) or True)
+
+    class StepAgent:
+        def __init__(self, screen, ask, emit, stop):
+            self.emit = emit
+
+        def run(self, goal, max_steps):
+            self.emit("1. [{\"action\": \"click\"}] -> click (10,10)")
+            return _FakeRes("done")
+
+    import alice.computer_agent as ca
+
+    monkeypatch.setattr(ca, "ComputerAgent", StepAgent)
+    ctx.router = object()
+    computer.ComputerTask().run(ctx, goal="g")
+    texts = [m.get("text") for m in sent if m.get("id") == "task"]
+    assert texts[:2] == ["Ekran görevi · 1. adım", "Ekran görevi · 2. adım"]
+    assert sent[-1] == {"kind": "clear", "id": "task"}  # bitince Adadan kalkar
+
+
+def test_screen_act_frames_click_on_hud(monkeypatch):
+    import alice.computer_agent as ca
+    from alice.hud import views
+    from alice.tools import computer as comp
+
+    seen, clicks = [], []
+    monkeypatch.setattr(views, "click_target", lambda x, y, action="click", wait=True: seen.append((x, y, action)))
+    monkeypatch.setattr(comp, "_pyautogui", lambda: type("PG", (), {"click": staticmethod(
+        lambda *a, **k: clicks.append(a))})())
+    shot = ca.Shot("", 0, 0, 1000, 1000, [], "")
+    ca.Screen(None).act({"action": "right_click", "point": [500, 250]}, shot)
+    assert seen == [(250, 500, "right_click")] and clicks == [(250, 500)]
+
+
 @pytest.mark.parametrize("given,expected", [(0, 30), (-4, 1), (None, 30), (12, 12)])
 def test_computer_task_max_steps_clamp(ctx, fake_agent_mod, given, expected):
     ctx.router = object()

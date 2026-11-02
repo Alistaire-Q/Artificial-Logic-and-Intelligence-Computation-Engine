@@ -236,6 +236,9 @@ class Screen:
             return f"tuş: {a.get('keys')}"
         pg = _pyautogui()
         x, y = self.point(a, shot)
+        from alice.hud import views
+
+        views.click_target(x, y, kind)  # HUD açıksa nereye tıklayacağını önceden göster
         if kind in ("click", "double_click", "right_click"):
             pg.click(x, y, clicks=2 if kind == "double_click" else 1, button="right" if kind == "right_click" else "left",
                      interval=0.08)

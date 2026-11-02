@@ -12,6 +12,7 @@ import re
 import socket
 import sys
 import threading
+import time
 import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
@@ -549,6 +550,7 @@ def connection_lost(e: BaseException) -> bool:
 
 # Bir eylemin en uzun süresi (sn). Playwright'ın bazı çağrıları (CDP komutları, ölü bağlantıdaki istekler) süre
 # sınırı tanımıyor; süre dolunca sürücü öldürülür ki ALICE dakikalarca "çalışıyor" diye takılı kalmasın.
+ROOT_AGAIN = 60.0  # sn: bu sürede aynı sitenin ana sayfası yine istenirse açık sekmeyi ana sayfaya götür
 ACTION_BUDGET = {"goto": 120.0, "back": 60.0, "screenshot": 40.0}
 DEFAULT_BUDGET = 45.0
 CONNECT_BUDGET = 70.0  # yeni bağlantı: tarayıcı kullanıcıdan izin isteyebilir (connect_over_cdp 60 sn bekler)
@@ -763,8 +765,16 @@ class Browser(Tool):
             if b.attached:  # kullanıcının kendi tarayıcısı: açık site sekmesini kullan, her seferinde yeni açma
                 b.page = page = b.tab_for(url)
                 page.bring_to_front()
-                if host_of(page.url) == host_of(url) and urlparse(url).path.strip("/") == "" and not urlparse(url).query:
-                    return snap(f"zaten açık sekmeye geçildi: {b.title_of(page)}")  # içindekini (çalan video) bozma
+                root = urlparse(url).path.strip("/") == "" and not urlparse(url).query
+                if host_of(page.url) == host_of(url) and root:
+                    # İlk istekte içindekini (çalan video) bozma; kısa sürede aynı ana sayfa yine istenirse
+                    # ("ana sayfaya geç") gerçekten git: model sekmenin hâlâ videoda olduğunu görüp tekrar istemiştir.
+                    last = ctx.state.get("browser_root_switch")
+                    ctx.state["browser_root_switch"] = (host_of(url), time.monotonic())
+                    if not (last and last[0] == host_of(url) and time.monotonic() - last[1] < ROOT_AGAIN):
+                        at = "" if urlparse(page.url).path.strip("/") == "" else (
+                            " (sekme sitenin içinde; ana sayfası isteniyorsa aynı goto'yu bir kez daha çağır)")
+                        return snap(f"zaten açık sekmeye geçildi: {b.title_of(page)}{at}")
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=45000)
             except Exception as e:  # noqa: BLE001
