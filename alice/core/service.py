@@ -401,7 +401,7 @@ class Core:
             self.store.add_event("info", "Önsezi: oyun güncellemesi", msg, "info", "now")
 
     def _morning(self) -> None:
-        if self.morning is None:
+        if getattr(self, "morning", None) is None:  # eski kurulum ya da __init__ atlanmış (testler)
             return
         answers = self.morning.check()
         if answers:

@@ -74,7 +74,7 @@ def test_phone_server_watch_and_hosts(workdir):
     try:
         port = ps.server.httpd.server_address[1]
         base = f"http://127.0.0.1:{port}"
-        assert ps.url.endswith(f"/quick?t={state.token}") and ps.ip in state.allowed_hosts
+        assert ps.url.endswith(f"/m?t={state.token}") and ps.ip in state.allowed_hosts
         assert httpx.post(base + "/api/watch", json={"hr": 90}).status_code == 403
         r = httpx.post(base + "/api/watch", json={"hr": 90}, headers={"X-Alice-Token": state.token})
         assert r.json() == {"ok": True, "added": 1} and st.last("watch.hr")[1] == 90
