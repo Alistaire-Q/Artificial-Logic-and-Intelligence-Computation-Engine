@@ -6,7 +6,7 @@ interface-guidelines/live-activities, /materials, /color):
     ayrı yüzen paneller yok: HIG yarı saydam katmanları üst üste koymamayı ve tek yüzeyde dönüşümlü göstermeyi
     söylüyor.
   * apple.com'un açık dili: beyaz-gri buzlu cam (arkasındaki ekran gerçekten bulanıklaşır, üstünde açık tül, kılcal
-    kenar ve üst kenarda ışık), koyu yazı #1D1D1F, ikincil #6E6E73, marka mavisi #0071E3. Siyah Ada ve doygun
+    kenar ve üst kenarda ışık), Apple marka paleti: yazı Shark #1D1D1F, vurgu Science Blue #0066CC, cam beyaz ve Athens Gray #F5F5F7. Siyah Ada ve doygun
     turuncu "oyun arayüzü" gibi duruyordu. Renk sadece simge ve değerde, sadece anlam için; kritikte ince kırmızı
     çizgi ve yavaş nefes. Renkli nokta, renkli çerçeve yok.
   * Yazı büyük ve en az orta kalınlıkta (HIG: "large, heavier-weight text"). Segoe UI Variable'ın Display/Text optik
@@ -32,18 +32,23 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 from alice.hud.model import Item, clock_of
 
-# apple.com'un açık dili: beyaz-gri buzlu cam, koyu yazı, marka mavisi. Durum renkleri HIG açık mod "artırılmış
-# kontrast" değerleri: açık camın üstünde yazı olarak okunsunlar (normal turuncu beyazda soluk kalıyordu).
-RED, ORANGE, YELLOW = (233, 21, 45), (197, 83, 0), (161, 106, 0)
-GREEN, BLUE, GRAY = (0, 137, 50), (0, 113, 227), (142, 142, 147)
-GLOW = {"info": (0, 136, 255), "warn": (255, 141, 40), "critical": (255, 56, 60)}  # kenar ışığı: canlı tonlar
-COLORS = {"info": BLUE, "warn": ORANGE, "critical": RED}
-LABEL = (29, 29, 31)             # apple.com ana yazı (#1D1D1F)
-LABEL_2 = (110, 110, 115, 255)   # apple.com ikincil yazı (#6E6E73)
-TINT = (250, 250, 252, 172)      # buzlu camın tülü (arkası bulanık ekran)
-TINT_SOLID = (245, 245, 247, 240)  # arka plan alınamazsa (deneme, eski Windows): neredeyse opak açık gri
-HAIRLINE = (0, 0, 0, 24)         # camı zeminden ayıran kılcal çizgi
-HIGHLIGHT = (255, 255, 255, 190)  # üst kenardaki ışık yansıması (cam kalınlığı hissi)
+# Apple marka paleti: Science Blue #0066CC (tek vurgu), Shark #1D1D1F (yazı), Athens Gray #F5F5F7, beyaz #FFFFFF.
+# Vurgu rengi tek: bilgi ve uyarı aynı mavi, ayrımı simge ve yazı yapar. Kritik tehdit güvenlik için kırmızı kalır
+# (Apple da tehlikeli durumda kırmızı kullanır).
+BRAND_BLUE = (0, 102, 204)       # #0066CC
+SHARK = (29, 29, 31)             # #1D1D1F
+ATHENS = (245, 245, 247)         # #F5F5F7
+RED = (215, 0, 21)               # Apple'ın açık zemindeki kırmızısı: yalnız kritik
+BLUE, GRAY = BRAND_BLUE, (142, 142, 147)
+ORANGE = GREEN = YELLOW = BRAND_BLUE  # eski adlar: paletin dışına çıkılmasın
+GLOW = {"info": (0, 102, 204), "warn": (0, 102, 204), "critical": (255, 56, 60)}  # kenar ışığı
+COLORS = {"info": BRAND_BLUE, "warn": BRAND_BLUE, "critical": RED}
+LABEL = SHARK                    # ana yazı
+LABEL_2 = (*SHARK, 150)          # ikincil yazı: aynı renk, %59 (paletin dışına çıkmadan hiyerarşi)
+TINT = (255, 255, 255, 176)      # buzlu camın tülü: beyaz, arkası bulanık ekran
+TINT_SOLID = (*ATHENS, 242)      # arka plan alınamazsa: Athens Gray
+HAIRLINE = (*SHARK, 22)          # camı zeminden ayıran kılcal çizgi
+HIGHLIGHT = (255, 255, 255, 200)  # üst kenardaki ışık yansıması (cam kalınlığı hissi)
 TRACKING = -0.022                # em: apple.com'da 17 px yazıda -0,374 px; sıkı, tok görünüm
 SS = 3                           # kenar yumuşatma için büyütme
 
