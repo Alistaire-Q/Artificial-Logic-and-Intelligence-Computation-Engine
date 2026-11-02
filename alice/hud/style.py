@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from typing import Any
 
@@ -308,7 +308,8 @@ def entries(items: list[Item]) -> list[Entry]:
                                   "warning" if sev in ("warn", "critical") else "sparkle")
             out.append(Entry(key, "card", g, title, body=" ".join(str(d.get("text") or "").split()), severity=sev,
                              seq=it.seq))
-    out.sort(key=lambda e: (PRIORITY.get(e.severity, 2), -e.seq))
+    # kritik tehdit her şeyden önce; sonra yeni gelen kart (kısa ömürlü, Adayı genişletir); sonra önem sırası
+    out.sort(key=lambda e: (e.severity != "critical", e.kind != "card", PRIORITY.get(e.severity, 2), -e.seq))
     return out
 
 
@@ -371,13 +372,19 @@ def _glass_parts(w: int, h: int, r: int, crit: bool, pulse_q: float, k: float) -
     pts = [(x * SS, y * SS) for x, y in squircle(box, r)]
     d.line(pts + [pts[0]], fill=(*RED, 220) if crit else HAIRLINE,
            width=max(1, round((1.6 if crit else 1.0) * k * SS)))
-    inner = [(x * SS, y * SS) for x, y in squircle((box[0] + k, box[1] + k, box[2] - k, box[3] - k),
-                                                    max(0.0, r - k))]
-    edge = box[1] + min(h * 0.45, r * 1.2)
-    top = sorted((pt for pt in inner if pt[1] < edge * SS), key=lambda pt: pt[0])  # yalnız üst kenar
-    if len(top) > 2:
-        d.line(top, fill=HIGHLIGHT, width=max(1, round(1.0 * k * SS)), joint="curve")
     over = big.resize((W, H), Image.LANCZOS)
+    # Üst kenar ışığı: iç şekil - 1 px aşağı kaydırılmış iç şekil = yalnız üst kenarda ince şerit; yanlara doğru
+    # söner. (Kontur noktalarını sıralayıp çizmek köşelerde "kulak" bırakıyordu, canlı ekranda görüldü.)
+    inner = _ss_mask(W, H, (box[0] + k, box[1] + k, box[2] - k, box[3] - k), max(0.0, r - k))
+    shifted = Image.new("L", (W, H), 0)
+    shifted.paste(inner, (0, max(1, round(1.2 * k))))
+    band = ImageChops.subtract(inner, shifted)
+    fade = Image.linear_gradient("L").rotate(90).resize((W, H))  # soldan sağa 0..255
+    fade = fade.point(lambda v: int(255 * max(0.0, 1 - abs(v / 255 - 0.5) * 2) ** 0.6))
+    band = ImageChops.multiply(band, fade).point(lambda v: v * HIGHLIGHT[3] // 255)
+    shine = Image.new("RGBA", (W, H), HIGHLIGHT[:3] + (0,))
+    shine.putalpha(band)
+    over.alpha_composite(shine)
     return under, mask, over
 
 
@@ -522,6 +529,9 @@ class Island:
         self.minimals: list[Entry] = []
         self.started = -1e9
         self.last_t: float | None = None
+        self.angle: float | None = None     # şu an çizilen ok açısı (yeni yöne döner, zıplamaz)
+        self.turn = (0.0, 0.0, -1e9)        # (nereden, nereye, başladığı an)
+        self.calm = False                   # yalnız nabız atıyor (boyut/geçiş/dönüş yok): seyrek çizilebilir
 
     def update(self, ents: list[Entry], now: float) -> bool:
         """Yeni içerik listesi. Görünecek bir şey varsa True."""
@@ -533,6 +543,9 @@ class Island:
             same = cur is not None and top.key == cur.key
             if not same:
                 self.prev, self.changed_at = cur, now
+                self.angle = top.angle
+            elif top.angle != cur.angle:
+                self.turn = (self.angle if self.angle is not None else cur.angle, top.angle, now)
             if cur is None:
                 self.started = now
             self.current = top
@@ -559,9 +572,18 @@ class Island:
         content_alpha = (min(1.0, (t - 0.4) / 0.6) if t < 1 else 1.0) if content is self.current else max(0.0, 1 - t / 0.4)
         if t < 1:
             moving = True
+        a0, a1, at = self.turn
+        tt = (now - at) / TURN
+        if self.current is not None and tt < 1.2:
+            diff = ((a1 - a0) + 180) % 360 - 180
+            self.angle = (a0 + diff * ease_out(tt)) % 360
+            content = replace(content, angle=self.angle) if content is self.current else content
+            moving = True
         pulse = 0.0
+        self.calm = False
         if self.current is not None and self.current.severity == "critical":
             pulse = 0.5 + 0.5 * math.sin((now - self.started) * 2 * math.pi / PULSE)
+            self.calm = not moving
             moving = True
         img = Image.new("RGBA", (self.cw, self.ch), (0, 0, 0, 0))
         k = self.k
@@ -624,7 +646,7 @@ def _edge_sprite(key: str, it: Item, sw: int, sh: int, k: float) -> Sprite:
     ty = (sh / 2) / abs(dy) if abs(dy) > 1e-6 else math.inf
     t = min(tx, ty)
     ex, ey = sw / 2 + dx * t, sh / 2 + dy * t
-    depth = round(110 * k)
+    depth = round(180 * k)  # derin: en parlak kısım görev çubuğunun altında kalıp kaybolmasın
     if min(ex, sw - ex) < sw * 0.14 and min(ey, sh - ey) < sh * 0.14:
         r = round(320 * k)
         return Sprite(key, it, 0 if ex < sw / 2 else sw - r, 0 if ey < sh / 2 else sh - r, r, r, ang)
@@ -649,9 +671,9 @@ def _edge_mask(w: int, h: int, left: bool, top: bool) -> Image.Image:
             if square:
                 val = max(0.0, 1 - math.hypot(u if left else 1 - u, v if top else 1 - v)) ** 2.4
             elif w < h:
-                val = max(0.0, 1 - (u if left else 1 - u)) ** 2.2 * math.exp(-((v - 0.5) ** 2) / 0.05)
+                val = max(0.0, 1 - (u if left else 1 - u)) ** 1.5 * math.exp(-((v - 0.5) ** 2) / 0.05)
             else:
-                val = max(0.0, 1 - (v if top else 1 - v)) ** 2.2 * math.exp(-((u - 0.5) ** 2) / 0.05)
+                val = max(0.0, 1 - (v if top else 1 - v)) ** 1.5 * math.exp(-((u - 0.5) ** 2) / 0.05)
             px[i, j] = int(255 * val)
     return mask.resize((w, h), Image.BICUBIC).filter(ImageFilter.GaussianBlur(3))
 
@@ -662,7 +684,7 @@ def render(sp: Sprite, sh: int, alpha: float = 1.0, grow: float = 1.0, pulse: fl
     sev = sp.item.data.get("severity", "info")
     rgb = GLOW.get(sev, GLOW["info"]) if sp.item.kind == "edge" else BLUE  # kenar ışığı canlı, halka marka mavisi
     if sp.item.kind == "edge":
-        peak = (0.5 + 0.35 * (1 - pulse)) if sev == "critical" else 0.5
+        peak = (0.7 + 0.25 * (1 - pulse)) if sev == "critical" else 0.6
         mask = _edge_mask(img.width, img.height, sp.x <= 0, sp.y <= 0).point(lambda v: int(v * peak))
         glow = Image.new("RGBA", img.size, (*rgb, 0))
         glow.putalpha(mask)
@@ -737,7 +759,8 @@ class Anim:
         pulse = 0.0
         if sp.item.kind == "edge" and sp.item.data.get("severity") == "critical":
             pulse = 0.5 + 0.5 * math.sin((now - self.shown_at) * 2 * math.pi / PULSE)
-            moving = True
+            if self.gone_at is None:  # sönerken nabız "hareket" sayılmaz: yoksa ışık hiç kapanmıyordu
+                moving = True
         return alpha, grow, pulse, moving
 
 

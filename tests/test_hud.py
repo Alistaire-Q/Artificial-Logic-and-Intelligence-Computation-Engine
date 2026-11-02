@@ -150,7 +150,10 @@ def test_everything_goes_into_one_island_by_priority():
     for msg in ALL_KINDS:
         m.apply(msg, 0.0)
     ents = style.entries(m.visible())
-    assert [e.kind for e in ents].count("card") == 1 and ents[0].severity == "warn"  # uyarı bilgiden önce
+    assert ents[0].kind == "card"  # yeni gelen kart Adayı genişletir (canlı denemede yanda küçük daire kalıyordu)
+    assert [e.severity for e in ents[1:3]] == ["warn", "info"]  # sonra önem sırası
+    crit = style.entries(m.visible() + [_item({"kind": "arrow", "clock": 6, "severity": "critical"}, 99)])
+    assert crit[0].severity == "critical"  # kritik tehdit karttan da önce
     assert [s.item.kind for s in style.layout(m.visible(), 1920, 1080)] == ["edge", "box"]
     sam = next(e for e in ents if e.glyph == "arrow")
     assert sam.title == "SAM" and sam.angle == 90  # saat 3
@@ -210,6 +213,32 @@ def test_island_springs_to_content_and_fades():
     for i in range(1, 60):
         isl.frame(4 + i / 60)
     assert not isl.update([], 5.0)  # söndü
+
+
+def test_critical_edge_fades_out_and_arrow_turns():
+    """Canlı denemede bulunanlar: kritik kenar ışığı nabız yüzünden hiç sönmüyordu; ok yön değişince zıplıyordu."""
+    from alice.hud import style
+
+    m = HudModel()
+    m.apply({"kind": "edge", "clock": 7, "severity": "critical", "id": "e"}, 0.0)
+    sp = style.layout(m.visible(), 1920, 1080)[0]
+    an = style.Anim(0.0)
+    assert an.frame(1.0, sp)[3]  # görünürken nabız atar
+    an.gone_at = 2.0
+    alpha, _, _, moving = an.frame(2.5, sp)
+    assert alpha == 0 and not moving  # temizlenince söner ve biter
+
+    isl = style.Island(1920, 1080)
+    arrow = {"kind": "arrow", "text": "Arkanda · 900 m", "severity": "critical", "id": "six"}
+    isl.update(style.entries([_item({**arrow, "clock": 7})]), 0.0)
+    for i in range(60):
+        isl.frame(i / 60)
+    isl.update(style.entries([_item({**arrow, "clock": 5, "text": "Arkanda · 700 m"})]), 1.0)
+    isl.frame(1.05)
+    assert 150 < isl.angle < 210  # saat 7'den 5'e yolda (zıplamadı)
+    for i in range(30):
+        isl.frame(1.1 + i / 60)
+    assert isl.angle == pytest.approx(150)
 
 
 def test_focus_ring_and_island_render_fast():

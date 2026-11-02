@@ -43,6 +43,7 @@ TOPMOST_EVERY = 2.0     # kenarlıksız oyun öne geçerse en üstte olmayı yen
 EXIT_BUSY = 3           # port başka bir HUD'da: çıkış kodu (denetleyici bunu çökme saymaz)
 ISLAND_KEY = "__ada__"  # Adanın penceresi
 BACKDROP_EVERY = 0.12   # sn: buzlu camın arkası bu sıklıkla yenilenir (oyunda arka plan akarken cam da akar)
+CALM_EVERY = 1 / 15     # sn: yalnız nabız atarken Ada en sık bu kadar çizilir
 
 
 # ------------------------------------------------------------------------- ağ
@@ -363,6 +364,8 @@ class HudWindow:
             slot = self.slots[ISLAND_KEY] = self._new_slot(now)
         sig = (self.island.current and style._sig(self.island.current),
                tuple(style._sig(e) for e in self.island.minimals))
+        if self.island.calm and now - self._island_painted < CALM_EVERY:
+            return  # yalnız nabız atıyor: saniyede ~15 kare yeter (her karede çizmek %36 işlemci yiyordu)
         img, moving = self.island.frame(now)
         glass_due = self.island.backdrop is not None and now - self._island_painted >= BACKDROP_EVERY
         if not moving and slot.last == sig and not glass_due:
