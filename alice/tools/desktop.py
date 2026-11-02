@@ -161,7 +161,7 @@ SHORTCUT_SUFFIXES = (".lnk", ".url", ".appref-ms")
 # URI (ms-settings:, mailto:, steam://...); şema en az iki harf, yani "C:\..." sürücü harfi eşleşmez
 URI_RX = re.compile(r"^[a-z][a-z0-9+.-]+:", re.I)
 # Sürücüyle başlayan ya da klasör içeren dosya yolu (uygulama adı değil): yoksa açmaya çalışılmaz
-FILE_PATH_RX = re.compile(r"^([a-z]:[\\/]|\\\\|~[\\/]|%\w+%[\\/])", re.I)
+FILE_PATH_RX = re.compile(r"^([a-z]:[\\/]|\\\\|~[\\/]|%\w+%[\\/]|/)", re.I)
 
 
 def missing_file(p: Path) -> str:
@@ -454,6 +454,11 @@ def open_app(target: str) -> str:
         from alice.tools import fetch_file
 
         return fetch_file.describe(fetch_file.download(target), opened=True)
+    path = Path(os.path.expandvars(target)).expanduser()
+    if FILE_PATH_RX.match(target) and not path.exists():
+        # Var olmayan dosya yolu: Windows'ta "son çare" başlatma "bulunamadı" hata penceresini açıyordu, ALICE de o
+        # pencerede Enter'a basıp duruyordu (olmayan Sonora-Setup.exe; dosya e.exe adıyla inmişti).
+        raise ToolError(missing_file(path))
     if IS_WIN:
         if URI_RX.match(target):
             # ms-settings:nightlight, mailto:, steam:// ... doğrudan: aramaya sokulunca Ayarlar sayfası 42 sn'de açılmıştı.
@@ -463,10 +468,6 @@ def open_app(target: str) -> str:
         if p.exists() or "://" in target or shutil.which(target):
             os.startfile(str(p) if p.exists() else (shutil.which(target) or target))  # type: ignore[attr-defined]
             return f"açıldı: {target}"
-        if FILE_PATH_RX.match(target):
-            # Var olmayan dosya yolu: aşağıdaki "son çare" Windows'un "bulunamadı" hata penceresini açıyordu, ALICE
-            # de o pencerede Enter'a basıp duruyordu (olmayan Sonora-Setup.exe; dosya e.exe adıyla inmişti).
-            raise ToolError(missing_file(p))
         if target.lower().startswith("shell:appsfolder"):
             subprocess.Popen(["explorer.exe", target])
             return f"açıldı: {target}"
