@@ -216,8 +216,9 @@ def _engine() -> Any:
     try:
         from winrt.windows.media.ocr import OcrEngine
     except ImportError:
-        _ocr_error = "OCR paketi kurulu değil: pip install winrt-Windows.Media.Ocr winrt-Windows.Graphics.Imaging " \
-                     "winrt-Windows.Storage.Streams winrt-Windows.Globalization winrt-Windows.Foundation"
+        from alice.deps import install_command
+
+        _ocr_error = f"OCR paketi bu Python'da kurulu değil (ALICE açılışta kendisi kurar), elle: {install_command([])}"
         raise RuntimeError(_ocr_error) from None
     eng = OcrEngine.try_create_from_user_profile_languages()
     if eng is None:

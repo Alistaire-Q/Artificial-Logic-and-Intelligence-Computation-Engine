@@ -58,6 +58,10 @@ def core_cmd(argv: list[str]) -> int:
             core.voice = "listening" if voice is not None else "no-mic"
         if "--once" not in argv:
             _start_browser_ext(cfg)
+            from alice import deps
+
+            # Hangi Python'dan başlatılırsa başlatılsın (oturum açılışı .venv, elle sistem Python'u) eksik paket kalmasın
+            deps.heal_in_background(lambda s: print(f"[paketler] {s}", flush=True))
         hud = _start_hud(cfg, core) if (cfg.data.get("hud", {}) or {}).get("enabled") and "--once" not in argv else None
         sims = _start_sims(cfg, core, show=_hud_show(hud)) if "--once" not in argv else None
         tl = _start_timeline(cfg, core) if (cfg.data.get("timeline", {}) or {}).get("enabled") and             "--once" not in argv else None
