@@ -1,0 +1,110 @@
+from __future__ import annotations
+
+import sqlite3
+import sys
+
+import pytest
+from PIL import Image
+
+from alice import timeline
+from alice.timeline import Recorder, Timeline, excluded
+
+
+def fake_enc(b: bytes) -> bytes:
+    return bytes(x ^ 0x5A for x in b)
+
+
+@pytest.fixture
+def tl(tmp_path):
+    t = Timeline(tmp_path / "timeline.db", enc=fake_enc, dec=fake_enc)
+    yield t
+    t.close()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows DPAPI")
+def test_dpapi_roundtrip_and_ciphertext():
+    data = "Discord: https://örnek.link/abc şifreli".encode()
+    enc = timeline.protect(data)
+    assert enc != data and data not in enc
+    assert timeline.unprotect(enc) == data
+
+
+def test_text_is_stored_encrypted(tl):
+    tl.add("discord.exe", "Discord - #genel", "Ali: şu linke bak https://example.com/oyun", ts=1000.0)
+    raw = sqlite3.connect(str(tl.path)).execute("SELECT title, text FROM shots").fetchone()
+    assert b"example.com" not in raw[1] and b"genel" not in raw[0]
+
+
+def test_search_all_words_newest_first_and_days(tl):
+    tl.add("discord.exe", "Discord - #genel", "Ali: şu linke bak https://example.com/oyun", ts=1000.0)
+    tl.add("opera.exe", "Haber", "Bugün hava güzel", ts=2000.0)
+    tl.add("discord.exe", "Discord - #oyun", "Veli: yeni LINK https://example.com/yeni", ts=3000.0)
+    rows = tl.search("discord link", now=3100.0)
+    assert [r["title"] for r in rows] == ["Discord - #oyun", "Discord - #genel"]
+    assert "https://example.com/yeni" in rows[0]["snippet"]
+    assert tl.search("hava", days=0.01, now=3100.0) == []  # 15 dk geriye: yok
+    assert tl.search("yok böyle bir şey", now=3100.0) == []
+
+
+def test_prune_and_wipe(tl):
+    tl.add("a.exe", "t", "eski", ts=0.0)
+    tl.add("a.exe", "t", "yeni", ts=86400 * 40)
+    assert tl.prune(30, now=86400 * 40) == 1 and tl.count() == 1
+    assert tl.wipe() == 1 and tl.count() == 0
+
+
+def test_exclusions():
+    assert excluded("KeePassXC.exe", "veritabanı")
+    assert excluded("opera.exe", "Yeni InPrivate penceresi")
+    assert excluded("chrome.exe", "Ziraat Bankası - Giriş")
+    assert excluded("aces.exe", "War Thunder")
+    assert excluded("whatsapp.root.exe", "WhatsApp", extra=["whatsapp"])
+    assert not excluded("code.exe", "alice - VS Code")
+
+
+def img(color):
+    return Image.new("RGB", (640, 360), color)
+
+
+def recorder(tl, frames, texts, mode="normal", fg=("code.exe", "alice - VS Code", (0, 0, 640, 360))):
+    frames, texts = iter(frames), iter(texts)
+    return Recorder(tl, {"keep_days": 30}, mode=lambda: mode, foreground=lambda: fg,
+                    grab=lambda box: next(frames), ocr=lambda im: [(next(texts), None)])
+
+
+def test_recorder_saves_only_changed_screens(tl):
+    r = recorder(tl, [img("white"), img("white"), img("black"), img("gray")],
+                 ["def main():", "hata: KeyError", "hata: KeyError"])  # aynı ekranda OCR çalışmaz: metin harcanmaz
+    assert r.step(1000.0) and not r.step(1030.0)
+    assert r.step(1060.0)
+    assert not r.step(1090.0)  # ekran değişti ama yazı aynı
+    assert tl.count() == 2 and r.saved == 2
+
+
+def test_recorder_skips_games_and_private_windows(tl):
+    assert not recorder(tl, [img("white")], ["x"], mode="flight").step(1.0)
+    assert not recorder(tl, [img("white")], ["x"], fg=("1password.exe", "Kasa", (0, 0, 10, 10))).step(1.0)
+    assert not recorder(tl, [img("white")], ["x"], fg=("code.exe", "simge", None)).step(1.0)
+    assert tl.count() == 0
+
+
+def test_tool_is_untrusted_and_wipe_needs_approval():
+    from alice.tools.base import DANGER, READ
+    from alice.tools.timelinetool import TimelineSearch
+
+    t = TimelineSearch()
+    assert t.untrusted and t.risk_for({"action": "search"}) == READ and t.risk_for({"action": "wipe"}) == DANGER
+
+
+def test_tool_reports_when_off():
+    from types import SimpleNamespace
+
+    from alice.tools.timelinetool import TimelineSearch
+
+    assert "kaydı yok" in TimelineSearch().run(SimpleNamespace(), action="search", query="link").text
+
+
+def test_default_off():
+    from alice.config import default_config_dict
+
+    assert default_config_dict()["timeline"]["enabled"] is False

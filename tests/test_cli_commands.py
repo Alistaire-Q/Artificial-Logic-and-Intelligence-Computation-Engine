@@ -160,8 +160,8 @@ def test_core_run_refuses_second_instance(monkeypatch, out):
 
 
 def test_core_run_once_ticks_and_releases_lock(monkeypatch, out, fake_core):
-    for name in ("_start_voice", "_start_sims", "_start_phone", "_start_quick", "_start_app"):
-        monkeypatch.setattr(core_cli, name, lambda *a, n=name: pytest.fail(f"--once ile {n} başlamamalı"))
+    for name in ("_start_voice", "_start_sims", "_start_phone", "_start_quick", "_start_app", "_start_hud"):
+        monkeypatch.setattr(core_cli, name, lambda *a, n=name, **kw: pytest.fail(f"--once ile {n} başlamamalı"))
     assert core_cli.core_cmd(["run", "--once"]) == 0
     core = _FakeCore.instances[0]
     assert core.calls == ["prime", "tick"] and fake_core == [True]
@@ -174,22 +174,31 @@ def test_core_run_forever_stops_helpers_on_ctrl_c(monkeypatch, out, fake_core):
     init_home()
     set_config_value("voice", "enabled", True)
     set_config_value("phone", "enabled", True)
-    stopped = []
+    set_config_value("hud", "enabled", True)
+    stopped, sims_show = [], []
 
     def helper(name):
-        return lambda *a: SimpleNamespace(stop=lambda: stopped.append(name))
+        def start(*a, **kw):
+            if name == "sims":
+                sims_show.append(kw.get("show"))
+            return SimpleNamespace(stop=lambda: stopped.append(name))
 
-    for name in ("voice", "sims", "phone", "quick", "app"):
+        return start
+
+    for name in ("voice", "sims", "phone", "quick", "app", "hud"):
         monkeypatch.setattr(core_cli, f"_start_{name}", helper(name))
     assert core_cli.core_cmd(["run"]) == 0
     assert _FakeCore.instances[0].calls == ["prime", "forever", "stop"]
-    assert sorted(stopped) == ["app", "phone", "quick", "sims", "voice"] and fake_core == [True]
+    assert sorted(stopped) == ["app", "hud", "phone", "quick", "sims", "voice"] and fake_core == [True]
+    from alice.hud import client
+
+    assert sims_show == [client.show]  # HUD açıkken uçuş tehditleri HUD'a da gider
     assert "her 15 sn" in out()
 
 
 def test_core_run_tray(monkeypatch, out, fake_core):
     for name in ("_start_sims", "_start_quick", "_start_app"):
-        monkeypatch.setattr(core_cli, name, lambda *a: None)
+        monkeypatch.setattr(core_cli, name, lambda *a, **kw: None)
     monkeypatch.setattr(service, "run_tray", lambda core: True)
     assert core_cli.core_cmd(["run", "--tray"]) == 0
     assert "forever" not in _FakeCore.instances[0].calls and fake_core == [True]

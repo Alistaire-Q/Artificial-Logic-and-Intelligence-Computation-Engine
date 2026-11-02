@@ -56,7 +56,9 @@ def core_cmd(argv: list[str]) -> int:
         core.greeter.voice = voice  # karşılamadan sonra "Hey Alice" demeden cevap verilebilsin
         if cfg.data.get("voice", {}).get("enabled") and "--once" not in argv:
             core.voice = "listening" if voice is not None else "no-mic"
-        sims = _start_sims(cfg, core) if "--once" not in argv else None
+        hud = _start_hud(cfg, core) if (cfg.data.get("hud", {}) or {}).get("enabled") and "--once" not in argv else None
+        sims = _start_sims(cfg, core, show=_hud_show(hud)) if "--once" not in argv else None
+        tl = _start_timeline(cfg, core) if (cfg.data.get("timeline", {}) or {}).get("enabled") and             "--once" not in argv else None
         host = _start_app(cfg, core) if (cfg.data.get("app", {}) or {}).get("in_core", True) and \
             "--once" not in argv else None
         # Masaüstü uygulaması, hızlı bar ve telefon tek uygulama durumunu paylaşır: üçü aynı sohbeti görür, araçlar ve
@@ -90,6 +92,10 @@ def core_cmd(argv: list[str]) -> int:
                 quick.stop()
             if sims is not None:
                 sims.stop()
+            if hud is not None:
+                hud.stop()
+            if tl is not None:
+                tl.stop()
             if phone is not None:
                 phone.stop()
             service.release_lock()
@@ -171,11 +177,63 @@ def _start_app(cfg, core):
     return host
 
 
-def _start_sims(cfg, core):
+def _start_sims(cfg, core, show=None):
     """DCS ve War Thunder dinleyicilerini başlat."""
     from alice.sims.hub import SimHub
 
-    return SimHub(cfg.data.get("sims", {}), core.store, core.notifier, processes=lambda: core.pc.processes).start()
+    return SimHub(cfg.data.get("sims", {}), core.store, core.notifier, processes=lambda: core.pc.processes,
+                  show=show).start()
+
+
+def _start_hud(cfg, core):
+    """Ekran üstü HUD'u ayrı süreçte başlat; çökerse denetleyici yeniden başlatır. Bildirimler Windows balonu yerine
+    ALICE'in kartıyla gelir."""
+    from alice.hud import PORT, client, views
+    from alice.hud.supervisor import HudSupervisor
+
+    port = int((cfg.data.get("hud", {}) or {}).get("port") or PORT)
+    client.configure(port)
+    notifier = core.notifier
+    sv = HudSupervisor(port)
+    desktop = notifier._desktop if notifier._desktop in notifier.channels else None
+    if desktop is not None:
+        notifier.channels.remove(desktop)
+
+    def card(n, pol) -> None:
+        if sv.alive():
+            views.notification(n)
+        elif desktop is not None:  # HUD çöktü/yeniden başlıyor: bildirim kaybolmasın, balon gelsin
+            desktop(n, pol)
+
+    notifier.channels.append(card)
+    # Kritik sınıra yaklaşan sıcaklık/RAM köşede küçük çubuk olarak görünsün (konuşmadan). Kanca sadece HUD açıkken
+    # eklenir: HUD kapalıysa çekirdek turuna hiç maliyeti yok.
+    hooks = getattr(core, "hooks", None)
+    if hooks is not None and getattr(core, "store", None) is not None:
+        from alice.core.watchdogs import SystemGauges
+
+        hooks.append(SystemGauges(core.store, getattr(core, "interval", 15.0)))
+    return sv.start()
+
+
+def _start_timeline(cfg, core):
+    """Zaman makinesi hafıza: öndeki pencerenin yazısını şifreli zaman çizgisine yaz (uçuş modunda durur)."""
+    from alice.timeline import Recorder, Timeline
+
+    try:
+        return Recorder(Timeline(), cfg.data.get("timeline", {}) or {}, mode=lambda: core.modes.current).start()
+    except Exception as e:  # noqa: BLE001 - kayıt açılamasa da çekirdek çalışsın
+        core.store.add_event("error", "Zaman çizgisi başlamadı", str(e)[:200], "warn", "core")
+        return None
+
+
+def _hud_show(hud):
+    """HUD açıksa uçuş tehditleri ok ve kenar parlaması olarak da çizilsin."""
+    if hud is None:
+        return None
+    from alice.hud import client
+
+    return client.show
 
 
 def _start_quick(cfg, state=None):
@@ -237,6 +295,9 @@ def _start_voice(cfg, core):
                                kwargs={"limit": int(v.get("prewarm_per_start", 12)), "log": voice_log})
         warm.daemon = True
         warm.start()
+        # Önsezi: alışkanlığa göre War Thunder açılmadan ~20 dk önce kalan uçuş seslerini de hazırla.
+        core.anticipator.hooks.append(lambda: speaker.prewarm(callouts(), limit=int(v.get("prewarm_per_start", 12)),
+                                                              log=voice_log))
     if not mic_available():
         console.print("[yellow]mikrofon yok;[/] ALICE sadece bildirimleri seslendirecek")
         return None

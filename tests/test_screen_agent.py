@@ -538,9 +538,13 @@ def test_reflex_refuses_wrong_foreground_window(monkeypatch):
 
 def test_long_or_multiline_text_is_pasted(monkeypatch):
     """Not Defteri'ne 1-10 satır satır tuşlanınca dosyada sadece '9, 10' kalmıştı: çok satırlı metin panodan."""
-    import pyperclip
+    import sys
+    import types
 
     from alice.tools import computer
+
+    pyperclip = types.ModuleType("pyperclip")  # CI'da isteğe bağlı paket kurulu değil: sahtesi yeter
+    monkeypatch.setitem(sys.modules, "pyperclip", pyperclip)
 
     calls, board = [], {"v": "eski pano"}
 
@@ -550,8 +554,8 @@ def test_long_or_multiline_text_is_pasted(monkeypatch):
 
     monkeypatch.setattr(computer, "_pyautogui", lambda: PG())
     monkeypatch.setattr(computer.time, "sleep", lambda s: None)
-    monkeypatch.setattr(pyperclip, "paste", lambda: board["v"])
-    monkeypatch.setattr(pyperclip, "copy", lambda t: board.update(v=t) or calls.append(("copy", (t,))))
+    pyperclip.paste = lambda: board["v"]
+    pyperclip.copy = lambda t: board.update(v=t) or calls.append(("copy", (t,)))
     monkeypatch.setattr(computer, "send_unicode", lambda t: False)  # testte gerçek girdi gönderilmesin
     computer.type_text("1234*5678=")
     assert calls == [("write", ("1234*5678=",))]  # kısa tek satır: panoya gitmez (hesap makinesi)

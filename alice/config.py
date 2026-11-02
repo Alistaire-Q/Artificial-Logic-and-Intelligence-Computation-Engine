@@ -242,6 +242,40 @@ follow_up = 5
 dcs = true
 dcs_port = 41230
 warthunder = true
+# Ekrandan füze görme (War Thunder füzeyi API'de vermiyor, ekranda gösteriyor). Sadece uçuşta, ekranın yalnızca
+# RWR bölgesi işlemcide saniyede 10 kez yakalanır; oyuna dokunmaz. Önce bölgeyi ayarla:
+# alice vision region X Y GENİŞLİK YÜKSEKLİK, örnek topla: alice vision record, dene: alice vision test <klasör>
+missile_vision = false
+# vision_region = [x, y, genişlik, yükseklik]
+# Renk eşikleri ve doğrulama: [sims.vision] red_min, red_margin, min_pixels, confirm, window, hold, fps
+
+# Gece döngüsü ve rüya modu: gece 03-07 arası kendi kayıtlarını okur (tekrarlayan hata, gereksiz anons, yanlış
+# uyanma, bozulan araç), bağlantıları arar; sabah bir kez "şunları buldum, düzelteyim mi?" der. Kod değiştirmez.
+# Elle: alice night. Rapor: ~/.alice/night/
+[night]
+enabled = true
+
+# Zaman makinesi hafıza: ekranda gördüğün yazılar yerelde, şifreli (Windows DPAPI) ve aranabilir bir zaman çizgisine
+# yazılır ("geçen hafta Discord'da paylaşılan linki bul"). Görüntü saklanmaz, sadece yazı. Oyunda, şifre
+# yöneticilerinde ve gizli tarayıcı pencerelerinde kayıt yok. Silmek: alice timeline wipe.
+[timeline]
+enabled = false
+every = 30          # saniye
+keep_days = 30
+# exclude = ["whatsapp", "banka"]   # program adı ya da başlıkta geçen sözler
+
+# Ekran üstü HUD (`alice hud`): oyunun ve masaüstünün üstüne tehdit oku, kenar parlaması, kart çizer.
+# Tıklamalar alttaki pencereye geçer, odak almaz, ALICE'in ekran görüntülerinde görünmez. Oyuna kod enjekte etmez.
+# Özel tam ekranda (exclusive fullscreen) hiçbir pencere oyunun üstüne çizilemez: oyunu kenarlıksız pencerede aç.
+[hud]
+# true: çekirdek HUD'u başlatır, çökerse yeniden başlatır.
+enabled = false
+port = 41240
+# 0 ana monitör, 1 sonraki...
+monitor = 0
+opacity = 0.92
+# HUD'u tamamen gizle / geri getir.
+hotkey = "<ctrl>+<alt>+h"
 
 # Akıllı saat (Gadgetbridge). export_path: Gadgetbridge'in otomatik dışa aktardığı veritabanı
 # (Syncthing vb. ile bilgisayara gelen dosya ya da klasör). Boş = kapalı.

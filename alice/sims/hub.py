@@ -18,8 +18,9 @@ ACTIVE: "SimHub | None" = None
 
 
 class SimHub:
-    def __init__(self, cfg: dict[str, Any], store: Store, notifier: Notifier, processes=lambda: set()):
+    def __init__(self, cfg: dict[str, Any], store: Store, notifier: Notifier, processes=lambda: set(), show=None):
         self.cfg = cfg
+        self.show = show  # HUD'a çizim (alice.hud.client.show); None ise sadece ses
         self.store = store
         self.notifier = notifier
         self.processes = processes
@@ -27,6 +28,21 @@ class SimHub:
         self.last_debrief: tuple[Debrief, str] | None = None
         self._parts: list = []
         self._briefed: str = ""  # brifingi verilen görev (yol + değişme zamanı): aynı görev için bir kez
+        self._fullscreen_said = False
+        self._coach_said: dict[str, str] = {}  # desen -> söylendiği gün
+        self._coach_last = 0.0
+        self._break_last = 0.0
+
+    def _fullscreen_check(self, game: str) -> None:
+        """HUD açıkken oyun özel tam ekrandaysa oklar görünmez: çekirdek çalıştığı sürece bir kez söyle."""
+        if self.show is None or self._fullscreen_said:
+            return
+        from alice.hud.screen import exclusive_fullscreen
+
+        if exclusive_fullscreen():
+            self._fullscreen_said = True
+            self._say(f"{game} özel tam ekranda, HUD oyunun üstüne çizemiyor. Görüntü ayarlarından kenarlıksız "
+                      "pencereye geçersen tehdit oklarını da görürsün.", "info", "calm")
 
     def _say(self, text: str, severity: str, emotion: str) -> None:
         self.notifier.send(Notification("Uçuş", text, severity, "flight", kind="flight", emotion=emotion))
@@ -52,7 +68,8 @@ class SimHub:
 
     def companion(self, source: str) -> FlightCompanion:
         if source not in self.companions:
-            self.companions[source] = FlightCompanion(self._say, self._hr_stats, self._hr_now, self._debrief)
+            self.companions[source] = FlightCompanion(self._say, self._hr_stats, self._hr_now, self._debrief,
+                                                        show=self.show)
         return self.companions[source]
 
     def start(self) -> "SimHub":
@@ -71,12 +88,14 @@ class SimHub:
             tracker = TouchdownTracker(comp)
 
             def feed(s, comp=comp, tracker=tracker):
-                if comp.last_state is None and (s.ias or 0) < 30:  # yerde yeni oturum: kalkıştan önce brifing
-                    threading.Thread(target=self.brief_mission, daemon=True, name="alice-dcs-brief").start()
+                if comp.last_state is None:
+                    self._fullscreen_check("DCS")
+                    if (s.ias or 0) < 30:  # yerde yeni oturum: kalkıştan önce brifing
+                        threading.Thread(target=self.brief_mission, daemon=True, name="alice-dcs-brief").start()
                 tracker.feed(s)
 
             try:
-                self._parts.append(DCSListener(feed, comp.restricted, comp.session_end,
+                self._parts.append(DCSListener(feed, comp.restricted, lambda c=comp: self._session_end(c),
                                                lambda rows: self.store.add_many(rows),
                                                port=int(self.cfg.get("dcs_port", PORT))).start())
             except OSError as e:
@@ -87,10 +106,75 @@ class SimHub:
             comp = self.companion("warthunder")
             tracker = TouchdownTracker(comp)
             running = lambda: any(p.lower() == "aces.exe" for p in self.processes())  # noqa: E731
-            self._parts.append(WarThunderPoller(tracker.feed, comp.session_end,
-                                                lambda rows: self.store.add_many(rows), running=running).start())
+
+            vision = self._missile_vision()
+
+            def wt_feed(s, comp=comp, tracker=tracker):
+                if comp.last_state is None:  # yeni oturum (maç)
+                    self._fullscreen_check("War Thunder")
+                if vision is not None:  # ekrandan görülen füze uyarısı temas listesine
+                    vision.poke()
+                    seen = vision.contacts()
+                    if seen:
+                        s.extra["contacts"] = list(s.extra.get("contacts") or []) + seen
+                tracker.feed(s)
+
+            self._parts.append(WarThunderPoller(wt_feed, lambda c=comp: self._session_end(c),
+                                                lambda rows: self.store.add_many(rows), running=running,
+                                                nick=str(self.cfg.get("warthunder_nick") or "") or None).start())
         ACTIVE = self
         return self
+
+    COACH_GAP = 20 * 60.0   # iki koçluk cümlesi arası en az (sn)
+    BREAK_GAP = 45 * 60.0   # "ara ver" önerisi en sık
+
+    def _session_end(self, comp: FlightCompanion) -> None:
+        """Ölüm / maç sonu: uçuşu kapat, sonra ölüm desenlerine ve ruh haline arka planda bak."""
+        comp.session_end()
+        threading.Thread(target=self._after_death, args=(comp,), daemon=True, name="alice-coach").start()
+
+    def _after_death(self, comp: FlightCompanion, now: float | None = None) -> None:
+        from datetime import date
+
+        from alice import mood
+        from alice.sims import coach
+
+        now = time.time() if now is None else now
+        try:
+            flights = coach.load_flights(limit=40)
+            events = self.store.events(since=now - 6 * 3600, kind="flight", limit=5000)
+            found = coach.patterns(coach.contexts(flights, events))
+            m = mood.current(self.store, now, flights=flights)
+        except Exception:  # noqa: BLE001 - koçluk uçuşu bozmasın
+            return
+        comp.coach_flags = set(found)
+        comp.calm = m.level == "tilt"
+        if m.level == "tilt" and now - self._break_last >= self.BREAK_GAP:
+            self._break_last = now
+            self._say("Üst üste düştün. Bir maç ara vermek iyi gelebilir.", "info", "calm")
+            return
+        today = date.fromtimestamp(now).isoformat()
+        for key, text in found.items():
+            if self._coach_said.get(key) != today and now - self._coach_last >= self.COACH_GAP:
+                self._coach_said[key], self._coach_last = today, now
+                self._say(text, "info", "calm")
+                break
+
+    def _missile_vision(self):
+        """[sims] missile_vision açık ve RWR bölgesi ayarlıysa ekrandan füze görme (alice/sims/vision.py)."""
+        if not self.cfg.get("missile_vision"):
+            return None
+        from alice.sims.vision import MissileWatcher, region_of
+
+        region = region_of(self.cfg)
+        if region is None:
+            self.store.add_event("info", "Ekrandan füze görme kapalı",
+                                 "RWR bölgesi ayarlı değil: alice vision region X Y GENİŞLİK YÜKSEKLİK", "info",
+                                 "flight")
+            return None
+        w = MissileWatcher(region, self.cfg.get("vision") or {})
+        self._parts.append(w)
+        return w
 
     def stop(self) -> None:
         global ACTIVE

@@ -187,6 +187,8 @@ def test_memory_job_steps_survive_calendar_error(monkeypatch):
     monkeypatch.setattr(core, "_health_report", lambda: None, raising=False)
     monkeypatch.setattr(core, "_weekly", lambda m: None, raising=False)
     monkeypatch.setattr(core, "_mail_dates", lambda m: None, raising=False)
+    monkeypatch.setattr(core, "_night", lambda m: None, raising=False)
+    core.anticipator = type("A", (), {"check": lambda self: False})()
     core.memory_job()
     core.memory_job()
     assert sent == ["ilacını al"]  # bir kez gider, takvim hatası durdurmaz

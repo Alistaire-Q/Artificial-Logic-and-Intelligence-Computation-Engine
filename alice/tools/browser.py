@@ -57,6 +57,64 @@ SNAPSHOT_JS = r"""
 
 TEXT_JS = "() => document.body ? document.body.innerText : ''"
 
+# Öğenin sayfa içi kutusu + pencerenin ekrandaki yeri: HUD'da çerçevelemek için (screen_box ekrana çevirir).
+PLACE_JS = """el => { const r = el.getBoundingClientRect(); return {
+  left: r.left, top: r.top, width: r.width, height: r.height, sx: window.screenX, sy: window.screenY,
+  ow: window.outerWidth, oh: window.outerHeight, iw: window.innerWidth, ih: window.innerHeight,
+  dpr: window.devicePixelRatio, visible: document.visibilityState === 'visible' }; }"""
+# Gösterilen öğenin sayfa içi çerçevesi (HUD kapalıyken highlight): 3 sn sonra eski haline döner.
+OUTLINE_JS = """el => { const o = el.style.outline, f = el.style.outlineOffset;
+  el.style.outline = '3px solid #ffb000'; el.style.outlineOffset = '2px';
+  setTimeout(() => { el.style.outline = o; el.style.outlineOffset = f; }, 3000); }"""
+MAX_TOOLBAR = 400  # CSS px: sekme+adres çubuğu bundan yüksekse ölçüm saçmadır (yakınlaştırma, tam ekran oyunu)
+PAD = 4  # CSS px: çerçeve öğenin kenarına yapışmasın
+
+
+def screen_box(info: Any) -> tuple[int, int, int, int] | None:
+    """PLACE_JS çıktısını fiziksel ekran pikseline (x, y, w, h) çevir; hesaplanamıyorsa None.
+
+    Chromium'da pencere ölçüleri (screenX/Y, outer*/inner*) ve öğe kutusu aynı CSS pikseliyle gelir; devicePixelRatio
+    ile çarpınca fiziksel piksel olur. Sayfanın ekrandaki sol üstü: pencerenin sol üstü + yan çerçeve + üstteki
+    sekme/adres çubuğu (outerHeight - innerHeight, alt çerçeve düşülerek). Sekme arka plandaysa ya da öğe görünür
+    alanın dışındaysa çizilecek bir şey yoktur."""
+    if not isinstance(info, dict) or not info.get("visible"):
+        return None
+    try:
+        v = {k: float(info[k]) for k in ("left", "top", "width", "height", "sx", "sy", "ow", "oh", "iw", "ih", "dpr")}
+    except (KeyError, TypeError, ValueError):
+        return None
+    if any(x != x or x in (float("inf"), float("-inf")) for x in v.values()) or v["dpr"] <= 0:
+        return None
+    if v["iw"] <= 0 or v["ih"] <= 0 or v["ow"] < v["iw"] or v["oh"] < v["ih"]:
+        return None
+    side = (v["ow"] - v["iw"]) / 2
+    toolbar = v["oh"] - v["ih"] - side
+    if not 0 <= toolbar <= MAX_TOOLBAR:
+        return None
+    # Görünür alana kırp: yarısı aşağıda kalan öğenin görünen kısmı çerçevelenir.
+    left, top = max(0.0, v["left"] - PAD), max(0.0, v["top"] - PAD)
+    right, bottom = min(v["iw"], v["left"] + v["width"] + PAD), min(v["ih"], v["top"] + v["height"] + PAD)
+    if right - left < 2 or bottom - top < 2:
+        return None
+    ox, oy, k = v["sx"] + side, v["sy"] + toolbar, v["dpr"]
+    return (round((ox + left) * k), round((oy + top) * k), round((right - left) * k), round((bottom - top) * k))
+
+
+def mark_on_hud(b: Any, loc: Any, label: str, ttl: float | None = None, wait: bool = False) -> bool:
+    """Öğeyi HUD'da çerçevele. HUD kapalıysa, tarayıcı görünmezse (headless) ya da konum hesaplanamıyorsa hiçbir şey
+    yapmaz; tarayıcı eylemi bundan asla etkilenmez."""
+    from alice.hud import client, views
+
+    if not client.active or getattr(b, "headless", False):
+        return False
+    try:
+        box = screen_box(loc.evaluate(PLACE_JS, timeout=2000))
+    except Exception:  # noqa: BLE001 - çerçeve süs: ölçülemezse sessizce atla
+        return False
+    if box is None:
+        return False
+    return views.page_target(*box, label=label, ttl=views.PAGE_TTL if ttl is None else ttl, wait=wait)
+
 # Fonksiyon başı: "function", "async function", "(a, b) =>", "x =>", "async () =>". "(() => 1)()" gibi
 # hemen çağrılan ifadeler ya da içinde ok fonksiyonu geçen ifadeler bu kalıba uymaz, ifade olarak sarılır.
 _JS_FN_HEAD = re.compile(r"^(?:async\b\s*)?(?:function\b|(?:\([^()]*\)|[A-Za-z_$][\w$]*)\s*=>)")
@@ -222,6 +280,7 @@ class BrowserSession:
         _register_exit_cleanup()
         self.driver_pid = _driver_pid(self._pw)
         self.aborted = ""  # "timeout" | "stop": sürücü öldürüldü, bu oturum artık kullanılamaz
+        self.headless = bool(headless and not endpoint)  # ekranda görünmüyor: HUD'da çerçevelenecek bir şey yok
         self._bridge_port = None
         if bridge_port and endpoint:
             from alice.tools.browser_bridge import endpoint as bridge_endpoint
@@ -478,7 +537,7 @@ def _register_exit_cleanup() -> None:
 _CONNECTION_LOST = ("has been closed", "target closed", "browser closed", "connection closed", "not connected",
                     "disconnected", "websocket error", "socket closed", "connection refused", "econnrefused")
 # Bağlantı kopunca yeni bağlantıyla bir kez daha denenebilen eylemler: tekrar etmek bir şeyi iki kez yapmaz.
-RETRY_SAFE = ("goto", "snapshot", "text", "screenshot", "tabs")
+RETRY_SAFE = ("goto", "snapshot", "text", "screenshot", "tabs", "highlight")
 RECONNECT_HINT = ("tarayıcı bağlantısı koptu (Opera kapandı, yeniden başladı ya da cevap vermiyor); bağlantı "
                   "sıfırlandı. İşlem yapılmış olabilir: browser action=snapshot ile sayfaya bak, sonra gerekiyorsa tekrar dene.")
 
@@ -583,22 +642,25 @@ class Browser(Tool):
         "snapshot'ta yenilenir; sayfa değişince eski ID'yi kullanma.\n"
         "- goto, site zaten bir sekmede açıksa o sekmeyi kullanır; yeni sekme açmaz.\n"
         "- Sayfanın içeriğini okumak için text, görsel düzen için screenshot.\n"
+        "- Kullanıcıya sayfadaki bir yeri göstermek için highlight (ekranda çerçevelenir).\n"
         "- 'Bağlanılamıyor' derse ayrı pencere açma: windows switch_tab/navigate + ui_elements/ui_act ile kullanıcının "
         "sekmelerinde çalış.\n"
         "- Ekrandaki bir şeye tek tıklama/yazma için reflex daha hızlı; birçok adımlı iş için run_plan."
     )
     parameters = obj({
         "action": {"type": "string", "enum": ["goto", "snapshot", "click", "type", "select", "press", "scroll", "back",
-                                              "text", "screenshot", "eval", "tabs", "switch_tab", "close"],
+                                              "text", "screenshot", "eval", "tabs", "switch_tab", "highlight", "close"],
                    "description": "goto: url'ye git | snapshot: tıklanabilir öğeleri [ID] ile listele | click: "
                    "element_id'ye tıkla | type: element_id alanına text yaz (submit=true Enter'a basar) | select: "
                    "açılır listede text seçeneğini seç | press: keys tuşuna bas | scroll: amount piksel kaydır | "
                    "back: geri | text: sayfanın düz metni | screenshot: sayfa görüntüsü | eval: js çalıştır | tabs: açık "
-                   "sekmeler | switch_tab: index'li sekmeye geç | close. goto/click/type/press/scroll sonrası güncel "
+                   "sekmeler | switch_tab: index'li sekmeye geç | highlight: element_id'yi kullanıcıya göster (text "
+                   "etiket olur) | close. goto/click/type/press/scroll sonrası güncel "
                    "snapshot otomatik döner."},
         "url": {"type": "string", "description": "goto için adres, ör. 'https://mail.google.com' ya da 'github.com'."},
-        "element_id": {"type": "integer", "description": "click/type/select için son snapshot'taki [ID]."},
-        "text": {"type": "string", "description": "type için yazılacak metin; select için seçeneğin görünen adı."},
+        "element_id": {"type": "integer", "description": "click/type/select/highlight için son snapshot'taki [ID]."},
+        "text": {"type": "string", "description": "type için yazılacak metin; select için seçeneğin görünen adı; "
+                 "highlight için çerçevenin kısa etiketi."},
         "submit": {"type": "boolean", "description": "type sonrası Enter'a bas (arama kutuları için). Varsayılan false."},
         "keys": {"type": "string", "description": "press için tuş, ör. 'Enter', 'Escape', 'Control+A'."},
         "amount": {"type": "integer", "description": "scroll için piksel; pozitif aşağı, negatif yukarı. Varsayılan 600."},
@@ -610,7 +672,7 @@ class Browser(Tool):
 
     def risk_for(self, args: dict[str, Any]) -> str:
         a = args.get("action")
-        if a in ("snapshot", "text", "screenshot", "tabs"):
+        if a in ("snapshot", "text", "screenshot", "tabs", "highlight"):
             return READ
         if a == "goto":
             return NETWORK
@@ -665,7 +727,7 @@ class Browser(Tool):
         submit, separate = as_bool(submit, "submit"), as_bool(separate, "separate")
         amount = as_number(600 if amount is None else amount, "amount", int)
         index = None if index is None else as_number(index, "index", int)
-        if element_id is None and action in ("click", "type", "select"):
+        if element_id is None and action in ("click", "type", "select", "highlight"):
             raise ToolError(f"{action} için element_id gerekli (snapshot çıktısındaki [ID])")
         if action == "close":
             b = ctx.state.get("browser")
@@ -719,11 +781,25 @@ class Browser(Tool):
         if action == "click":
             loc = b.locator(element_id)
             loc.scroll_into_view_if_needed(timeout=5000)
+            mark_on_hud(b, loc, "tıklıyorum", wait=True)  # HUD açıksa nereye tıklayacağını önceden göster
             loc.click(timeout=8000)
             page.wait_for_timeout(600)
             return snap(f"tıklandı: [{element_id}]")
+        if action == "highlight":
+            from alice.hud import views
+
+            loc = b.locator(element_id)
+            loc.scroll_into_view_if_needed(timeout=5000)
+            label = str(text or "burada").strip()[:40] or "burada"
+            if mark_on_hud(b, loc, label, ttl=views.SHOW_TTL):
+                return ToolResult(f"gösterildi: [{element_id}] ekranda çerçevelendi")
+            if getattr(b, "headless", False):
+                return ToolResult("tarayıcı görünmez (headless) çalışıyor; kullanıcıya gösterilemez")
+            loc.evaluate(OUTLINE_JS, timeout=2000)  # HUD yok: sayfanın içinde kısa süre çerçevele
+            return ToolResult(f"gösterildi: [{element_id}] sayfada çerçevelendi")
         if action == "type":
             loc = b.locator(element_id)
+            mark_on_hud(b, loc, "yazıyorum")
             loc.fill("" if text is None else str(text), timeout=8000)
             if submit:
                 loc.press("Enter")
@@ -732,7 +808,9 @@ class Browser(Tool):
         if action == "select":
             if text is None or not str(text).strip():
                 raise ToolError("select için text (seçeneğin görünen adı) gerekli")
-            b.locator(element_id).select_option(label=str(text), timeout=8000)
+            loc = b.locator(element_id)
+            mark_on_hud(b, loc, "seçiyorum")
+            loc.select_option(label=str(text), timeout=8000)
             return snap(f"seçildi: {text}")
         if action == "press":
             keys = str(keys or "Enter")

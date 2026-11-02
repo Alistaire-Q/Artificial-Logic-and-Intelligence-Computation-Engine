@@ -178,6 +178,9 @@ def load_plugins(cfg: "Config | None" = None, emit: Callable[[str], None] = lamb
         names.add(p.name)
         tool_names |= p.tool_names()
         active.append(p)
+    from alice import selftools
+
+    active = selftools.instrument(active)  # ALICE'in kendi yazdıkları: kullanım/hata sayımı, 3 hatada kapanır
     _ACTIVE, _ERRORS = active, errors
     for e in errors:
         emit(f"eklenti hatası: {e}")

@@ -365,8 +365,10 @@ class FeedMonitor:
                 try:
                     items = self._fetch(feed)
                 except Exception as e:  # noqa: BLE001 - bir akış patlasa diğerleri sürsün
+                    # aynı hata her turda yazılmasın (kurulmamış örnek akış 2 günde 74 kez "token yok" yazdı)
+                    if row.get("error") != str(e)[:200]:
+                        self.emit(f"akış {feed.name}: {e}")
                     row["error"] = str(e)[:200]
-                    self.emit(f"akış {feed.name}: {e}")
                     items = None
                 if items is not None:
                     row.pop("error", None)

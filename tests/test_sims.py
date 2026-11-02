@@ -517,6 +517,30 @@ def test_ground_proximity_only_without_own_gpws():
     assert len(r.texts()) == 1
 
 
+def test_ground_warning_rearms_only_after_recovery():
+    """Alçakta dalaşırken art arda söylenmez; güvenli duruma dönüp yeniden dalınca tekrar söyler."""
+    c, tr, r = make()
+    c.phase, c.profile = "air", profile_for("P-51D")
+    c.profile = c.profile.__class__("uçak")  # kendi GPWS'i yok
+    warn = "Yere yaklaşıyorsun, burnu kaldır!"
+    c._ground(st(0, agl=200, vv=-50))
+    for t in range(1, 60):  # bir dakika hep alçakta, alçalıp yükselerek dalaşıyor: kısa toparlanmalar
+        dive = t % 4 != 0
+        c._ground(st(t, agl=150 if dive else 250, vv=-40 if dive else 5))
+    assert r.texts() == [warn]
+    for t in range(60, 64):  # 3 sn'den uzun güvenli: yükseldi
+        c._ground(st(t, agl=500, vv=10))
+    c._ground(st(64, agl=200, vv=-50))
+    assert r.texts() == [warn, warn]
+    # Güvenli dönüş olsa bile GROUND_REPEAT dolmadan tekrar yok
+    for t in (65, 66, 67, 68):
+        c._ground(st(t, agl=200, vv=0))
+    c._ground(st(69, agl=200, vv=-50))
+    assert r.texts() == [warn, warn]
+    c._ground(st(72.5, agl=200, vv=-50))
+    assert r.texts() == [warn, warn, warn]
+
+
 def test_flaps_forgotten_and_external_tanks():
     c, tr, r = make()
     c.phase = "air"
@@ -722,12 +746,126 @@ def test_threat_callouts_once_and_six_warning():
     assert "Füze! Saat 2, SA-6. Chaff at, dön!" in said
     bandit = {"id": "", "clock": 6, "dist_m": 1200.0, "kind": "aircraft", "name": "Fighter", "lock": False,
               "missile": False}
-    for t in (30, 31, 45, 52):
+    for t in (30, 31, 45, 52, 76):
         tr.feed(st(t, extra={"contacts": [bandit]}))
     six = [x for x in r.texts() if x.startswith("Arkanda")]
-    assert six == ["Arkanda düşman, saat 6, 1,2 kilometre!"] * 2  # 20 sn'de bir
+    assert six == ["Arkanda düşman, saat 6, 1,2 kilometre!"] * 2  # 45 sn'de bir
     far = {**bandit, "clock": 1, "dist_m": 4000.0}
-    tr.feed(st(80, extra={"contacts": [{**far, "dist_m": 9000.0}]}))
-    tr.feed(st(81, extra={"contacts": [far]}))
-    tr.feed(st(99, extra={"contacts": [far]}))
+    tr.feed(st(100, extra={"contacts": [{**far, "dist_m": 9000.0}]}))
+    tr.feed(st(101, extra={"contacts": [far]}))
+    tr.feed(st(119, extra={"contacts": [far]}))
     assert r.texts().count("Düşman saat 1, 4,0 kilometre.") == 1
+
+
+def test_warthunder_quiet_g_and_no_debrief_speech_on_death():
+    c, tr, r = make()
+    wt = dict(source="warthunder", aircraft="su_30mkk", x=None, z=None)
+    tr.feed(st(0, ias=0, agl=0.5, alt=50, **wt))
+    tr.feed(st(1, ias=80, agl=30, **wt))
+    for t in range(2, 200):
+        tr.feed(st(t, g=9.5 if t < 150 else (48.0 if t == 160 else 1.0), **wt))  # uzun çekiş + ölümde sıçrama
+    assert not any("G üstündesin" in x for x in r.texts())
+    c.session_end()  # öldü: veri kesildi
+    assert r.debriefs and r.debriefs[0].max_g == 9.5  # tek ölçümlük 48 G sayılmadı
+    assert not any(x.startswith("Uçuş ") for x in r.texts())  # 3 dakikalık inişsiz uçuş: sesli değerlendirme yok
+
+
+def test_endurance_warning_waits_until_tank_is_low():
+    c, tr, r = make()
+    wt = dict(source="warthunder", aircraft="su_30mkk", x=None, z=None, burn_kgs=None)
+    tr.feed(st(0, ias=0, agl=0.5, alt=50, fuel_kg=9000, extra={"fuel_pct": 100}, **wt))
+    tr.feed(st(1, ias=80, agl=30, fuel_kg=9000, extra={"fuel_pct": 100}, **wt))
+    fuel = 9000.0
+    for t in range(2, 600):
+        fuel -= 12  # art yakıcı: dakikada 720 kg
+        tr.feed(st(t, fuel_kg=fuel, extra={"fuel_pct": 100 * fuel / 9400}, **wt))
+        if fuel > 0.35 * 9400:
+            assert not any("dakika yeter" in x for x in r.texts())  # yüzde 35'in üstündeyken söylemez
+    assert any("dakika yeter" in x for x in r.texts())  # depo azalınca söyler
+
+
+def test_warthunder_ground_threats_and_nose_aspect():
+    from alice.sims.warthunder import contacts
+
+    info = {"map_min": [0, 0], "map_max": [100000, 100000], "valid": True}
+    objs = [{"type": "aircraft", "icon": "Player", "color": "#faC81E", "x": 0.5, "y": 0.5, "dx": 0.0, "dy": -1.0},
+            # 8 km kuzeyde, burnu güneye (bize) dönük
+            {"type": "aircraft", "icon": "Fighter", "color": "#f00C00", "x": 0.5, "y": 0.42, "dx": 0.0, "dy": 1.0},
+            # 5 km doğuda, kuzeye uçuyor (bize yandan)
+            {"type": "aircraft", "icon": "Fighter", "color": "#f00C00", "x": 0.55, "y": 0.5, "dx": 0.0, "dy": -1.0},
+            {"type": "ground_model", "icon": "SAM", "color": "#fa0C00", "x": 0.5, "y": 0.6},       # 10 km güney
+            {"type": "ground_model", "icon": "MediumTank", "color": "#fa0C00", "x": 0.5, "y": 0.51},
+            {"type": "ground_model", "icon": "SPAA", "color": "#fa0C00", "x": 0.9, "y": 0.5}]      # 40 km: uzak
+    cs = contacts(objs, info)
+    assert [(c["kind"], c["clock"], round(c["dist_m"]), c["name"]) for c in cs] == [
+        ("aircraft", 3, 5000, "Fighter"), ("aircraft", 12, 8000, "Fighter"), ("sam", 6, 10000, "SAM")]
+    assert round(cs[1]["aspect"]) == 0 and round(cs[0]["aspect"]) == 90
+
+
+def test_warthunder_threat_callouts():
+    c, tr, r = make()
+    tr.feed(st(0, ias=0, agl=0.5, alt=50))
+    tr.feed(st(1, ias=80, agl=30))
+    sam = {"id": "", "clock": 2, "dist_m": 20000.0, "kind": "sam", "name": "SAM", "range_m": 18000.0}
+    tr.feed(st(2, extra={"contacts": [sam]}))
+    tr.feed(st(3, extra={"contacts": [{**sam, "dist_m": 17000.0}]}))
+    tr.feed(st(4, extra={"contacts": [{**sam, "dist_m": 16000.0}]}))
+    assert r.texts().count("SAM menzilindesin: saat 2, 17,0 kilometre.") == 1
+    hot = {"id": "", "clock": 1, "dist_m": 8000.0, "kind": "aircraft", "name": "Fighter", "aspect": 5.0}
+    for t in (10, 11, 12.5, 13, 20):
+        tr.feed(st(t, extra={"contacts": [hot]}))
+    nose = [x for x in r.texts() if "burnunu" in x]
+    assert nose == ["Saat 1'deki düşman burnunu sana çevirdi, 8,0 kilometre. Füze gelebilir!"]
+    tr.feed(st(21, extra={"contacts": [], "hud": [("kill", "MiG-29SMT"), ("fire", "Su-30MK")]}))
+    assert "Düşürdün: MiG-29SMT." in r.texts() and "Yanıyorsun! Su-30MK vurdu." in r.texts()
+
+
+def test_warthunder_hud_parse_and_nick_learning():
+    from alice.sims.warthunder import hud_events, learn_nick
+
+    msgs = [{"msg": "=R1N= Sgt_Hi_Ping (␗Su-30MKK) destroyed weapons/su_r_77_default/short"},
+            {"msg": "=WAPs= sapit (▄Su-30MK) set afire =R1N= Sgt_Hi_Ping (␗Su-30MKK)"},
+            {"msg": "=WAPs= sapit (▄Su-30MK) shot down =R1N= Sgt_Hi_Ping (␗Su-30MKK)"},
+            {"msg": "FSAF SAMP/T (TEL) shot down [SSQS] BlackBurn01 (☢MiG-29SMT)"}]
+    assert learn_nick(msgs, "su_30mkk") == "=R1N= Sgt_Hi_Ping"
+    assert learn_nick(msgs + [{"msg": "a (F-16C) shot down b (␗Su-30MKK)"}], "su_30mkk") is None  # iki aday
+    kill = [{"msg": "=R1N= Sgt_Hi_Ping (␗Su-30MKK) shot down [SSQS] BlackBurn01 (☢MiG-29SMT)"}]
+    assert hud_events(msgs + kill, "=R1N= Sgt_Hi_Ping") == [("fire", "Su-30MK"), ("kill", "MiG-29SMT")]
+    assert hud_events(kill, "") == []
+
+
+def test_warthunder_crash_is_not_a_landing_and_takeoff_is_not_approach():
+    c, tr, r = make()
+    wt = dict(source="warthunder", aircraft="su_30mkk", x=None, z=None, agl=None)
+    tr.feed(st(0, ias=0, alt=50, gear=1.0, **wt))
+    for t in range(1, 20):  # piste kalkış: teker açık, hızlanıyor, tırmanıyor
+        tr.feed(st(t, ias=60 + 3 * t, alt=50 + 10 * t, vv=8.0, aoa=1.0, gear=1.0, **wt))
+    assert "Hızlısın." not in r.texts()
+    for t in range(20, 200):
+        tr.feed(st(t, ias=250, alt=2000, **wt))
+    for t in range(200, 210):  # öldü: enkaz yerde, teker kapalı
+        tr.feed(st(t, ias=0, alt=40, vv=0.0, **wt))
+    assert r.debriefs and not any(x.startswith("Uçuş ") for x in r.texts())
+
+
+def test_threat_voices_share_a_gap_and_survive_respawn():
+    """Dalaşta ALICE susmuyordu: tehdit sesleri arasında ortak boşluk, gemi grubu tek anons, doğunca baştan sayılmaz."""
+    c, tr, r = make()
+    wt = dict(source="warthunder", aircraft="su_30mkk", x=None, z=None)
+    tr.feed(st(0, ias=0, agl=0.5, alt=50, **wt))
+    tr.feed(st(1, ias=80, agl=30, **wt))
+    ships = [{"id": "", "clock": 11, "dist_m": 7200.0, "kind": "sam", "name": "füzeli muhrip", "range_m": 9000.0},
+             {"id": "", "clock": 11, "dist_m": 8200.0, "kind": "sam", "name": "fırkateyn", "range_m": 9000.0}]
+    bandit = {"id": "", "clock": 2, "dist_m": 3600.0, "kind": "aircraft", "name": "Fighter"}
+    tr.feed(st(2, extra={"contacts": ships + [bandit]}, **wt))
+    tr.feed(st(5, extra={"contacts": ships + [{**bandit, "clock": 5, "dist_m": 900.0}]}, **wt))
+    said = r.texts()
+    assert said == ["Füzeli muhrip menzilindesin: saat 11, 7,2 kilometre."]  # fırkateyn, düşman ve arkadaki: sus
+    tr.feed(st(15, extra={"contacts": [{**bandit, "clock": 6, "dist_m": 900.0}]}, **wt))
+    assert r.texts()[-1] == "Arkanda düşman, saat 6, 900 metre!"  # 12 sn boşluktan sonra
+    c.session_end()  # öldü, yeniden doğdu: aynı gemiler yeniden sayılmaz
+    tr.feed(st(60, ias=0, agl=0.5, alt=50, **wt))
+    tr.feed(st(61, ias=80, agl=30, **wt))
+    n = len(r.texts())
+    tr.feed(st(80, extra={"contacts": ships}, **wt))
+    assert len(r.texts()) == n

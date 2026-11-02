@@ -91,3 +91,16 @@ disabled = ["spotify"]
 
 Bozuk eklenti ALICE'i durdurmaz: atlanır, hatası `alice plugins` çıktısında ve başlangıç mesajlarında görünür.
 Yerleşik bir araç ya da grup adıyla çakışan eklenti de atlanır.
+
+## ALICE'in kendi yazdığı araçlar
+
+Bir işi yapacak aracı yoksa ALICE aracı kendisi yazabilir (`make_tool`, ayrıntı: `alice/selftools.py`):
+
+1. Neyin eksik olduğunu söyler ve eklentiyi, testini ve **bildirgesini** yazar. Bildirge, aracın neye erişeceğini söyler: internet adresleri, klasörler, programlar. Bildirgede olmayan bir adres, klasör ya da program kullanan kod reddedilir. `eval`, `exec` ve `ctypes` yasak.
+2. Test kum havuzunda çalışır. Windows'ta bu, düşük bütünlük seviyesi demek: test yalnız geçici klasöre yazabilir ve süre sınırı vardır.
+3. ALICE ne yaptığını ve neye erişeceğini bir cümleyle söyleyip **her zaman** onay ister. Onay yoksa bu klasöre hiçbir dosya girmez.
+4. Onaydan sonra araç `~/.alice/plugins/<ad>.py` olarak eklenir ve aynı konuşmada kullanılır. Testi `_tests/` altında durur.
+
+`~/.alice/selftools.json` her aracı tutar: ne zaman ve neden yazıldığı, kaç kez kullanıldığı, son hatası. Üç kez hata veren araç kendiliğinden kapanır. Bildirgede `asks_each_time` olan araçlar (kod değiştiren, para harcayan, mesaj gönderen, silen) her kullanımda ayrıca onay ister. "Hangi araçları kendin yazdın?" sorusunun cevabı `make_tool action=list`. Kaldırılan araç silinmez, `_kaldirilan/` klasörüne taşınır.
+
+Sınır: bildirge denetimi koda bakarak yapılır. Çalışırken ağ ve dosya erişimi işletim sistemi seviyesinde kısıtlanmaz.

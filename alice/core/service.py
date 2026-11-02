@@ -195,6 +195,9 @@ class Core:
         self.running_tasks: set[str] = set()
         # Her turda mod politikasıyla çağrılır (ör. ses: DCS açılınca modelleri ekran kartından çıkar).
         self.hooks: list[Callable[[Policy], None]] = []
+        from alice.now import Anticipator
+
+        self.anticipator = Anticipator(self.store)  # beklenen oyundan önce hazırlık (ses modülü kanca ekler)
         self._last_prune = 0.0
         self._last_files: float | None = None  # None: dosyalar henüz hiç kontrol edilmedi
         self._lock = threading.Lock()
@@ -333,6 +336,8 @@ class Core:
             ("sağlık raporu", self._health_report),
             ("haftalık özet", lambda: self._weekly(mem)),
             ("e-posta tarihleri", lambda: self._mail_dates(mem)),
+            ("gece döngüsü", lambda: self._night(mem)),
+            ("önsezi", lambda: self.anticipator.check()),
         ]
         for name, fn in steps:
             try:
@@ -378,6 +383,15 @@ class Core:
 
         weekly.maybe_send(self.store, mem, self.router(), lambda t, b: self.notifier.send(
             Notification(t, b, "info", "memory", kind="info", emotion="cheerful")))
+
+    def _night(self, mem) -> None:
+        """Gece kendi kayıtlarını okuyup sorunları ve bağlantıları bul, sabah sor (alice/night.py)."""
+        if not (self.cfg.data.get("night", {}) or {}).get("enabled", True):
+            return
+        from alice import night
+
+        night.maybe_run(self.store, mem)
+        night.maybe_tell(lambda t, b: self.notifier.send(Notification(t, b, "info", "night", kind="info")))
 
     def _mail_dates(self, mem) -> None:
         from alice.extras import mailwatch

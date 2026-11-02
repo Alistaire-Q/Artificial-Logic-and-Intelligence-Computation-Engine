@@ -279,6 +279,11 @@ def sanitize_schema(s: Any) -> Any:
             out["properties"] = {n: sanitize_schema(p) for n, p in (v or {}).items()}
         elif k == "items":
             out["items"] = sanitize_schema(v)
+        elif k == "enum":
+            # Gemini Live tek bir boş enum değeri ("") görünce bütün araç listesini reddedip açılmıyordu (30 Ekim)
+            vals = [str(e) for e in (v or []) if str(e) != ""]
+            if vals:
+                out["enum"] = vals
         else:
             out[k] = v
     if out.get("type") == "OBJECT" and not out.get("properties"):
@@ -518,8 +523,12 @@ class LiveSession:
         if callable(sync):
             sync()  # yüklenebilir araçların listesi
         history = self.history_text()
+        from alice.now import voice_line
+
+        state = voice_line()  # mod, oyun, bugünün uçuşları, nabız
         system = self.agent.messages[0]["content"] + "\n\n" + LIVE_PROMPT.format(
-            now=f"{now:%d.%m.%Y %H:%M} ({spoken_time(now.hour, now.minute)})", names=", ".join(self.names()),
+            now=f"{now:%d.%m.%Y %H:%M} ({spoken_time(now.hour, now.minute)})" + (f"; durum: {state}" if state else ""),
+            names=", ".join(self.names()),
             monitors=monitor_layout(),
             history=("\n# Az önceki konuşma (aynı sohbetin devamı)\n" + history) if history else "")
         enabled = self.agent.ctx.state.setdefault("tool_groups", set())
@@ -534,7 +543,10 @@ class LiveSession:
             "tools": [{"functionDeclarations": declarations(self._specs()) + ([THINK_DECL] if self.think else [])}],
             "inputAudioTranscription": {},
             "outputAudioTranscription": {},
+            # Başlangıç hassasiyeti düşük ve 0,4 sn ön dolgu: 125 oturumun 72'sinde model tık/nefes/hışırtıyı
+            # konuşma sanıp kendi sözünü kesiyordu ("live araya girildi"), cevap kesik kesik geliyordu.
             "realtimeInputConfig": {"automaticActivityDetection": {
+                "startOfSpeechSensitivity": "START_SENSITIVITY_LOW", "prefixPaddingMs": 400,
                 "endOfSpeechSensitivity": "END_SENSITIVITY_HIGH", "silenceDurationMs": self.silence_ms}},
         }
         if extras and self.affective:

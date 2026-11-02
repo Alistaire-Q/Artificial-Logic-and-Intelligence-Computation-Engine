@@ -131,6 +131,9 @@ def test_hata_akisi_oldurmez_ve_kaydedilir(feeds_file):
     assert m.collect() == []
     assert "401" in m.state["discord_genel"]["error"]
     assert notes and "401" in notes[0]
+    m.state["discord_genel"]["last"] = 0
+    m.collect()
+    assert len(notes) == 1  # aynı hata her turda yeniden yazılmaz
 
 
 def test_ajan_yeni_ogede_uyanir(feeds_file, tmp_path, monkeypatch):

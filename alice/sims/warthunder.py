@@ -4,13 +4,23 @@
 /indicators uçak tipini. Oyun açık değilse bağlantı reddedilir; o zaman sessizce bekler.
 /map_obj.json mini haritada oyuncunun gördüğü nesneleri (düşman ve dost uçaklar, kendisi) verir, /map_info.json haritanın
 metre cinsinden boyutunu: bunlardan en yakın düşmanların saat yönü ve mesafesi çıkar (irtifa haritada yok).
+
+Oyun RWR'ı, kilidi ya da gelen füzeyi bu arayüzde yayınlamıyor (1 Kasım'da canlı bakıldı: /state, /indicators,
+/map_obj.json'da yok). Onun yerine eldekinden tehdit çıkarılır:
+  * düşman uçağının haritadaki burun yönü: burnu sana dönük ve menzildeyse füze atabilir
+  * haritadaki düşman SAM, uçaksavar ve füzeli gemiler: menziline girince söylenir
+  * /hudmsg savaş kayıtları: oyuncunun düşürdüğü, onu vuran/yakan. Oyuncunun adı ilk ölümde öğrenilir (ölmeden hemen
+    önce "X (Su-30MKK)'i düşürdü" satırı) ya da [sims] warthunder_nick ile verilir.
 """
 
 from __future__ import annotations
 
+import json
 import math
+import re
 import threading
 import time
+from collections import deque
 from typing import Any, Callable
 
 import httpx
@@ -72,8 +82,19 @@ def _enemy(color: str) -> bool:
     return rr > 180 and gg < 110 and bb < 110
 
 
-def contacts(objs: list[dict[str, Any]], info: dict[str, Any], limit: int = 6) -> list[dict[str, Any]]:
-    """Mini harita nesneleri -> en yakın düşman uçakları (saat yönü oyuncunun gidiş yönüne göre)."""
+# Haritadaki düşman hava savunması: simge -> (söylenen ad, yaklaşık etkili menzil m)
+GROUND_THREATS = {
+    "SAM": ("SAM", 18000.0), "SPAA": ("uçaksavar", 6000.0), "MissileDestroyer": ("füzeli muhrip", 18000.0),
+    "Cruiser": ("kruvazör", 15000.0), "Frigate": ("fırkateyn", 12000.0), "Destroyer": ("muhrip", 8000.0),
+}
+
+
+def contacts(objs: list[dict[str, Any]], info: dict[str, Any], limit: int = 6,
+             heading: float | None = None) -> list[dict[str, Any]]:
+    """Mini harita nesneleri -> en yakın düşman uçakları (saat yönü oyuncunun gidiş yönüne göre), ardından menzile
+    yakın düşman hava savunması (kind="sam").
+
+    Uçakta "aspect": düşmanın burnu ile ona göre senin olduğun yön arasındaki açı (0 = burnu tam sana dönük)."""
     from alice.sims.dcs import clock_of
 
     me = next((o for o in objs if o.get("icon") == "Player"), None)
@@ -82,23 +103,116 @@ def contacts(objs: list[dict[str, Any]], info: dict[str, Any], limit: int = 6) -
     if me is None or w <= 0 or h <= 0:
         return []
     hx, hy = float(me.get("dx") or 0), float(me.get("dy") or 0)
-    heading = math.degrees(math.atan2(hx * w, -hy * h)) % 360 if (hx or hy) else 0.0
-    out = []
+    if heading is None:  # pusula yoksa haritadaki okun yönü
+        heading = math.degrees(math.atan2(hx * w, -hy * h)) % 360 if (hx or hy) else 0.0
+    planes, ground = [], []
     for o in objs:
-        if o is me or o.get("type") != "aircraft" or not _enemy(str(o.get("color") or "")):
+        kind, icon = o.get("type"), str(o.get("icon") or "")
+        if o is me or not _enemy(str(o.get("color") or "")):
+            continue
+        if kind != "aircraft" and not (kind == "ground_model" and icon in GROUND_THREATS):
             continue
         ex, ey = (float(o.get("x") or 0) - float(me["x"])) * w, (float(o.get("y") or 0) - float(me["y"])) * h
         dist = math.hypot(ex, ey)
         bearing = math.degrees(math.atan2(ex, -ey)) % 360
-        out.append({"id": "", "clock": clock_of(bearing - heading), "dist_m": dist, "kind": "aircraft",
-                    "name": str(o.get("icon") or "uçak"), "lock": False, "missile": False})
-    return sorted(out, key=lambda c: c["dist_m"])[:limit]
+        if kind == "aircraft":
+            aspect = None
+            ox, oy = float(o.get("dx") or 0), float(o.get("dy") or 0)
+            if (ox or oy) and dist > 0:
+                nose = math.degrees(math.atan2(ox * w, -oy * h))
+                aspect = abs((nose - (bearing + 180) + 180) % 360 - 180)
+            planes.append({"id": "", "clock": clock_of(bearing - heading), "dist_m": dist, "kind": "aircraft",
+                           "name": icon or "uçak", "lock": False, "missile": False, "aspect": aspect})
+        else:
+            name, rng = GROUND_THREATS[icon]
+            if dist <= rng + 15000:
+                ground.append({"id": "", "clock": clock_of(bearing - heading), "dist_m": dist, "kind": "sam",
+                               "name": name, "range_m": rng, "lock": False, "missile": False})
+    planes.sort(key=lambda c: c["dist_m"])
+    ground.sort(key=lambda c: c["dist_m"] - c["range_m"])
+    return planes[:limit] + ground[:3]
+
+
+_HUD = re.compile(r"^(?P<a>.+?) \((?P<at>[^)]*)\) (?P<verb>shot down|destroyed|critically damaged|severely damaged|"
+                  r"set afire) (?P<b>.+?)(?: \((?P<bt>[^)]*)\))?$")
+
+
+def _norm(t: str) -> str:
+    """'␗Su-30MKK' / 'su_30mkk' -> 'su30mkk'."""
+    return re.sub(r"[^0-9a-z]", "", (t or "").lower())
+
+
+def parse_hud(msg: str) -> dict[str, str] | None:
+    """Savaş kaydı satırı -> {a, at, verb, b, bt}. Füze/bomba düşürme ("... destroyed weapons/...") sayılmaz."""
+    m = _HUD.match((msg or "").strip())
+    if not m or m["b"].startswith("weapons/"):
+        return None
+    return {k: (m[k] or "").strip() for k in ("a", "at", "verb", "b", "bt")}
+
+
+def _type_name(t: str) -> str:
+    return re.sub(r"^[^0-9A-Za-z]+", "", t or "").strip() or "düşman"
+
+
+def hud_events(msgs: list[dict[str, Any]], nick: str) -> list[tuple[str, str]]:
+    """Oyuncuyu ilgilendiren savaş kayıtları -> [(tür, karşı taraf tipi)]: kill | hit | fire."""
+    out: list[tuple[str, str]] = []
+    if not nick:
+        return out
+    for m in msgs:
+        d = parse_hud(str(m.get("msg") or ""))
+        if not d:
+            continue
+        if d["a"] == nick and d["verb"] in ("shot down", "destroyed") and d["b"] != nick:
+            out.append(("kill", _type_name(d["bt"] or d["b"])))
+        elif d["b"] == nick and d["a"] != nick:
+            if d["verb"] in ("critically damaged", "severely damaged"):
+                out.append(("hit", _type_name(d["at"])))
+            elif d["verb"] == "set afire":
+                out.append(("fire", _type_name(d["at"])))
+    return out
+
+
+def learn_nick(recent: list[dict[str, Any]], aircraft: str) -> str | None:
+    """Ölümden hemen önceki kayıtlarda bu uçak tipinden tek bir oyuncu düşürüldüyse o oyuncudur."""
+    me = _norm(aircraft)
+    if not me:
+        return None
+    names = set()
+    for m in recent:
+        d = parse_hud(str(m.get("msg") or ""))
+        if d and d["verb"] in ("shot down", "destroyed") and d["bt"]:
+            t = _norm(d["bt"])
+            if t and (t.startswith(me) or me.startswith(t)):
+                names.add(d["b"])
+    return names.pop() if len(names) == 1 else None
+
+
+def _nick_path():
+    from alice.config import alice_home
+
+    return alice_home() / "warthunder.json"
+
+
+def load_nick() -> str:
+    try:
+        return str(json.loads(_nick_path().read_text(encoding="utf-8")).get("nick") or "")
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
+def save_nick(nick: str) -> None:
+    try:
+        _nick_path().write_text(json.dumps({"nick": nick}, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
 
 
 class WarThunderPoller:
     def __init__(self, on_state: Callable[[FlightState], None], on_end: Callable[[], None] = lambda: None,
                  on_metrics: Callable[[list], None] = lambda rows: None, hz: float = 5,
-                 client: httpx.Client | None = None, running: Callable[[], bool] = lambda: True):
+                 client: httpx.Client | None = None, running: Callable[[], bool] = lambda: True,
+                 nick: str | None = None):
         self.on_state = on_state
         self.on_end = on_end
         self.on_metrics = on_metrics
@@ -112,6 +226,12 @@ class WarThunderPoller:
         self._map_info: dict[str, Any] = {}
         self._contacts: list[dict[str, Any]] = []
         self._t0 = time.monotonic()
+        self._fixed_nick = bool(nick)  # ayarda verildiyse öğrenilenle değiştirme
+        self.nick = nick or load_nick()
+        self._hud_last: int | None = None  # son okunan savaş kaydı; None: ilk okuma (eskiler anons edilmez)
+        self._hud_recent: deque = deque(maxlen=40)  # (alındığı an, kayıt): ölümde oyuncunun adını öğrenmek için
+        self._hud_new: list[tuple[str, str]] = []
+        self._aircraft = ""
 
     def start(self) -> "WarThunderPoller":
         threading.Thread(target=self._loop, daemon=True, name="alice-warthunder").start()
@@ -133,13 +253,18 @@ class WarThunderPoller:
         if s is None:
             if self.active:  # hangar / ölüm / maç sonu
                 self.active = False
+                self._death()
                 self.on_end()
             return None
         self.active = True
+        self._aircraft = s.aircraft or self._aircraft
         if time.monotonic() - self._map_at >= 1.0:
             self._map_at = time.monotonic()
-            self._contacts = self._read_map()
+            self._contacts = self._read_map(s.heading)
+            self._read_hud()
         s.extra["contacts"] = self._contacts
+        if self._hud_new:
+            s.extra["hud"], self._hud_new = self._hud_new, []
         self.on_state(s)
         if time.monotonic() - self._metrics_at >= 1.0:
             self._metrics_at = time.monotonic()
@@ -148,14 +273,40 @@ class WarThunderPoller:
                 if v is not None])
         return s
 
-    def _read_map(self) -> list[dict[str, Any]]:
+    def _read_map(self, heading: float | None = None) -> list[dict[str, Any]]:
         try:
             objs = self.client.get("/map_obj.json").json()
             if not self._map_info.get("valid") or self._map_info.get("_at", 0) < time.monotonic() - 60:
                 self._map_info = {**self.client.get("/map_info.json").json(), "_at": time.monotonic()}
         except (httpx.HTTPError, ValueError):
             return []
-        return contacts(objs, self._map_info) if isinstance(objs, list) else []
+        return contacts(objs, self._map_info, heading=heading) if isinstance(objs, list) else []
+
+    def _read_hud(self) -> None:
+        try:
+            r = self.client.get("/hudmsg", params={"lastEvt": 0, "lastDmg": self._hud_last or 0}).json()
+        except (httpx.HTTPError, ValueError):
+            return
+        dmg = [m for m in (r.get("damage") or []) if isinstance(m, dict)] if isinstance(r, dict) else []
+        first = self._hud_last is None
+        fresh = [m for m in dmg if first or int(m.get("id") or 0) > (self._hud_last or 0)]
+        self._hud_last = max([int(m.get("id") or 0) for m in dmg] + [self._hud_last or 0])
+        now = time.monotonic()
+        for m in fresh:
+            self._hud_recent.append((now, m))
+        if not first:
+            self._hud_new += hud_events(fresh, self.nick)
+
+    def _death(self) -> None:
+        """Oyuncu öldü ya da çıktı: adı bilinmiyorsa son saniyelerin savaş kayıtlarından öğren."""
+        if self._fixed_nick:
+            return
+        self._read_hud()
+        now = time.monotonic()
+        nick = learn_nick([m for at, m in self._hud_recent if now - at <= 8], self._aircraft)
+        if nick and nick != self.nick:
+            self.nick = nick
+            save_nick(nick)
 
     def _loop(self) -> None:
         while not self._stop.is_set():

@@ -56,6 +56,14 @@ GROUPS: dict[str, tuple[set[str], str, str]] = {
                    r"ne gönderdin|kime yazdın|ne yazdın|benim adıma|gönderdiklerin"),
     "blender": ({"blender"}, "Blender'da 3B sahne (bpy betiği)",
                 r"blender|3d|3b|üç boyut|modelle|sahne|render|mesh"),
+    "selftools": ({"make_tool"}, "yapamadığın iş için yeni araç yaz (kum havuzunda test, onayla ekle), kendi "
+                  "yazdığın araçları listele",
+                  r"araç(ın)? yaz|aracın yok|yapamıyor|eklenti yaz|kendin yaz|hangi araçları"),
+    "now": ({"now"}, "kullanıcının şu anki durumu: mod, oyun, bugünün uçuşları, nabız, öneri",
+            r"nasılım|ne durumdayım|durumum|mola|yorgun muyum|bugün nasıl gidiyor"),
+    "timeline": ({"timeline"}, "zaman makinesi hafıza: ekranda daha önce görülen yazıları ara",
+                 r"ekranda gör|geçen (hafta|gün).*(link|bağlantı|yazı|mesaj)|o linki bul|zaman çizgisi|"
+                 r"daha önce gördü|okuduğum o"),
     "flight": ({"flight"}, "DCS / War Thunder uçuş verisi ve kneeboard",
                r"dcs|war ?thunder|uçuş|uçak|kneeboard|pist|iniş|kalkış|simülasyon|sim\b"),
     "connect": (set(),  # araçlar çalışma anında tanımlardan gelir (alice/connect)

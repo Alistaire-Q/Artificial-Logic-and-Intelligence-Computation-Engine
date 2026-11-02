@@ -33,6 +33,8 @@ def test_sanitize_schema_for_gemini():
     assert sanitize_schema(s) == {"type": "OBJECT", "properties": {
         "a": {"type": "STRING", "nullable": True}, "b": {"type": "ARRAY", "items": {"type": "INTEGER"}}},
         "required": ["a"]}
+    assert sanitize_schema({"type": "string", "enum": ["", "pdf"]}) == {"type": "STRING", "enum": ["pdf"]}
+    assert sanitize_schema({"type": "string", "enum": [""]}) == {"type": "STRING"}  # boş enum Live'ı açtırmıyordu
     d = declarations([{"type": "function", "function": {"name": "t", "description": "d",
                                                          "parameters": {"type": "object", "properties": {}}}}])
     assert d == [{"name": "t", "description": "d"}]
