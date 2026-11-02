@@ -42,6 +42,7 @@ TICK_MS = 16            # animasyon karesi ve komut kuyruğu; sadece hareket ede
 TOPMOST_EVERY = 2.0     # kenarlıksız oyun öne geçerse en üstte olmayı yeniden iste (odak almadan)
 EXIT_BUSY = 3           # port başka bir HUD'da: çıkış kodu (denetleyici bunu çökme saymaz)
 ISLAND_KEY = "__ada__"  # Adanın penceresi
+BACKDROP_EVERY = 0.12   # sn: buzlu camın arkası bu sıklıkla yenilenir (oyunda arka plan akarken cam da akar)
 
 
 # ------------------------------------------------------------------------- ağ
@@ -275,6 +276,9 @@ class HudWindow:
         self.win32 = win32 if win32 is not None else (Win32() if IS_WIN else None)
         self.make_slot = make_slot
         self.island = style.Island(self.w, self.h)
+        if isinstance(self.win32, Win32):  # gerçek ekranda: camın arkası gerçekten bulanıklaşsın
+            self.island.backdrop = self._backdrop_source()
+        self._island_painted = 0.0
         self.slots: dict[str, Slot] = {}
         self.shown = False
         self._topmost_at = 0.0
@@ -317,6 +321,36 @@ class HudWindow:
         slot.visible = True
         return moving
 
+    def _backdrop_source(self) -> Callable[[], Any]:
+        """Adanın altındaki ekran parçası, bulanık. HUD pencereleri ekran görüntüsünden hariç olduğu için cam
+        kendini görmez. Özel tam ekranda yakalama başarısız olursa None: cam düz açık gri olur."""
+        state: dict[str, Any] = {"at": -1e9, "img": None, "sct": None, "fail": 0}
+
+        def grab() -> Any:
+            now = time.monotonic()
+            if state["img"] is not None and now - state["at"] < BACKDROP_EVERY:
+                return state["img"]
+            if state["fail"] >= 5:
+                return None
+            try:
+                import mss
+                from PIL import Image
+
+                if state["sct"] is None:
+                    state["sct"] = mss.mss()
+                isl = self.island
+                shot = state["sct"].grab({"left": self.ox + isl.x, "top": self.oy + isl.y,
+                                          "width": isl.cw, "height": isl.ch})
+                state["img"] = style.blur_backdrop(Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX"),
+                                                   isl.k)
+                state["at"], state["fail"] = now, 0
+            except Exception:  # noqa: BLE001
+                state["fail"] += 1
+                state["img"] = None
+            return state["img"]
+
+        return grab
+
     def _paint_island(self, now: float) -> None:
         """Ada: tek pencere, içerik ve boyut style.Island'da. Hareket yokken yeniden basılmaz."""
         visible = self.island.update(style.entries(self.model.visible()), now)
@@ -330,9 +364,11 @@ class HudWindow:
         sig = (self.island.current and style._sig(self.island.current),
                tuple(style._sig(e) for e in self.island.minimals))
         img, moving = self.island.frame(now)
-        if not moving and slot.last == sig:
+        glass_due = self.island.backdrop is not None and now - self._island_painted >= BACKDROP_EVERY
+        if not moving and slot.last == sig and not glass_due:
             return
         slot.last = sig if not moving else None
+        self._island_painted = now
         if self.opacity < 0.999:
             img = style.adjust(img, self.opacity)
         if self.win32 is not None and slot.hwnd:

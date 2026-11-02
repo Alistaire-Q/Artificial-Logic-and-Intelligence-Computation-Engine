@@ -1,12 +1,14 @@
 """HUD'un görünümü. Apple'ın Dynamic Island ve Live Activities kurallarına göre (developer.apple.com/design/human-
 interface-guidelines/live-activities, /materials, /color):
 
-  * Tek yüzey, "Ada": ekranın üst ortasında opak siyah tek bir kapsül. Tehdit, yakıt, sıcaklık, bildirim, konuşma
-    hep onun içinde; birden fazla şey varsa en önemlisi Adada, diğerleri yanında küçük dairelerde (minimal görünüm).
-    Ayrı ayrı yüzen paneller yok: HIG yarı saydam katmanları üst üste koymamayı ve tek yüzeyde dönüşümlü göstermeyi
+  * Tek yüzey, "Ada": ekranın üst ortasında tek bir kapsül. Tehdit, yakıt, sıcaklık, bildirim, konuşma hep onun
+    içinde; birden fazla şey varsa en önemlisi Adada, diğerleri yanında küçük dairelerde (minimal görünüm). Ayrı
+    ayrı yüzen paneller yok: HIG yarı saydam katmanları üst üste koymamayı ve tek yüzeyde dönüşümlü göstermeyi
     söylüyor.
-  * Renk sadece içerikte ve sadece anlam için: beyaz yazı, değer ve simge durum rengiyle (iOS koyu mod sistem
-    renkleri). Kritikte Adanın etrafında ince renkli çizgi (HIG "key line"). Renkli nokta, renkli çerçeve yok.
+  * apple.com'un açık dili: beyaz-gri buzlu cam (arkasındaki ekran gerçekten bulanıklaşır, üstünde açık tül, kılcal
+    kenar ve üst kenarda ışık), koyu yazı #1D1D1F, ikincil #6E6E73, marka mavisi #0071E3. Siyah Ada ve doygun
+    turuncu "oyun arayüzü" gibi duruyordu. Renk sadece simge ve değerde, sadece anlam için; kritikte ince kırmızı
+    çizgi ve yavaş nefes. Renkli nokta, renkli çerçeve yok.
   * Yazı büyük ve en az orta kalınlıkta (HIG: "large, heavier-weight text"). Segoe UI Variable'ın Display/Text optik
     boyutları SF'nin Windows'taki en yakın karşılığı. Simgeler SF Symbols gibi tek renk, yazıyla aynı ağırlıkta.
   * Eş merkezli kenar boşlukları: içerik kenara sıkı, iç köşeler dış köşeyle uyumlu; köşeler Apple'ın sürekli köşesi
@@ -26,19 +28,23 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 from alice.hud.model import Item, clock_of
 
-# iOS koyu mod sistem renkleri (HIG Color, 2025)
-RED, ORANGE, YELLOW = (255, 66, 69), (255, 146, 48), (255, 214, 0)
-GREEN, BLUE, GRAY = (48, 209, 88), (0, 145, 255), (142, 142, 147)
+# apple.com'un açık dili: beyaz-gri buzlu cam, koyu yazı, marka mavisi. Durum renkleri HIG açık mod "artırılmış
+# kontrast" değerleri: açık camın üstünde yazı olarak okunsunlar (normal turuncu beyazda soluk kalıyordu).
+RED, ORANGE, YELLOW = (233, 21, 45), (197, 83, 0), (161, 106, 0)
+GREEN, BLUE, GRAY = (0, 137, 50), (0, 113, 227), (142, 142, 147)
+GLOW = {"info": (0, 136, 255), "warn": (255, 141, 40), "critical": (255, 56, 60)}  # kenar ışığı: canlı tonlar
 COLORS = {"info": BLUE, "warn": ORANGE, "critical": RED}
-WHITE = (245, 245, 247)          # apple.com'un koyu bölümlerindeki yazı rengi (saf beyaz değil)
-LABEL_2 = (134, 134, 139, 255)   # apple.com ikincil yazı (#86868B)
+LABEL = (29, 29, 31)             # apple.com ana yazı (#1D1D1F)
+LABEL_2 = (110, 110, 115, 255)   # apple.com ikincil yazı (#6E6E73)
+TINT = (250, 250, 252, 172)      # buzlu camın tülü (arkası bulanık ekran)
+TINT_SOLID = (245, 245, 247, 240)  # arka plan alınamazsa (deneme, eski Windows): neredeyse opak açık gri
+HAIRLINE = (0, 0, 0, 24)         # camı zeminden ayıran kılcal çizgi
+HIGHLIGHT = (255, 255, 255, 190)  # üst kenardaki ışık yansıması (cam kalınlığı hissi)
 TRACKING = -0.022                # em: apple.com'da 17 px yazıda -0,374 px; sıkı, tok görünüm
-ISLAND = (0, 0, 0, 255)          # Dynamic Island: opak siyah
-KEYLINE = (255, 255, 255, 34)    # Adayı zeminden ayıran ince çizgi (gölge yerine)
 SS = 3                           # kenar yumuşatma için büyütme
 
 FADE_IN, FADE_OUT, TURN = 0.22, 0.18, 0.2   # sn
@@ -197,9 +203,9 @@ def glyph(img: Image.Image, name: str, cx: float, cy: float, s: float, rgb: tupl
     elif name == "warning":  # exclamationmark.triangle.fill
         tri = [(cx, cy - h * 0.95), (cx + h, cy + h * 0.8), (cx - h, cy + h * 0.8)]
         d.polygon([(X(x), X(y)) for x, y in tri], fill=col)
-        d.line([(X(cx), X(cy - h * 0.35)), (X(cx), X(cy + h * 0.25))], fill=(0, 0, 0, 255), width=round(X(s * 0.11)))
+        d.line([(X(cx), X(cy - h * 0.35)), (X(cx), X(cy + h * 0.25))], fill=(255, 255, 255, 255), width=round(X(s * 0.11)))
         r = s * 0.07
-        d.ellipse([X(cx - r), X(cy + h * 0.5 - r), X(cx + r), X(cy + h * 0.5 + r)], fill=(0, 0, 0, 255))
+        d.ellipse([X(cx - r), X(cy + h * 0.5 - r), X(cx + r), X(cy + h * 0.5 + r)], fill=(255, 255, 255, 255))
     elif name == "drop":  # drop.fill (yakıt)
         r = h * 0.62
         d.ellipse([X(cx - r), X(cy + h * 0.3 - r), X(cx + r), X(cy + h * 0.3 + r)], fill=col)
@@ -213,7 +219,7 @@ def glyph(img: Image.Image, name: str, cx: float, cy: float, s: float, rgb: tupl
     elif name == "check":  # checkmark.circle.fill
         d.ellipse([X(cx - h), X(cy - h), X(cx + h), X(cy + h)], fill=col)
         pts = [(cx - h * 0.45, cy + h * 0.02), (cx - h * 0.1, cy + h * 0.38), (cx + h * 0.5, cy - h * 0.35)]
-        d.line([(X(x), X(y)) for x, y in pts], fill=(0, 0, 0, 255), width=round(X(s * 0.13)), joint="curve")
+        d.line([(X(x), X(y)) for x, y in pts], fill=(255, 255, 255, 255), width=round(X(s * 0.13)), joint="curve")
     elif name == "cursor":  # cursorarrow
         pts = [(0, -1), (0.0, 0.62), (0.3, 0.32), (0.55, 0.92), (0.72, 0.84), (0.48, 0.25), (0.88, 0.25)]
         d.polygon([(X(cx - h * 0.4 + a * h), X(cy + b * h)) for a, b in pts], fill=col)
@@ -327,26 +333,61 @@ def island_layout(e: Entry | None, k: float) -> Layout:
     return Layout(max(w, 112 * k), 38 * k, 19 * k)
 
 
-MARGIN = 48  # gölge ve ışıma payı (k cinsinden): bulanıklık kesilmesin (26'da dikdörtgen kenar görünüyordu)
+MARGIN = 48  # gölge ve ışıma payı (k cinsinden): bulanıklık kesilmesin
+
+
+def _ss_mask(W: int, H: int, box: tuple, r: float) -> Image.Image:
+    big = Image.new("L", (W * SS, H * SS), 0)
+    ImageDraw.Draw(big).polygon([(x * SS, y * SS) for x, y in squircle(box, r)], fill=255)
+    return big.resize((W, H), Image.LANCZOS)
 
 
 @lru_cache(maxsize=64)
-def _body(w: int, h: int, r: int, crit: bool, pulse_q: float, k: float) -> Image.Image:
-    """Adanın gövdesi (kritikte ışıma + siyah sürekli köşeli şekil + key line). Boyut başına bir kez."""
+def _glass_parts(w: int, h: int, r: int, crit: bool, pulse_q: float, k: float) -> tuple:
+    """Buzlu cam parçaları (boyut başına bir kez): (gölge ya da ışıma, şekil maskesi, kılcal çizgi + ışık)."""
     m = round(MARGIN * k)
     W, H = w + 2 * m, h + 2 * m
-    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     box = (m, m, m + w, m + h)
-    q = 4  # ışıma çeyrek çözünürlükte bulanıklaştırılır: aynı görünür, 16 kat ucuz
-    if crit:
-        small = Image.new("RGBA", (max(1, W // q), max(1, H // q)), (0, 0, 0, 0))
+    q = 4  # bulanıklık çeyrek çözünürlükte: aynı görünür, 16 kat ucuz
+    under = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    small = Image.new("RGBA", (max(1, W // q), max(1, H // q)), (0, 0, 0, 0))
+    if crit:  # kritik: nefes alan kırmızı ışıma
         g = (3 + 3 * pulse_q) * k
         poly = squircle((box[0] - g, box[1] - g, box[2] + g, box[3] + g), r + g)
-        fill, blur = (*RED, int(70 + 60 * (1 - pulse_q))), 8 * k
-        ImageDraw.Draw(small).polygon([(x / q, y / q) for x, y in poly], fill=fill)
-        img.alpha_composite(small.filter(ImageFilter.GaussianBlur(blur / q)).resize((W, H), Image.BILINEAR))
-    # Gölge yok: apple.com'da da Dynamic Island'da da gölge kullanılmıyor (box-shadow: none); ayrımı key line yapar.
-    _shape(img, box, r, ISLAND, (*RED, 210) if crit else KEYLINE, 1.5 * k if crit else 1.0 * k)
+        fill, blur = (*GLOW["critical"], int(80 + 70 * (1 - pulse_q))), 9 * k
+    else:  # Liquid Glass gibi çok hafif gölge: açık gökyüzünde de cam seçilsin
+        poly = squircle((box[0], box[1] + 3 * k, box[2], box[3] + 3 * k), r)
+        fill, blur = (0, 0, 0, 46), 10 * k
+    ImageDraw.Draw(small).polygon([(x / q, y / q) for x, y in poly], fill=fill)
+    under.alpha_composite(small.filter(ImageFilter.GaussianBlur(blur / q)).resize((W, H), Image.BILINEAR))
+    mask = _ss_mask(W, H, box, r)
+    big = _big((W, H))
+    d = ImageDraw.Draw(big)
+    pts = [(x * SS, y * SS) for x, y in squircle(box, r)]
+    d.line(pts + [pts[0]], fill=(*RED, 220) if crit else HAIRLINE,
+           width=max(1, round((1.6 if crit else 1.0) * k * SS)))
+    inner = [(x * SS, y * SS) for x, y in squircle((box[0] + k, box[1] + k, box[2] - k, box[3] - k),
+                                                    max(0.0, r - k))]
+    edge = box[1] + min(h * 0.45, r * 1.2)
+    top = sorted((pt for pt in inner if pt[1] < edge * SS), key=lambda pt: pt[0])  # yalnız üst kenar
+    if len(top) > 2:
+        d.line(top, fill=HIGHLIGHT, width=max(1, round(1.0 * k * SS)), joint="curve")
+    over = big.resize((W, H), Image.LANCZOS)
+    return under, mask, over
+
+
+def _glass(w: int, h: int, r: int, crit: bool, pulse_q: float, k: float, behind: Image.Image | None) -> Image.Image:
+    """Bir cam yüzey: arkadaki (bulanık) ekran + açık tül, şekle kırpılmış; üstte kılcal çizgi ve ışık."""
+    under, mask, over = _glass_parts(w, h, r, crit, pulse_q, k)
+    img = under.copy()
+    if behind is not None and behind.size == under.size:
+        fill = behind.convert("RGBA")
+        fill.alpha_composite(Image.new("RGBA", fill.size, TINT))
+    else:
+        fill = Image.new("RGBA", under.size, TINT_SOLID)
+    fill.putalpha(ImageChops.multiply(fill.getchannel("A"), mask))
+    img.alpha_composite(fill)
+    img.alpha_composite(over)
     return img
 
 
@@ -358,10 +399,10 @@ def _content(sig: tuple, w: int, h: int, k: float) -> Image.Image:
     img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     if kind == "card":
         pad = 20 * k
-        glyph(img, gname, pad + 9 * k, 31 * k, 20 * k, WHITE if gname == "sparkle" else rgb)
+        glyph(img, gname, pad + 9 * k, 31 * k, 20 * k, LABEL if gname == "sparkle" else rgb)
         d = ImageDraw.Draw(img)
         tx = pad + 30 * k
-        text(d, (tx, 31 * k), title, font(round(16 * k), 600), WHITE, "lm")
+        text(d, (tx, 31 * k), title, font(round(16 * k), 600), (*LABEL, 255), "lm")
         if body:
             fb = font(round(14 * k), 400, False)
             y = 48 * k
@@ -373,7 +414,7 @@ def _content(sig: tuple, w: int, h: int, k: float) -> Image.Image:
     glyph(img, gname, 24 * k, cy, 18 * k, rgb, float(angle))
     d = ImageDraw.Draw(img)
     ft = font(round(15 * k), 600)
-    text(d, (43 * k, cy), title, ft, WHITE, "lm")
+    text(d, (43 * k, cy), title, ft, (*LABEL, 255), "lm")
     right = w - 16 * k
     if progress is not None:
         ring(img, right - 8 * k, cy, 8 * k, progress, rgb, k)
@@ -396,14 +437,23 @@ def _fade(img: Image.Image, a: float) -> Image.Image:
     return out
 
 
+def _behind(backdrop: Image.Image | None, x: int, y: int, W: int, H: int) -> Image.Image | None:
+    """Bulanık arka planın bu yüzeyin altına düşen parçası (tuval koordinatı)."""
+    if backdrop is None:
+        return None
+    return backdrop.crop((x, y, x + W, y + H))
+
+
 def draw_island(img: Image.Image, e: Entry | None, box: tuple, r: float, k: float, content_alpha: float,
-                pulse: float = 0.0) -> None:
+                pulse: float = 0.0, backdrop: Image.Image | None = None) -> None:
     x0, y0, x1, y1 = box
     w, h = max(1, round(x1 - x0)), max(1, round(y1 - y0))
     crit = e is not None and e.severity == "critical"
-    body = _body(w, h, round(min(r, h / 2)), crit, round(pulse * 6) / 6 if crit else 0.0, k)
     m = round(MARGIN * k)
-    img.alpha_composite(body, (round(x0) - m, round(y0) - m))
+    px, py = round(x0) - m, round(y0) - m
+    body = _glass(w, h, round(min(r, h / 2)), crit, round(pulse * 6) / 6 if crit else 0.0, k,
+                  _behind(backdrop, px, py, w + 2 * m, h + 2 * m))
+    img.alpha_composite(body, (px, py))
     if e is None or content_alpha <= 0.01:
         return
     lay = island_layout(e, k)
@@ -413,22 +463,15 @@ def draw_island(img: Image.Image, e: Entry | None, box: tuple, r: float, k: floa
     img.alpha_composite(_fade(c, content_alpha), (round(x0), round(y0)))
 
 
-@lru_cache(maxsize=32)
-def _minimal(gname: str, sev: str, angle: int, d_: int, k: float) -> Image.Image:
-    m = round(MARGIN * k)
-    img = _body(d_, d_, d_ // 2, False, 0.0, k).copy()
-    if sev == "critical":
-        _shape(img, (m, m, m + d_, m + d_), d_ / 2, (0, 0, 0, 0), (*RED, 210), 1.5 * k)
-    glyph(img, gname, m + d_ / 2, m + d_ / 2, 16 * k, COLORS.get(sev, BLUE), float(angle))
-    return img
-
-
-def draw_minimal(img: Image.Image, e: Entry, cx: float, cy: float, d_: float, k: float, alpha: float) -> None:
-    """Ada yanında ayrık küçük daire: ikinci/üçüncü içeriğin yalnızca simgesi (HIG minimal görünüm)."""
+def draw_minimal(img: Image.Image, e: Entry, cx: float, cy: float, d_: float, k: float, alpha: float,
+                 backdrop: Image.Image | None = None) -> None:
+    """Ada yanında ayrık küçük cam daire: ikinci/üçüncü içeriğin yalnızca simgesi (HIG minimal görünüm)."""
     d = max(2, round(d_))
     m = round(MARGIN * k)
-    img.alpha_composite(_fade(_minimal(e.glyph, e.severity, round(e.angle), d, k), alpha),
-                        (round(cx - d / 2) - m, round(cy - d / 2) - m))
+    px, py = round(cx - d / 2) - m, round(cy - d / 2) - m
+    layer = _glass(d, d, d // 2, e.severity == "critical", 0.0, k, _behind(backdrop, px, py, d + 2 * m, d + 2 * m))
+    glyph(layer, e.glyph, m + d / 2, m + d / 2, 16 * k, COLORS.get(e.severity, BLUE), e.angle)
+    img.alpha_composite(_fade(layer, alpha), (px, py))
 
 
 class Spring:
@@ -457,7 +500,8 @@ class Island:
 
     MAX_W, MAX_H, MINIMALS = 420, 170, 2
 
-    def __init__(self, sw: int, sh: int, top: float = 10.0):
+    def __init__(self, sw: int, sh: int, top: float = 10.0, backdrop=None):
+        self.backdrop = backdrop   # () -> Adanın tuvali boyunda bulanık arka plan ya da None
         self.k = scale_for(sh)
         k = self.k
         self.sw, self.sh = sw, sh
@@ -516,17 +560,23 @@ class Island:
             moving = True
         img = Image.new("RGBA", (self.cw, self.ch), (0, 0, 0, 0))
         k = self.k
+        bd = None
+        if self.shown > 0.005 and self.backdrop is not None:
+            try:
+                bd = self.backdrop()
+            except Exception:  # noqa: BLE001 - arka plan alınamazsa düz açık cam
+                bd = None
         if self.shown > 0.005:
             cx, top = self.cw / 2, self.top
             w, h = self.w.x, self.h.x
             grow = 0.86 + 0.14 * self.shown  # belirirken küçükten
             w, h = w * grow, h * grow
             box = (cx - w / 2, top, cx + w / 2, top + h)
-            draw_island(img, content, box, min(self.r.x, h / 2), k, content_alpha, pulse)
+            draw_island(img, content, box, min(self.r.x, h / 2), k, content_alpha, pulse, bd)
             x = box[2] + 6 * k
             for e in self.minimals:  # sağda ayrık küçük daireler
                 d_ = 38 * k * grow
-                draw_minimal(img, e, x + d_ / 2, top + d_ / 2, d_, k, 1.0)
+                draw_minimal(img, e, x + d_ / 2, top + d_ / 2, d_, k, 1.0, bd)
                 x += d_ + 6 * k
             if self.shown < 0.999:
                 img.putalpha(img.getchannel("A").point(lambda v: int(v * self.shown)))
@@ -605,7 +655,7 @@ def render(sp: Sprite, sh: int, alpha: float = 1.0, grow: float = 1.0, pulse: fl
     k = scale_for(sh)
     img = Image.new("RGBA", (max(1, sp.w), max(1, sp.h)), (0, 0, 0, 0))
     sev = sp.item.data.get("severity", "info")
-    rgb = COLORS.get(sev, BLUE)
+    rgb = GLOW.get(sev, GLOW["info"]) if sp.item.kind == "edge" else BLUE  # kenar ışığı canlı, halka marka mavisi
     if sp.item.kind == "edge":
         peak = (0.5 + 0.35 * (1 - pulse)) if sev == "critical" else 0.5
         mask = _edge_mask(img.width, img.height, sp.x <= 0, sp.y <= 0).point(lambda v: int(v * peak))
@@ -686,6 +736,18 @@ class Anim:
         return alpha, grow, pulse, moving
 
 
+def blur_backdrop(img: Image.Image, k: float = 1.0) -> Image.Image:
+    """Camın arkası: ekran parçası çeyrek çözünürlükte bulanıklaştırılıp biraz doygunlaştırılır (Apple'ın cam
+    malzemesi rengi soldurmaz, yumuşatır). Ucuz: 700x200'lük parça için ~2 ms."""
+    from PIL import ImageEnhance
+
+    q = 4
+    small = img.convert("RGB").resize((max(1, img.width // q), max(1, img.height // q)), Image.BILINEAR)
+    small = small.filter(ImageFilter.GaussianBlur(18 * k / q))
+    small = ImageEnhance.Color(small).enhance(1.35)
+    return small.resize(img.size, Image.BILINEAR)
+
+
 def preview(items: list[dict[str, Any]], sw: int = 1920, sh: int = 1080,
             background: Image.Image | None = None) -> Image.Image:
     """Komutların son halini tek resimde göster (rapor ve deneme için; pencere açmaz)."""
@@ -699,6 +761,10 @@ def preview(items: list[dict[str, Any]], sw: int = 1920, sh: int = 1080,
     for sp in layout(m.visible(), sw, sh):
         img.alpha_composite(render(sp, sh, pulse=0.3), (sp.x, sp.y))
     isl = Island(sw, sh)
+    if background is not None:  # buzlu cam: arkadaki resmin bulanık hali
+        bg = img.crop((isl.x, isl.y, isl.x + isl.cw, isl.y + isl.ch)).convert("RGB")
+        blurred = blur_backdrop(bg, isl.k)
+        isl.backdrop = lambda: blurred
     isl.update(entries(m.visible()), 0.0)
     for t in range(0, 120):  # yaylar ve geçişler otursun
         frame, _ = isl.frame(t / 60)
