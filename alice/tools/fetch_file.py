@@ -157,3 +157,16 @@ def describe(d: dict[str, Any], opened: bool = False) -> str:
         return ("tarayıcı indiriyor ama kaydetme penceresi açık olabilir (Opera'da 'nereye kaydedileceğini sor' "
                 "açık): kullanıcıya söyle ya da pencerede Kaydet'e bas")
     return f"hâlâ iniyor{pct}: {d.get('file') or d.get('url')} (browser action=downloads ile takip et; bitmeden açma)"
+
+
+def source_name(url: str) -> str:
+    """Bağlantının kastettiği dosya adı (GitHub gibi imzalı bağlantılarda "filename=" parametresinden)."""
+    from urllib.parse import parse_qs
+
+    q = parse_qs(urlparse(url).query)
+    for key in ("rscd", "response-content-disposition"):
+        for v in q.get(key, []):
+            m = re.search(r"filename\*?=(?:UTF-8'')?\"?([^\";]+)", v)
+            if m:
+                return unquote(m.group(1))
+    return unquote(urlparse(url).path.rsplit("/", 1)[-1])

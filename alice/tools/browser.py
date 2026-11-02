@@ -881,6 +881,10 @@ class Browser(Tool):
             rows = []
             for d in fetch_file.jobs() + (b.downloads() if getattr(b, "extension", False) else []):
                 row = f"{d.get('file') or d.get('url')} | {d.get('state')}"
+                src = fetch_file.source_name(str(d.get("url") or ""))
+                name = str(d.get("file") or "").replace("\\", "/").rsplit("/", 1)[-1]
+                if name and src and "." in src and name.lower() != src.lower():
+                    row += f" | DİKKAT: bağlantıdaki ad {src}, dosya {name} adıyla kaydedilmiş"
                 if not d.get("file") and d.get("state") == "in_progress":
                     row += " | kaydetme penceresi bekliyor olabilir (download action'ı bu pencereyi açmaz)"
                 if d.get("error"):

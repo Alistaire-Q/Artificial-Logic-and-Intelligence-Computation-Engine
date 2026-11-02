@@ -100,3 +100,14 @@ def test_windows_low_integrity_blocks_writes_outside_project(tmp_path):
     assert (proj / "icerde.txt").exists(), res.text
     assert not outside.exists(), res.text
     assert "[sandbox:" in res.text
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows düşük bütünlük seviyesi")
+def test_failed_read_is_not_blamed_on_sandbox(tmp_path):
+    """Canlı kayıt: olmayan dosyaya bakan Get-Item'ın hatasına sandbox notu eklenince model "indirme klasörüne
+    erişim engellendi" sanıp yanlış yöne gitti."""
+    proj = tmp_path / "proje"
+    proj.mkdir()
+    c = ToolContext(cwd=proj, config=make_config({"brain": ["a:m"]}, sandbox="on"))
+    res = TOOLS["run_command"].run(c, f"Get-Item '{tmp_path / 'yok.exe'}'")
+    assert res.is_error and "[sandbox:" not in res.text

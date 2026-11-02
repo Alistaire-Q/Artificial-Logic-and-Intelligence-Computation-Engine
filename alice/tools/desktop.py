@@ -160,6 +160,24 @@ def _shortcut_roots() -> list[Path]:
 SHORTCUT_SUFFIXES = (".lnk", ".url", ".appref-ms")
 # URI (ms-settings:, mailto:, steam://...); şema en az iki harf, yani "C:\..." sürücü harfi eşleşmez
 URI_RX = re.compile(r"^[a-z][a-z0-9+.-]+:", re.I)
+# Sürücüyle başlayan ya da klasör içeren dosya yolu (uygulama adı değil): yoksa açmaya çalışılmaz
+FILE_PATH_RX = re.compile(r"^([a-z]:[\\/]|\\\\|~[\\/]|%\w+%[\\/])", re.I)
+
+
+def missing_file(p: Path) -> str:
+    """Olmayan dosya için açıklama + aynı klasördeki en yeni benzer dosyalar (yanlış adla inmiş olabilir)."""
+    msg = f"dosya yok: {p}"
+    try:
+        same = sorted((f for f in p.parent.iterdir() if f.is_file() and f.suffix.lower() == p.suffix.lower()),
+                      key=lambda f: f.stat().st_mtime, reverse=True)[:5]
+    except OSError:
+        same = []
+    if same:
+        msg += ". Aynı klasörde en yeni " + p.suffix + " dosyaları: " + ", ".join(f.name for f in same) + \
+            " (dosya başka adla inmiş olabilir; emin değilsen browser action=download ile yeniden indir)"
+    return msg
+
+
 # Tarayıcıda açılınca indirilen dosyalar (kurulumlar, arşivler): adres çubuğu yerine eklentiyle indirilir
 DOWNLOAD_RX = re.compile(r"\.(exe|msi|msix|zip|7z|rar|dmg|appimage|deb|iso)$", re.I)
 SHORTCUT_TTL = 60.0  # sn: kısayol listesi bu kadar önbellekte
@@ -445,6 +463,10 @@ def open_app(target: str) -> str:
         if p.exists() or "://" in target or shutil.which(target):
             os.startfile(str(p) if p.exists() else (shutil.which(target) or target))  # type: ignore[attr-defined]
             return f"açıldı: {target}"
+        if FILE_PATH_RX.match(target):
+            # Var olmayan dosya yolu: aşağıdaki "son çare" Windows'un "bulunamadı" hata penceresini açıyordu, ALICE
+            # de o pencerede Enter'a basıp duruyordu (olmayan Sonora-Setup.exe; dosya e.exe adıyla inmişti).
+            raise ToolError(missing_file(p))
         if target.lower().startswith("shell:appsfolder"):
             subprocess.Popen(["explorer.exe", target])
             return f"açıldı: {target}"

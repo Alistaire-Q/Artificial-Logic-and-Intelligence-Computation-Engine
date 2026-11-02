@@ -26,6 +26,9 @@ def isolated_home(tmp_path, monkeypatch):
     # Gerçek Windows "Rahatsız etmeyin" ayarına testte asla dokunulmasın (bir test uçuş moduna geçince açık kalmıştı)
     monkeypatch.setattr(anticipate, "_wnf", lambda: None)
     monkeypatch.setattr(anticipate, "start_steam_silent", lambda root=None: False)
+    from alice.tools import outcome
+
+    monkeypatch.setattr(outcome, "IS_WIN", False)  # eylem sonrası gözlem gerçek masaüstü pencerelerine bakmasın
     for k in ("GEMINI_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "NVIDIA_API_KEY", "CEREBRAS_API_KEY",
               "TYPESAFE_API_KEY", "MISTRAL_API_KEY", "SAMBANOVA_API_KEY", "GITHUB_MODELS_TOKEN", "ZAI_API_KEY",
               "COHERE_API_KEY", "AI_GATEWAY_API_KEY", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "HF_TOKEN",

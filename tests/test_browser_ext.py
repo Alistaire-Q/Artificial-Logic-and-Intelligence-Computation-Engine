@@ -306,3 +306,34 @@ def test_download_needing_login_falls_back_to_browser(ext, files_server, tmp_pat
                                               "total": 0} if m == "download" else orig(m, _timeout, **p))
     r = browser.Browser().run(ctx, "download", url=f"{files_server}/login.html")  # sayfa: giriş gerekiyor
     assert "kaydetme penceresi açık olabilir" in r.text
+
+
+def test_open_missing_file_says_so_and_lists_lookalikes(tmp_path):
+    """Canlı kayıt: kurulum e.exe adıyla inmişti; ALICE olmayan Sonora-Setup.exe'yi açınca Windows'un "bulunamadı"
+    penceresi çıktı ve reflex orada Enter'a basıp durdu. Artık hata ve klasördeki benzer dosyalar döner."""
+    from alice.tools.desktop import open_app
+
+    (tmp_path / "e.exe").write_bytes(b"MZ")
+    with pytest.raises(ToolError) as e:
+        open_app(str(tmp_path / "Sonora-Setup.exe"))
+    assert "dosya yok" in str(e.value) and "e.exe" in str(e.value) and "download" in str(e.value)
+
+
+def test_downloads_warns_when_saved_under_other_name(ext):
+    fh, ctx = ext
+    url = ("https://release-assets.githubusercontent.com/x?sp=r&rscd=attachment%3B+filename%3DSonora-Setup.exe"
+           "&rsct=application%2Foctet-stream")
+    orig = fh.call
+    fh.call = lambda m, _timeout=15.0, **p: ([{"file": "C:/Users/k/Downloads/e.exe", "url": url, "state": "complete",
+                                               "error": "", "bytes": 1, "total": 1}]
+                                             if m == "downloads" else orig(m, _timeout, **p))
+    out = browser.Browser().run(ctx, "downloads").text
+    assert "DİKKAT: bağlantıdaki ad Sonora-Setup.exe, dosya e.exe adıyla kaydedilmiş" in out
+
+
+def test_sandbox_hint_only_for_access_errors():
+    from alice.tools.shell import ACCESS_DENIED
+
+    assert ACCESS_DENIED.search("Remove-Item : Access to the path 'C:/x' is denied.")
+    assert ACCESS_DENIED.search("UnauthorizedAccessException")
+    assert not ACCESS_DENIED.search("Get-Item : Cannot find path 'C:/Users/k/Downloads/Sonora-Setup.exe'")

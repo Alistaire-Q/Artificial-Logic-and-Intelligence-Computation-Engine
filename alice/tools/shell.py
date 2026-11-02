@@ -43,6 +43,9 @@ DANGEROUS = [
     r"\bcurl\b.*\|\s*(sh|bash|iex)", r"\biwr\b.*\|\s*iex", r"Invoke-Expression.*DownloadString",
 ]
 _DANGER_RX = [re.compile(p, re.I) for p in DANGEROUS]
+READ_ONLY = re.compile(r"^\s*(get-\w+|dir|ls|type|cat|where(\.exe)?|test-path|select-string)(\s|$)", re.I)
+ACCESS_DENIED = re.compile(r"access (is )?denied|access to the path .* is denied|erişim (engellendi|reddedildi)|UnauthorizedAccess|permission denied|"
+                           r"EACCES|EPERM", re.I)
 
 
 def is_dangerous(command: str) -> bool:
@@ -171,9 +174,13 @@ class RunCommand(Tool):
         if IS_WIN and "is not a valid statement separator" in err:
             body += ("\n[ipucu] Bu Windows PowerShell 5.1: '&&' ve '||' yok. Komutları ';' ile ayır, "
                      "koşul için 'if ($?) { ... }' ya da 'if (-not $?) { ... }' kullan.")
-        if boxed:
-            body += (f"\n[sandbox: komut sadece {wd} ve geçici klasöre yazabildi. 'Erişim reddedildi' gibi bir hata bu "
-                     "yüzdense ve proje dışına yazmak gerçekten gerekiyorsa unsandboxed=true ile tekrar dene.]")
+        # Yalnız gerçek erişim hatasında ya da yazmaya çalışan komut başarısız olunca (düşük bütünlükte engellenen
+        # yazma bazen hiç çıktı vermiyor). Salt okuma komutunun hatası ("dosya yok") sandbox'tan değil.
+        if boxed and (ACCESS_DENIED.search(out + err) or (returncode != 0 and not READ_ONLY.match(command))):
+            # Yalnız gerçekten erişim hatası varken: her başarısız komuta eklenince model "dosya yok"u da "erişim
+            # engellendi" sanıyordu (olmayan Sonora-Setup.exe'ye bakan Get-Item, 2026-11-02).
+            body += (f"\n[sandbox: komut sadece {wd} ve geçici klasöre yazabildi. Bu erişim hatası bu yüzdense ve proje "
+                     "dışına yazmak gerçekten gerekiyorsa unsandboxed=true ile tekrar dene.]")
         return ToolResult(f"çıkış kodu {returncode}\n{body}", is_error=returncode != 0)
 
 

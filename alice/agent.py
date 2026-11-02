@@ -746,7 +746,14 @@ class Agent:
                 result = ToolResult(f"Kullanıcının hook'u bu çağrıyı engelledi: {blocked}", is_error=True)
                 self.ui.tool_end(call["id"], tool.name, result)
                 return result
+        watch = self._watch(tool, args)
         result = self._run_tool(tool, args)
+        if watch is not None and not self.cancel.is_set():
+            from dataclasses import replace
+
+            seen = watch.note()
+            if seen:  # ekranda gerçekte olan: yeni pencere, hata kutusu, UAC, açılmayan program
+                result = replace(result, text=result.text + seen)
         if self.hooks.has("PostToolUse"):
             from dataclasses import replace
 
@@ -759,6 +766,25 @@ class Agent:
         self._log_outward(tool, args, summary, "failed" if result.is_error else "sent", result.text)
         self.ui.tool_end(call["id"], tool.name, result)
         return self._fence(tool, result)
+
+    def _watch(self, tool: Tool, args: dict[str, Any]):
+        """Ekranı etkileyen eylem (tıklama, tuş, program açma, komut) öncesi pencereleri not al; sonra ne değiştiği
+        araç sonucuna eklenir (bkz. alice.tools.outcome). Salt okuma eylemlerinde ve ayar kapalıyken None."""
+        if not self.config.agent.get("observe_outcomes", True):
+            return None
+        try:
+            if tool.name != "run_command" and tool.risk_for(args) != COMPUTER:
+                return None
+        except Exception:  # noqa: BLE001
+            return None
+        if str(args.get("action") or "") in ("screenshot", "list", "snapshot", "text", "tabs", "downloads",
+                                              "cursor_position", "wait"):
+            return None
+        from alice.tools import outcome
+
+        if not outcome.IS_WIN:
+            return None
+        return outcome.Watch(opening=tool.name in ("windows", "app") and args.get("action") in ("open", "launch"))
 
     def _fence(self, tool: Tool, result: ToolResult) -> ToolResult:
         """Dış içerik getiren aracın sonucunu "güvenilmeyen veri" diye işaretle ve turu kirlenmiş say (bkz. guard)."""
