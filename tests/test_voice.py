@@ -1745,3 +1745,10 @@ def test_ali_call_wakes_but_not_talk_to_real_ali():
     assert strip_wake("Ali, nasılsın?", strict=True) == "nasılsın?"
     for t in ("Selam Ali", "Merhaba Ali", "Ali gel buraya", "Ali bak şimdi", "Ali Selim geldi"):
         assert strip_wake(t, strict=True) is None, t
+
+
+def test_strip_wake_repeated_hey_in_strict_mode():
+    """Canlı kayıt: Discord'da (seçici mod) "Hey Hey Alice." yok sayıldı; tekrarlanan seslenme ismi baştan itmesin."""
+    assert strip_wake("Hey Hey Alice.", strict=True) == ""
+    assert strip_wake("Hey hey Alice, saat kaç?", strict=True) == "saat kaç?"
+    assert strip_wake("Hey hey.", strict=True) is None

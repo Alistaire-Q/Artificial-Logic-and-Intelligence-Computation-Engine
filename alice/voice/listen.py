@@ -241,6 +241,9 @@ def strip_wake(text: str, strict: bool = False) -> str | None:
     if i < len(words) and words[i].group().lower().translate(_TR) in _HEYS:
         after_hey = words[i].group().lower().translate(_TR)
         i += 1
+        # "Hey hey Alice": tekrarlanan seslenme ismi cümlenin başından itmesin (Discord'da seçici modda yok sayılmıştı)
+        while i < len(words) - 1 and words[i].group().lower().translate(_TR) == after_hey:
+            i += 1
     # Küçük model "Alice naber"i birleşik yazıyor: "Alisneber", "Alisine ber", "Ali Cennaber" (sesli testte 6'da 3)
     if i < len(words) and i <= 1:
         w = words[i].group().lower().translate(_TR)
