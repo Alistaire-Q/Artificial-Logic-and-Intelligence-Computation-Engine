@@ -404,7 +404,15 @@ class DesktopObserver:
                 unpark_mouse(left + w // 2, top + h // 2)  # köşede bekleyen fare yazmayı engellemesin
             except Exception:  # noqa: BLE001
                 pass
-        title, raw = collect_ui_elements(self.ctx, self.title, limit=200, hwnd=self._window())
+        try:
+            title, raw = collect_ui_elements(self.ctx, self.title, limit=200, hwnd=self._window())
+        except Exception:  # noqa: BLE001 - UIA bazen COM hatası veriyor (0x80040201, Win+D sonrası masaüstünde
+            # görüldü); bütün refleksi düşürme: kısa bekleyip bir kez daha dene, olmazsa yalnızca OCR ile devam et.
+            time.sleep(0.3)
+            try:
+                title, raw = collect_ui_elements(self.ctx, self.title, limit=200, hwnd=self._window())
+            except Exception:  # noqa: BLE001
+                title, raw = foreground_title(), []
         # Oyunda pencerenin Kapat düğmesi hiç seçenek olmaz: "ayarları X ile kapat" Unciv'i kapatmıştı.
         chrome_goal = "" if self.diff else self.goal
         ax: list[Item] = []

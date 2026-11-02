@@ -134,7 +134,9 @@ def log_line(text: str) -> None:
 class Screen:
     """Gerçek ekran: görüntü + UIA öğeleri + fare/klavye."""
 
-    def __init__(self, ctx, max_width: int = 1280, max_elements: int = 60, monitor: int = 0):
+    # 1280 geniş: 3440x1440 ekran 1280x536'ya iniyordu, sağ tık menüsünün yazıları seçilemedi ve "Görünüm"e
+    # tıklarken ıskalayıp menüyü 3 kez yeniden açtı (2026-11-02, 11 adım).
+    def __init__(self, ctx, max_width: int = 1920, max_elements: int = 60, monitor: int = 0):
         self.ctx = ctx
         self.monitor = monitor  # 0: öndeki pencerenin monitörü
         self.max_width = max_width

@@ -153,3 +153,29 @@ def test_desktop_reflex_frames_click_on_hud(monkeypatch):
     with pytest.raises(ValueError, match="yeri bilinmiyor"):  # HUD değil, eylemin kendi hatası
         obs.act("right_click", Item("n", "ocr", "text", "yeri yok"))
     assert len(seen) == 1
+
+
+def test_desktop_reflex_survives_uia_com_error(monkeypatch):
+    """Canlı kayıt: UIA COM hatası (0x80040201) bütün refleksi "ekran okunamadı" ile düşürdü; OCR ile devam etmeli."""
+    import alice.reflex.observers as ob
+    from alice.tools import desktop
+
+    calls = []
+
+    def boom(*a, **k):
+        calls.append(1)
+        raise OSError(-2147220991, "An event was unable to invoke any of the subscribers")
+
+    monkeypatch.setattr(desktop, "collect_ui_elements", boom)
+    monkeypatch.setattr(ob, "foreground_title", lambda: "Program Manager")
+    monkeypatch.setattr(ob, "ocr_available", lambda: (False, ""))
+    monkeypatch.setattr(ob, "focused_control", lambda: None, raising=False)
+    monkeypatch.setattr(ob.time, "sleep", lambda s: None)
+    obs = ob.DesktopObserver.__new__(ob.DesktopObserver)
+    obs.ctx, obs.title, obs.goal, obs.diff, obs.echoes, obs._unparked, obs._rect = None, None, "x", False, (), True, None
+    obs._prev_img, obs._prev_lines = None, []
+    monkeypatch.setattr(obs, "snapshot", lambda hwnd=0: None, raising=False)
+    monkeypatch.setattr(obs, "_target_hwnd", lambda: 0, raising=False)
+    monkeypatch.setattr(obs, "_window", lambda: 0, raising=False)
+    scr = obs.screen("simgeleri gizle")
+    assert scr.title == "Program Manager" and len(calls) == 2  # bir kez yeniden denendi
