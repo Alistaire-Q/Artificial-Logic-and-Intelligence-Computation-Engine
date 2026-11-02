@@ -169,6 +169,10 @@ class VoiceUI:
         for s in rest:
             self._say(s)
         self.splitter = SentenceSplitter()
+        if text and not self.muted:
+            from alice.hud import views
+
+            views.speech(text)  # HUD açıksa listeyi ve sayıları köşede de göster
 
     def tool_start(self, call_id: str, name: str, summary: str) -> None:
         self._inner("tool_start", call_id, name, summary)

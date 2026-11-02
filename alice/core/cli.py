@@ -56,7 +56,7 @@ def core_cmd(argv: list[str]) -> int:
         core.greeter.voice = voice  # karşılamadan sonra "Hey Alice" demeden cevap verilebilsin
         if cfg.data.get("voice", {}).get("enabled") and "--once" not in argv:
             core.voice = "listening" if voice is not None else "no-mic"
-        hud = _start_hud(cfg) if (cfg.data.get("hud", {}) or {}).get("enabled") and "--once" not in argv else None
+        hud = _start_hud(cfg, core) if (cfg.data.get("hud", {}) or {}).get("enabled") and "--once" not in argv else None
         sims = _start_sims(cfg, core, show=_hud_show(hud)) if "--once" not in argv else None
         host = _start_app(cfg, core) if (cfg.data.get("app", {}) or {}).get("in_core", True) and \
             "--once" not in argv else None
@@ -182,13 +182,18 @@ def _start_sims(cfg, core, show=None):
                   show=show).start()
 
 
-def _start_hud(cfg):
-    """Ekran üstü HUD'u ayrı süreçte başlat; çökerse denetleyici yeniden başlatır."""
-    from alice.hud import PORT, client
+def _start_hud(cfg, core):
+    """Ekran üstü HUD'u ayrı süreçte başlat; çökerse denetleyici yeniden başlatır. Bildirimler Windows balonu yerine
+    ALICE'in kartıyla gelir."""
+    from alice.hud import PORT, client, views
     from alice.hud.supervisor import HudSupervisor
 
     port = int((cfg.data.get("hud", {}) or {}).get("port") or PORT)
     client.configure(port)
+    notifier = core.notifier
+    if notifier._desktop in notifier.channels:
+        notifier.channels.remove(notifier._desktop)
+    notifier.channels.append(lambda n, pol: views.notification(n))
     return HudSupervisor(port).start()
 
 

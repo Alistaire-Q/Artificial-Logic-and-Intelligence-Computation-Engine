@@ -16,11 +16,13 @@ from alice.hud import PORT
 _port = PORT
 _sock: socket.socket | None = None
 _lock = threading.Lock()
+active = False  # çekirdek HUD'u başlattı: göstermek için beklemeye değer (tıklama önizlemesi gibi)
 
 
-def configure(port: int) -> None:
-    global _port
+def configure(port: int, on: bool = True) -> None:
+    global _port, active
     _port = int(port)
+    active = on
 
 
 def send(msg: dict[str, Any]) -> bool:

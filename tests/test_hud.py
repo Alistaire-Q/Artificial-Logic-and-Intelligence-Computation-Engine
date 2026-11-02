@@ -97,7 +97,7 @@ def test_client_reaches_receiver_over_socket():
         assert inbox.empty()
     finally:
         rx.stop()
-        client.configure(window.PORT)
+        client.configure(window.PORT, on=False)
 
 
 def test_client_never_blocks_when_hud_is_closed():
@@ -109,7 +109,7 @@ def test_client_never_blocks_when_hud_is_closed():
         assert time.monotonic() - t0 < 1.0
         assert client.send({"kind": "arrow", "clock": 1, "bad": object()}) is False  # JSON'a çevrilemez: sessiz
     finally:
-        client.configure(window.PORT)
+        client.configure(window.PORT, on=False)
 
 
 def test_client_swallows_socket_errors(monkeypatch):
@@ -385,3 +385,93 @@ def test_exclusive_fullscreen_reads_notification_state(monkeypatch):
     for value, ret, want in ((3, 0, True), (2, 0, False), (3, 1, False)):
         monkeypatch.setattr(ctypes, "windll", fake(value, ret))
         assert screen.exclusive_fullscreen() is want
+
+
+# ------------------------------------------------------- bildirim, konuşma, tıklama
+@pytest.fixture
+def hud_on(monkeypatch):
+    sent = []
+    monkeypatch.setattr(client, "active", True)
+    monkeypatch.setattr(client, "send", lambda msg: sent.append(msg) or True)
+    return sent
+
+
+def test_views_do_nothing_when_hud_is_off(monkeypatch):
+    from types import SimpleNamespace
+
+    from alice.hud import views
+
+    monkeypatch.setattr(client, "active", False)
+    monkeypatch.setattr(client, "send", lambda msg: pytest.fail("HUD kapalıyken gönderilmemeli"))
+    t0 = time.monotonic()
+    assert not views.click_target(10, 10)
+    assert not views.speech("1. bir\n2. iki")
+    assert not views.notification(SimpleNamespace(kind="alert", topic="pc", severity="warn", title="t", body="b"))
+    assert time.monotonic() - t0 < 0.1  # tıklama önizlemesi beklemez
+
+
+def test_notification_card_skips_flight(hud_on):
+    from alice.core.notify import Notification
+    from alice.hud import views
+
+    assert views.notification(Notification("ALICE", "Ekran kartı  88°C,\nçok sıcak.", "critical", "pc"))
+    assert not views.notification(Notification("Uçuş", "Arkanda düşman", "warn", "flight", kind="flight"))
+    assert hud_on == [{"kind": "card", "ttl": 12.0, "title": "ALICE", "text": "Ekran kartı 88°C, çok sıcak.",
+                       "severity": "critical", "id": "note:ALICE"}]
+
+
+def test_speech_summary_shows_lists_and_numbers_only():
+    from alice.hud.views import summarize
+
+    assert summarize("Tamam, açıyorum.") is None
+    assert summarize("Bugün üç işin var:\n- **Okul** 9'da\n- Staj 14'te\n- Spor") == "Okul 9'da · Staj 14'te · Spor"
+    assert summarize("Ekran kartı 72 derece.") == "Ekran kartı 72 derece."
+    long = summarize("Uzun bir cümle. " * 40)
+    assert long.endswith("…") and len(long) <= 260
+
+
+def test_click_target_previews_before_click(hud_on, monkeypatch):
+    from alice.hud import views
+
+    waited = []
+    monkeypatch.setattr(views.time, "sleep", waited.append)
+    assert views.click_target(500, 300, "double_click")
+    assert hud_on[0]["kind"] == "box" and (hud_on[0]["x"], hud_on[0]["y"]) == (472, 272)
+    assert hud_on[0]["text"] == "çift tıklıyorum" and waited == [views.CLICK_PREVIEW]
+
+
+def test_voice_ui_sends_speech_card(hud_on):
+    from alice.voice.assistant import VoiceUI
+
+    class Spk:
+        speaking = False
+
+        def say(self, *a, **kw):
+            return True
+
+        def stop(self):
+            pass
+
+    ui = VoiceUI(Spk())
+    ui.begin_turn()
+    ui.stream_end("Yarın:\n1. Okul\n2. Staj", "model")
+    assert [m["text"] for m in hud_on if m.get("id") == "speech"] == ["Okul · Staj"]
+
+
+def test_start_hud_replaces_windows_toast_with_card(monkeypatch):
+    from types import SimpleNamespace
+
+    from alice.core import cli as core_cli
+    from alice.core.notify import Notifier
+    from alice.hud import supervisor
+
+    monkeypatch.setattr(supervisor.HudSupervisor, "start", lambda self: self)
+    nt = Notifier(store=None, policy=lambda: None)
+    core = SimpleNamespace(notifier=nt)
+    cfg = SimpleNamespace(data={"hud": {"enabled": True, "port": 41277}})
+    try:
+        sv = core_cli._start_hud(cfg, core)
+        assert sv.port == 41277 and client.active
+        assert nt._desktop not in nt.channels and len(nt.channels) == 1
+    finally:
+        client.configure(window.PORT, on=False)

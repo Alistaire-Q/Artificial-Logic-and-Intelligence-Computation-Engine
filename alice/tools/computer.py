@@ -326,6 +326,9 @@ class Computer(Tool):
             if x is None or y is None:
                 raise ToolError(f"{action} için x ve y gerekli")
             rx, ry = to_real(ctx, x, y)
+            from alice.hud import views
+
+            views.click_target(rx, ry, action)  # HUD açıksa nereye tıklayacağını önceden göster
             if action in ("click", "double_click", "right_click", "middle_click"):
                 button = {"right_click": "right", "middle_click": "middle"}.get(action, "left")
                 pg.click(rx, ry, clicks=2 if action == "double_click" else 1, button=button, interval=0.08)
