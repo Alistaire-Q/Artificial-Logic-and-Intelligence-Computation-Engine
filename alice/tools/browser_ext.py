@@ -342,7 +342,14 @@ class ExtPage:
         return self.s.hub.call(method, _timeout, tabId=self.tab_id, **params)
 
     def run(self, fn: str, *args: Any, _timeout: float = CALL_TIMEOUT) -> Any:
-        return self.call("run", _timeout, fn=fn, args=list(args))
+        try:
+            return self.call("run", _timeout, fn=fn, args=list(args))
+        except ToolError as e:
+            if "Cannot access" in str(e) or "cannot be scripted" in str(e):
+                # opera://, chrome://, eklenti mağazası: tarayıcı eklentilerin bu sayfalara girmesine izin vermez
+                raise ToolError("bu tarayıcının kendi sayfası (ayarlar, eklentiler, mağaza gibi); içi okunamaz ve "
+                                "tıklanamaz. Başka sekmeye geç ya da windows/ui_act ile çalış.") from e
+            raise
 
     def _refresh(self) -> dict[str, Any]:
         try:

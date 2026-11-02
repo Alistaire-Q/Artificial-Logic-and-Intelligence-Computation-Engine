@@ -235,3 +235,17 @@ def test_reflex_browser_observer_runs_on_extension(ext):
     assert ob.location.startswith("https://www.youtube.com") and [e.label for e in ob.elements] == ["Install", "Ara"]
     obs.type(2, "merhaba", submit=False)
     assert ("run", {"tabId": 1, "fn": "fill", "args": [2, "merhaba"]}) in fh.calls
+
+
+def test_browser_own_pages_get_a_clear_message(ext):
+    fh, ctx = ext
+    b = browser.get_browser(ctx)
+
+    def deny(method, _timeout=15.0, **p):
+        if method == "run":
+            raise ToolError("tarayıcı eklentisi: Cannot access a chrome:// URL")
+        return FakeHub.call(fh, method, **p)
+
+    fh.call = deny
+    with pytest.raises(ToolError, match="tarayıcının kendi sayfası"):
+        b.snapshot()
