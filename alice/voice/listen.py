@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 import threading
 from collections import deque
+from pathlib import Path
 from typing import Callable, Iterator
 
 from alice.voice.audio import Audio, Microphone, rms
@@ -54,12 +55,67 @@ class VAD:
         return speech and loud
 
 
+class SileroVAD:
+    """Silero VAD (faster-whisper ile gelen ONNX modeli, ek indirme yok). webrtcvad sadece "ses var mı"ya bakıyor;
+    tık, nefes, klavye ve oyun sesi de konuşma sayılıp ALICE yarıda kesiliyordu. Silero insan konuşması olasılığı
+    verir (32 ms'de ~0,1 ms işlemci). Arayüz VAD ile aynı: is_speech(kare), boost (ALICE konuşurken eşik yükselir)."""
+
+    CHUNK = 512
+    CONTEXT = 64
+
+    def __init__(self, threshold: float = 0.5, path: str | None = None):
+        import numpy as np
+        import onnxruntime
+
+        if path is None:
+            import faster_whisper
+
+            path = str(Path(faster_whisper.__file__).parent / "assets" / "silero_vad_v6.onnx")
+        opts = onnxruntime.SessionOptions()
+        opts.inter_op_num_threads = opts.intra_op_num_threads = 1
+        opts.log_severity_level = 4
+        self._np = np
+        self._s = onnxruntime.InferenceSession(path, providers=["CPUExecutionProvider"], sess_options=opts)
+        self.threshold = threshold
+        self.boost = 1.0
+        self.noise = 0.0
+        self.prob = 0.0
+        self._h = np.zeros((1, 1, 128), dtype="float32")
+        self._c = np.zeros((1, 1, 128), dtype="float32")
+        self._ctx = np.zeros(self.CONTEXT, dtype="float32")
+        self._buf = np.zeros(0, dtype="float32")
+
+    def is_speech(self, frame: bytes, rate: int = 16000) -> bool:
+        np = self._np
+        x = np.frombuffer(frame, dtype="<i2").astype("float32") / 32768.0
+        self._buf = np.concatenate([self._buf, x])
+        while len(self._buf) >= self.CHUNK:
+            chunk, self._buf = self._buf[:self.CHUNK], self._buf[self.CHUNK:]
+            inp = np.concatenate([self._ctx, chunk])[None, :]
+            out, self._h, self._c = self._s.run(None, {"input": inp, "h": self._h, "c": self._c})
+            self.prob = float(np.asarray(out).ravel()[0])
+            self._ctx = chunk[-self.CONTEXT:]
+        # ALICE konuşurken (boost 2,5) eşik 0,5 -> 0,8: kendi sesinin yankısı ve kısa sesler araya giremesin
+        thr = min(0.9, self.threshold + 0.2 * (self.boost - 1.0))
+        return self.prob >= thr
+
+
+def make_vad(aggressiveness: int = 2) -> "VAD | SileroVAD":
+    """Silero varsa o, yoksa eski VAD (webrtcvad)."""
+    try:
+        return SileroVAD()
+    except Exception:  # noqa: BLE001 - onnxruntime/faster-whisper yoksa eski yöntem
+        return VAD(aggressiveness)
+
+
 class SpeechGate:
     """Canlı konuşmada mikrofonu süzer: konuşma yokken Live'a sessizlik gider. Oyun/motor sesi Live'ın kendi
     konuşma algısını tetikleyip "vote vote", Japonca, Hintçe gibi uydurma cümlelere yol açıyordu."""
 
-    def __init__(self, vad: "VAD | None" = None, preroll: int = 10, hangover: int = 20, start_frames: int = 3):
-        self.vad = vad or VAD(aggressiveness=3)
+    # start_frames 8 (~0,24 sn sürekli konuşma): 3 karede tık ve nefes de geçip Live'ı susturuyordu; öncesindeki
+    # 0,3 sn yine gönderildiği için ilk hece kesilmez.
+    def __init__(self, vad: "VAD | None" = None, preroll: int = 10, hangover: int = 20, start_frames: int = 8):
+        self.vad = vad or make_vad(3)
         self.ring: deque[bytes] = deque(maxlen=preroll)
         self.hangover = hangover
         self.start_frames = start_frames
@@ -129,6 +185,12 @@ _REAL_HEYS = {"hey", "hay", "hei", "heyy", "ey", "hej"}
 _NOT_NAMES = {"aliye", "alisan"}
 
 
+# "Ali ..." ile başlayıp ALICE'e söylendiği belli olan devamlar (Türkçe karakterler sadeleştirilmiş)
+_ALI_CALLS = {"naber", "nbr", "haber", "nasilsin", "nasilsiniz", "selam", "merhaba", "orda", "orada", "burada",
+              "burda", "uyan", "uyandin", "duyuyor", "dinliyor", ("ne", "haber"), ("ne", "var"), ("orada", "misin"), ("orda", "misin"), ("beni", "duyuyor"),
+              ("duyuyor", "musun")}
+
+
 def _name_like(word: str, after_hey: bool | str) -> bool:
     import difflib
 
@@ -179,6 +241,27 @@ def strip_wake(text: str, strict: bool = False) -> str | None:
     if i < len(words) and words[i].group().lower().translate(_TR) in _HEYS:
         after_hey = words[i].group().lower().translate(_TR)
         i += 1
+    # Küçük model "Alice naber"i birleşik yazıyor: "Alisneber", "Alisine ber", "Ali Cennaber" (sesli testte 6'da 3)
+    if i < len(words) and i <= 1:
+        w = words[i].group().lower().translate(_TR)
+        for pre in ("alice", "alis", "alic", "alıs"):
+            pre = pre.translate(_TR)
+            if w.startswith(pre) and len(w) > len(pre) + 2 and w not in {n.translate(_TR) for n in _NAMES}:
+                return (w[len(pre):] + text[words[i].end():]).strip(" ,.!?;:-")
+        # "Ali Cennaber": sadece uzun ve c/ç ile başlayan ikinci kelime ("Ali Selim", "Ali Cenk" gerçek adlar)
+        if (w == "ali" and i + 1 < len(words) and len(words[i + 1].group()) > 5
+                and words[i + 1].group().lower().translate(_TR)[:1] in ("c", "j")):
+            nxt = words[i + 1].group()
+            return (nxt[2:] + text[words[i + 1].end():]).strip(" ,.!?;:-")
+    # Kullanıcının "Alice"i motorlara "Ali" diye geliyor: Scribe "Ali? Ne haber?" yazdı (30 Ekim, gerçek ses).
+    # Başta "Ali" tek başına ("Ali?") ya da hemen ardından selamlaşma/çağrı geliyorsa uyandır. "Ali Selim",
+    # "Ali gel buraya" gibi gerçek bir Ali'ye söylenen cümleler uyandırmaz.
+    if (i < len(words) and i <= 1 and words[i].group().lower().translate(_TR) == "ali"
+            and (not after_hey or after_hey in _REAL_HEYS)):  # "Selam Ali", "Merhaba Ali" gerçek bir Ali'ye
+        rest = text[words[i].end():].lstrip(" ,.!?;:-'’").strip()
+        nxt = [x.lower().translate(_TR) for x in re.findall(r"\w+", rest)][:3]
+        if not nxt or tuple(nxt[:2]) in _ALI_CALLS or nxt[0] in _ALI_CALLS:
+            return rest
     # "Alice" -> "Ali C", "Ali J'e" diye bölünmüş yazım: Ali + tek harf (+ ek)
     if (i < len(words) - 1 and i <= 2 and words[i].group().lower().translate(_TR) == "ali"
             and len(words[i + 1].group()) == 1 and words[i + 1].start() - words[i].end() <= 1):

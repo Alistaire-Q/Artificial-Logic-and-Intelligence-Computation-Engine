@@ -26,9 +26,10 @@ QUERY = ('newer_than:3d -category:promotions -category:social (fatura OR "son ö
 PROMPT = """Bu e-postada kullanıcının kaçırmaması gereken bir TARİH var mı? Sadece mailde açıkça yazan tarihi al, \
 tahmin etme. Bugün: {today}.
 Türler:
-- "bill": fatura, abonelik yenilemesi, kredi kartı ekstresi son ödeme tarihi
+- "bill": kullanıcının KENDİSİNİN ödemesi gereken fatura ya da kredi kartı ekstresi (son ödeme tarihi)
 - "date": ödev/proje teslimi, sınav, staj ya da iş görüşmesi, başvuru son günü, randevu
-- "none": reklam, bülten, tarihsiz bilgi, geçmiş tarih
+- "none": reklam, bülten, tarihsiz bilgi, geçmiş tarih, ödeme makbuzu/"ödemeniz alındı", kartdan OTOMATİK çekilen abonelik yenilemesi (YouTube Premium, Claude, Netflix gibi: kullanıcı bir şey yapmayacak)
+Tarih biçimi: İngilizce mailde "11/04/2026" ay/gün (4 Kasım) olabilir; ayı yazıyla geçen tarihi tercih et, emin değilsen "none".
 Sadece JSON yaz: {{"kind": "bill|date|none", "title": "kısa ad, ör. 'Turkcell faturası' ya da 'Algoritma ödevi \
 teslimi'", "due": "YYYY-MM-DD ya da YYYY-MM-DDTHH:MM", "amount": "349,90 TL ya da null"}}
 
@@ -55,7 +56,8 @@ def extract(router, sender: str, subject: str, body: str, today: datetime) -> di
         due = datetime.fromisoformat(str(data["due"]).strip())
     except ValueError:
         return None
-    if due.date() < today.date() or due > today + timedelta(days=200):
+    horizon = 60 if data["kind"] == "bill" else 200  # faturalar aylık: iki aydan uzak "son ödeme" yanlış okunmuştur
+    if due.date() < today.date() or due > today + timedelta(days=horizon):
         return None
     amount = data.get("amount")
     return {"kind": data["kind"], "title": str(data["title"])[:80], "due": due,

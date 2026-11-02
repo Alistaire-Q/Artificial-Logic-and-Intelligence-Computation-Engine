@@ -82,6 +82,35 @@ def _cuda_ok(model) -> bool:
         return False
 
 
+class ElevenScribe:
+    """ElevenLabs Scribe (ELEVENLABS_API_KEY). Türkçede Groq Whisper'dan belirgin iyi: "Alice naber"i Whisper
+    "Aysenabek", "Alessandraş" diye yazıyordu. keyterms ile "Alice" ve uçuş terimleri doğru yazılır. Kredi biterse
+    STTError: yönlendirici Groq'a geçer."""
+
+    URL = "https://api.elevenlabs.io/v1/speech-to-text"
+    KEYTERMS = ["Alice", "DCS", "War Thunder", "bingo", "joker", "waypoint", "kneeboard", "chaff", "flare"]
+
+    def __init__(self, api_key: str, model: str = "scribe_v2", language: str = "tr",
+                 client: httpx.Client | None = None):
+        self.api_key = api_key
+        self.model = model
+        self.language = language
+        self.name = f"eleven:{model}"
+        self.client = client or httpx.Client(timeout=httpx.Timeout(20, connect=8))
+
+    def transcribe(self, audio: Audio) -> str:
+        data = {"model_id": self.model, "language_code": self.language, "tag_audio_events": "false",
+                "keyterms": self.KEYTERMS}
+        try:
+            r = self.client.post(self.URL, headers={"xi-api-key": self.api_key}, data=data,
+                                 files={"file": ("speech.wav", audio.resample(16000).to_wav(), "audio/wav")})
+        except httpx.HTTPError as e:
+            raise STTError(f"elevenlabs bağlantı hatası: {e}") from e
+        if r.status_code != 200:
+            raise STTError(f"elevenlabs {r.status_code}: {r.text[:200]}")
+        return str(r.json().get("text", "")).strip()
+
+
 class GroqWhisper:
     URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 
@@ -473,6 +502,10 @@ def make_stt(cfg: Config) -> STTRouter:
     lang = v.get("language", "tr")
     compute = str(v.get("gpu_compute", GPU_COMPUTE) or GPU_COMPUTE)
     engines: list[STT] = []
+    eleven = os.environ.get(str(v.get("eleven_api_key_env", "ELEVENLABS_API_KEY")), "")
+    # Scribe sadece "ikinci kulak": her cümleyi ona göndermek ElevenLabs kredisini dakikalar içinde yiyordu.
+    second = ElevenScribe(eleven, str(v.get("stt_eleven", "scribe_v2")), lang) if eleven and v.get("stt_eleven",
+                                                                                                    "scribe_v2") else None
     for ref in v.get("stt", ["groq:whisper-large-v3-turbo", "local:large-v3-turbo"]):
         kind, _, model = ref.partition(":")
         if kind == "groq":
@@ -485,6 +518,7 @@ def make_stt(cfg: Config) -> STTRouter:
                                         allow_gpu=lambda: core_policy().get("local_gpu", True) is not False,
                                         prompt=PROMPT, compute=compute))
     router = STTRouter(engines)
+    router.second_ear = second
     gate_model = v.get("wake_local", "base")
     if gate_model:
         router.wake_gate = WakeGate(gate_model, lang, gpu_model=str(v.get("wake_local_gpu", "small") or ""),

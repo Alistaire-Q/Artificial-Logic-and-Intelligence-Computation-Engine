@@ -581,6 +581,7 @@ def _fake_sd(monkeypatch, fail_open=False):
             if fail_open:
                 raise OSError("Error opening RawInputStream [PaErrorCode -9996]")
             state["opened"] += 1
+            state["latency"] = k.get("latency")
 
         def start(self):
             pass
@@ -609,8 +610,10 @@ def test_microphone_open_read_reopen_with_fake_device(monkeypatch):
     mic = Microphone(auto_gain=False)
     with mic as m:
         assert m.name == "Test Mic" and m.read() == b"\x10\x00" * Microphone.FRAME
+        # 0,06 sn'lik varsayılan arabellekte döngü takılınca ses sessizce kayboluyordu ("Alice" kesiliyordu)
+        assert state["latency"] >= 0.3
         m.reopen()
-        assert state == {"opened": 2, "closed": 1}
+        assert state["opened"] == 2 and state["closed"] == 1
     assert state["closed"] == 2
     with pytest.raises(OSError, match="kapalı"):
         mic.read()

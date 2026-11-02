@@ -4,8 +4,10 @@ import array
 import base64
 import json
 import math
+import tempfile
 import threading
 import time
+from pathlib import Path
 
 import httpx
 import pytest
@@ -217,17 +219,17 @@ def test_speaker_keeps_order_and_stops():
     for s in ("bir", "iki", "üç"):
         sp.say(s)
     assert sp.wait(5)
-    assert player.played == ["bir", "iki", "üç"]
+    assert " ".join(player.played) == "bir iki üç"  # sırada bekleyenler tek seferde üretilir, sıra korunur
     assert tts.calls[0][1] == "calm"
 
     slow = FakePlayer(dur=5)
     sp2 = Speaker(FakeTTS("t"), slow)
     sp2.say("uzun cümle")
-    sp2.say("ikinci")
     for _ in range(100):
         if slow.played:
             break
         time.sleep(0.01)
+    sp2.say("ikinci")  # ilki çalarken gelen: kesilince söylenmez
     sp2.stop()
     assert sp2.wait(2) and slow.played == ["uzun cümle"]
 
@@ -1607,3 +1609,139 @@ def test_short_prompt_echo_with_caps_alice_is_noise():
     for t in ("Alice, dur.", "Hey Alice.", "Alice, müziği aç", "Hey Alice, saat kaç?"):
         assert not is_hallucination(t), t
     assert "alice" not in PROMPT.lower()  # ipucunda ad yok: yankısı uyandıramaz
+
+
+def test_flight_callouts_go_stale_and_urgent_jumps_queue(monkeypatch):
+    slow = FakePlayer(dur=0.3)
+    sp = Speaker(FakeTTS("t"), slow)
+    monkeypatch.setattr(Speaker, "STALE", {"critical": 5.0, "warn": 5.0, "info": 0.2})
+    sp.say("ilk cümle")  # konu yok: bayatlamaz
+    for _ in range(100):
+        if slow.played:
+            break
+        time.sleep(0.01)
+    sp.say("Düşman saat 2", severity="info", topic="flight")  # 0.2 sn içinde çalamaz: atılır
+    sp.say("Waypoint 3", severity="info", topic="flight")
+    sp.say("Füze! Saat 3", severity="critical", topic="flight")  # sıradaki önemsizleri atar
+    assert sp.wait(5)
+    assert len(slow.played) == 2 and slow.played[1].startswith("Füze")  # düşman/waypoint atıldı
+
+
+def test_no_barge_in_while_gaming_or_on_discord():
+    agent, sp = FakeAgent(), FakeSpeaker()
+    va = VoiceAssistant(agent, sp, stt=None, social=lambda: "War Thunder")
+    stopped = []
+    va._interrupt = lambda: stopped.append(1)
+    sp.speaking = True
+    va._on_speech_start()
+    assert stopped == []  # arkadaşın/oyun sesi ALICE'i kesmez
+    va.social = lambda: ""
+    va._on_speech_start()
+    assert stopped == [1]
+
+
+def test_mic_closed_to_alice_while_on_discord_unless_ptt():
+    agent, sp = FakeAgent(), FakeSpeaker()
+    reason = ["Discord sesli konuşmada"]
+    va = VoiceAssistant(agent, sp, stt=None, ptt_key="<scroll_lock>", social=lambda: reason[0], social_ptt=True)
+    assert va._social_skip()  # social_mode = "ptt": hiçbir cümle gitmez
+    reason[0] = ""
+    assert not va._social_skip()
+    no_ptt = VoiceAssistant(agent, sp, stt=None, social=lambda: "War Thunder")
+    assert not no_ptt._social_skip()  # tuş yoksa eski davranış: "Alice" başta olmalı
+    wake = VoiceAssistant(agent, sp, stt=None, ptt_key="<f13>", social=lambda: "DCS")
+    assert not wake._social_skip()  # varsayılan: "Alice naber" dinlenir (ses izi süzer)
+
+
+def test_tts_stays_on_one_voice():
+    from alice.voice.tts import SpeechCache, TTSRouter
+
+    cloud, local = FakeTTS("cloud"), FakeTTS("local")
+    cache = SpeechCache(path=Path(tempfile.mkdtemp()))
+    r = TTSRouter(cloud, local, "cloud", policy=lambda: {}, cache=cache)
+    cache.put("local", "calm", "merhaba", Audio(b"x" * 20, 16000))  # başka motorun eski kaydı
+    r.synth("merhaba")
+    assert cloud.calls and r.last == "cloud"  # yerelin kaydı kullanılmaz: ses değişirdi
+    cloud.fail = True
+    r.synth("bir")
+    cloud.fail = False
+    r.down.clear()
+    r.synth("iki")
+    assert r.last == "local"  # yedeğe geçince bir süre onda kalır, cümle cümle gidip gelmez
+
+
+def test_elevenlabs_engine_picks_model_sends_turkish_and_falls_back_on_credits():
+    from alice.voice.tts import ElevenLabsTTS, QuotaError, TTSRouter
+
+    seen = []
+
+    def handler(req):
+        seen.append(req)
+        if req.url.path == "/v1/models":
+            return httpx.Response(200, json=[{"model_id": "eleven_multilingual_v2"}, {"model_id": "eleven_v4_turbo"},
+                                             {"model_id": "eleven_turbo_v2", "can_do_text_to_speech": True}])
+        body = json.loads(req.content)
+        if body["text"] == "kredi yok":
+            return httpx.Response(401, json={"detail": {"status": "quota_exceeded", "message": "credits"}})
+        return httpx.Response(200, content=b"\1\0" * 2400)
+
+    el = ElevenLabsTTS("k", "YxrwjAKoUKULGd0g8K9Y", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    a = el.synth("Füze, saat üç!", "urgent")
+    assert a.rate == 24000 and len(a.pcm) == 4800
+    post = seen[-1]
+    body = json.loads(post.content)
+    assert post.url.path == "/v1/text-to-speech/YxrwjAKoUKULGd0g8K9Y" and post.url.params["output_format"] == "pcm_24000"
+    assert body["model_id"] == "eleven_v4_turbo" and body["language_code"] == "tr"
+    assert post.headers["xi-api-key"] == "k" and body["voice_settings"]["stability"] < 0.5  # acil: daha canlı
+    with pytest.raises(QuotaError):
+        el.synth("kredi yok")
+    gem = FakeTTS("gemini")
+    r = TTSRouter(gem, None, "cloud", policy=lambda: {"local_gpu": False}, premium=el)
+    assert r.order()[0] is el  # uçuşta da önce ElevenLabs
+    r.synth("kredi yok")
+    assert r.last == "gemini"  # kredi bitince susmaz
+
+
+def test_eleven_scribe_first_with_alice_keyterm_and_groq_fallback():
+    from alice.voice.stt import ElevenScribe, STTError, STTRouter
+
+    calls = []
+
+    def handler(req):
+        calls.append(req)
+        body = req.content.decode("latin-1")
+        assert 'name="keyterms"' in body and "Alice" in body and 'name="language_code"' in body
+        return httpx.Response(200, json={"text": "Alice naber?"})
+
+    sc = ElevenScribe("k", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    audio = Audio(b"\1\0" * 16000, 16000)
+    assert sc.transcribe(audio) == "Alice naber?" and calls[0].headers["xi-api-key"] == "k"
+    broke = ElevenScribe("k", client=httpx.Client(transport=httpx.MockTransport(
+        lambda r: httpx.Response(401, json={"detail": "quota_exceeded"}))))
+    with pytest.raises(STTError):
+        broke.transcribe(audio)
+
+    class Groq:
+        name = "groq:x"
+
+        def transcribe(self, a):
+            return "yedek"
+
+    assert STTRouter([broke, Groq()]).transcribe(audio) == "yedek"  # kredi bitince Groq
+
+
+def test_merged_alice_spellings_from_small_wake_model():
+    # sesli testte küçük model "Alice naber"i böyle yazdı
+    for t in ("Ali Cennaber", "Alisine ber.", "Alisneber", "Alisa naber"):
+        assert strip_wake(t, strict=True) is not None, t
+    for t in ("Ali Selim nerede", "Ali Cenk geldi", "Alişan geldi", "Ali Can geldi"):  # gerçek adlar
+        assert strip_wake(t, strict=True) is None, t
+
+
+def test_ali_call_wakes_but_not_talk_to_real_ali():
+    # Kullanıcının "Alice"i motorlara "Ali" diye geliyor (Scribe: "Ali? Ne haber?", gerçek kayıt)
+    assert strip_wake("Ali? Ne haber?", strict=True) == "Ne haber?"
+    assert strip_wake("Ali.", strict=True) == ""
+    assert strip_wake("Ali, nasılsın?", strict=True) == "nasılsın?"
+    for t in ("Selam Ali", "Merhaba Ali", "Ali gel buraya", "Ali bak şimdi", "Ali Selim geldi"):
+        assert strip_wake(t, strict=True) is None, t

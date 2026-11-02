@@ -201,6 +201,9 @@ wake_local_gpu = "small"
 gpu_compute = "int8_float16"
 # Bulut sesi "gemini:<ses>"; yerel motor "xtts" ya da "chatterbox" (boş = yok).
 tts_cloud = "gemini:Aoede"
+# ElevenLabs sesi (elevenlabs.io/voices/<kimlik>); ELEVENLABS_API_KEY varsa her yerde önce bu, sonra yukarıdakiler.
+tts_eleven = ""
+tts_eleven_model = "auto"
 tts_local = ""
 # Bulut ve yerel ses düşerse (kota, hata, takılma) ücretsiz, anahtarsız Microsoft Edge sesi (edge-tts): ~1 sn.
 # Türkçe kadın sesi tr-TR-EmelNeural, erkek tr-TR-AhmetNeural. Boş = kapalı.
@@ -225,14 +228,19 @@ gemini_tts_models = ["gemini-3.8-flash-lite-tts", "gemini-3.8-flash-tts", "gemin
 # Konuşma tanıma zinciri: groq:<model>, local:<faster-whisper modeli>
 stt = ["groq:whisper-large-v3-turbo", "local:large-v3-turbo"]
 stt_cpu_model = "small"
+# ELEVENLABS_API_KEY varsa konuşma önce ElevenLabs Scribe ile yazıya dökülür (Türkçede çok daha iyi), sonra "stt".
+stt_eleven = "scribe_v2"
 language = "tr"
 # Bas-konuş tuşu (pynput adı: <scroll_lock>, <f13>, <pause>...). Boş = kapalı.
 ptt_key = "<scroll_lock>"
 # openWakeWord modeli (.onnx). Boşsa "Hey Alice" Whisper ile, konuşma algılanınca anlaşılır.
 wake_model = ""
 wake_phrase = true
-# ALICE konuşurken konuşmaya başlarsan susar.
+# ALICE konuşurken konuşmaya başlarsan susar (Discord'da ve oyunda hariç).
 barge_in = true
+# Discord'da konuşurken ya da oyundayken: "wake" = "Alice" cümlenin başında olmalı ve ses senin sesin olmalı
+# (ses izi, Ayarlar → Ses → Sesimi tanıt); "ptt" = mikrofon ALICE'e tamamen kapalı, sadece bas-konuş tuşu.
+social_mode = "wake"
 # ALICE cevap verdikten sonra bu kadar saniye "Hey Alice" demeden devam edebilirsin (en fazla 5).
 # "Alice sus" dersen yeniden "Alice" diyene kadar hiçbir şeyi komut saymaz.
 follow_up = 5
@@ -527,6 +535,8 @@ CLOUDFLARE_API_TOKEN=
 CLOUDFLARE_ACCOUNT_ID=
 # TypeSafe Jev (opsiyonel, ücretli ama çok ucuz) -> https://typesafe.ai
 TYPESAFE_API_KEY=
+# ElevenLabs (ALICE'in sesi; ücretsiz planda ayda ~10.000 karakter, ses Ayarlar'da tts_eleven) -> https://elevenlabs.io/app/settings/api-keys
+ELEVENLABS_API_KEY=
 # GitHub (repo izinli token: depo klonlama, commit/push, PR) -> https://github.com/settings/tokens
 GITHUB_TOKEN=
 # --- Bağlantılar (alice connect): doldurduğun servis açılır, boş olan atlanır ---

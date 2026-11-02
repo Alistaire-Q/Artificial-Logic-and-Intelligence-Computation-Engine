@@ -58,12 +58,27 @@ def _watch(watch: Callable[[], str | None], close: Callable[[], None], load: Cal
     threading.Thread(target=loop, daemon=True, name="alice-window-watch").start()
 
 
+def gaming() -> bool:
+    """Oyun/uçuş modu açık mı (çekirdeğin durum dosyasından)? Açıksa pencere öne geçip odağı almamalı."""
+    try:
+        from alice.core.service import read_state
+
+        s = read_state()
+        return bool(s.get("running")) and s.get("mode") == "flight"
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def open_window(url: str, title: str = "ALICE", prefer: str = "auto",
-                watch: Callable[[], str | None] | None = None) -> str:
+                watch: Callable[[], str | None] | None = None, quiet: bool | None = None) -> str:
     """Pencereyi açar ve kapanana kadar bekler. Hangi yöntemin kullanıldığını döndürür.
 
     watch verilirse (çekirdekteki uygulamaya bağlı pencere) çekirdek kapanınca pencere de kapanır, çekirdek yeniden
-    başlayınca yeni adrese geçer."""
+    başlayınca yeni adrese geçer.
+
+    Oyun açıkken (quiet) pencere görev çubuğunda simge durumunda ve odaksız açılır: öne geçip oyunu
+    arkaya atınca kullanıcı oyunda ölüyordu."""
+    quiet = gaming() if quiet is None else quiet
     if prefer in ("auto", "webview"):
         try:
             import webview  # pywebview
@@ -72,7 +87,7 @@ def open_window(url: str, title: str = "ALICE", prefer: str = "auto",
             # yakalanamayan bir .NET hatasıyla çöker; orada .ico kullan.
             icon = Path(__file__).parent / "static" / ("alice.ico" if sys.platform == "win32" else "icon.png")
             win = webview.create_window(title, url, width=1320, height=880, min_size=(820, 560),
-                                        background_color="#16161a")
+                                        background_color="#16161a", minimized=quiet, focus=not quiet)
             if watch is not None:
                 _watch(watch, win.destroy, win.load_url)
             kwargs = {"icon": str(icon)} if icon.exists() else {}
@@ -101,7 +116,7 @@ def open_window(url: str, title: str = "ALICE", prefer: str = "auto",
             while True:
                 box["proc"] = subprocess.Popen([exe, f"--app={box['url']}", "--window-size=1320,880",
                                                 f"--user-data-dir={profile}", "--no-first-run",
-                                                "--no-default-browser-check"])
+                                                "--no-default-browser-check"] + (["--start-minimized"] if quiet else []))
                 box["proc"].wait()
                 if not box["next"]:
                     return "app"

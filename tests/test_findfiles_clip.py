@@ -47,3 +47,20 @@ def test_clipboard_history_skips_secrets(tmp_path):
     assert clipwatch.load(path, now=100 + 13 * 3600) == []  # 12 saat sonra silinir
     w = clipwatch.ClipWatch(read=iter(["eski", "eski", "yeni metin"]).__next__)
     assert not w.step() and not w.step()  # açılıştaki pano kaydedilmez
+
+
+def test_no_tool_schema_has_empty_enum_value():
+    # Gemini Live boş enum değeri ("") gören bütün araç listesini reddediyordu: Live hiç açılmadı, cevaplar 10 sn sürdü
+    from alice.tools import builtin_tools
+
+    def walk(node, path):
+        if isinstance(node, dict):
+            assert "" not in node.get("enum", []), path
+            for k, v in node.items():
+                walk(v, f"{path}/{k}")
+        elif isinstance(node, list):
+            for i, v in enumerate(node):
+                walk(v, f"{path}[{i}]")
+
+    for t in builtin_tools():
+        walk(t.parameters, t.name)

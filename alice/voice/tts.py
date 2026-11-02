@@ -617,6 +617,76 @@ class EdgeTTS:
         return Audio(decode_mp3(data, 24000), 24000)
 
 
+# Ton -> ElevenLabs ses ayarı (stability düşük = daha canlı/değişken, style yüksek = daha vurgulu)
+ELEVEN_SETTINGS = {"calm": (0.6, 0.15), "happy": (0.45, 0.35), "playful": (0.4, 0.45), "serious": (0.6, 0.2),
+                   "urgent": (0.35, 0.5), "excited": (0.35, 0.5)}
+# Model "auto": hesabın listesinden ilk bulunan (en yeni hızlı, Türkçe destekleyen önce)
+ELEVEN_PREFER = ("eleven_v4_turbo", "eleven_turbo_v4", "eleven_v4", "eleven_turbo_v2_5", "eleven_flash_v2_5",
+                 "eleven_multilingual_v2")
+
+
+class ElevenLabsTTS:
+    """ElevenLabs (ELEVENLABS_API_KEY): ham 24 kHz PCM ister, çözme gerekmez. Kredi biterse QuotaError: yönlendirici
+    Gemini'ye geçer, ALICE susmaz."""
+
+    URL = "https://api.elevenlabs.io/v1"
+    RATE = 24000
+
+    def __init__(self, api_key: str, voice: str, model: str = "auto", client: httpx.Client | None = None):
+        self.api_key = api_key
+        self.voice = voice
+        self.model = model
+        self.name = f"eleven:{voice}"
+        self.client = client or httpx.Client(timeout=httpx.Timeout(20, connect=8))
+        self._lang_ok = True  # language_code'u kabul etmeyen modelde bir daha gönderme
+
+    def _headers(self) -> dict[str, str]:
+        return {"xi-api-key": self.api_key}
+
+    def model_id(self) -> str:
+        if self.model and self.model != "auto":
+            return self.model
+        try:
+            r = self.client.get(f"{self.URL}/models", headers=self._headers())
+            models = r.json() if r.status_code == 200 else []
+            ids = [m.get("model_id", "") for m in models if m.get("can_do_text_to_speech", True)]
+        except (httpx.HTTPError, ValueError):
+            ids = []
+        named = {i.lower(): i for i in ids}
+        pick = next((named[k] for k in ELEVEN_PREFER if k in named), None)
+        if pick is None:  # listede tanımadığımız yeni ad: v4 ve turbo geçen ilk model
+            pick = next((i for i in ids if "v4" in i and "turbo" in i), None) or "eleven_turbo_v2_5"
+        self.model = pick
+        return pick
+
+    def synth(self, text: str, emotion: str = "calm") -> Audio:
+        stability, style = ELEVEN_SETTINGS.get(emotion, ELEVEN_SETTINGS["calm"])
+        body: dict[str, Any] = {"text": text, "model_id": self.model_id(),
+                                "voice_settings": {"stability": stability, "similarity_boost": 0.8, "style": style,
+                                                   "use_speaker_boost": True}}
+        if self._lang_ok:
+            body["language_code"] = "tr"
+        url = f"{self.URL}/text-to-speech/{self.voice}"
+        try:
+            r = self.client.post(url, params={"output_format": f"pcm_{self.RATE}"}, headers=self._headers(),
+                                 json=body)
+            if r.status_code in (400, 422) and "language" in r.text.lower() and self._lang_ok:
+                self._lang_ok = False  # bu model dil kodu almıyor: metinden anlar
+                body.pop("language_code", None)
+                r = self.client.post(url, params={"output_format": f"pcm_{self.RATE}"}, headers=self._headers(),
+                                     json=body)
+        except httpx.HTTPError as e:
+            raise TTSError(f"elevenlabs'e ulaşılamadı: {type(e).__name__}: {e}") from e
+        if r.status_code == 200 and r.content:
+            return Audio(r.content, self.RATE)
+        low = r.text.lower()
+        if r.status_code == 429 or "quota" in low or "credits" in low:
+            # Aylık kredi bitti ya da hız sınırı: kredi bittiyse bir saat sonra yine dene (yenilenmiş olabilir)
+            raise QuotaError(f"elevenlabs kredisi/kotası: {r.text[:160]}", None if r.status_code == 429 else 3600,
+                             daily=r.status_code != 429)
+        raise TTSError(f"elevenlabs HTTP {r.status_code}: {r.text[:200]}")
+
+
 def decode_mp3(data: bytes, rate: int) -> bytes:
     """MP3 -> int16 mono PCM (av, faster-whisper ile birlikte gelir)."""
     import io
@@ -695,7 +765,11 @@ class TTSRouter:
 
     def __init__(self, cloud: TTS | None, local: TTS | None, prefer: str = "cloud",
                  policy: Callable[[], dict[str, Any]] = core_policy, cooldown: float = 300,
-                 cache: SpeechCache | None = None, backup: TTS | None = None):
+                 cache: SpeechCache | None = None, backup: TTS | None = None, premium: TTS | None = None):
+        self.premium = premium  # ElevenLabs: varsa her yerde önce o (uçuşta da: ekran kartı kullanmaz)
+        # Anahtar sonradan girilirse (Ayarlar → Anahtarlar) yeniden başlatmadan devreye girsin
+        self.premium_factory: Callable[[], TTS | None] | None = None
+        self._premium_checked = 0.0
         self.cloud = cloud
         self.local = local
         self.backup = backup  # hızlı son çare (Edge): bulut ve yerel ses düşünce
@@ -705,6 +779,10 @@ class TTSRouter:
         self.down: dict[str, float] = {}
         self.last = ""
         self.cache = cache
+        # Yapışkan motor: bir motora geçilince bir süre onda kal. Önceden her cümle sıradaki ilk uygun motordan
+        # (ya da başka motorun önbelleğinden) geliyordu, ALICE'in sesi cümle cümle değişiyordu.
+        self.sticky = ""
+        self.sticky_until = 0.0
 
     @property
     def name(self) -> str:
@@ -724,7 +802,15 @@ class TTSRouter:
         if self.policy().get("local_gpu") is False and self.local is not None:
             # Uçuşta GPU oyuna kalsın: önce bulut; yerel ancak işlemcide, son çare olarak.
             engines = [self.cloud, self.backup, self.local]
-        return [e for e in engines if e is not None]
+        if self.premium is None and self.premium_factory is not None and time.monotonic() - self._premium_checked > 20:
+            self._premium_checked = time.monotonic()
+            self.premium = self.premium_factory()
+        engines = [e for e in [self.premium, *engines] if e is not None]
+        now = time.monotonic()
+        stick = next((e for e in engines if e.name == self.sticky), None) if now < self.sticky_until else None
+        if stick is not None and self.down.get(stick.name, 0) <= now:
+            engines = [stick] + [e for e in engines if e is not stick]
+        return engines
 
     def warm_up(self) -> None:
         """Yerel ses modelini arka planda ekran kartına yükle: ilk cevap 20-25 sn beklemesin."""
@@ -756,19 +842,23 @@ class TTSRouter:
         text = normalize(text)
         errors = []
         now = time.monotonic()
-        if self.cache is not None:
-            for e in self.order():
-                hit = self.cache.get(e.name, emotion, text)
-                if hit is not None:
-                    self.last = f"{e.name} (önbellek)"
-                    return hit
-        for e in self.order():
+        order = self.order()
+        usable = [e for e in order if self.down.get(e.name, 0) <= now]
+        if self.cache is not None and usable:
+            # Sadece şu an konuşan motorun önbelleği: başka motorun kaydı farklı bir ses demek.
+            hit = self.cache.get(usable[0].name, emotion, text)
+            if hit is not None:
+                self.last = f"{usable[0].name} (önbellek)"
+                return hit
+        for e in order:
             if self.down.get(e.name, 0) > now:
                 errors.append(f"{e.name}: bekletiliyor")
                 continue
             try:
                 audio = e.synth(text, emotion)
                 self.last = e.name
+                if e is not order[0] or self.sticky == e.name:
+                    self.sticky, self.sticky_until = e.name, time.monotonic() + 600
                 if self.cache is not None:
                     self.cache.put(e.name, emotion, text, audio)
                 return audio
@@ -816,8 +906,19 @@ def make_local(cfg: Config, name: str | None = None) -> TTS | None:
     return None
 
 
+def make_eleven(cfg: Config) -> ElevenLabsTTS | None:
+    v = cfg.data.get("voice", {})
+    voice = str(v.get("tts_eleven", "") or "")
+    key = os.environ.get(str(v.get("eleven_api_key_env", "ELEVENLABS_API_KEY")), "")
+    if not voice or not key:
+        return None
+    return ElevenLabsTTS(key, voice, str(v.get("tts_eleven_model", "auto") or "auto"))
+
+
 def make_tts(cfg: Config) -> TTSRouter:
     v = cfg.data.get("voice", {})
     edge = str(v.get("tts_edge", "tr-TR-EmelNeural") or "")
-    return TTSRouter(make_cloud(cfg), make_local(cfg), v.get("prefer", "cloud"), cache=SpeechCache(),
-                     backup=EdgeTTS(edge) if edge else None)
+    r = TTSRouter(make_cloud(cfg), make_local(cfg), v.get("prefer", "cloud"), cache=SpeechCache(),
+                  backup=EdgeTTS(edge) if edge else None, premium=make_eleven(cfg))
+    r.premium_factory = lambda: make_eleven(cfg)
+    return r

@@ -202,7 +202,8 @@ class FindFiles(Tool):
                    "description": "recent: son açılanlar | downloads: İndirilenler | search: kişisel klasörlerde ad "
                    "araması | open: path'i aç | tidy: İndirilenler'i tür klasörlerine ayır."},
         "query": {"type": "string", "description": "Dosya adında geçen kelimeler (hepsi geçmeli), ör. 'staj'. Boş: hepsi."},
-        "kind": {"type": "string", "enum": [""] + list(KINDS), "description": "Dosya türü."},
+        # Boş seçenek ("") yok: Gemini Live boş enum değeri gören bütün araç listesini reddedip açılmıyordu
+        "kind": {"type": "string", "enum": list(KINDS), "description": "Dosya türü (boş bırakılabilir)."},
         "days": {"type": "number", "description": "Son kaç gün ('dün' 2, 'geçen hafta' 8)."},
         "path": {"type": "string", "description": "open için dosya yolu."},
         "apply": {"type": "boolean", "description": "tidy için: true ise gerçekten taşı."},
