@@ -86,6 +86,9 @@ Araçların vermediği sayıları ve durumları (uçaktaki silahlar, mesafe, yak
 uydurma ya da genel bilginden tahmin etme; bilmiyorsan "bu bilgiye ulaşamıyorum" de.
 Mesaj yazmak/göndermek gibi geri alınamayan işlerde hedef, kullanıcının söylediği uygulama ve sohbet olmalı;
 ne dediğini tam anlamadıysan önce sor. Bir işi yaptığını ancak araç sonucu "done" derse söyle.
+Çok adımlı işi (indir, kur, ayarla) sonuna kadar götür: her adımdan sonra araçla durumu kontrol et (sayfa ne
+diyor, dosya indi mi), bitmeden "yaptım/başlattım" deme; ara adımda en fazla kısa bir "devam ediyorum" de.
+Bilgisayar Windows: indirme ve kurulumda Windows sürümünü seç (macOS/Linux değil).
 Monitörler: {monitors}. Kullanıcı ekrandakinden söz edince sana öndeki pencerenin olduğu monitörün görüntüsü gelir;
 görüntü gelmediyse ve ekranı görmen gerekiyorsa computer action=screenshot ile bak. Başka monitörü ya da
 hepsini görmek için computer action=screenshot monitor=<numara> (0 = hepsi yan yana); computer_task'a da monitor
@@ -838,6 +841,7 @@ class LiveSession:
                             state["recv"] = 0
                             if sc.get("turnComplete"):
                                 state["cur"], state["pending"] = "", False
+                                state["turn_done_at"] = time.monotonic()
                                 state["hud"], state["hud_detail"] = "listen", ""
                     if msg.get("toolCall"):
                         for fc in msg["toolCall"].get("functionCalls", []):
@@ -909,6 +913,7 @@ class LiveSession:
                     hud()
                     self._fill(state, out, fc)
                     self._run_call(ws, fc)
+                    state["tool_done_at"] = time.monotonic()  # model sonucu görüp devam edecek: iş sürüyor
                     touch()
                     continue
                 if state["hud"] == "speak" and not out.playing:
@@ -918,9 +923,14 @@ class LiveSession:
                     touch()
                 elif state["pending"] and time.monotonic() - state.get("asked", 0) < self.ANSWER_WAIT:
                     touch()  # kullanıcı konuştu, cevap bekleniyor: model düşünürken kapanma
+                working = state.get("tool_done_at", -1e9) >= state.get("turn_done_at", -1e9)
+                if working and time.monotonic() - state.get("tool_done_at", -1e9) < self.ANSWER_WAIT:
+                    touch()  # araç sonucu gitti, model sıradaki adımı düşünüyor: iş bitmeden kapanma
                 idle = self.idle
-                if self.single_turn and state.get("answered") and not state["pending"]:
-                    idle = min(idle, 1.0)  # seçici mod: cevap bitti, takip konuşması yok
+                if self.single_turn and state.get("answered") and not state["pending"] and not working:
+                    # seçici mod: cevap bitti, takip konuşması yok. Araç sonucundan sonra modelin turu bitmeden
+                    # kapanmaz: "kurulumu yap" ilk tıklamadan sonra yarıda kalıyordu (2026-11-02).
+                    idle = min(idle, 1.0)
                 if time.monotonic() - state["active"] > idle:
                     break
         finally:

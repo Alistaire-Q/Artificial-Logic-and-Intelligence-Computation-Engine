@@ -631,3 +631,32 @@ def test_dolgu_cumlesi_kullanicinin_tonuna_uyar(tmp_path):
     f._last = ""
     pcm = f.get("tool", "urgent")
     assert pcm == b"\x01\x00" * 10
+
+
+def test_live_single_turn_waits_for_model_after_tool_result(monkeypatch):
+    """Canlı kayıt: Discord'da (seçici mod) "kurulumu yap" dendi; model ilk tıklamayla birlikte konuşunca oturum 1 sn
+    sonra kapandı, iş yarıda kaldı. Araç sonucundan sonra modelin turu bitmeden kapanmamalı."""
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+
+    class SlowWS(FakeWS):
+        def send(self, data):
+            msg = json.loads(data)
+            if "toolResponse" in msg:  # model sonucu düşünüyor: devamı 2 sn sonra gelir
+                self.sent.append(msg)
+                threading.Timer(2.0, lambda: self.inbox.put({"serverContent": {
+                    "outputTranscription": {"text": "Kurulum bitti."}, "turnComplete": True}})).start()
+                return
+            super().send(data)
+
+    ws = SlowWS([{"serverContent": {"inputTranscription": {"text": "kurulumu yap"},
+                                    "outputTranscription": {"text": "Devam ediyorum."}, "turnComplete": True}},
+                 {"toolCall": {"functionCalls": [{"id": "c1", "name": "browser", "args": {"action": "click"}}]}}])
+    agent = SimpleNamespace(messages=[{"role": "system", "content": "s"}], ctx=SimpleNamespace(state={}), ui=None,
+                            tool_specs=lambda: [], _enable_groups_for=lambda **k: None,
+                            _execute_calls=lambda c: [ToolResult("tıklandı")])
+    logs = []
+    s = LiveSession(SimpleNamespace(data={"voice": {"live_idle": 8, "live_models": ["m1"]}}), agent, log=logs.append,
+                    connect=lambda url, **k: ws, out_factory=FakeOut)
+    s.single_turn = True
+    s.converse("kurulumu yap", queue.Queue(), threading.Event())
+    assert any("Kurulum bitti." in line for line in logs)  # devamı duyuldu, sonra kapandı
