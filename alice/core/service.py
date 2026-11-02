@@ -337,7 +337,7 @@ class Core:
             ("haftalık özet", lambda: self._weekly(mem)),
             ("e-posta tarihleri", lambda: self._mail_dates(mem)),
             ("gece döngüsü", lambda: self._night(mem)),
-            ("önsezi", self.anticipator.check),
+            ("önsezi", lambda: self.anticipator.check()),
         ]
         for name, fn in steps:
             try:
