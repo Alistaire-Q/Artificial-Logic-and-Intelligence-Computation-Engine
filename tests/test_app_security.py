@@ -126,3 +126,27 @@ def test_idle_connection_is_closed(app, monkeypatch):
         s.close()
         srv.httpd.shutdown()
         srv.httpd.server_close()
+
+
+def test_phone_app_routes_need_token_and_actions_are_checked(app, monkeypatch):
+    from alice.app import remote
+
+    state, srv, client = app
+    anon = httpx.Client(base_url=str(client.base_url), timeout=10)
+    assert anon.get("/m").status_code == 403
+    assert anon.get("/api/remote/status").status_code == 403
+    assert anon.post("/api/remote/action", json={"action": "lock"}).status_code == 403
+    page = anon.get("/m", params={"t": state.token})
+    assert page.status_code == 200 and state.token in page.text and "m.js" in page.text
+    man = anon.get("/m.webmanifest", params={"t": state.token}).json()
+    assert man["start_url"] == f"/m?t={state.token}" and man["display"] == "standalone"
+    assert client.get("/static/m.js").status_code == 200 and client.get("/static/m.css").status_code == 200
+    monkeypatch.setattr(remote, "status", lambda: {"core": True, "mode": "normal", "events": []})
+    assert client.get("/api/remote/status").json()["mode"] == "normal"
+    done = []
+    monkeypatch.setattr(remote, "_lock", lambda: done.append("lock") or "bilgisayar kilitlendi")
+    r = client.post("/api/remote/action", json={"action": "lock"}).json()
+    assert r == {"ok": True, "text": "bilgisayar kilitlendi"} and done == ["lock"]
+    bad = client.post("/api/remote/action", json={"action": "format_c"})
+    assert bad.status_code == 400 and "bilinmeyen" in bad.json()["error"]
+    assert client.post("/api/remote/action", json={"action": "type", "text": ""}).json()["ok"] is False

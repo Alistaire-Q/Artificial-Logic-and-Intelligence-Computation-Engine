@@ -268,6 +268,12 @@ missile_vision = false
 [night]
 enabled = true
 
+# Önsezi: alışkanlıktan ne yapacağını tahmin edip önceden hazırlar.
+[anticipate]
+quiet_notifications = true   # maçta Windows "Rahatsız etmeyin" (Discord balonları susar), bitince eski haline
+game_update = true           # oyundan önce Steam güncellemesini kontrol et, gerekirse Steam'i arka planda aç
+morning = true               # sabah genelde ilk sorduğun şeylerin cevabını önceden hazırla
+
 # Zaman makinesi hafıza: ekranda gördüğün yazılar yerelde, şifreli (Windows DPAPI) ve aranabilir bir zaman çizgisine
 # yazılır ("geçen hafta Discord'da paylaşılan linki bul"). Görüntü saklanmaz, sadece yazı. Oyunda, şifre
 # yöneticilerinde ve gizli tarayıcı pencerelerinde kayıt yok. Silmek: alice timeline wipe.

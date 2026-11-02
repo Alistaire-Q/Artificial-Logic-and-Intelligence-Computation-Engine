@@ -13,6 +13,7 @@ Sesli konuşmada (Live) bu döngü arka planda çalışır; bitince sonuç konu�
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import re
@@ -347,16 +348,29 @@ class ComputerAgent:
         if hint:
             self.emit("benzer bir işin geçmiş adımları ipucu olarak verildi")
         res = self._run(goal, max_steps, max_seconds, hint)
-        if self.learn and res.status in ("done", "fail") and res.steps:
-            save_recipe(goal, res.status, res.summary, res.steps)
+        if self.learn and res.status in ("done", "fail", "max_steps") and res.steps:
+            # yarım kalan iş de ders: bir dahaki sefere "bu yol bitmedi, başka yol dene" ipucu olur
+            save_recipe(goal, "done" if res.status == "done" else "fail", res.summary, res.steps)
         return res
+
+    EXTEND_STEPS = 10  # ilerleme varken adım sınırı dolarsa bir kez bu kadar uzat
+    STUCK_NOTE = ("NOTE: you repeated the same action 3 times without success. Do NOT repeat it. Try a different "
+                  "approach: keyboard shortcut, search box, scrolling, another element.\n")
+    SAME_NOTE = ("NOTE: your last action did not change the screen at all. It probably missed: pick a different "
+                 "element, use a keyboard shortcut, or scroll first.\n")
 
     def _run(self, goal: str, max_steps: int, max_seconds: float, hint: str = "") -> TaskResult:
         steps: list[str] = []
         last: list[str] = []
         model_errors = 0
         deadline = time.monotonic() + max_seconds
-        for n in range(1, max_steps + 1):
+        limit, extended, nudged = max_steps, False, False
+        prev_hash: str | None = None
+        changed: list[bool] = []  # her adımdan sonra ekran değişti mi (ilerleme ölçüsü)
+        note = ""
+        n = 0
+        while n < limit:
+            n += 1
             if self.stop():
                 return TaskResult("stopped", "durduruldu", steps)
             if time.monotonic() > deadline:
@@ -365,11 +379,19 @@ class ComputerAgent:
                 shot = self.screen.observe()
             except Exception as e:  # noqa: BLE001
                 return TaskResult("error", f"ekran okunamadı: {e}", steps)
+            h = hashlib.sha1(str(shot.png_b64).encode("ascii", "ignore")).hexdigest()
+            if prev_hash is not None:
+                changed.append(h != prev_hash)
+                if h == prev_hash and steps and not note:
+                    note = self.SAME_NOTE  # tıklama boşa gitti: model aynı yere tekrar basmasın
+            prev_hash = h
             elems = "\n".join(f"[{e['id']}] {e.get('role', '')} '{e.get('name', '')}'"
                               + (f" değer='{e['value']}'" if e.get("value") else "") for e in shot.elements[:60])
-            text = (f"GOAL: {goal}\n" + (f"{hint}\n" if hint else "") + f"FOREGROUND WINDOW: {shot.title or '?'}\n"
+            text = (f"GOAL: {goal}\n" + (f"{hint}\n" if hint else "") + note
+                    + f"FOREGROUND WINDOW: {shot.title or '?'}\n"
                     f"DONE SO FAR:\n{chr(10).join(steps[-10:]) or '(nothing yet)'}\n"
                     f"ELEMENTS:\n{elems or '(none: use points)'}\nNext action JSON:")
+            note = ""
             messages = [{"role": "system", "content": SYSTEM},
                         {"role": "user", "content": [{"type": "text", "text": text}, {"type": "image_url", "image_url": {
                             "url": f"data:image/png;base64,{shot.png_b64}"}}]}]
@@ -402,7 +424,14 @@ class ComputerAgent:
                              ensure_ascii=False)
             last.append(key)
             if len(last) >= 3 and len(set(last[-3:])) == 1:
-                return TaskResult("fail", "aynı adım tekrarlanıyor, ilerleyemedim", steps)
+                if nudged:
+                    return TaskResult("fail", "aynı adım tekrarlanıyor, ilerleyemedim", steps)
+                nudged = True  # bir kez toparlan: üçüncü kez aynısı yerine başka bir yol
+                last.clear()
+                note = self.STUCK_NOTE
+                steps.append(f"{n}. (takıldı: aynı adım 3 kez, başka bir yol denenecek)")
+                self.emit(steps[-1])
+                continue
             results = []
             for b in batch:
                 if b.get("action") in ("done", "fail"):
@@ -417,6 +446,9 @@ class ComputerAgent:
             steps.append(line)
             self.emit(line)
             time.sleep(self.settle)
+            if n == limit and not extended and sum(changed[-5:]) >= 2:
+                extended, limit = True, limit + self.EXTEND_STEPS  # ekran değişiyor, ilerliyor: yarıda bırakma
+                self.emit(f"ilerleme var, {self.EXTEND_STEPS} adım daha")
         return TaskResult("max_steps", "adım sınırı doldu", steps)
 
 

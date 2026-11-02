@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import queue
 import socket
 import time
@@ -133,23 +134,73 @@ class FakeCanvas:
         return rec
 
 
-def test_painter_draws_every_kind():
-    c = FakeCanvas()
-    p = window.Painter(c, 1920, 1080, origin=(0, 0))
+ALL_KINDS = ({"kind": "arrow", "clock": 3, "text": "SAM", "severity": "warn"},
+             {"kind": "edge", "clock": 6, "severity": "critical"},
+             {"kind": "label", "text": "merhaba"}, {"kind": "card", "title": "ALICE", "text": "deneme"},
+             {"kind": "box", "x": 100, "y": 100, "w": 50, "h": 40, "text": "düğme"},
+             {"kind": "progress", "value": 0.5, "text": "yükleniyor"})
+
+
+def test_style_renders_every_kind_inside_screen():
+    from alice.hud import style
+
     m = HudModel(max_items=10)
-    for msg in ({"kind": "arrow", "clock": 3, "text": "SAM", "severity": "warn"},
-                {"kind": "edge", "clock": 6, "severity": "critical"},
-                {"kind": "label", "text": "merhaba"}, {"kind": "card", "title": "ALICE", "text": "deneme"},
-                {"kind": "box", "x": 100, "y": 100, "w": 50, "h": 40, "text": "düğme"},
-                {"kind": "progress", "value": 0.5, "text": "yükleniyor"}):
+    for msg in ALL_KINDS:
         m.apply(msg, 0.0)
-    p.draw(m.visible(), 0.5)
-    names = [o[0] for o in c.ops]
-    assert names[0] == "delete" and "create_polygon" in names and "create_line" in names
-    poly = next(o for o in c.ops if o[0] == "create_polygon")
-    tip_x, tip_y = poly[1][0][0], poly[1][0][1]
-    assert tip_x > 960 + 200 and abs(tip_y - 540) < 1  # saat 3: sağa bakan ok
-    assert any(o[2].get("text") == "merhaba" for o in c.ops)
+    sprites = style.layout(m.visible(), 1920, 1080)
+    assert [s.item.kind for s in sprites] == ["arrow", "edge", "label", "card", "box", "progress"]
+    for sp in sprites:
+        img = style.render(sp, 1080)
+        assert img.size == (sp.w, sp.h) and img.getbbox() is not None  # boş resim yok
+        assert 0 <= sp.x and sp.x + sp.w <= 1920 and 0 <= sp.y and sp.y + sp.h <= 1080
+    arrow = sprites[0]
+    assert arrow.x > 960 + 200 and abs(arrow.y + 37 - 540) < 2  # saat 3: merkezin sağında
+
+
+def test_arrow_points_its_clock_and_edge_glows_in_corner():
+    from alice.hud import style
+
+    def tip_angle(clock):
+        m = HudModel()
+        m.apply({"kind": "arrow", "clock": clock, "severity": "info"}, 0.0)
+        sp = style.layout(m.visible(), 1920, 1080)[0]
+        img = style.render(sp, 1080)
+        px = img.load()
+        cx, cy = sp.w / 2, 14 + 23
+        pts = [(x, y) for y in range(img.height) for x in range(img.width)
+               if px[x, y][2] > 200 and px[x, y][0] < 60 and px[x, y][3] > 200]
+        fx, fy = max(pts, key=lambda p: (p[0] - cx) ** 2 + (p[1] - cy) ** 2)
+        return math.degrees(math.atan2(fx - cx, -(fy - cy))) % 360
+
+    for clock in (1, 3, 4, 7, 10, 12):
+        diff = (tip_angle(clock) - clock * 30 + 180) % 360 - 180
+        assert abs(diff) < 8, clock  # ok gerçekten saatine bakıyor (eşkenar üçgen yönsüzdü)
+    m = HudModel()
+    m.apply({"kind": "edge", "clock": 4, "severity": "warn"}, 0.0)
+    sp = style.layout(m.visible(), 1920, 1080)[0]
+    assert sp.w == sp.h and sp.x + sp.w == 1920 and sp.y + sp.h == 1080  # saat 4: sağ alt köşede ışık
+
+
+def test_animation_fades_in_springs_and_fades_out():
+    from alice.hud import style
+
+    m = HudModel()
+    m.apply({"kind": "arrow", "clock": 3, "severity": "warn", "id": "a"}, 0.0)
+    sp = style.layout(m.visible(), 1920, 1080)[0]
+    an = style.Anim(0.0)
+    a0, g0, _, mv0 = an.frame(0.0, sp)
+    a1, g1, _, _ = an.frame(0.1, sp)
+    a2, g2, _, mv2 = an.frame(1.0, sp)
+    assert a0 == 0 and 0 < a1 < 1 and a2 == 1 and g0 < g1 and g2 == 1 and mv0 and not mv2
+    sp.angle = 120.0  # yön değişti: zıplamaz, döner
+    an.frame(1.0, sp)
+    assert 90 <= an.angle < 120
+    an.frame(1.5, sp)
+    assert an.angle == pytest.approx(120)
+    an.gone_at = 2.0
+    a3, *_ = an.frame(2.09, sp)
+    a4, _, _, mv4 = an.frame(2.5, sp)
+    assert 0 < a3 < 1 and a4 == 0 and not mv4
 
 
 def test_edge_point_and_direction():
@@ -179,21 +230,33 @@ class FakeWin32:
         self.calls.append(("topmost",))
 
 
+class FakeTop:
+    def __init__(self):
+        self.destroyed = False
+
+    def destroy(self):
+        self.destroyed = True
+
+
 def test_window_tick_shows_only_while_items_exist():
-    """Boşken pencere gizli (oyunun FPS'i için), öğe gelince odak almadan görünür, ttl dolunca yine gizlenir."""
-    w = window.HudWindow.__new__(window.HudWindow)
-    w.model, w.inbox, w.win32, w.hwnd = HudModel(), queue.Queue(), FakeWin32(), 42
-    w.canvas = FakeCanvas()
-    w.painter = window.Painter(w.canvas, 800, 600)
-    w.shown, w._drawn, w._topmost_at = False, -1, 0.0
+    """Boşken hiç pencere yok (oyunun FPS'i için), öğe gelince kendi penceresi odak almadan görünür, ttl dolunca
+    solarak kaybolur ve penceresi kapanır."""
+    hwnds = iter(range(100, 200))
+    w = window.HudWindow(HudModel(), queue.Queue(), win32=FakeWin32(), root=object(), rect=(0, 0, 1920, 1080),
+                         make_slot=lambda root: (FakeTop(), next(hwnds)))
+    w.win32.update_layered = lambda hwnd, img, x, y: w.win32.calls.append(("ulw", hwnd, img.size))
     w.tick()
-    assert w.win32.calls == []
-    w.inbox.put({"kind": "arrow", "clock": 4, "ttl": 0.2})
+    assert w.win32.calls == [] and not w.shown
+    w.inbox.put({"kind": "arrow", "clock": 4, "ttl": 0.2, "id": "sam"})
     w.tick()
-    assert ("show", True) in w.win32.calls and w.shown
+    assert ("style", 100) in w.win32.calls and ("capture", 100) in w.win32.calls  # tıklama geçer, görüntüde yok
+    assert ("show", True) in w.win32.calls and any(c[0] == "ulw" for c in w.win32.calls) and w.shown
     time.sleep(0.25)
+    w.tick()  # süresi doldu: solmaya başladı, pencere henüz duruyor
+    assert w.shown and w.slots["sam"].anim.gone_at is not None
+    time.sleep(0.2)
     w.tick()
-    assert w.win32.calls[-1] == ("show", False) and not w.shown
+    assert w.win32.calls[-1] == ("show", False) and not w.shown and not w.slots
 
 
 # --------------------------------------------------------------- denetleyici

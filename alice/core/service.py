@@ -198,6 +198,13 @@ class Core:
         from alice.now import Anticipator
 
         self.anticipator = Anticipator(self.store)  # beklenen oyundan önce hazırlık (ses modülü kanca ekler)
+        from alice.anticipate import Morning, QuietGame
+
+        ant = cfg.data.get("anticipate", {}) or {}
+        self.quiet_game = QuietGame(enabled=bool(ant.get("quiet_notifications", True)))
+        self.morning = Morning(cfg) if ant.get("morning", True) else None
+        if ant.get("game_update", True):
+            self.anticipator.hooks.append(self._prep_game_update)
         self._last_prune = 0.0
         self._last_files: float | None = None  # None: dosyalar henüz hiç kontrol edilmedi
         self._lock = threading.Lock()
@@ -282,6 +289,12 @@ class Core:
         self.store.add(MODE_KEY, text=mode, ts=now)
         if changed:
             self.store.add_event("mode", f"Mod: {MODE_NAMES.get(mode, mode)}", severity="info", topic="mode")
+            try:  # maçta Windows bildirim balonları susar, bitince eski haline
+                did = self.quiet_game.mode(mode)
+                if did:
+                    self.store.add_event("info", did, topic="now")
+            except Exception:  # noqa: BLE001
+                pass
 
     def _reload_if_changed(self) -> None:
         """Kural/görev dosyaları başka süreçten (CLI, ajan aracı) değiştiyse yeniden yükle."""
@@ -338,6 +351,7 @@ class Core:
             ("e-posta tarihleri", lambda: self._mail_dates(mem)),
             ("gece döngüsü", lambda: self._night(mem)),
             ("önsezi", lambda: self.anticipator.check()),
+            ("sabah hazırlığı", self._morning),
         ]
         for name, fn in steps:
             try:
@@ -369,6 +383,29 @@ class Core:
         if mails:
             self.notifier.send(Notification(f"{len(mails)} yeni önemli e-posta", "; ".join(mails[:3]),
                                             "info", "mail", kind="info"))
+
+    def _processes(self) -> set[str]:
+        procs: set[str] = set()
+        for m in self.monitors:
+            procs |= set(getattr(m, "processes", set()))
+        return procs
+
+    def _prep_game_update(self) -> None:
+        from alice import anticipate
+
+        st = anticipate.load_state()
+        msg = anticipate.prep_game_update(self._processes(), lambda t, b: self.notifier.send(
+            Notification(t, b, "info", "now", kind="info")), st)
+        anticipate.save_state(st)
+        if msg:
+            self.store.add_event("info", "Önsezi: oyun güncellemesi", msg, "info", "now")
+
+    def _morning(self) -> None:
+        if self.morning is None:
+            return
+        answers = self.morning.check()
+        if answers:
+            self.store.add_event("info", "Önsezi: sabah cevapları hazır", "; ".join(answers), "info", "now")
 
     def _health_report(self) -> None:
         from alice import health_report

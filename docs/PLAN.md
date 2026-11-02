@@ -75,14 +75,15 @@ Hepsi main'de: #157-#167 birlikte #168 ile, ses/ElevenLabs işi #169 ile, DCS ka
 
 | Madde | Durum | Senden beklenen |
 |---|---|---|
-| HUD motoru (#158) | Oyunda tehdit oku ve kenar parlaması, bildirim kartı, konuşmanın yazılı özeti, tıklamadan önce hedef çerçevesi | `[hud] enabled = true`, War Thunder'da FPS ve odak ölçümü |
+| HUD motoru (#158, yeniden tasarım) | macOS HUD dili: yarı saydam cam, yumuşak gölge, iOS renkleri, yay gibi animasyon, dönen yön oku, köşede kenar ışığı. Öğe başına küçük katmanlı pencere (UpdateLayeredWindow, ~1 ms) | War Thunder'da FPS ve odak ölçümü |
 | Ekrandan füze görme (#159) | Yakalama, kurallı tanıma, kalibrasyon ve örnek toplama hazır; eşikler gerçek görüntüyle ölçülmedi | `alice vision record` ile 10-20 örnek, `alice vision region` |
 | Kendi aracını yazan ALICE (#160) | make_tool: bildirge denetimi, kum havuzunda test, onayla ekleme, 3 hatada kapanma | "Steam'de son oynadığım oyunlar" ile dene |
 | Gece döngüsü ve rüya modu (#161) | Gece raporu, sabah sorusu, bağlantılar; kendiliğinden kod değiştirmez | Sabah sorusuna evet/hayır |
-| Şu an durumu ve önsezi (#162) | Sesli cevaplara durum, `now` aracı, oyundan önce ses hazırlığı | — |
+| Şu an durumu ve önsezi (#162, tamamlandı) | Oyundan önce ses hazırlığı ve Steam güncellemesi, maçta Windows "Rahatsız etmeyin", sabah ilk sorulanın hazır cevabı (yeterli sabah verisi birikince) | Steam'de War Thunder'ı "her zaman güncel tut"a al |
 | Koçluk ve duygusal zekâ (#163) | Ölüm desenleri, maç içi öğüt, tilt'te daha az konuşma, mola önerisi | — |
-| Zaman makinesi hafıza | Şifreli (DPAPI) yerel zaman çizgisi, arama, silme; varsayılan kapalı | Açmak istersen `[timeline] enabled = true` |
-| Her yerde aynı ALICE | Bilgisayar, telefon ve hızlı bar zaten aynı sohbeti paylaşıyor | Saat için Gadgetbridge dışa aktarması |
+| Zaman makinesi hafıza | Şifreli (DPAPI) yerel zaman çizgisi, arama, silme; senin ayarında açık | — |
+| Her yerde aynı ALICE | Telefon uygulaması (`/m`): sohbet, bilgisayar durumu ve kontrolleri (mod, ses, medya, kilit, uyku, kapat, uygulama aç, yaz/pano), canlı ekran, akış; ana ekrana eklenebilir | Telefonda `alice phone` adresini aç, ana ekrana ekle. Saat şimdilik beklemede |
+| Sözünü tutan bilgisayar kullanımı | Aynı adım 3 kez tekrarlanınca önce başka yol, işe yaramayan tıklamada uyarı, ilerleme varken adım sınırı bir kez uzar, yarım kalan iş de tarif olur | — |
 | DCS kanat adamları (#170) | Sesle AI gruplarına saldır, yanıma gel, bekle, eve dön. `MissionScripting.lua` değişmedi; sabit komut kabul eden bir DCS hook dosyası kullanılıyor, çekirdek başlarken kurulur. DCS'te denenmedi | Tek oyunculu bir görevde ilk komutu dene; çalışmazsa `dcs.log`'daki `ALICE` satırları |
 
 ### 1. Ekran üstü HUD motoru
