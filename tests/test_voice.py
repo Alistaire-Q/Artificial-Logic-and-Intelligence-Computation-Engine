@@ -935,10 +935,10 @@ class FakeLive:
         self.texts = []
         self.prefetched = self.discarded = 0
 
-    def prefetch(self):
+    def prefetch(self, owner=None):
         self.prefetched += 1
 
-    def discard(self):
+    def discard(self, owner=None):
         self.discarded += 1
 
     def converse(self, text, frames, stop):
@@ -1008,7 +1008,7 @@ def test_live_wake_sends_audio_without_cloud_stt():
             return "Hey Alice, saat kaç?"
 
     class AudioLive(FakeLive):
-        def converse(self, text, frames, stop, first_audio=b""):
+        def converse(self, text, frames, stop, first_audio=b"", **kw):
             self.texts.append((text, len(first_audio)))
 
     agent, stt, live = FakeAgent(), CloudSTT(), AudioLive()
@@ -1126,7 +1126,7 @@ def test_live_wake_passes_trusted_local_text():
     class HintLive(FakeLive):
         names = staticmethod(lambda: ["GitHub"])
 
-        def converse(self, text, frames, stop, first_audio=b"", hint=None):
+        def converse(self, text, frames, stop, first_audio=b"", hint=None, **kw):
             self.texts.append(hint())
 
     for conf, want in ((-0.2, "GitHub'ı açar mısın?"), (-1.5, None)):
@@ -1172,7 +1172,7 @@ def test_live_follow_up_without_wake_word_after_conversation():
     class HintLive(FakeLive):
         names = staticmethod(lambda: [])
 
-        def converse(self, text, frames, stop, first_audio=b"", hint=None):
+        def converse(self, text, frames, stop, first_audio=b"", hint=None, **kw):
             self.texts.append(hint())
 
     live = HintLive()
@@ -1537,7 +1537,7 @@ def test_live_window_does_not_extend_after_idle_close():
         hushed = False
         last_active = 0.0
 
-        def converse(self, text, frames, stop, first_audio=b"", hint=None):
+        def converse(self, text, frames, stop, first_audio=b"", hint=None, **kw):
             self.last_active = time.monotonic() - 5  # 5 sn sessizlikten sonra kapandı
 
     live = FakeLive()

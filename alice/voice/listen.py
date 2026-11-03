@@ -121,6 +121,12 @@ class SpeechGate:
         self.start_frames = start_frames
         self.voiced = 0
         self.open_left = 0
+        # verify: ALICE konuşurken (Discord/oyun) kesen sesin kullanıcıya ait olduğunu soran işlev; konuşma ancak
+        # VERIFY_FRAMES kadar birikip doğrulanınca açılır. Yoksa (None) eski davranış.
+        self.verify: Callable[[bytes], bool] | None = None
+        self._held: list[bytes] = []
+
+    VERIFY_FRAMES = 27  # ~0,8 sn: ses izi daha kısa seste güvenilmez
 
     def feed(self, frame: bytes) -> list[bytes]:
         """Kareyi al, Live'a gidecek kareleri döndür (konuşma yoksa aynı uzunlukta sessizlik)."""
@@ -131,10 +137,27 @@ class SpeechGate:
         if self.open_left > 0:
             self.open_left = self.hangover if self.voiced else self.open_left - 1
             return [frame]
-        if self.voiced >= self.start_frames:  # konuşma başladı: hemen öncesini de gönder (ilk hece kesilmesin)
+        if self._held:
+            self._held.append(frame)
+            if len(self._held) < self.VERIFY_FRAMES:
+                return []  # doğrulanana kadar tutulur (sonra hepsi birden gider, süre kaymaz)
+            held, self._held = self._held, []
+            try:
+                ok = self.verify is None or self.verify(b"".join(held))
+            except Exception:  # noqa: BLE001 - doğrulanamadıysa eski davranış
+                ok = True
+            if not ok:  # başkası ya da ALICE'in kendi yankısı: sözünü kesmesin
+                self.voiced = 0
+                return [b"\x00" * len(f) for f in held]
             self.open_left = self.hangover
+            return held
+        if self.voiced >= self.start_frames:  # konuşma başladı: hemen öncesini de gönder (ilk hece kesilmesin)
             out = list(self.ring) + [frame]
             self.ring.clear()
+            if self.verify is not None:
+                self._held = out
+                return []
+            self.open_left = self.hangover
             return out
         self.ring.append(frame)
         return [b"\x00" * len(frame)]
@@ -222,6 +245,16 @@ def is_yes(text: str) -> bool:
     return any(w in YES_WORDS or w.startswith(("evet", "tamam", "onaylı")) for w in words)
 
 
+# Ek almış isim seslenme değil, ALICE'ten söz etmedir: "Alice'e de söyle", "Alice'dir bu", "Alice'ten". Sevgi ekleri
+# ("Alice'cim", "Alice'ciğim") seslenmedir.
+_VOCATIVE = re.compile(r"^[cç][ıiuü](?:m|ğ[ıiuü]m)$", re.I)
+
+
+def _mention(text: str, word: "re.Match[str]") -> bool:
+    m = re.match(r"['’](\w+)", text[word.end():])
+    return bool(m) and not _VOCATIVE.match(m.group(1))
+
+
 def strip_wake(text: str, strict: bool = False) -> str | None:
     """'Hey Alice, saat kaç?' -> 'saat kaç?'. Uyandırma yoksa None.
     Başta bir dolgu sözcüğüne ("ee", "şey") ve Whisper'ın farklı yazımlarına izin verir.
@@ -247,7 +280,10 @@ def strip_wake(text: str, strict: bool = False) -> str | None:
     # Küçük model "Alice naber"i birleşik yazıyor: "Alisneber", "Alisine ber", "Ali Cennaber" (sesli testte 6'da 3)
     if i < len(words) and i <= 1:
         w = words[i].group().lower().translate(_TR)
-        for pre in ("alice", "alis", "alic", "alıs"):
+        # "Alışanlar", "Alışver", "Alışıyorsun": ş'li "alış-" gerçek bir Türkçe kök, bitişik "Alice" değil (voice.log'da
+        # en az 4 yanlış uyanma). Whisper bitişik "Alice"i hep s ile yazıyor ("Alisneber").
+        glued = not re.match(r"al[ıi]ş", words[i].group().lower())
+        for pre in ("alice", "alis", "alic", "alıs") if glued else ():
             pre = pre.translate(_TR)
             if w.startswith(pre) and len(w) > len(pre) + 2 and w not in {n.translate(_TR) for n in _NAMES}:
                 return (w[len(pre):] + text[words[i].end():]).strip(" ,.!?;:-")
@@ -271,12 +307,16 @@ def strip_wake(text: str, strict: bool = False) -> str | None:
         rest = text[words[i + 1].end():]
         return re.sub(r"^['’]\w{1,3}", "", rest).lstrip(" ,.!?;:-'’").strip()
     if i < len(words) and i <= 2 and _name_like(words[i].group(), after_hey):
-        return text[words[i].end():].lstrip(" ,.!?;:-'’").strip()
+        if _mention(text, words[i]):
+            return None
+        return re.sub(r"^['’]\w+", "", text[words[i].end():]).lstrip(" ,.!?;:-'’").strip()
     # "Bak şimdi Alice ..." gibi: ilk üç sözcükte tam isim (benzerlik değil, yanlış uyanmasın). İsim cümlenin
     # başında değilse arkasından gerçek bir istek gelmeli: "Şuan Alice ya", "Gideyse iyi Alice" gibi başkasına
     # ALICE'ten bahsederken söylenen cümleler uyandırıp boş bir "Buradayım" cevabı aldırıyordu.
     for w in ([] if strict else words[:3]):
         if _name_like(w.group(), False):
+            if _mention(text, w):
+                return None
             rest = text[w.end():].lstrip(" ,.!?;:-'’").strip()
             meaningful = [x for x in re.findall(r"\w+", rest) if x.lower() not in _FILLERS | {"ya", "yaa", "be", "lan"}]
             return rest if len(meaningful) >= 2 else None
