@@ -715,12 +715,12 @@ def start_detached() -> bool:
 
     if read_state().get("running"):
         return False
-    exe = Path(sys.executable)
+    from alice import runtime
+
+    exe = runtime.python()  # hep aynı ortam (bkz. alice.runtime)
     kwargs: dict[str, Any] = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL,
                               "cwd": str(Path.home())}
     if sys.platform == "win32":
-        pyw = exe.with_name("pythonw.exe")
-        exe = pyw if pyw.exists() else exe
         kwargs["creationflags"] = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
     else:
         kwargs["start_new_session"] = True
@@ -740,12 +740,13 @@ def install_autostart() -> Path:
     """Oturum açılınca çekirdeği konsolsuz başlat."""
     import subprocess
 
+    from alice import runtime
+
     path = autostart_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    exe = Path(sys.executable)
+    exe = runtime.python()  # açılış da elle başlatmayla aynı Python'u kullansın (bkz. alice.runtime)
     if sys.platform == "win32":
-        pyw = exe.with_name("pythonw.exe")
-        target = pyw if pyw.exists() else exe
+        target = exe
         icon = Path(__file__).resolve().parent.parent / "app" / "static" / "alice.ico"
         ps = ("$s=(New-Object -ComObject WScript.Shell).CreateShortcut('" + str(path).replace("'", "''") + "');"
               f"$s.TargetPath='{target}';$s.Arguments='-m alice core run --tray';"

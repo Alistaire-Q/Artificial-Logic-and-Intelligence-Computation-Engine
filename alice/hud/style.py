@@ -244,6 +244,16 @@ def glyph(img: Image.Image, name: str, cx: float, cy: float, s: float, rgb: tupl
             x = cx + (i - (n - 1) / 2) * s * 0.24
             d.rounded_rectangle([X(x - bw / 2), X(cy - h * amp), X(x + bw / 2), X(cy + h * amp)],
                                 radius=X(bw / 2), fill=col)
+    elif name == "music":  # music.note: çalan şarkı
+        w = round(X(s * 0.11))
+        r = s * 0.17
+        for hx in (-0.42, 0.42):
+            d.ellipse([X(cx + hx * h - r - s * 0.08), X(cy + h * 0.62 - r), X(cx + hx * h + r - s * 0.08),
+                       X(cy + h * 0.62 + r)], fill=col)
+            d.line([(X(cx + hx * h + r - s * 0.08 - w / SS / 2), X(cy + h * 0.62)),
+                    (X(cx + hx * h + r - s * 0.08 - w / SS / 2), X(cy - h * 0.75))], fill=col, width=w)
+        d.line([(X(cx - 0.42 * h + r - s * 0.08 - w / SS / 2), X(cy - h * 0.75)),
+                (X(cx + 0.42 * h + r - s * 0.08 - w / SS / 2), X(cy - h * 0.95))], fill=col, width=round(w * 1.4))
     elif name == "clock":  # clock: geçmiş bildirimler
         w = round(X(s * 0.11))
         d.ellipse([X(cx - h), X(cy - h), X(cx + h), X(cy + h)], outline=col, width=w)

@@ -23,6 +23,9 @@ dependencies = [
     "winrt-Windows.Storage.Streams>=2; sys_platform == 'win32'",
     "winrt-Windows.Globalization>=2; sys_platform == 'win32'",
     "winrt-Windows.Foundation>=2; sys_platform == 'win32'",
+    # Ne çalıyor + çalan uygulamayı kontrol (Spotify, Sonora, tarayıcı...): Windows medya oturumları
+    "winrt-Windows.Media.Control>=2; sys_platform == 'win32'",
+    "winrt-Windows.Foundation.Collections>=2; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

@@ -104,6 +104,17 @@ def voice_state(state: str | None, detail: str = "") -> bool:
                        ttl=VOICE_TTL, id="voice")
 
 
+MUSIC_TTL = 5.0
+
+
+def now_playing(n: dict) -> bool:
+    """Parça değişince Adada kısa süre şarkı · sanatçı (oyun modunda bilgi olduğu için görünmez)."""
+    if not client.active or not n.get("title"):
+        return False
+    text = f"{n['title'][:40]} · {n['artist'][:30]}" if n.get("artist") else n["title"][:60]
+    return client.show("label", text=text, icon="music", severity="info", ttl=MUSIC_TTL, id="music")
+
+
 def game_context(in_game: bool) -> bool:
     """Oyundayken HUD yalnız tehdit ve uyarıları gösterir (ayar: [hud] mode)."""
     return client.send({"kind": "context", "game": bool(in_game)}) if client.active else False

@@ -48,6 +48,11 @@ sandbox = "auto"
 sandbox_network = true
 # İş bitmeden durursa ("şimdi testleri çalıştıracağım" deyip susmak) en fazla kaç kez devam hatırlatılsın. 0 = kapalı.
 finish_nudges = 2
+# "Yaptım/indirildi/yok" gibi sonuç söyleyen cevap bu turdaki araç sonuçlarıyla desteklenmiyorsa (hızlı modelle
+# karşılaştırılır) ALICE bir kez doğrulamaya geri gönderilir. Ekran eylemlerinden sonra yeni pencere/hata kutusu
+# sonuca eklenir (observe_outcomes).
+verify_claims = true
+observe_outcomes = true
 # web_search önce Google'da arasın (Gemini grounding, GEMINI_API_KEY): kaynaklı, güncel özet. Kota dolarsa ya da
 # hata verirse DuckDuckGo/Bing'e düşer.
 search_grounding = true

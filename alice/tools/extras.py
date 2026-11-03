@@ -89,14 +89,14 @@ class Weather(Tool):
 
 class Media(Tool):
     name = "media"
-    description = ("Çalan medyayı (müzik, video) medya tuşlarıyla kontrol eder ve sistem sesini ayarlar; hangi "
-                   "uygulamada çaldığı fark etmez. Ayrıca zamanlı durdurma ve bilgisayarı kapatma. Yeni bir şarkı ya "
-                   "da video AÇMAK için değil (youtube ya da browser).")
+    description = ("Çalan medyayı (müzik, video) kontrol eder ve ne çaldığını söyler (now): Spotify, Sonora, YouTube, "
+                   "hangi uygulama olursa. Sistem sesi, zamanlı durdurma, bilgisayarı kapatma. Yeni bir şarkı ya da video "
+                   "AÇMAK için değil (youtube ya da browser).")
     parameters = obj({
-        "action": {"type": "string", "enum": ["play_pause", "next", "previous", "stop", "mute", "volume_up",
+        "action": {"type": "string", "enum": ["now", "play_pause", "next", "previous", "stop", "mute", "volume_up",
                                               "volume_down", "set_volume", "pause_in", "shutdown_in",
                                               "cancel_shutdown"],
-                   "description": "play_pause: durdur/devam | next/previous: sonraki/önceki parça | mute: sesi kapat/aç "
+                   "description": "now: ne çalıyor (şarkı, sanatçı, uygulama) | play_pause: durdur/devam | next/previous: sonraki/önceki parça | mute: sesi kapat/aç "
                    "| volume_up/volume_down: times kadar adım | set_volume: percent'e ayarla | pause_in: minutes "
                    "sonra müziği durdur | shutdown_in: minutes sonra bilgisayarı kapat | cancel_shutdown."},
         "times": {"type": "integer", "description": "volume_up/down için basış sayısı (her biri ~%2). Varsayılan 5."},
@@ -122,6 +122,16 @@ class Media(Tool):
             return ToolResult(media.pause_in(minutes) if action == "pause_in" else media.shutdown_in(minutes))
         if action == "cancel_shutdown":
             return ToolResult(media.cancel_shutdown())
+        from alice.extras import nowplaying
+
+        if action == "now":
+            return ToolResult(nowplaying.describe(nowplaying.now()))
+        if action in nowplaying.CONTROL and nowplaying.control(action):
+            # Tam çalan uygulamaya gider (medya tuşu son odaklanana gidiyordu); sonucu söyle, varsayma
+            import time
+
+            time.sleep(0.7)
+            return ToolResult(f"tamam; şimdi: {nowplaying.describe(nowplaying.now())}")
         return ToolResult(media.key(action, times if action.startswith("volume") else 1))
 
 

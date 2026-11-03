@@ -31,6 +31,10 @@ def core_cmd(argv: list[str]) -> int:
 
     sub = argv[0] if argv else "status"
     if sub == "run":
+        from alice import runtime
+
+        if "--once" not in argv and runtime.redirect_core(argv):
+            return 0  # başka bir Python'dan başlatıldı (ör. .venv açılış kısayolu): kayıtlı Python'la yeniden başladı
         cfg = load_config()
         if not service.acquire_lock():
             console.print("[yellow]çekirdek zaten çalışıyor[/]")
@@ -63,6 +67,11 @@ def core_cmd(argv: list[str]) -> int:
             # Hangi Python'dan başlatılırsa başlatılsın (oturum açılışı .venv, elle sistem Python'u) eksik paket kalmasın
             deps.heal_in_background(lambda s: print(f"[paketler] {s}", flush=True))
         hud = _start_hud(cfg, core) if (cfg.data.get("hud", {}) or {}).get("enabled") and "--once" not in argv else None
+        if hud is not None:
+            from alice.extras import nowplaying
+            from alice.hud import views as hud_views
+
+            nowplaying.Watcher(hud_views.now_playing).start()  # şarkı değişince Adada kısa süre
         sims = _start_sims(cfg, core, show=_hud_show(hud)) if "--once" not in argv else None
         tl = _start_timeline(cfg, core) if (cfg.data.get("timeline", {}) or {}).get("enabled") and             "--once" not in argv else None
         host = _start_app(cfg, core) if (cfg.data.get("app", {}) or {}).get("in_core", True) and \

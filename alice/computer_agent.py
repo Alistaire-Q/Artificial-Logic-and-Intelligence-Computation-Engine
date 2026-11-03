@@ -48,7 +48,7 @@ Do not close or delete the user's things unless the GOAL says so."""
 
 @dataclass
 class Shot:
-    png_b64: str  # modele giden (küçültülmüş, işaretli) görüntü
+    png_b64: str  # modele giden (küçültülmüş, işaretli) görüntü; JPEG (adı eski)
     left: int
     top: int
     width: int  # gerçek piksel
@@ -131,6 +131,9 @@ def log_line(text: str) -> None:
         pass
 
 
+STABLE_DIFF = 1.5  # 0-255 ortalama piksel farkı (küçük gri görüntüde): altı "ekran duruldu"
+
+
 class Screen:
     """Gerçek ekran: görüntü + UIA öğeleri + fare/klavye."""
 
@@ -176,9 +179,31 @@ class Screen:
             d.rectangle([box[0], box[1], box[0] + 7 + 7 * len(str(e["id"])), box[1] + 13], fill=(255, 0, 200))
             d.text((box[0] + 2, box[1]), str(e["id"]), fill=(255, 255, 255))
         buf = io.BytesIO()
-        img.save(buf, "PNG")
+        # JPEG: 1920 genişlikte PNG ~1 MB'tı, her adımda modele yükleniyor ve okunuyordu; JPEG ~5 kat küçük, yazılar
+        # ve işaret kutuları okunur kalır.
+        img.save(buf, "JPEG", quality=82)
         return Shot(base64.b64encode(buf.getvalue()).decode(), mon["left"], mon["top"], mon["width"],
                     mon["height"], elements, title)
+
+    def wait_stable(self, max_wait: float = 0.8, every: float = 0.1) -> float:
+        """Eylemden sonra ekran durulana kadar bekle (art arda iki küçük görüntü aynıysa); geçen süreyi döner. Sabit
+        0,5 sn beklemek yerine: tıklama anında oturan ekranda hemen devam, açılan menüde biraz bekle."""
+        import mss
+        from PIL import Image, ImageChops, ImageStat
+
+        t0 = time.monotonic()
+        prev = None
+        with mss.mss() as sct:
+            mon = sct.monitors[self.monitor] if 0 < self.monitor < len(sct.monitors) else self._monitor(sct)
+            while time.monotonic() - t0 < max_wait:
+                raw = sct.grab(mon)
+                small = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX").resize((96, 54)).convert("L")
+                # Küçük hareket (oynayan video, saat, imleç) durulmayı engellemesin: ortalama fark eşiğin altındaysa dur
+                if prev is not None and ImageStat.Stat(ImageChops.difference(small, prev)).mean[0] < STABLE_DIFF:
+                    break
+                prev = small
+                time.sleep(every)
+        return time.monotonic() - t0
 
     @staticmethod
     def _monitor(sct) -> dict[str, int]:
@@ -399,7 +424,7 @@ class ComputerAgent:
             note = ""
             messages = [{"role": "system", "content": SYSTEM},
                         {"role": "user", "content": [{"type": "text", "text": text}, {"type": "image_url", "image_url": {
-                            "url": f"data:image/png;base64,{shot.png_b64}"}}]}]
+                            "url": f"data:image/jpeg;base64,{shot.png_b64}"}}]}]
             try:
                 answer = self.ask(messages)
             except Exception as e:  # noqa: BLE001 - kota/bağlantı: görmeden devam etme
@@ -450,7 +475,11 @@ class ComputerAgent:
             line = f"{n}. {key[:160]} -> {'; '.join(results)} ({str(a.get('thought', ''))[:100]})"
             steps.append(line)
             self.emit(line)
-            time.sleep(self.settle)
+            stable = getattr(self.screen, "wait_stable", None)
+            if stable is not None and self.settle > 0:
+                stable(self.settle)  # ekran duruldu mu: durulunca hemen, en fazla eski sabit bekleme kadar
+            else:
+                time.sleep(self.settle)
             if n == limit and not extended and sum(changed[-5:]) >= 2:
                 extended, limit = True, limit + self.EXTEND_STEPS  # ekran değişiyor, ilerliyor: yarıda bırakma
                 self.emit(f"ilerleme var, {self.EXTEND_STEPS} adım daha")
