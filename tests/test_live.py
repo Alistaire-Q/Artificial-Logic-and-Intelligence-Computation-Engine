@@ -551,14 +551,15 @@ def test_filler_plays_when_model_calls_a_tool_silently(monkeypatch, tmp_path):
                  {"toolCall": {"functionCalls": [{"id": "c2", "name": "weather", "args": {"city": "İzmir"}}]}}])
     agent = SimpleNamespace(messages=[{"role": "system", "content": "s"}], ctx=SimpleNamespace(state={}), ui=None,
                             tool_specs=lambda: [], _enable_groups_for=lambda **k: None,
-                            _execute_calls=lambda c: [ToolResult("12 derece")])
+                            _execute_calls=lambda c: time.sleep(0.2) or [ToolResult("12 derece")])
     cfg = SimpleNamespace(data={"voice": {"live_idle": 0.5, "live_models": ["m1"]}})
     out = FakeOut()
     logs = []
     s = LiveSession(cfg, agent, log=logs.append, connect=lambda url, **k: ws, out_factory=lambda: out)
     s.names = lambda: []
+    s.FILL_AFTER = 0.05  # araç bundan uzun sürüyor: dolgu çalınır (hemen biten araçta çalınmaz)
     s.converse("Ankara'da hava nasıl", queue.Queue(), threading.Event())
-    assert out.chunks[0] == b"\x05\x00" * 50  # ilk araçtan önce dolgu çalındı
+    assert out.chunks[0] == b"\x05\x00" * 50  # araç sürerken dolgu çalındı
     assert sum("dolgu" in line for line in logs) == 1  # aynı turda ikinci araçta tekrar çalınmadı
 
 

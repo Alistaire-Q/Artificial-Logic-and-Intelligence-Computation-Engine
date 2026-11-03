@@ -1172,6 +1172,8 @@ durable facts about the user.
 """ + DURABLE_RULES.replace("{", "{{").replace("}", "}}") + """
 Write each fact as one short Turkish sentence in the third person, starting with "Kullanıcı" when natural \
 (e.g. "Kullanıcı kahveyi şekersiz içer."). kind: preference | fact | person | routine | note.
+An ALICE reply starting with [doğrulanmadı] is a claim no tool confirmed: never record it as done or as something \
+the user confirmed.
 Existing related memories (id: text):
 {known}
 If the user contradicts or refines an existing memory, put it in "update" (same id, new text) or "remove" instead of \
@@ -1187,7 +1189,8 @@ one finished conversation (it started {date}). Produce:
 1. "summary": 1-3 short Turkish sentences: what was talked about, what got done or decided, what is left. Concrete \
 (names, projects, numbers). Write only what happened: never sentences like "Hiçbir işlem yapılmadı", "karar \
 alınmadı", "devam eden iş kalmadı". Empty string if it was only trivial commands, small talk, testing ALICE's \
-features, or misheard noise (fragments that make no sense, other languages).
+features, or misheard noise (fragments that make no sense, other languages). ALICE replies starting with \
+[doğrulanmadı] are claims no tool confirmed: do not report them as done or as confirmed by the user.
 2. "add": durable facts about the user. The summary already records what happened, so facts are rare: \
 usually zero, at most two. """ + DURABLE_RULES.replace("{", "{{").replace("}", "}}") + """
 One short Turkish sentence each, third person ("Kullanıcı ..."). kind: preference | fact | person | routine | note. \
