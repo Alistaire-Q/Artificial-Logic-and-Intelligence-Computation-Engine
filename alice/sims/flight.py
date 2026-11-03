@@ -31,6 +31,20 @@ FT = 0.3048
 NM = 1852.0
 
 
+# Saatin Türkçe bulunma eki: 1'deki, 2'deki, 3'teki, 4'teki, 5'teki, 6'daki, 7'deki, 8'deki, 9'daki, 10'daki, 11'deki,
+# 12'deki (sayının okunuşundaki son ünlü ve sert ünsüze göre). "Saat 3'deki" yanlıştı.
+_CLOCK_EK = {1: "'deki", 2: "'deki", 3: "'teki", 4: "'teki", 5: "'teki", 6: "'daki", 7: "'deki", 8: "'deki",
+             9: "'daki", 10: "'daki", 11: "'deki", 12: "'deki"}
+
+
+def clock_loc(clock: object) -> str:
+    try:
+        c = int(clock)
+    except (TypeError, ValueError):
+        return f"{clock}'deki"
+    return f"{c}{_CLOCK_EK.get(c, chr(39) + 'deki')}"
+
+
 @dataclass
 class FlightState:
     t: float                         # simülasyon zamanı (sn)
@@ -558,7 +572,7 @@ class FlightCompanion:
             self._follow(s.t, c["clock"], f"BURNU SANA · {self._km_short(c['dist_m'])}", "warn", "nose")
             return False
         c = hot[0]
-        self.say(f"Saat {c['clock']}'deki düşman burnunu sana çevirdi, {self._km(c['dist_m'])}. Füze gelebilir!",
+        self.say(f"Saat {clock_loc(c['clock'])} düşman burnunu sana çevirdi, {self._km(c['dist_m'])}. Füze gelebilir!",
                  "warn", self._urgent())
         self._point(s.t, c["clock"], f"BURNU SANA · {self._km_short(c['dist_m'])}", "warn", "nose")
         return True
