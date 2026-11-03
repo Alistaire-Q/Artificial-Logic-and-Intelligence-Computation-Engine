@@ -216,8 +216,9 @@ def _engine() -> Any:
     try:
         from winrt.windows.media.ocr import OcrEngine
     except ImportError:
-        _ocr_error = "OCR paketi kurulu değil: pip install winrt-Windows.Media.Ocr winrt-Windows.Graphics.Imaging " \
-                     "winrt-Windows.Storage.Streams winrt-Windows.Globalization winrt-Windows.Foundation"
+        from alice.deps import install_command
+
+        _ocr_error = f"OCR paketi bu Python'da kurulu değil (ALICE açılışta kendisi kurar), elle: {install_command([])}"
         raise RuntimeError(_ocr_error) from None
     eng = OcrEngine.try_create_from_user_profile_languages()
     if eng is None:
@@ -236,6 +237,23 @@ def ocr_image(img: Any, recognize: Callable[[Any], list[tuple[str, tuple[int, in
     for text, (x, y, rw, rh) in lines:
         out.append((text, (x / w, y / h, min(1.0, (x + rw) / w), min(1.0, (y + rh) / h))))
     return out
+
+
+def ocr_words(img: Any) -> list[tuple[str, tuple[int, int, int, int]]]:
+    """Görüntüdeki tek tek kelimeler ve piksel kutuları (x, y, en, boy). RWR'daki "M29 F15 MSL" gibi aynı satıra
+    düşen işaretlerin her birinin yeri ayrı gerekir (füzenin yönü MSL'nin konumundan çıkar)."""
+    from winrt.windows.graphics.imaging import BitmapAlphaMode, BitmapPixelFormat, SoftwareBitmap
+    from winrt.windows.storage.streams import DataWriter
+
+    eng = _engine()
+    rgba = img.convert("RGBA")
+    writer = DataWriter()
+    writer.write_bytes(rgba.tobytes())
+    bmp = SoftwareBitmap.create_copy_from_buffer(writer.detach_buffer(), BitmapPixelFormat.RGBA8, rgba.width,
+                                                 rgba.height, BitmapAlphaMode.PREMULTIPLIED)
+    result = _wait(eng.recognize_async(bmp))
+    return [(wd.text, (int(wd.bounding_rect.x), int(wd.bounding_rect.y), int(wd.bounding_rect.width),
+                       int(wd.bounding_rect.height))) for line in result.lines for wd in line.words]
 
 
 def _wait(op: Any) -> Any:

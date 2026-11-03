@@ -60,7 +60,7 @@ def test_single_frame_false_alarm_is_ignored():
 
 def test_watcher_reports_confirmed_missile_as_contact():
     frames = iter([frame(4), frame(4), frame(None), frame(4)])
-    w = MissileWatcher((0, 0, 120, 120), grab=lambda region: next(frames))
+    w = MissileWatcher((0, 0, 120, 120), {"method": "red", "confirm": 3}, grab=lambda region: next(frames))
     for i in range(4):
         w.step(i / 10)
     assert w.contacts() == [{"id": "vision", "name": "", "kind": "radar", "clock": 4, "lock": True,
@@ -140,15 +140,71 @@ def test_hub_adds_vision_contacts_to_war_thunder_feed(monkeypatch):
         hb.stop()
 
 
-def test_hub_without_region_says_how_to_set_it(monkeypatch):
+def test_hub_without_region_uses_war_thunder_default(monkeypatch):
     from tests.test_sims_hub import FakeNotifier, FakeStore
 
+    from alice.sims import vision
     from alice.sims.hub import SimHub
 
     hb = SimHub({"missile_vision": True}, FakeStore(), FakeNotifier())
-    assert hb._missile_vision() is None
-    assert "alice vision region" in hb.store.events[0][2]
+    w = hb._missile_vision()
+    try:
+        assert w is not None and w.region[2:] == tuple(round(v * w.region[3] / 285) for v in (255, 285))
+        assert w.region[0] == round(60 * w.region[3] / 285)  # sol kenar, ekran yüksekliğine göre ölçekli
+    finally:
+        hb.stop()
     assert SimHub({}, FakeStore(), FakeNotifier())._missile_vision() is None
+    assert vision.default_region(1440) == (80, 507, 340, 380)
+
+
+# ------------------------------------------------- War Thunder'ın turkuaz RWR yazıları (Medal kliplerinden)
+def test_read_rwr_launch_track_and_direction_from_words():
+    from alice.sims.vision import WT_CENTER, read_rwr
+
+    img = np.zeros((285, 255, 3), dtype=np.uint8)
+    cx, cy = WT_CENTER[0] * 255, WT_CENTER[1] * 285
+    track = read_rwr(img, words=[("INSTRUCTOR", (0, 0, 90, 14)), ("TRACK", (92, 14, 40, 14))])
+    assert track.track and not track.launch and track.clock is None
+    # füze sağda (saat 3) ve okuma motorunun Türkçe harfleri ("MSÜ", "LAUNŞH")
+    d = read_rwr(img, words=[("LAUNŞH", (92, 14, 50, 14)), ("MSÜ", (cx + 60, cy - 7, 24, 14))])
+    assert d.launch and d.clock == 3
+    up = read_rwr(img, words=[("MSL", (cx - 12, cy - 80, 24, 14))])  # LAUNCH okunmasa da MSL füze demek
+    assert up.launch and up.clock == 12
+    merged = read_rwr(img, words=[("LAUNCH", (92, 14, 50, 14)), ("M29MSL", (cx + 40, cy + 40, 50, 14))])
+    assert merged.launch and merged.clock is None  # birleşik kelimenin yeri yön sayılmaz
+    assert read_rwr(img, words=[("F15", (cx, cy, 20, 14)), ("ENGN1", (0, 0, 40, 14))]) is None
+
+
+def test_hud_mask_keeps_only_cyan_text():
+    from alice.sims.vision import hud_mask
+
+    img = np.zeros((10, 20, 3), dtype=np.uint8)
+    img[:, :10] = (40, 230, 200)   # turkuaz HUD
+    img[:, 10:] = (60, 140, 50)    # ağaç
+    m = np.asarray(hud_mask(__import__("PIL.Image", fromlist=["Image"]).fromarray(img)))
+    assert (m[:, :10] == 0).all() and (m[:, 10:] == 255).all()
+
+
+def test_watcher_text_mode_reports_directionless_missile_and_lock(monkeypatch):
+    from alice.sims import vision
+
+    seq = iter([vision.TextDetection(None, False, True), vision.TextDetection(None, False, True),
+                vision.TextDetection(None, True, False), None, vision.TextDetection(None, True, False)])
+    monkeypatch.setattr(vision, "read_rwr", lambda frame, cfg=None: next(seq))
+    w = MissileWatcher((0, 0, 50, 50), grab=lambda r: np.zeros((50, 50, 3), dtype=np.uint8))
+    w.step(0.0)
+    w.step(0.1)
+    assert w.contacts()[0]["missile"] is False and w.contacts()[0]["lock"] is True  # kilit
+    for i in range(3):
+        w.step(0.2 + i / 10)
+    c = w.contacts()[0]
+    assert c["missile"] is True and c["clock"] is None  # yanıp sönen LAUNCH: 2/5 yeter, yönsüz
+
+
+def test_directionless_vision_missile_callout():
+    from alice.sims.flight import clock_from
+
+    assert [clock_from(c) for c in (3, 6, 12)] == ["3'ten", "6'dan", "12'den"]
 
 
 def test_test_files_crops_full_screenshots(tmp_path):

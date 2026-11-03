@@ -69,20 +69,24 @@ Buraya kadarki her şey "iyi bir asistan". Bundan sonrası ALICE'i sıradan bir 
 
 Aşağıda ilk üç madde için nasıl yapılacağı yazılı. Diğerlerinin ayrıntısı sırası gelince eklenir.
 
-### Durum (2 Kasım 2026)
+### Durum (3 Kasım 2026)
 
-Hepsi main'de: #157-#167 birlikte #168 ile, ses/ElevenLabs işi #169 ile, DCS kanat adamları #170 ile birleşti.
+#157-#170 main'de. 2-3 Kasım işleri (HUD, telefon, önsezi, tarayıcı eklentisi, gözlem ve kanıt kontrolü, füze görme,
+gece döngüsü) PR #172'de, birleşmeyi bekliyor.
 
 | Madde | Durum | Senden beklenen |
 |---|---|---|
-| HUD motoru (#158) | Oyunda tehdit oku ve kenar parlaması, bildirim kartı, konuşmanın yazılı özeti, tıklamadan önce hedef çerçevesi | `[hud] enabled = true`, War Thunder'da FPS ve odak ölçümü |
-| Ekrandan füze görme (#159) | Yakalama, kurallı tanıma, kalibrasyon ve örnek toplama hazır; eşikler gerçek görüntüyle ölçülmedi | `alice vision record` ile 10-20 örnek, `alice vision region` |
-| Kendi aracını yazan ALICE (#160) | make_tool: bildirge denetimi, kum havuzunda test, onayla ekleme, 3 hatada kapanma | "Steam'de son oynadığım oyunlar" ile dene |
-| Gece döngüsü ve rüya modu (#161) | Gece raporu, sabah sorusu, bağlantılar; kendiliğinden kod değiştirmez | Sabah sorusuna evet/hayır |
-| Şu an durumu ve önsezi (#162) | Sesli cevaplara durum, `now` aracı, oyundan önce ses hazırlığı | — |
+| HUD motoru (Ada) | Apple'ın Dynamic Island kurallarıyla tek "Ada" (açık buzlu cam, marka mavisi, sürekli köşe, yay animasyonu); kenar ışığı. ALICE'in imleci hedefe kayar, tıklamada halka yayılır; dinlerken dalga ve mavi parıltı; oyunda yalnız tehdit ve uyarı (`[hud] mode`, Ctrl+Alt+K); Ctrl+Alt+J son bildirimler; yönsüz tehdide radar simgesi; çalan şarkı. War Thunder'da kenarlıksız pencerede denendi, FPS'e etkisi yok | — |
+| Ekrandan füze görme (#159) | Medal'deki 344 War Thunder klibinden: RWR turkuaz ve uyarı yazıyla (TRACK kilit, LAUNCH füze, dairedeki MSL yön). Turkuaz maske ve kelime düzeyinde OCR; 40 klipte 28'inde füze yakalandı, örneklenen karelerin hepsi gerçek LAUNCH, kare ~8-15 ms. Bölge ekran yüksekliğine göre kendiliğinden, varsayılan açık | Bir maçta "Füze!" ve "Kilitlendin!" anonslarını dinle; geç ya da yanlış gelirse söyle |
+| Kendi aracını yazan ALICE (#160) | Altyapıdaki dört hata düzeldi (kum havuzu çıktısı kayboluyordu, `from __future__` sırası, çift ters eğik çizgili klasör, iki adla görünen kullanıcı klasöründe tmp_path). Steam aracı testi ilk denemede geçiyor; ama son oynanmayı değil son güncellenmeyi sıralıyor | Steam aracını "son oynanma" (`localconfig.vdf`) ile düzeltip kurayım mı |
+| Gece döngüsü ve rüya modu (#161) | Gece raporu, sabah sorusu, bağlantılar. Artık tek seferlik iş parçacığı ölümleri ve sohbetlerdeki takılmalar da (aynı adımı tekrarlama, ekran işinde aynı tuşa basıp durma, kesilen iş, "yine saçmaladı") isteğiyle birlikte rapora girer; kendiliğinden kod değiştirmez | Sabah sorusuna evet/hayır |
+| Şu an durumu ve önsezi (#162, tamamlandı) | Oyundan önce ses hazırlığı ve Steam güncellemesi, maçta Windows "Rahatsız etmeyin", sabah ilk sorulanın hazır cevabı. "Ne çalıyor": Windows medya oturumu (Spotify, Sonora, tarayıcı), durdur/geç tam çalan uygulamaya | Steam'de War Thunder'ı "her zaman güncel tut"a al |
 | Koçluk ve duygusal zekâ (#163) | Ölüm desenleri, maç içi öğüt, tilt'te daha az konuşma, mola önerisi | — |
-| Zaman makinesi hafıza | Şifreli (DPAPI) yerel zaman çizgisi, arama, silme; varsayılan kapalı | Açmak istersen `[timeline] enabled = true` |
-| Her yerde aynı ALICE | Bilgisayar, telefon ve hızlı bar zaten aynı sohbeti paylaşıyor | Saat için Gadgetbridge dışa aktarması |
+| Zaman makinesi hafıza | Şifreli (DPAPI) yerel zaman çizgisi, arama, silme; senin ayarında açık | — |
+| Her yerde aynı ALICE | Telefon uygulaması (`/m`) denendi: sohbet, bilgisayar durumu ve kontrolleri, medya kartında çalan şarkı, canlı ekran, akış | Telefonda `alice phone` adresini aç, ana ekrana ekle. Saat şimdilik beklemede |
+| Sözünü tutan bilgisayar kullanımı | Ekran işleri önce reflex'e (~1 sn/adım), ekran görevi yedek; ekran görevi JPEG ve "ekran durulunca devam" ile hızlı. Ekranı etkileyen her eylemden sonra yeni pencere/hata kutusu/UAC sonuca eklenir; "yaptım/indirildi/yok" diyen cevap araç sonuçlarıyla desteklenmiyorsa bir kez doğrulamaya gönderilir. Olmayan dosya açılmaz, indirmeler Farklı Kaydet'e girmeden doğrudan İndirilenler'e | Sonora gibi bir indirme-kurulum işini baştan sona dene |
+| Tarayıcı eklentisi | Opera'ya ALICE eklentisi: uzaktan hata ayıklama ve izin penceresi yok, indirme/tema ellenmez; sekme, okuma, yazma, tıklama, ekran görüntüsü, indirme listesi. Opera'da kuruldu ve okuma denendi | Opera'da gerçek bir tıklama/yazma işini dene |
+| Tek Python ortamı | ALICE'in Python'u kaydedilir, başka Python'dan başlayan çekirdek kayıtlıyla yeniden başlar; açılışta eksik paketleri kendisi kurar | — |
 | DCS kanat adamları (#170) | Sesle AI gruplarına saldır, yanıma gel, bekle, eve dön. `MissionScripting.lua` değişmedi; sabit komut kabul eden bir DCS hook dosyası kullanılıyor, çekirdek başlarken kurulur. DCS'te denenmedi | Tek oyunculu bir görevde ilk komutu dene; çalışmazsa `dcs.log`'daki `ALICE` satırları |
 
 ### 1. Ekran üstü HUD motoru
@@ -116,7 +120,7 @@ Hepsi main'de: #157-#167 birlikte #168 ile, ses/ElevenLabs işi #169 ile, DCS ka
 * **Sonuç:** mevcut temas listesine `missile: True` olarak eklenir. Böylece bugünkü "Füze! Saat 4, chaff at" anonsu ve HUD'daki ok hiçbir değişiklik gerekmeden çalışır.
 * **Ayar:** bölge koordinatları ve renkler uçağa ya da HUD düzenine göre değişebilir. Bir kerelik bir "kalibrasyon" komutu olur: ALICE bölgeyi ekran görüntüsünde gösterir, sen onaylarsın.
 
-**İlk adım (seni bekliyor).** War Thunder'da füze uyarısının ve RWR'ın göründüğü anlardan 10-20 ekran görüntüsü. Aynısını uyarı yokken de birkaç tane. Bunlar olmadan uyarının nerede ve hangi renkte göründüğü tahmin edilir, ölçülmez.
+**İlk adım (yapıldı, 3 Kasım).** Medal kliplerinden ölçüldü: War Thunder'ın RWR'ı kırmızı değil turkuaz ve uyarıyı yazıyla veriyor (TRACK, LAUNCH, dairede MSL). Renk eşiği yerine turkuaz maske ve kelime düzeyinde Windows OCR kullanılıyor; LAUNCH saniyede ~2 kez yanıp söndüğü için yakalama 6 kare/sn.
 
 **Bitti sayılır.**
 * Kaydedilmiş oyun görüntülerinde füze uyarılarının en az yüzde 90'ı yakalanır.
@@ -161,8 +165,10 @@ Hepsi main'de: #157-#167 birlikte #168 ile, ses/ElevenLabs işi #169 ile, DCS ka
 
 ## Şu an seni bekleyenler
 
+* **PR #172'yi birleştir.** 2-3 Kasım işlerinin hepsi orada.
 * **Google bağlantıları koptu.** Google Takvim ve 4 Gmail hesabının izni dolmuş, sağlık raporu her gün bunu söylüyor. `alice connect google_calendar` ve Ayarlar → Kurulum → Gmail ekle (aynı adla).
-* **Yeni War Thunder anonslarını bir maçta dinle:** burnu sana dönük düşman, SAM/uçaksavar menzili, düşürdün/yanıyorsun. Oyuncu adın ilk ölümde öğrenilir; olmazsa `[sims] warthunder_nick` ile ver. Fazla ya da eksik gelenleri söyle.
+* **Ekrandan füze görmeyi bir maçta dinle:** "Füze! Saat 4", "Füze atıldı!", "Kilitlendin!". Geç, eksik ya da yanlış gelirse söyle.
+* **Steam aracı:** ALICE'in yazdığı araç testi geçiyor ama son oynanmayı değil son güncellenmeyi sıralıyor; düzeltip kurmak için onay.
 * **Model listesinde çalışmayanlar:** Vercel AI Gateway kredi kartı istiyor, Ollama kapalı. Kullanmıyorsan listeden çıkaralım, boşuna denenmesinler.
 * **Örnek Discord akışı:** `~/.alice/feeds.toml` içindeki `ornek` akışı hiç kurulmadı. Bir kanal izlemek istiyorsan dolduralım, istemiyorsan silelim.
 * **Akıllı saat:** Gadgetbridge dışa aktarması hâlâ bağlı değil (`[watch] export_path` boş). Nabız uçuş raporlarına ve duygusal zekâ fikrine bundan gelecek.

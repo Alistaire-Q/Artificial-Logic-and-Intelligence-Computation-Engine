@@ -48,6 +48,11 @@ sandbox = "auto"
 sandbox_network = true
 # İş bitmeden durursa ("şimdi testleri çalıştıracağım" deyip susmak) en fazla kaç kez devam hatırlatılsın. 0 = kapalı.
 finish_nudges = 2
+# "Yaptım/indirildi/yok" gibi sonuç söyleyen cevap bu turdaki araç sonuçlarıyla desteklenmiyorsa (hızlı modelle
+# karşılaştırılır) ALICE bir kez doğrulamaya geri gönderilir. Ekran eylemlerinden sonra yeni pencere/hata kutusu
+# sonuca eklenir (observe_outcomes).
+verify_claims = true
+observe_outcomes = true
 # web_search önce Google'da arasın (Gemini grounding, GEMINI_API_KEY): kaynaklı, güncel özet. Kota dolarsa ya da
 # hata verirse DuckDuckGo/Bing'e düşer.
 search_grounding = true
@@ -82,6 +87,9 @@ browser_cdp = "http://127.0.0.1:9222"
 # Kullanıcının tarayıcısına (opera://inspect "Allow remote debugging") ALICE'ten bağımsız küçük bir köprü süreci
 # bağlanır; çekirdek yeniden başlasa da tarayıcı izni tekrar sormaz. 0 = köprü yok, doğrudan bağlan.
 browser_bridge_port = 9339
+# ALICE tarayıcı eklentisi (alice/extension, opera://extensions'ta "paketlenmemiş yükle") bu porta bağlanır. Bağlıyken
+# yukarıdaki uzaktan hata ayıklama hiç kullanılmaz: izin penceresi yok, indirmeler/tema ellenmez. 0 = kapalı.
+browser_ext_port = 9340
 # true: rol zincirinde "auto" yazmasan da ölçülen en iyi ücretsiz modeller zincirin sonuna eklenir.
 auto_models = true
 # Arayüzde gizlenen modeller ya da sağlayıcılar ("groq" ya da "groq:model"): otomatik zincirlerde kullanılmaz.
@@ -255,18 +263,25 @@ dcs_port = 41230
 dcs_wingmen_port = 41231
 # dcs_wingmen = ["Uzi 2", "Uzi 3"]
 warthunder = true
-# Ekrandan füze görme (War Thunder füzeyi API'de vermiyor, ekranda gösteriyor). Sadece uçuşta, ekranın yalnızca
-# RWR bölgesi işlemcide saniyede 10 kez yakalanır; oyuna dokunmaz. Önce bölgeyi ayarla:
-# alice vision region X Y GENİŞLİK YÜKSEKLİK, örnek topla: alice vision record, dene: alice vision test <klasör>
-missile_vision = false
+# Ekrandan füze görme (War Thunder füzeyi API'de vermiyor, ekranda gösteriyor). Sadece uçuşta, sol kenardaki RWR
+# bölgesi saniyede 6 kez yakalanır ve turkuaz yazıları okunur: TRACK = kilitlendin, LAUNCH/MSL = füze, MSL'nin
+# dairedeki yeri = yön. Oyuna dokunmaz. Bölge ekran yüksekliğine göre kendiliğinden; HUD'u taşıdıysan:
+# alice vision region X Y GENİŞLİK YÜKSEKLİK, dene: alice vision test <klasör>
+missile_vision = true
 # vision_region = [x, y, genişlik, yükseklik]
-# Renk eşikleri ve doğrulama: [sims.vision] red_min, red_margin, min_pixels, confirm, window, hold, fps
+# Doğrulama: [sims.vision] method (text|red), confirm, window, hold, fps
 
 # Gece döngüsü ve rüya modu: gece 03-07 arası kendi kayıtlarını okur (tekrarlayan hata, gereksiz anons, yanlış
 # uyanma, bozulan araç), bağlantıları arar; sabah bir kez "şunları buldum, düzelteyim mi?" der. Kod değiştirmez.
 # Elle: alice night. Rapor: ~/.alice/night/
 [night]
 enabled = true
+
+# Önsezi: alışkanlıktan ne yapacağını tahmin edip önceden hazırlar.
+[anticipate]
+quiet_notifications = true   # maçta Windows "Rahatsız etmeyin" (Discord balonları susar), bitince eski haline
+game_update = true           # oyundan önce Steam güncellemesini kontrol et, gerekirse Steam'i arka planda aç
+morning = true               # sabah genelde ilk sorduğun şeylerin cevabını önceden hazırla
 
 # Zaman makinesi hafıza: ekranda gördüğün yazılar yerelde, şifreli (Windows DPAPI) ve aranabilir bir zaman çizgisine
 # yazılır ("geçen hafta Discord'da paylaşılan linki bul"). Görüntü saklanmaz, sadece yazı. Oyunda, şifre
@@ -289,6 +304,11 @@ monitor = 0
 opacity = 0.92
 # HUD'u tamamen gizle / geri getir.
 hotkey = "<ctrl>+<alt>+h"
+# Ne kadar şey görünsün: auto (oyunda yalnız tehdit ve uyarılar, masaüstünde hepsi) | all | game | quiet (yalnız
+# kritik). mode_hotkey sırayla değiştirir; history_hotkey kaçırılan son bildirimleri gösterir.
+mode = "auto"
+mode_hotkey = "<ctrl>+<alt>+k"
+history_hotkey = "<ctrl>+<alt>+j"
 
 # Akıllı saat (Gadgetbridge). export_path: Gadgetbridge'in otomatik dışa aktardığı veritabanı
 # (Syncthing vb. ile bilgisayara gelen dosya ya da klasör). Boş = kapalı.

@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="alice-token" content="{{TOKEN}}">
+<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="ALICE">
+<title>ALICE</title>
+<link rel="manifest" href="/m.webmanifest?t={{TOKEN}}">
+<link rel="icon" href="/static/alice.png">
+<link rel="apple-touch-icon" href="/static/alice.png">
+<link rel="stylesheet" href="/static/m.css">
+<script src="/static/marked.min.js"></script>
+<script src="/static/purify.min.js"></script>
+<script src="/static/m.js" defer></script>
+</head>
+<body>
+
+<header id="top">
+  <h1 id="title">Sohbet</h1>
+  <span id="conn" class="conn" hidden>Bağlantı yok</span>
+</header>
+
+<main>
+  <!-- Sohbet -->
+  <section id="tab-chat" class="tab active" aria-label="Sohbet">
+    <div id="msgs" aria-live="polite">
+      <div class="empty" id="chatEmpty">
+        <img src="/static/alice.png" alt="" width="56" height="56">
+        <p>ALICE'e yaz. Bilgisayarda ne istersen yapar.</p>
+      </div>
+    </div>
+    <form id="composer" autocomplete="off">
+      <button type="button" id="newChat" class="icon-btn" aria-label="Yeni sohbet">
+        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
+      <textarea id="q" rows="1" placeholder="Mesaj" enterkeyhint="send"></textarea>
+      <button type="submit" id="sendBtn" class="send" aria-label="Gönder" disabled>
+        <svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+      </button>
+    </form>
+  </section>
+
+  <!-- Bilgisayar -->
+  <section id="tab-pc" class="tab" aria-label="Bilgisayar">
+    <div class="group">
+      <div class="seg" id="modeSeg" role="radiogroup" aria-label="Mod">
+        <button data-mode="auto" role="radio">Otomatik</button>
+        <button data-mode="normal" role="radio">Normal</button>
+        <button data-mode="flight" role="radio">Uçuş</button>
+        <button data-mode="quiet" role="radio">Sessiz</button>
+      </div>
+      <p class="foot" id="nowLine"></p>
+    </div>
+
+    <h2 class="label">Durum</h2>
+    <div class="gauges" id="gauges">
+      <div class="gauge" data-k="cpu"><svg viewBox="0 0 36 36"><circle class="track" cx="18" cy="18" r="15.5"/><circle class="val" cx="18" cy="18" r="15.5"/></svg><b>–</b><span>İşlemci</span></div>
+      <div class="gauge" data-k="ram"><svg viewBox="0 0 36 36"><circle class="track" cx="18" cy="18" r="15.5"/><circle class="val" cx="18" cy="18" r="15.5"/></svg><b>–</b><span>Bellek</span></div>
+      <div class="gauge" data-k="gpu"><svg viewBox="0 0 36 36"><circle class="track" cx="18" cy="18" r="15.5"/><circle class="val" cx="18" cy="18" r="15.5"/></svg><b>–</b><span>Ekran kartı</span></div>
+      <div class="gauge" data-k="gpu_temp" data-unit="°" data-max="100"><svg viewBox="0 0 36 36"><circle class="track" cx="18" cy="18" r="15.5"/><circle class="val" cx="18" cy="18" r="15.5"/></svg><b>–</b><span>GPU sıcaklığı</span></div>
+    </div>
+
+    <div class="group list" id="insight" hidden></div>
+
+    <h2 class="label">Medya ve ses</h2>
+    <div class="group">
+      <div class="playing" id="playing" hidden><b id="playTitle"></b><span id="playMeta"></span></div>
+      <div class="row-btns">
+        <button class="pill" data-act="previous" aria-label="Önceki"><svg viewBox="0 0 24 24"><path d="M19 6 9 12l10 6V6ZM6 6v12"/></svg></button>
+        <button class="pill big" data-act="play_pause" aria-label="Oynat ya da durdur"><svg viewBox="0 0 24 24"><path d="M7 5v14l11-7L7 5Z"/></svg></button>
+        <button class="pill" data-act="next" aria-label="Sonraki"><svg viewBox="0 0 24 24"><path d="m5 6 10 6-10 6V6Zm13 0v12"/></svg></button>
+      </div>
+      <div class="vol">
+        <button class="icon-btn" data-act="mute" aria-label="Sesi kapat ya da aç"><svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9H4Z"/><path d="m17 9 4 6m0-6-4 6"/></svg></button>
+        <input type="range" id="vol" min="0" max="100" step="5" value="40" aria-label="Ses seviyesi">
+        <button class="icon-btn" data-act="volume_up" aria-label="Sesi aç"><svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9H4Z"/><path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/></svg></button>
+      </div>
+    </div>
+
+    <h2 class="label">Gönder</h2>
+    <div class="group">
+      <textarea id="sendText" rows="2" placeholder="Bilgisayarda yaz ya da panoya kopyala"></textarea>
+      <div class="row-btns tight">
+        <button class="text-btn" id="typeBtn">Bilgisayarda yaz</button>
+        <button class="text-btn" id="clipBtn">Panoya kopyala</button>
+      </div>
+    </div>
+
+    <h2 class="label">Aç</h2>
+    <div class="group">
+      <input type="search" id="appSearch" placeholder="Uygulama ya da site (ör. Discord, youtube.com)" enterkeyhint="go">
+      <div class="list" id="appList"></div>
+    </div>
+
+    <h2 class="label">Bilgisayar</h2>
+    <div class="group list">
+      <button class="cell" data-act="hud"><span>HUD'u gizle / göster</span><i>›</i></button>
+      <button class="cell" data-act="lock"><span>Kilitle</span><i>›</i></button>
+      <button class="cell" data-act="sleep" data-confirm="Bilgisayar uyku moduna geçsin mi?"><span>Uyku</span><i>›</i></button>
+      <button class="cell danger" data-act="shutdown" data-confirm="Bilgisayar 60 saniye sonra kapansın mı? Bu sürede iptal edebilirsin."><span>Kapat</span><i>›</i></button>
+      <button class="cell" data-act="cancel_shutdown" id="cancelShut" hidden><span>Kapatmayı iptal et</span><i>›</i></button>
+    </div>
+  </section>
+
+  <!-- Ekran -->
+  <section id="tab-screen" class="tab" aria-label="Ekran">
+    <div class="screen-wrap">
+      <img id="shot" alt="Bilgisayarın ekranı">
+      <p class="foot" id="shotInfo">Ekran yükleniyor…</p>
+    </div>
+    <div class="row-btns tight">
+      <button class="text-btn" id="shotPause">Durdur</button>
+      <button class="text-btn" id="shotFull">Tam ekran</button>
+    </div>
+  </section>
+
+  <!-- Akış -->
+  <section id="tab-feed" class="tab" aria-label="Akış">
+    <div class="group list" id="feed"></div>
+  </section>
+</main>
+
+<nav id="tabs" aria-label="Sekmeler">
+  <button data-tab="chat" class="active"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4V5Z"/></svg><span>Sohbet</span></button>
+  <button data-tab="pc"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><span>Bilgisayar</span></button>
+  <button data-tab="screen"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="12" cy="12" r="3"/></svg><span>Ekran</span></button>
+  <button data-tab="feed"><svg viewBox="0 0 24 24"><path d="M6 4h12M6 9h12M6 14h8M6 19h5"/></svg><span>Akış</span></button>
+</nav>
+
+<div id="sheet" class="sheet" hidden role="dialog" aria-modal="true">
+  <div class="sheet-card">
+    <p id="sheetText"></p>
+    <div class="row-btns tight">
+      <button class="text-btn" id="sheetNo">Vazgeç</button>
+      <button class="text-btn strong" id="sheetYes">Evet</button>
+    </div>
+  </div>
+</div>
+<div id="toast" class="toast" hidden></div>
+</body>
+</html>

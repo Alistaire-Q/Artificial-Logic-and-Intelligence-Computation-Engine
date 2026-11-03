@@ -172,9 +172,9 @@ def test_observe_failure_stop_and_deadline(monkeypatch):
 
 def test_repeat_detection_ignores_thought_changes():
     s = FakeScreen()
-    answers = [json.dumps({"thought": f"deneme {i}", "action": "click", "id": 1}) for i in range(5)]
+    answers = [json.dumps({"thought": f"deneme {i}", "action": "click", "id": 1}) for i in range(8)]
     res = ComputerAgent(s, scripted(*answers), settle=0).run("x")
-    assert res.status == "fail" and "tekrarlanıyor" in res.summary and len(s.acts) == 2
+    assert res.status == "fail" and "tekrarlanıyor" in res.summary and len(s.acts) == 4  # bir kez toparlanma
 
 
 def test_router_asker_passes_role_and_effort():

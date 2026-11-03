@@ -12,6 +12,7 @@ import re
 import socket
 import sys
 import threading
+import time
 import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
@@ -549,7 +550,8 @@ def connection_lost(e: BaseException) -> bool:
 
 # Bir eylemin en uzun süresi (sn). Playwright'ın bazı çağrıları (CDP komutları, ölü bağlantıdaki istekler) süre
 # sınırı tanımıyor; süre dolunca sürücü öldürülür ki ALICE dakikalarca "çalışıyor" diye takılı kalmasın.
-ACTION_BUDGET = {"goto": 120.0, "back": 60.0, "screenshot": 40.0}
+ROOT_AGAIN = 60.0  # sn: bu sürede aynı sitenin ana sayfası yine istenirse açık sekmeyi ana sayfaya götür
+ACTION_BUDGET = {"goto": 120.0, "back": 60.0, "screenshot": 40.0, "download": 270.0}
 DEFAULT_BUDGET = 45.0
 CONNECT_BUDGET = 70.0  # yeni bağlantı: tarayıcı kullanıcıdan izin isteyebilir (connect_over_cdp 60 sn bekler)
 STOPPED = "durduruldu (kullanıcı kesti)"
@@ -608,6 +610,15 @@ def get_browser(ctx: ToolContext, separate: bool = False) -> BrowserSession:
     if b is not None and not b.alive():  # bağlantı ölmüş: her araç çağrısı "browser has been closed" demesin
         drop_browser(ctx)
         b = None
+    from alice.tools import browser_ext
+
+    hub = None if separate else browser_ext.hub()
+    if hub is not None:  # ALICE eklentisi bağlı: uzaktan hata ayıklama yok, Opera izin sormaz
+        if not getattr(b, "extension", False):
+            drop_browser(ctx)
+            b = ctx.state["browser"] = browser_ext.ExtBrowserSession(hub)
+        b.ensure_page()
+        return b
     if b is None:
         a = ctx.config.agent
         allow = separate or bool(a.get("browser_headless", False)) or bool(a.get("browser_allow_separate", False))
@@ -643,19 +654,24 @@ class Browser(Tool):
         "- goto, site zaten bir sekmede açıksa o sekmeyi kullanır; yeni sekme açmaz.\n"
         "- Sayfanın içeriğini okumak için text, görsel düzen için screenshot.\n"
         "- Kullanıcıya sayfadaki bir yeri göstermek için highlight (ekranda çerçevelenir).\n"
-        "- 'Bağlanılamıyor' derse ayrı pencere açma: windows switch_tab/navigate + ui_elements/ui_act ile kullanıcının "
-        "sekmelerinde çalış.\n"
+        "- Dosya/kurulum indirmek için download url=<dosya bağlantısı>: kaydetme penceresi çıkmaz, tam yolu döner; "
+        "kurulumu o yolla aç. Dosya bağlantısını goto ile açma.\n"
+        "- 'Bağlanılamıyor' derse ayrı pencere açma: windows switch_tab/navigate + ui_act ile çalış.\n"
         "- Ekrandaki bir şeye tek tıklama/yazma için reflex daha hızlı; birçok adımlı iş için run_plan."
     )
     parameters = obj({
         "action": {"type": "string", "enum": ["goto", "snapshot", "click", "type", "select", "press", "scroll", "back",
-                                              "text", "screenshot", "eval", "tabs", "switch_tab", "highlight", "close"],
+                                              "text", "screenshot", "eval", "tabs", "switch_tab", "highlight", "download",
+                                              "downloads",
+                                              "close"],
                    "description": "goto: url'ye git | snapshot: tıklanabilir öğeleri [ID] ile listele | click: "
                    "element_id'ye tıkla | type: element_id alanına text yaz (submit=true Enter'a basar) | select: "
                    "açılır listede text seçeneğini seç | press: keys tuşuna bas | scroll: amount piksel kaydır | "
                    "back: geri | text: sayfanın düz metni | screenshot: sayfa görüntüsü | eval: js çalıştır | tabs: açık "
                    "sekmeler | switch_tab: index'li sekmeye geç | highlight: element_id'yi kullanıcıya göster (text "
-                   "etiket olur) | close. goto/click/type/press/scroll sonrası güncel "
+                   "etiket olur) | download: url'deki dosyayı İndirilenler'e indir (kaydetme penceresi açılmaz, "
+                   "bitene kadar bekler, dosyanın tam yolunu döner) | downloads: son indirmeler (dosya, durum) | close. "
+                   "goto/click/type/press/scroll sonrası güncel "
                    "snapshot otomatik döner."},
         "url": {"type": "string", "description": "goto için adres, ör. 'https://mail.google.com' ya da 'github.com'."},
         "element_id": {"type": "integer", "description": "click/type/select/highlight için son snapshot'taki [ID]."},
@@ -672,9 +688,9 @@ class Browser(Tool):
 
     def risk_for(self, args: dict[str, Any]) -> str:
         a = args.get("action")
-        if a in ("snapshot", "text", "screenshot", "tabs", "highlight"):
+        if a in ("snapshot", "text", "screenshot", "tabs", "highlight", "downloads"):
             return READ
-        if a == "goto":
+        if a in ("goto", "download"):
             return NETWORK
         return COMPUTER
 
@@ -763,8 +779,16 @@ class Browser(Tool):
             if b.attached:  # kullanıcının kendi tarayıcısı: açık site sekmesini kullan, her seferinde yeni açma
                 b.page = page = b.tab_for(url)
                 page.bring_to_front()
-                if host_of(page.url) == host_of(url) and urlparse(url).path.strip("/") == "" and not urlparse(url).query:
-                    return snap(f"zaten açık sekmeye geçildi: {b.title_of(page)}")  # içindekini (çalan video) bozma
+                root = urlparse(url).path.strip("/") == "" and not urlparse(url).query
+                if host_of(page.url) == host_of(url) and root:
+                    # İlk istekte içindekini (çalan video) bozma; kısa sürede aynı ana sayfa yine istenirse
+                    # ("ana sayfaya geç") gerçekten git: model sekmenin hâlâ videoda olduğunu görüp tekrar istemiştir.
+                    last = ctx.state.get("browser_root_switch")
+                    ctx.state["browser_root_switch"] = (host_of(url), time.monotonic())
+                    if not (last and last[0] == host_of(url) and time.monotonic() - last[1] < ROOT_AGAIN):
+                        at = "" if urlparse(page.url).path.strip("/") == "" else (
+                            " (sekme sitenin içinde; ana sayfası isteniyorsa aynı goto'yu bir kez daha çağır)")
+                        return snap(f"zaten açık sekmeye geçildi: {b.title_of(page)}{at}")
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=45000)
             except Exception as e:  # noqa: BLE001
@@ -843,6 +867,30 @@ class Browser(Tool):
         if action == "tabs":
             rows = [f"{i}: {b.title_of(p)} - {p.url}{'  <- aktif' if p is b.page else ''}" for i, p in enumerate(b.ctx.pages)]
             return ToolResult("\n".join(rows))
+        if action == "download":
+            if not url:
+                raise ToolError("download için url gerekli (dosyanın bağlantısı)")
+            from alice.tools import fetch_file
+
+            return ToolResult(fetch_file.describe(fetch_file.download(url)))
+        if action == "downloads":
+            from alice.tools import fetch_file
+
+            rows = []
+            for d in fetch_file.jobs() + (b.downloads() if getattr(b, "extension", False) else []):
+                row = f"{d.get('file') or d.get('url')} | {d.get('state')}"
+                src = fetch_file.source_name(str(d.get("url") or ""))
+                name = str(d.get("file") or "").replace("\\", "/").rsplit("/", 1)[-1]
+                if name and src and "." in src and name.lower() != src.lower():
+                    row += f" | DİKKAT: bağlantıdaki ad {src}, dosya {name} adıyla kaydedilmiş"
+                if not d.get("file") and d.get("state") == "in_progress":
+                    row += " | kaydetme penceresi bekliyor olabilir (download action'ı bu pencereyi açmaz)"
+                if d.get("error"):
+                    row += f" | hata: {d['error']}"
+                elif d.get("state") != "complete" and d.get("total"):
+                    row += f" | %{100 * int(d.get('bytes') or 0) // int(d['total'])}"
+                rows.append(row)
+            return ToolResult("\n".join(rows) or "indirme yok")
         if action == "switch_tab":
             pages = b.ctx.pages
             if index is None or not 0 <= index < len(pages):

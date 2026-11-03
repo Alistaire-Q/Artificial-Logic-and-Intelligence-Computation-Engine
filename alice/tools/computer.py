@@ -7,6 +7,7 @@ fareyi ekranın sol üst köşesine götürmek ALICE'in fare/klavye hareketini a
 
 from __future__ import annotations
 
+import re
 import sys
 import time
 from typing import Any
@@ -378,14 +379,19 @@ class ComputerTask(Tool):
             raise ToolError("model yönlendirici yok")
         from alice.computer_agent import _RUNNING, log_line
 
+        from alice.hud import views
+
         if not _RUNNING.acquire(blocking=False):
             return ToolResult("zaten bir ekran görevi sürüyor; bitmesini bekle, aynı işi tekrar başlatma.", is_error=True)
         try:
             log_line(f"başladı: {goal}")
+            views.task_step(1)
 
             def emit(s: str) -> None:
                 ctx.emit(s)
                 log_line(s)
+                if m := re.match(r"(\d+)\. ", s):  # adım bitti: model sıradakini düşünüyor
+                    views.task_step(int(m.group(1)) + 1)
 
             agent = ComputerAgent(Screen(ctx, monitor=max(0, as_number(monitor or 0, "monitor", int))),
                                   router_asker(ctx.router, str(ctx.config.agent.get("computer_role", "vision"))),
@@ -393,6 +399,7 @@ class ComputerTask(Tool):
             res = agent.run(goal, max_steps=max(1, min(as_number(max_steps or 30, "max_steps", int), 60)))
             log_line(f"bitti: {res.status}: {res.summary}")
         finally:
+            views.task_end()
             _RUNNING.release()
         return ToolResult(res.report(), is_error=res.status in ("error",))
 

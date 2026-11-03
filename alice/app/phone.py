@@ -1,7 +1,7 @@
 """Telefon köprüsü: ALICE'e telefonun tarayıcısından ulaşma ve canlı saat verisi.
 
 Yerel ağa açılan ayrı bir sunucu (varsayılan port 8765). Telefonda adres:
-  http://<bilgisayarın-IP'si>:8765/quick?t=<anahtar>     -> hızlı bar (yazarak sor)
+  http://<bilgisayarın-IP'si>:8765/m?t=<anahtar>         -> telefon uygulaması (sohbet, bilgisayar, ekran)
   POST http://<IP>:8765/api/watch  (X-Alice-Token: <anahtar>, JSON {"hr": 88})  -> canlı nabız
 Anahtar ~/.alice/phone-token dosyasında kalıcıdır; böylece telefondaki yer imi ve otomasyon
 her açılışta çalışır. `alice phone --new-token` ile değiştirilir.
@@ -61,7 +61,7 @@ class PhoneServer:
 
     @property
     def url(self) -> str:
-        return f"http://{self.ip}:{self.server.httpd.server_address[1]}/quick?t={self.state.token}"
+        return f"http://{self.ip}:{self.server.httpd.server_address[1]}/m?t={self.state.token}"
 
     @property
     def projects_url(self) -> str:

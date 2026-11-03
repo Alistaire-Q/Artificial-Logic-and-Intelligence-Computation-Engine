@@ -28,7 +28,32 @@ PATH = "/devtools/browser/alice-bridge"
 CLEANUP_BASE = 2_000_000_000  # köprünün kendi komutlarının kimlikleri
 HEARTBEAT_ID = CLEANUP_BASE - 1  # kalp atışı komutunun kimliği (istemci kimlikleri 1'den sayar, çakışmaz)
 HEARTBEAT_EVERY = 15.0  # saniye
-HEARTBEAT_TIMEOUT = 20.0  # bu kadar cevap yoksa tarayıcı bağlantısı ölü sayılır
+HEARTBEAT_TIMEOUT = 20.0  # bu kadar cevap yoksa bir kaçırma sayılır
+HEARTBEAT_MISSES = 2  # üst üste bu kadar kaçırma: ölü. Tek gecikmede koparmak Opera'ya her seferinde yeniden izin
+                      # sordurtuyordu (meşgul tarayıcı bir kez geç cevap verebilir; 2026-11-02'de görüldü)
+
+
+# Playwright bağlanınca kullanıcının tarayıcısını kendi test tarayıcısı gibi ayarlıyor. Kullanıcının kendi tarayıcısında
+# bunlar zarar: indirmeler Playwright'ın geçici klasörüne GUID adıyla iniyor (sonra siliniyor), sayfalar açık temaya
+# zorlanıyor. Köprü bu komutları tarayıcıya iletmez, istemciye "oldu" der.
+BLOCKED = {"Browser.setDownloadBehavior"}
+MEDIA_FEATURES = {"prefers-color-scheme", "prefers-reduced-motion", "forced-colors", "prefers-contrast"}
+
+
+def neutralize(msg: dict[str, Any]) -> dict[str, Any] | None:
+    """İstemciden gelen komut tarayıcıya gitmeli mi? Gitmemeliyse None (köprü sahte başarı döner); gerekirse
+    zararsız haline çevrilmiş komut."""
+    method = msg.get("method", "")
+    if method in BLOCKED:
+        return None
+    if method == "Emulation.setEmulatedMedia":
+        params = dict(msg.get("params") or {})
+        feats = [f for f in params.get("features") or [] if f.get("name") not in MEDIA_FEATURES]
+        if not feats and not params.get("media"):
+            return None
+        params["features"] = feats
+        return {**msg, "params": params}
+    return msg
 
 
 def endpoint(port: int = DEFAULT_PORT) -> str:
@@ -77,7 +102,9 @@ class Bridge:
         return self.up
 
     async def _heartbeat(self, up) -> None:
-        """Tarayıcı hâlâ cevap veriyor mu? Vermiyorsa bağlantıyı kapat (yoksa istemci sonsuza dek bekler)."""
+        """Tarayıcı hâlâ cevap veriyor mu? Üst üste cevap vermezse bağlantıyı kapat (yoksa istemci sonsuza dek
+        bekler)."""
+        misses = 0
         while self.up is up:
             await asyncio.sleep(self.heartbeat)
             if self.up is not up:
@@ -87,8 +114,13 @@ class Bridge:
                 await asyncio.wait_for(up.send(json.dumps({"id": HEARTBEAT_ID, "method": "Browser.getVersion"})),
                                        self.heartbeat_timeout)
                 await asyncio.wait_for(self._pong.wait(), self.heartbeat_timeout)
-            except Exception:  # noqa: BLE001 - zaman aşımı ya da kopuk soket: ikisi de ölü bağlantı
-                self.log(f"tarayıcı {self.heartbeat_timeout:.0f} sn cevap vermedi; bağlantı ölü sayılıyor")
+                misses = 0
+            except Exception:  # noqa: BLE001 - zaman aşımı ya da kopuk soket
+                misses += 1
+                if misses < HEARTBEAT_MISSES:
+                    self.log(f"tarayıcı {self.heartbeat_timeout:.0f} sn cevap vermedi; bir kez daha bekleniyor")
+                    continue
+                self.log(f"tarayıcı üst üste {misses} kez cevap vermedi; bağlantı ölü sayılıyor")
                 await self._shutdown(up)
                 return
 
@@ -159,7 +191,9 @@ class Bridge:
                                       for s in self.sessions]
         cmds += [{"method": "Target.setAutoAttach", "params": {"autoAttach": False, "waitForDebuggerOnStart": False,
                                                                 "flatten": True}},
-                 {"method": "Target.setDiscoverTargets", "params": {"discover": False}}]
+                 {"method": "Target.setDiscoverTargets", "params": {"discover": False}},
+                 # eski sürüm köprü/istemci indirmeleri geçici klasöre yönlendirdiyse tarayıcının kendi ayarına dön
+                 {"method": "Browser.setDownloadBehavior", "params": {"behavior": "default"}}]
         self.sessions = set()
         for i, c in enumerate(cmds):
             c["id"] = CLEANUP_BASE + i
@@ -192,7 +226,15 @@ class Bridge:
         self.log("istemci bağlandı")
         try:
             async for raw in ws:
-                msg = json.loads(raw)
+                msg = neutralize(json.loads(raw))
+                if msg is None:  # tarayıcıya gitmez: istemci beklemesin
+                    orig = json.loads(raw)
+                    if "id" in orig:
+                        reply = {"id": orig["id"], "result": {}}
+                        if orig.get("sessionId"):
+                            reply["sessionId"] = orig["sessionId"]
+                        await ws.send(json.dumps(reply))
+                    continue
                 if "id" in msg:
                     bid = self.next_id
                     self.next_id += 1

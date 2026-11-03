@@ -185,6 +185,14 @@ def _refresh(now: float) -> None:
             text = line(snapshot(st))
     except Exception:  # noqa: BLE001
         text = ""
+    try:  # önsezi: sabah genelde ilk sorduğun şeylerin hazır cevabı
+        from alice.anticipate import ready_line
+
+        ready = ready_line()
+        if ready:
+            text = (text + "; " if text else "") + "hazır cevaplar: " + ready
+    except Exception:  # noqa: BLE001
+        pass
     _cache.update(at=now, line=text, busy=False)
 
 

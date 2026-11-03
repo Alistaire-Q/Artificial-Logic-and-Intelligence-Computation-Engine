@@ -37,7 +37,7 @@ STATIC = Path(__file__).parent / "static"
 STATIC_FILES = {"app.js": "text/javascript", "projects.js": "text/javascript", "ui.js": "text/javascript",
                 "main.js": "text/javascript", "app.css": "text/css", "marked.min.js": "text/javascript",
                 "purify.min.js": "text/javascript", "highlight.js": "text/javascript", "icon.svg": "image/svg+xml", "alice.png": "image/png", "quick.js": "text/javascript",
-                "quick.css": "text/css"}
+                "quick.css": "text/css", "m.css": "text/css", "m.js": "text/javascript"}
 # media-src: Ayarlar → Ses'teki "Dinle" örneği data: adresinden çalınır. Yoktu; default-src 'none' yüzünden
 # tarayıcı sesi sessizce engelliyordu.
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
@@ -1447,6 +1447,20 @@ def make_handler(state: AppState):
                 return self._send(200, html.encode("utf-8"), "text/html; charset=utf-8",
                                   {"Content-Security-Policy": CSP.replace("img-src 'self' data:",
                                                                           "img-src 'self' data:; media-src 'self' blob:")})
+            if u.path == "/m":  # telefon uygulaması
+                if not self._token_ok(q):
+                    return self._deny()
+                html = (STATIC / "m.html").read_text(encoding="utf-8").replace("{{TOKEN}}", state.token)
+                return self._send(200, html.encode("utf-8"), "text/html; charset=utf-8",
+                                  {"Content-Security-Policy": CSP.replace("img-src 'self' data:",
+                                                                          "img-src 'self' data: blob:")})
+            if u.path == "/m.webmanifest":  # "Ana ekrana ekle": açılış adresi anahtarı taşısın
+                if not self._token_ok(q):
+                    return self._deny()
+                body = json.dumps({"name": "ALICE", "short_name": "ALICE", "start_url": f"/m?t={state.token}",
+                                   "display": "standalone", "background_color": "#000000", "theme_color": "#000000",
+                                   "icons": [{"src": "/static/alice.png", "sizes": "512x512", "type": "image/png"}]})
+                return self._send(200, body.encode("utf-8"), "application/manifest+json")
             if u.path.startswith("/preview/"):
                 return self._preview(u.path)
             if u.path.startswith("/static/"):
@@ -1463,6 +1477,21 @@ def make_handler(state: AppState):
                 return self._json(pending or {})
             if u.path == "/api/state":
                 return self._json(state.status())
+            if u.path == "/api/remote/status":
+                from alice.app import remote
+
+                return self._json(remote.status())
+            if u.path == "/api/remote/screen":
+                from alice.app import remote
+
+                try:
+                    return self._send(200, remote.screen_jpeg(int((q.get("m") or ["1"])[0])), "image/jpeg")
+                except Exception:  # noqa: BLE001 - ekran yakalanamadı (kilitli ekran gibi)
+                    return self._send(503, b"", "image/jpeg")
+            if u.path == "/api/remote/apps":
+                from alice.app import remote
+
+                return self._json({"apps": remote.apps()})
             if u.path == "/api/history":
                 return self._json(display_history(state.agent.messages, state.agent.tools))
             if u.path == "/api/sessions":
@@ -1603,6 +1632,13 @@ def make_handler(state: AppState):
                         return self._json({"ok": False, "error": "boş mesaj"}, 400)
                     ok, err = state.send(text or "Bu görsele bak.", images)
                     return self._json({"ok": ok, "error": err}, 200 if ok else 409)
+                if p == "/api/remote/action":
+                    from alice.app import remote
+
+                    try:
+                        return self._json({"ok": True, "text": remote.action(d)})
+                    except Exception as e:  # noqa: BLE001 - kullanıcıya kısa sebep
+                        return self._json({"ok": False, "error": str(e)[:200]}, 400)
                 if p == "/api/watch":
                     if state.watch_store is None:
                         return self._json({"ok": False, "error": "saat verisi bu sunucuda kapalı"}, 404)

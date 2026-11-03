@@ -249,14 +249,21 @@ class BrowserObserver:
             els.append(Element(i["id"], kind, i["text"] or i["placeholder"] or i["href"], editable, i["value"], i["inView"]))
         return Observation(self.b.page.title(), self.b.page.url, els)
 
+    def _frame(self, loc, label: str) -> None:
+        from alice.tools.browser import mark_on_hud
+
+        mark_on_hud(self.b, loc, label)  # HUD kapalıysa ya da ölçülemezse hiçbir şey yapmaz
+
     def click(self, element_id: int) -> None:
         loc = self.b.locator(element_id)
         loc.scroll_into_view_if_needed(timeout=5000)
+        self._frame(loc, "tıklıyorum")
         loc.click(timeout=8000)
         self.b.page.wait_for_timeout(500)
 
     def type(self, element_id: int, text: str, submit: bool) -> None:
         loc = self.b.locator(element_id)
+        self._frame(loc, "yazıyorum")
         loc.fill(text, timeout=8000)
         if submit:
             loc.press("Enter")
@@ -397,7 +404,15 @@ class DesktopObserver:
                 unpark_mouse(left + w // 2, top + h // 2)  # köşede bekleyen fare yazmayı engellemesin
             except Exception:  # noqa: BLE001
                 pass
-        title, raw = collect_ui_elements(self.ctx, self.title, limit=200, hwnd=self._window())
+        try:
+            title, raw = collect_ui_elements(self.ctx, self.title, limit=200, hwnd=self._window())
+        except Exception:  # noqa: BLE001 - UIA bazen COM hatası veriyor (0x80040201, Win+D sonrası masaüstünde
+            # görüldü); bütün refleksi düşürme: kısa bekleyip bir kez daha dene, olmazsa yalnızca OCR ile devam et.
+            time.sleep(0.3)
+            try:
+                title, raw = collect_ui_elements(self.ctx, self.title, limit=200, hwnd=self._window())
+            except Exception:  # noqa: BLE001
+                title, raw = foreground_title(), []
         # Oyunda pencerenin Kapat düğmesi hiç seçenek olmaz: "ayarları X ile kapat" Unciv'i kapatmıştı.
         chrome_goal = "" if self.diff else self.goal
         ax: list[Item] = []
@@ -438,6 +453,16 @@ class DesktopObserver:
             return None  # pencerenin dışında
         return tuple(min(1.0, max(0.0, v)) for v in fr)  # type: ignore[return-value]
 
+    def _frame(self, item: Item, action: str) -> None:
+        """HUD açıksa nereye tıklayacağını göster; beklemez (refleks hızlı kalsın), yeri bilinmiyorsa atlar."""
+        from alice.hud import views
+
+        try:
+            x, y = self._point(item)
+        except ValueError:
+            return
+        views.click_target(x, y, "type" if action == "type_text" else action, wait=False)
+
     def _point(self, item: Item) -> tuple[int, int]:
         if item.center is None or self._rect is None:
             raise ValueError(f"'{item.label}' öğesinin ekrandaki yeri bilinmiyor")
@@ -451,6 +476,8 @@ class DesktopObserver:
 
         if action in ("click", "double_click", "right_click", "type_text", "drag") and item is None:
             raise ValueError(f"{action} için öğe gerekli")
+        if item is not None and action in ("click", "double_click", "right_click", "type_text", "drag"):
+            self._frame(item, action)
         pg = _pyautogui()
         if action == "click":
             if item.source.startswith("ax") and item.ref is not None:

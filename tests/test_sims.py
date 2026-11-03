@@ -869,3 +869,10 @@ def test_threat_voices_share_a_gap_and_survive_respawn():
     n = len(r.texts())
     tr.feed(st(80, extra={"contacts": ships}, **wt))
     assert len(r.texts()) == n
+
+
+def test_clock_suffix_follows_turkish_vowel_harmony():
+    """Canlı kayıt: anonslar "Saat 3'deki", "Saat 9'deki" diyordu."""
+    from alice.sims.flight import clock_loc
+
+    assert [clock_loc(c) for c in (3, 6, 9, 10, 12)] == ["3'teki", "6'daki", "9'daki", "10'daki", "12'deki"]

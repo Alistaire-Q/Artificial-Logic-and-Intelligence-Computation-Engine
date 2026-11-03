@@ -402,6 +402,19 @@ def test_goto_attached_reuses_open_site_tab(ctx, monkeypatch):
     assert s.page is gmail and not any(c[0] == "goto" for c in gmail.calls)
 
 
+def test_goto_root_again_goes_home_in_open_tab(ctx, monkeypatch):
+    """Canlı kayıt: YouTube sekmesi videodaydı, "ana sayfaya geç" dendi, goto yalnızca sekmeye geçip videoda kaldı."""
+    video = FakePage("https://www.youtube.com/watch?v=K5", "Video")
+    s = make_session([video], attached=True)
+    ctx.state["browser"] = s
+    monkeypatch.setattr(browser.BrowserSession, "_visible_page", lambda self: None)
+    r = browser.Browser().run(ctx, "goto", url="youtube.com")
+    assert "zaten açık sekmeye geçildi" in r.text and "bir kez daha" in r.text
+    assert not any(c[0] == "goto" for c in video.calls)  # ilk istekte çalan videoya dokunmaz
+    browser.Browser().run(ctx, "goto", url="youtube.com")
+    assert any(c[0] == "goto" for c in video.calls)  # aynı istek tekrar gelince ana sayfaya gider
+
+
 def test_tab_for_prefers_same_host_then_blank_then_new():
     s = make_session([FakePage("https://www.youtube.com/watch?v=1"), FakePage("about:blank")])
     assert s.tab_for("https://youtube.com/results") is s.ctx.pages[0]

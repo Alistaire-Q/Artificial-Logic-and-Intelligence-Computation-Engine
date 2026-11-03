@@ -37,6 +37,9 @@ def read_only(name: str, args: dict[str, Any]) -> bool:
         return True
     return name == "run_command" and bool(_READ_COMMAND.match(str(args.get("command", ""))))
 LIVE_GROUPS = {"desktop", "browser", "personal", "system", "automation"}
+# Araç çalışırken Adada "Çalışıyorum · ..." ayrıntısı
+HUD_TOOLS = {"reflex": "ekranda", "computer_task": "ekranda", "computer": "ekranda", "ui_act": "ekranda",
+             "browser": "tarayıcıda", "windows": "pencerelerde", "web_search": "arıyorum", "web_fetch": "okuyorum"}
 # live_screen = "auto": kullanıcı ekrandakinden söz ediyorsa ("şuna tıkla", "ekrandaki", "bu ne") kare gider.
 SCREEN_WORDS = re.compile(
     r"\b(ekran\w*|şu(nu|na|nda|ndaki|raya|rada|radaki)?|bu(nu|na|nda|ndaki|raya|rada|radaki)?|"
@@ -65,13 +68,12 @@ target=<site adı> ile açık sekmeye geç, windows action=navigate target=<URL 
 Yeni sekme ya da ayrı pencere sadece kullanıcı isterse.
 Bilgisayarın TAMAMINI kullanabilirsin: masaüstü, Windows ayarları, her uygulama, fare ve klavye. "Sadece
 tarayıcıyı görebiliyorum", "yetkim yok" deme; bir yolunu bul.
-Birkaç adım süren ekran işlerini (masaüstünde/Windows'ta bir ayar, uygulamada menülerden geçmek, form doldurmak,
-bir şey çizmek/kurmak, dosya kaydetmek) computer_task'a ver: ekranı görerek fare ve klavyeyle kendi yapar, arka
-planda sürer, bitince sonucu sana yazar. goal'e işi net yaz (ör. "masaüstüne geç, boş yere sağ tıkla, Görünüm >
-Masaüstü simgelerini göster'i aç"). Tek tıklık işler için reflex daha hızlı.
-Ekranda birden fazla adım gereken işi (bir uygulamada yazmak, mesaj göndermek, ayar değiştirmek) DOĞRUDAN
-computer_task'a ver; önce screenshot/ui_elements/reflex ile denemeye çalışma. computer aracıyla görmeden (koordinat
-tahmin ederek) tıklama.
+Birkaç adım süren ekran işlerini de (masaüstünde/Windows'ta bir ayar, uygulamada menülerden geçmek, sağ tık menüsü,
+form doldurmak, bir uygulamada yazıp kaydetmek, mesaj göndermek) ÖNCE reflex'e ver: o da çok adımlıdır ve adım başına
+~1 sn (ör. goal "masaüstüne geç, boş yere sağ tıkla, Görünüm > Masaüstü simgelerini göster'i aç").
+computer_task YAVAŞ yedektir (adım başına 5-15 sn, ekran görüntüsüne bakan büyük model): yalnızca reflex
+"needs_help" derse ya da ekranda okunabilir öğe/yazı olmayan arayüzlerde (oyun, çizim, Blender'ın görüntü alanı) kullan;
+arka planda sürer, bitince sonucu sana yazar. computer aracıyla görmeden (koordinat tahmin ederek) tıklama.
 Mikrofon oyun/motor sesini, videoyu ve kullanıcının Discord'da/odada başkalarıyla konuşmasını da duyar. Duyduğun cümle
 anlamsızsa, Türkçe değilse ya da sana söylenmemiş gibiyse HİÇ cevap verme, sessiz kal; bu normaldir. Sessiz kalırken
 "cevap vermeyeceğim", "---", "no speech detected" gibi hiçbir şey söyleme ya da yazma, İngilizce konuşma. "Anlayamadım,
@@ -84,6 +86,9 @@ Araçların vermediği sayıları ve durumları (uçaktaki silahlar, mesafe, yak
 uydurma ya da genel bilginden tahmin etme; bilmiyorsan "bu bilgiye ulaşamıyorum" de.
 Mesaj yazmak/göndermek gibi geri alınamayan işlerde hedef, kullanıcının söylediği uygulama ve sohbet olmalı;
 ne dediğini tam anlamadıysan önce sor. Bir işi yaptığını ancak araç sonucu "done" derse söyle.
+Çok adımlı işi (indir, kur, ayarla) sonuna kadar götür: her adımdan sonra araçla durumu kontrol et (sayfa ne
+diyor, dosya indi mi), bitmeden "yaptım/başlattım" deme; ara adımda en fazla kısa bir "devam ediyorum" de.
+Bilgisayar Windows: indirme ve kurulumda Windows sürümünü seç (macOS/Linux değil).
 Monitörler: {monitors}. Kullanıcı ekrandakinden söz edince sana öndeki pencerenin olduğu monitörün görüntüsü gelir;
 görüntü gelmediyse ve ekranı görmen gerekiyorsa computer action=screenshot ile bak. Başka monitörü ya da
 hepsini görmek için computer action=screenshot monitor=<numara> (0 = hepsi yan yana); computer_task'a da monitor
@@ -739,6 +744,17 @@ class LiveSession:
                  "pending": True}
         self.hushed = False
         self.log(f"live açıldı [{self.model}]")
+        state["hud"], state["hud_detail"] = "listen", ""
+
+        def hud() -> None:  # Adada dinliyor/konuşuyor/çalışıyor; HUD hatası konuşmayı bozmasın
+            try:
+                from alice.hud import views
+
+                views.voice_state(state["hud"], state["hud_detail"])
+            except Exception:  # noqa: BLE001
+                pass
+
+        hud()
         if getattr(self, "fillers_on", False):
             threading.Thread(target=lambda: self.fillers().warm(), daemon=True, name="alice-live-warm").start()
 
@@ -785,6 +801,7 @@ class LiveSession:
                                     state["play0"] = getattr(out, "played", 0)
                                 state["recv"] = state.get("recv", 0) + len(pcm)
                                 out.put(pcm)
+                                state["hud"], state["hud_detail"] = "speak", ""
                                 touch()
                         if (t := (sc.get("inputTranscription") or {}).get("text")):
                             if not state["framed"] and self.wants_frame(state["cur"] + t):
@@ -824,6 +841,8 @@ class LiveSession:
                             state["recv"] = 0
                             if sc.get("turnComplete"):
                                 state["cur"], state["pending"] = "", False
+                                state["turn_done_at"] = time.monotonic()
+                                state["hud"], state["hud_detail"] = "listen", ""
                     if msg.get("toolCall"):
                         for fc in msg["toolCall"].get("functionCalls", []):
                             calls.put(fc)
@@ -890,17 +909,28 @@ class LiveSession:
                 except queue.Empty:
                     fc = None
                 if fc is not None:
+                    state["hud"], state["hud_detail"] = "work", HUD_TOOLS.get(fc.get("name"), "")
+                    hud()
                     self._fill(state, out, fc)
                     self._run_call(ws, fc)
+                    state["tool_done_at"] = time.monotonic()  # model sonucu görüp devam edecek: iş sürüyor
                     touch()
                     continue
+                if state["hud"] == "speak" and not out.playing:
+                    state["hud"], state["hud_detail"] = "listen", ""
+                hud()
                 if out.playing or self._bg:
                     touch()
                 elif state["pending"] and time.monotonic() - state.get("asked", 0) < self.ANSWER_WAIT:
                     touch()  # kullanıcı konuştu, cevap bekleniyor: model düşünürken kapanma
+                working = state.get("tool_done_at", -1e9) >= state.get("turn_done_at", -1e9)
+                if working and time.monotonic() - state.get("tool_done_at", -1e9) < self.ANSWER_WAIT:
+                    touch()  # araç sonucu gitti, model sıradaki adımı düşünüyor: iş bitmeden kapanma
                 idle = self.idle
-                if self.single_turn and state.get("answered") and not state["pending"]:
-                    idle = min(idle, 1.0)  # seçici mod: cevap bitti, takip konuşması yok
+                if self.single_turn and state.get("answered") and not state["pending"] and not working:
+                    # seçici mod: cevap bitti, takip konuşması yok. Araç sonucundan sonra modelin turu bitmeden
+                    # kapanmaz: "kurulumu yap" ilk tıklamadan sonra yarıda kalıyordu (2026-11-02).
+                    idle = min(idle, 1.0)
                 if time.monotonic() - state["active"] > idle:
                     break
         finally:
@@ -920,6 +950,8 @@ class LiveSession:
                 task_state.pop("task_hooks", None)
             if getattr(out, "dead", None) is not None:
                 self.log(f"live ses çıkışı açılamadı: {out.dead}")
+            state["hud"] = None
+            hud()
             self.log("live kapandı")
 
     TOOL_TIMEOUT = 25.0  # sn: araç takılırsa modele hata dön, konuşma kilitlenmesin

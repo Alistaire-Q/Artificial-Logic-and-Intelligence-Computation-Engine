@@ -1,8 +1,12 @@
-"""HUD penceresi: tkinter ile saydam, çerçevesiz, her zaman üstte; Win32 ayarlarıyla tıklama geçer, odak almaz.
+"""HUD penceresi: her öğe kendi küçük, çerçevesiz, her zaman üstte penceresinde; tıklama geçer, odak almaz.
 
-Oyunun FPS'ine dokunmamak için pencere yalnızca çizilecek bir şey varken görünür; boşken gizlenir (ekran
-birleştiricisi tam ekran saydam bir katmanla uğraşmaz). Gösterme her zaman SW_SHOWNOACTIVATE ile: oyundayken
-öne gelip odak çalan pencere kullanıcıyı öldürmüştü, bu sınır kesindir.
+Görünüm alice/hud/style.py'de (kenarı yumuşatılmış, yarı saydam resimler). Resim pencereye UpdateLayeredWindow
+ile piksel başı saydamlıkla basılır: tkinter'ın "saydam renk" yöntemi yarı saydamlık, yumuşak gölge ve kenar
+yumuşatma vermiyordu, her şey keskin ve siyah çerçeveli görünüyordu. Ekranı kaplayan tek pencere yerine öğe başına
+küçük pencere: animasyonda sadece o küçük resim yenilenir, oyunun FPS'ine dokunmaz. Öğe yoksa hiç pencere yok.
+
+Gösterme her zaman SW_SHOWNOACTIVATE ile: oyundayken öne gelip odak çalan pencere kullanıcıyı öldürmüştü, bu sınır
+kesindir. tkinter sadece olay döngüsü ve pencere tutucu olarak kullanılır.
 """
 
 from __future__ import annotations
@@ -16,8 +20,8 @@ import threading
 import time
 from typing import Any, Callable
 
-from alice.hud import PORT
-from alice.hud.model import HudModel, Item, clock_of, parse
+from alice.hud import PORT, style
+from alice.hud.model import HudModel, parse
 
 IS_WIN = sys.platform == "win32"
 
@@ -32,12 +36,16 @@ WDA_EXCLUDEFROMCAPTURE = 0x11
 SW_HIDE, SW_SHOWNOACTIVATE = 0, 4
 HWND_TOPMOST = -1
 SWP_NOSIZE, SWP_NOMOVE, SWP_NOACTIVATE, SWP_SHOWWINDOW = 0x1, 0x2, 0x10, 0x40
+ULW_ALPHA = 0x2
 
-KEY = "#010101"  # saydam renk: kenar yumuşatması buna karışınca koyu bir çerçeve olur, göze batmaz
-COLORS = {"info": "#40c4ff", "warn": "#ffb000", "critical": "#ff3b30"}
-TICK_MS = 30            # komut kuyruğu bu sıklıkla boşaltılır (0,3 sn hedefinin çok altında)
+HOTKEYS = {"mode_hotkey": "<ctrl>+<alt>+k", "history_hotkey": "<ctrl>+<alt>+j"}  # yoğunluk modu, son bildirimler
+TICK_MS = 16            # animasyon karesi ve komut kuyruğu; sadece hareket eden öğe yeniden basılır
 TOPMOST_EVERY = 2.0     # kenarlıksız oyun öne geçerse en üstte olmayı yeniden iste (odak almadan)
 EXIT_BUSY = 3           # port başka bir HUD'da: çıkış kodu (denetleyici bunu çökme saymaz)
+ISLAND_KEY = "__ada__"  # Adanın penceresi
+POINTER_KEY = "__imlec__"  # ALICE'in imlecinin penceresi
+BACKDROP_EVERY = 0.12   # sn: buzlu camın arkası bu sıklıkla yenilenir (oyunda arka plan akarken cam da akar)
+CALM_EVERY = 1 / 15     # sn: yalnız nabız atarken Ada en sık bu kadar çizilir
 
 
 # ------------------------------------------------------------------------- ağ
@@ -135,7 +143,9 @@ class Win32:
         import ctypes
         from ctypes import wintypes
 
+        self.ctypes, self.wt = ctypes, wintypes
         self.user32 = u = ctypes.windll.user32
+        self.gdi32 = g = ctypes.windll.gdi32
         get = getattr(u, "GetWindowLongPtrW", u.GetWindowLongW)
         put = getattr(u, "SetWindowLongPtrW", u.SetWindowLongW)
         get.argtypes, get.restype = [wintypes.HWND, ctypes.c_int], ctypes.c_ssize_t
@@ -145,6 +155,31 @@ class Win32:
         u.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int,
                                    ctypes.c_int, wintypes.UINT]
         self._get, self._put = get, put
+
+        class BITMAPINFOHEADER(ctypes.Structure):
+            _fields_ = [("biSize", wintypes.DWORD), ("biWidth", wintypes.LONG), ("biHeight", wintypes.LONG),
+                        ("biPlanes", wintypes.WORD), ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
+                        ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", wintypes.LONG),
+                        ("biYPelsPerMeter", wintypes.LONG), ("biClrUsed", wintypes.DWORD),
+                        ("biClrImportant", wintypes.DWORD)]
+
+        class BLENDFUNCTION(ctypes.Structure):
+            _fields_ = [("op", ctypes.c_ubyte), ("flags", ctypes.c_ubyte), ("alpha", ctypes.c_ubyte),
+                        ("fmt", ctypes.c_ubyte)]
+
+        self._bmi, self._blend = BITMAPINFOHEADER, BLENDFUNCTION
+        g.CreateCompatibleDC.restype, g.CreateCompatibleDC.argtypes = wintypes.HDC, [wintypes.HDC]
+        g.CreateDIBSection.restype = wintypes.HBITMAP
+        g.CreateDIBSection.argtypes = [wintypes.HDC, ctypes.c_void_p, wintypes.UINT, ctypes.POINTER(ctypes.c_void_p),
+                                       wintypes.HANDLE, wintypes.DWORD]
+        g.SelectObject.restype, g.SelectObject.argtypes = wintypes.HGDIOBJ, [wintypes.HDC, wintypes.HGDIOBJ]
+        g.DeleteObject.argtypes = [wintypes.HGDIOBJ]
+        g.DeleteDC.argtypes = [wintypes.HDC]
+        u.GetDC.restype, u.GetDC.argtypes = wintypes.HDC, [wintypes.HWND]
+        u.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+        u.UpdateLayeredWindow.argtypes = [
+            wintypes.HWND, wintypes.HDC, ctypes.POINTER(wintypes.POINT), ctypes.POINTER(wintypes.SIZE), wintypes.HDC,
+            ctypes.POINTER(wintypes.POINT), wintypes.COLORREF, ctypes.POINTER(BLENDFUNCTION), wintypes.DWORD]
 
     def style(self, hwnd: int) -> None:
         self._put(hwnd, GWL_EXSTYLE, self._get(hwnd, GWL_EXSTYLE) | HUD_EXSTYLE)
@@ -161,8 +196,38 @@ class Win32:
     def topmost(self, hwnd: int) -> None:
         self.user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
 
+    def cursor_pos(self) -> tuple[int, int] | None:
+        """Gerçek imlecin yeri (fiziksel piksel): ALICE'in imleci ilk kez buradan kalkar."""
+        pt = self.wt.POINT()
+        if not self.user32.GetCursorPos(self.ctypes.byref(pt)):
+            return None
+        return pt.x, pt.y
 
-# ------------------------------------------------------------------------ çizim
+    def update_layered(self, hwnd: int, img, x: int, y: int) -> bool:
+        """RGBA resmi pencereye piksel başı saydamlıkla bas ve pencereyi (x, y)'ye taşı."""
+        ct, wt, g, u = self.ctypes, self.wt, self.gdi32, self.user32
+        w, h = img.size
+        data = img.convert("RGBa").tobytes("raw", "BGRa")  # önceden çarpılmış alfa: ULW bunu ister
+        bmi = self._bmi(ct.sizeof(self._bmi), w, -h, 1, 32, 0, 0, 0, 0, 0, 0)
+        screen = u.GetDC(None)
+        mem = g.CreateCompatibleDC(screen)
+        bits = ct.c_void_p()
+        bmp = g.CreateDIBSection(mem, ct.byref(bmi), 0, ct.byref(bits), None, 0)
+        ok = False
+        if bmp and bits.value:
+            ct.memmove(bits, data, len(data))
+            old = g.SelectObject(mem, bmp)
+            ok = bool(u.UpdateLayeredWindow(hwnd, screen, ct.byref(wt.POINT(x, y)), ct.byref(wt.SIZE(w, h)), mem,
+                                            ct.byref(wt.POINT(0, 0)), 0, ct.byref(self._blend(0, 0, 255, 1)),
+                                            ULW_ALPHA))
+            g.SelectObject(mem, old)
+            g.DeleteObject(bmp)
+        g.DeleteDC(mem)
+        u.ReleaseDC(None, screen)
+        return ok
+
+
+# ------------------------------------------------------------------------ yön
 def direction(clock: int) -> tuple[float, float]:
     """Saat yönünün ekrandaki birim vektörü (12 yukarı, 3 sağ)."""
     a = math.radians(clock * 30)
@@ -178,138 +243,193 @@ def edge_point(clock: int, w: int, h: int) -> tuple[float, float, bool]:
     return w / 2 + dx * t, h / 2 + dy * t, tx <= ty
 
 
-class Painter:
-    """Model öğelerini bir tkinter Canvas'a çizer."""
-
-    def __init__(self, canvas, w: int, h: int, origin: tuple[int, int] = (0, 0)):
-        self.c, self.w, self.h, self.origin = canvas, w, h, origin
-        self.font = "Segoe UI"
-
-    def text(self, x: float, y: float, s: str, color: str, size: int = 14, anchor: str = "center",
-             bold: bool = True) -> None:
-        font = (self.font, size, "bold" if bold else "normal")
-        for ox, oy in ((-1, -1), (1, -1), (-1, 1), (1, 1), (0, 2)):  # siyah gölge: her arka planda okunsun
-            self.c.create_text(x + ox, y + oy, text=s, fill="#000000", font=font, anchor=anchor)
-        self.c.create_text(x, y, text=s, fill=color, font=font, anchor=anchor)
-
-    def draw(self, items: list[Item], now: float) -> None:
-        self.c.delete("all")
-        cards = progress = 0
-        for it in items:
-            color = str(it.data.get("color") or COLORS[it.data["severity"]])
-            pulse = 0.5 + 0.5 * math.sin((now - it.born) * 8)
-            if it.kind == "arrow":
-                self.arrow(clock_of(it.data["clock"]) or 12, str(it.data.get("text") or ""), color)
-            elif it.kind == "edge":
-                self.edge(clock_of(it.data["clock"]) or 12, color, pulse)
-            elif it.kind == "label":
-                x = it.data.get("x")
-                y = it.data.get("y")
-                lx = self.w / 2 if x is None else float(x) - self.origin[0]
-                ly = self.h * 0.12 if y is None else float(y) - self.origin[1]
-                self.text(lx, ly, str(it.data["text"]), color, int(it.data.get("size") or 18))
-            elif it.kind == "card":
-                self.card(cards, str(it.data.get("title") or ""), str(it.data.get("text") or ""), color)
-                cards += 1
-            elif it.kind == "box":
-                d = it.data
-                x, y = float(d["x"]) - self.origin[0], float(d["y"]) - self.origin[1]
-                self.c.create_rectangle(x, y, x + float(d["w"]), y + float(d["h"]), outline="#000000", width=5)
-                self.c.create_rectangle(x, y, x + float(d["w"]), y + float(d["h"]), outline=color, width=3)
-                if d.get("text"):
-                    self.text(x, y - 6, str(d["text"]), color, 12, anchor="sw")
-            elif it.kind == "progress":
-                self.progress(progress, float(it.data["value"]), str(it.data.get("text") or ""), color)
-                progress += 1
-
-    def arrow(self, clock: int, label: str, color: str) -> None:
-        dx, dy = direction(clock)
-        px, py = -dy, dx
-        cx, cy = self.w / 2, self.h / 2
-        r = min(self.w, self.h) * 0.22
-        length, half = 46, 24
-        bx, by = cx + dx * r, cy + dy * r
-        tx, ty = cx + dx * (r + length), cy + dy * (r + length)
-        pts = [tx, ty, bx + px * half, by + py * half, bx + dx * 12, by + dy * 12, bx - px * half, by - py * half]
-        self.c.create_polygon(pts, fill=color, outline="#000000", width=3)
-        if label:
-            lx, ly = cx + dx * (r + length + 34), cy + dy * (r + length + 34)
-            self.text(lx, ly, label, color, 15)
-
-    def edge(self, clock: int, color: str, pulse: float) -> None:
-        x, y, side = edge_point(clock, self.w, self.h)
-        half = min(self.w, self.h) * 0.14
-        for width, shade in ((int(26 + 10 * pulse), "#000000"), (int(14 + 8 * pulse), color), (4, "#ffffff")):
-            if side:
-                x0 = 0 if x < self.w / 2 else self.w
-                self.c.create_line(x0, max(0, y - half), x0, min(self.h, y + half), fill=shade, width=width)
-            else:
-                y0 = 0 if y < self.h / 2 else self.h
-                self.c.create_line(max(0, x - half), y0, min(self.w, x + half), y0, fill=shade, width=width)
-
-    def card(self, slot: int, title: str, body: str, color: str) -> None:
-        w, pad = 360, 14
-        x1, y0 = self.w - 24, 24 + slot * 104
-        x0, y1 = x1 - w, y0 + 92
-        self.c.create_rectangle(x0, y0, x1, y1, fill="#12161c", outline=color, width=2)
-        self.c.create_rectangle(x0, y0, x0 + 5, y1, fill=color, outline=color)
-        self.c.create_text(x0 + pad + 4, y0 + pad, text=title, fill=color, font=(self.font, 13, "bold"), anchor="nw")
-        self.c.create_text(x0 + pad + 4, y0 + pad + 26, text=body, fill="#e8eef4", font=(self.font, 11),
-                           anchor="nw", width=w - 2 * pad - 4)
-
-    def progress(self, slot: int, value: float, label: str, color: str) -> None:
-        value = min(1.0, max(0.0, value))
-        w, h = 380, 12
-        x0, y0 = (self.w - w) / 2, self.h - 90 - slot * 44
-        if label:
-            self.text(x0, y0 - 6, label, "#e8eef4", 11, anchor="sw", bold=False)
-        self.c.create_rectangle(x0, y0, x0 + w, y0 + h, fill="#12161c", outline="#000000", width=2)
-        if value > 0:
-            self.c.create_rectangle(x0, y0, x0 + w * value, y0 + h, fill=color, outline="")
-
-
 # ---------------------------------------------------------------------- pencere
+class Slot:
+    """Ekrandaki bir öğenin penceresi ve animasyonu."""
+
+    def __init__(self, top: Any, hwnd: int, anim: style.Anim):
+        self.top, self.hwnd, self.anim = top, hwnd, anim
+        self.sprite: style.Sprite | None = None
+        self.base: tuple[Any, Any] | None = None  # (anahtar, resim): değişmeyen öğe yeniden çizilmez
+        self.visible = False
+        self.last: tuple | None = None
+
+
+def _tk_slot(root: Any) -> tuple[Any, int]:
+    """Gizli bir tkinter penceresi aç: tutucusu (hwnd) katmanlı pencere olarak kullanılır."""
+    import tkinter as tk
+
+    top = tk.Toplevel(root)
+    top.withdraw()
+    top.overrideredirect(True)
+    top.geometry("1x1+-32000+-32000")
+    top.update_idletasks()
+    return top, (int(top.wm_frame(), 16) if IS_WIN else 0)
+
+
 class HudWindow:
     def __init__(self, model: HudModel, inbox: "queue.Queue[dict[str, Any]]", monitor: int = 0,
-                 opacity: float = 0.92, win32: Win32 | None = None, alive: Callable[[], bool] = lambda: True):
-        import tkinter as tk
-
+                 opacity: float = 0.95, win32: Win32 | None = None, alive: Callable[[], bool] = lambda: True,
+                 root: Any = None, rect: tuple[int, int, int, int] | None = None,
+                 make_slot: Callable[[Any], tuple[Any, int]] = _tk_slot):
         self.model, self.inbox, self.alive = model, inbox, alive
-        rect = monitor_rect(monitor)
-        self.root = root = tk.Tk()
-        root.withdraw()  # stil ayarlanmadan ekrana çıkmasın
+        self.opacity = min(1.0, max(0.2, opacity))
+        if root is None:
+            import tkinter as tk
+
+            root = tk.Tk()
+            root.withdraw()  # olay döngüsü için; kendisi hiç görünmez
+        self.root = root
         if rect is None:
-            rect = (0, 0, root.winfo_screenwidth(), root.winfo_screenheight())
-        x, y, w, h = rect
-        root.overrideredirect(True)
-        root.geometry(f"{w}x{h}+{x}+{y}")
-        root.configure(bg=KEY)
-        root.attributes("-transparentcolor", KEY, "-topmost", True, "-alpha", min(1.0, max(0.2, opacity)))
-        self.canvas = tk.Canvas(root, width=w, height=h, bg=KEY, highlightthickness=0, bd=0)
-        self.canvas.pack(fill="both", expand=True)
-        self.painter = Painter(self.canvas, w, h, (x, y))
+            rect = monitor_rect(monitor) or (0, 0, root.winfo_screenwidth(), root.winfo_screenheight())
+        self.ox, self.oy, self.w, self.h = rect
         self.win32 = win32 if win32 is not None else (Win32() if IS_WIN else None)
-        root.update_idletasks()
-        self.hwnd = int(root.wm_frame(), 16) if IS_WIN else 0
-        self.captured_hidden = False
-        if self.win32 is not None and self.hwnd:
-            self.win32.style(self.hwnd)
-            self.captured_hidden = self.win32.exclude_from_capture(self.hwnd)
+        self.make_slot = make_slot
+        self.island = style.Island(self.w, self.h)
+        self.pointer = style.Pointer(self.h)
+        if isinstance(self.win32, Win32):  # gerçek ekranda: camın arkası gerçekten bulanıklaşsın
+            self.island.backdrop = self._backdrop_source()
+        self._island_painted = 0.0
+        self.slots: dict[str, Slot] = {}
         self.shown = False
-        self._drawn = -1
         self._topmost_at = 0.0
         self._quit = False
 
-    def _set_shown(self, visible: bool) -> None:
-        if visible == self.shown:
+    def _new_slot(self, now: float) -> Slot:
+        top, hwnd = self.make_slot(self.root)
+        if self.win32 is not None and hwnd:
+            self.win32.style(hwnd)
+            self.win32.exclude_from_capture(hwnd)
+        return Slot(top, hwnd, style.Anim(now))
+
+    def _drop(self, key: str) -> None:
+        slot = self.slots.pop(key)
+        if self.win32 is not None and slot.hwnd and slot.visible:
+            self.win32.show(slot.hwnd, False)
+        try:
+            slot.top.destroy()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _paint(self, slot: Slot, now: float) -> bool:
+        """Bu karede pencereyi güncelle; öğe hâlâ hareket ediyorsa True."""
+        sp = slot.sprite
+        alpha, grow, pulse, moving = slot.anim.frame(now, sp)
+        pulse = round(pulse * 8) / 8  # nefes 9 basamak: önbellek tutsun
+        key = (sp.item.seq, sp.w, sp.h, round(sp.angle), pulse)
+        if slot.base is None or slot.base[0] != key:
+            slot.base = (key, style.render(sp, self.h, pulse=pulse))
+        a = alpha * self.opacity
+        frame = (round(a, 2), round(grow, 3), key, sp.x, sp.y)
+        if frame == slot.last:
+            return moving
+        slot.last = frame
+        img = style.adjust(slot.base[1], a, grow)
+        if self.win32 is not None and slot.hwnd:
+            self.win32.update_layered(slot.hwnd, img, self.ox + sp.x, self.oy + sp.y)
+            if not slot.visible:
+                self.win32.show(slot.hwnd, True)
+        slot.visible = True
+        return moving
+
+    def _backdrop_source(self) -> Callable[[], Any]:
+        """Adanın altındaki ekran parçası, bulanık. HUD pencereleri ekran görüntüsünden hariç olduğu için cam
+        kendini görmez. Özel tam ekranda yakalama başarısız olursa None: cam düz açık gri olur."""
+        state: dict[str, Any] = {"at": -1e9, "img": None, "sct": None, "fail": 0}
+
+        def grab() -> Any:
+            now = time.monotonic()
+            if state["img"] is not None and now - state["at"] < BACKDROP_EVERY:
+                return state["img"]
+            if state["fail"] >= 5:
+                return None
+            try:
+                import mss
+                from PIL import Image
+
+                if state["sct"] is None:
+                    state["sct"] = mss.mss()
+                isl = self.island
+                shot = state["sct"].grab({"left": self.ox + isl.x, "top": self.oy + isl.y,
+                                          "width": isl.cw, "height": isl.ch})
+                state["img"] = style.blur_backdrop(Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX"),
+                                                   isl.k)
+                state["at"], state["fail"] = now, 0
+            except Exception:  # noqa: BLE001
+                state["fail"] += 1
+                state["img"] = None
+            return state["img"]
+
+        return grab
+
+    def _paint_island(self, now: float) -> None:
+        """Ada: tek pencere, içerik ve boyut style.Island'da. Hareket yokken yeniden basılmaz."""
+        visible = self.island.update(style.entries(self.model.visible()), now)
+        slot = self.slots.get(ISLAND_KEY)
+        if not visible:
+            if slot is not None:
+                self._drop(ISLAND_KEY)
             return
-        self.shown = visible
-        if self.win32 is not None and self.hwnd:
-            self.win32.show(self.hwnd, visible)
-        elif visible:  # Windows dışı: yalnızca deneme için
-            self.root.deiconify()
-        else:
-            self.root.withdraw()
+        if slot is None:
+            slot = self.slots[ISLAND_KEY] = self._new_slot(now)
+        sig = (self.island.current and style._sig(self.island.current),
+               tuple(style._sig(e) for e in self.island.minimals))
+        if self.island.calm and now - self._island_painted < CALM_EVERY:
+            return  # yalnız nabız atıyor: saniyede ~15 kare yeter (her karede çizmek %36 işlemci yiyordu)
+        img, moving = self.island.frame(now)
+        glass_due = self.island.backdrop is not None and now - self._island_painted >= BACKDROP_EVERY
+        if not moving and slot.last == sig and not glass_due:
+            return
+        slot.last = sig if not moving else None
+        self._island_painted = now
+        if self.opacity < 0.999:
+            img = style.adjust(img, self.opacity)
+        if self.win32 is not None and slot.hwnd:
+            self.win32.update_layered(slot.hwnd, img, self.ox + self.island.x, self.oy + self.island.y)
+            if not slot.visible:
+                self.win32.show(slot.hwnd, True)
+        slot.visible = True
+
+    def _paint_pointer(self, items: list, now: float) -> None:
+        """ALICE'in imleci: en yeni imleç komutuna kayar; komut kalmayınca söner."""
+        cur = max((i for i in items if i.kind == "cursor"), key=lambda i: i.seq, default=None)
+        p = self.pointer
+        if cur is not None and cur.seq != p.seq:
+            p.seq = cur.seq
+            origin = None
+            pos = getattr(self.win32, "cursor_pos", None)
+            if pos is not None:
+                try:
+                    real = pos()
+                    origin = None if real is None else (real[0] - self.ox, real[1] - self.oy)
+                except Exception:  # noqa: BLE001
+                    origin = None
+            p.go(float(cur.data["x"]), float(cur.data["y"]), str(cur.data.get("action") or ""), now, origin)
+        elif cur is None:
+            p.leave(now)
+        slot = self.slots.get(POINTER_KEY)
+        if not p.active:
+            if slot is not None:
+                self._drop(POINTER_KEY)
+            return
+        img, x, y, moving = p.frame(now)
+        if img is None:
+            if slot is not None:
+                self._drop(POINTER_KEY)
+            return
+        if slot is None:
+            slot = self.slots[POINTER_KEY] = self._new_slot(now)
+        sig = (round(x), round(y), moving)
+        if not moving and slot.last == sig:
+            return
+        slot.last = sig
+        if self.opacity < 0.999:
+            img = style.adjust(img, self.opacity)
+        if self.win32 is not None and slot.hwnd:
+            self.win32.update_layered(slot.hwnd, img, self.ox + round(x), self.oy + round(y))
+            if not slot.visible:
+                self.win32.show(slot.hwnd, True)
+        slot.visible = True
 
     def tick(self) -> None:
         now = time.monotonic()
@@ -319,18 +439,32 @@ class HudWindow:
             except queue.Empty:
                 break
         self.model.expire(now)
-        items = self.model.visible()
-        animated = any(i.kind == "edge" for i in items)
-        if items and (self.model.version != self._drawn or animated):
-            self.painter.draw(items, now)
-            self._drawn = self.model.version
-        self._set_shown(bool(items))
-        if not items and self._drawn != self.model.version:
-            self.canvas.delete("all")
-            self._drawn = self.model.version
+        sprites = {sp.key: sp for sp in style.layout(self.model.visible(), self.w, self.h)}
+        for key, sp in sprites.items():
+            slot = self.slots.get(key)
+            if slot is not None and slot.anim.gone_at is not None:  # kaybolurken geri geldi: baştan
+                self._drop(key)
+                slot = None
+            if slot is None:
+                slot = self.slots[key] = self._new_slot(now)
+            slot.sprite = sp
+        for key, slot in self.slots.items():
+            if key not in (ISLAND_KEY, POINTER_KEY) and key not in sprites and slot.anim.gone_at is None:
+                slot.anim.gone_at = now  # kaybolurken solsun
+        for key, slot in list(self.slots.items()):
+            if key in (ISLAND_KEY, POINTER_KEY):
+                continue
+            moving = self._paint(slot, now)
+            if slot.anim.gone_at is not None and not moving:
+                self._drop(key)
+        self._paint_island(now)
+        self._paint_pointer(self.model.visible(), now)
+        self.shown = bool(self.slots)
         if self.shown and self.win32 is not None and now - self._topmost_at > TOPMOST_EVERY:
             self._topmost_at = now
-            self.win32.topmost(self.hwnd)
+            for slot in self.slots.values():
+                if slot.hwnd and slot.visible:
+                    self.win32.topmost(slot.hwnd)
 
     def _loop(self) -> None:
         if self._quit or not self.alive():
@@ -352,12 +486,13 @@ class HudWindow:
 
 # ---------------------------------------------------------------------- komut
 DEMO = [
-    {"kind": "arrow", "clock": 4, "text": "SAM · 12 km", "severity": "warn", "id": "demo-sam"},
-    {"kind": "edge", "clock": 7, "severity": "critical", "id": "demo-six"},
-    {"kind": "arrow", "clock": 7, "text": "ARKANDA · 1,2 km", "severity": "critical", "id": "demo-six-arrow"},
-    {"kind": "card", "title": "ALICE HUD", "text": "Deneme: tıklamalar alttaki pencereye geçer, odak kaymaz. "
-     "Gizle/göster: kısayol."},
-    {"kind": "progress", "value": 0.62, "text": "Yakıt %62"},
+    {"kind": "arrow", "clock": 2, "text": "SAM · 12 km", "severity": "warn", "id": "demo-sam"},
+    {"kind": "edge", "clock": 7, "severity": "critical", "id": "demo-six.edge"},
+    {"kind": "arrow", "clock": 7, "text": "Arkanda · 1,2 km", "severity": "critical", "id": "demo-six"},
+    {"kind": "label", "text": "Yakıt ~6 dk", "severity": "warn", "id": "demo-fuel"},
+    {"kind": "card", "title": "ALICE", "text": "Deneme: tıklamalar alttaki pencereye geçer, odak kaymaz. "
+     "Gizle/göster: Ctrl+Alt+H."},
+    {"kind": "progress", "value": 0.62, "text": "GPU 84°C", "severity": "info", "id": "demo-gpu"},
 ]
 
 
@@ -383,12 +518,17 @@ def hud_cmd(argv: list[str]) -> int:
     from alice.config import load_config
 
     ap = TrArgumentParser(prog="alice hud", description="Ekran üstü HUD: tıklama geçen, odak almayan saydam katman.")
-    ap.add_argument("--demo", action="store_true", help="ok, kenar parlaması, kart ve ilerleme çubuğu çiz (30 sn)")
+    ap.add_argument("--demo", action="store_true", help="ok, kenar ışığı, kart ve gösterge çiz (30 sn)")
+    ap.add_argument("--preview", metavar="DOSYA", help="denemeyi pencere açmadan PNG olarak kaydet")
     ap.add_argument("--port", type=int, default=None, help=f"komut portu (varsayılan [hud] port ya da {PORT})")
     ap.add_argument("--parent", type=int, default=0, help=argparse.SUPPRESS)  # çekirdeğin pid'i
     a = ap.parse_args(argv)
     hud = load_config().data.get("hud", {}) or {}
     port = int(a.port or hud.get("port") or PORT)
+    if a.preview:
+        style.preview(DEMO).save(a.preview)
+        print(f"Kaydedildi: {a.preview}")
+        return 0
     if a.demo:
         return _demo(port, hud)
     return run(port, hud, alive=_parent_alive(a.parent))
@@ -405,15 +545,20 @@ def run(port: int, hud: dict[str, Any], alive: Callable[[], bool] = lambda: True
         inbox.put(m)
     rx = Receiver(sock, inbox).start()
     end = time.monotonic() + seconds if seconds else 0.0
-    win = HudWindow(HudModel(), inbox, monitor=int(hud.get("monitor", 0) or 0),
-                    opacity=float(hud.get("opacity", 0.92) or 0.92),
+    win = HudWindow(HudModel(mode=str(hud.get("mode", "auto") or "auto")), inbox, monitor=int(hud.get("monitor", 0) or 0),
+                    opacity=float(hud.get("opacity", 0.95) or 0.95),
                     alive=lambda: alive() and (not end or time.monotonic() < end))
     keys = None
     combo = str(hud.get("hotkey", "<ctrl>+<alt>+h") or "")
     if IS_WIN and combo:
         from alice.hotkeys import WinHotkeys
 
-        keys = WinHotkeys({combo: lambda: inbox.put({"kind": "toggle"})})
+        binds = {combo: lambda: inbox.put({"kind": "toggle"})}
+        for key, kind in (("mode_hotkey", "mode"), ("history_hotkey", "history")):
+            extra = str(hud.get(key, HOTKEYS[key]) or "")
+            if extra and extra not in binds:
+                binds[extra] = lambda kind=kind: inbox.put({"kind": kind})
+        keys = WinHotkeys(binds)
         keys.start()
     try:
         win.run()

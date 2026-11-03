@@ -125,3 +125,35 @@ def test_core_runs_night_step(monkeypatch):
     core.cfg.data = {"night": {"enabled": False}}
     service.Core._night(core, None)
     assert calls == ["run", "tell"]
+
+
+def test_single_thread_death_is_reported():
+    """Canlı kayıt: ses iş parçacığı bir kez çöktü, ALICE saatlerce sağır kaldı; "en az 2 kez" kuralı kaçırıyordu."""
+    from alice import night
+
+    log = ("Exception in thread alice-voice:\nTraceback (most recent call last):\n  File \"x.py\", line 1, in run\n"
+           "    self._live_q.put(f)\n    ^^^^^^^^\nAttributeError: 'NoneType' object has no attribute 'put'\n")
+    found = night.thread_deaths(log)
+    assert len(found) == 1 and "alice-voice" in found[0].title and "AttributeError" in found[0].title
+
+
+def test_struggles_find_loops_repeated_keys_interrupts_and_frustration(tmp_path):
+    import json
+
+    from alice import night
+
+    call = {"id": "c", "type": "function", "function": {"name": "reflex", "arguments": "{\"goal\": \"kur\"}"}}
+    msgs = [{"role": "user", "content": "sonorayı kur"},
+            *[{"role": "assistant", "content": "", "tool_calls": [call]} for _ in range(3)],
+            {"role": "tool", "content": "adımlar: 1. pressed enter (ekran değişti) 2. pressed enter 3. pressed enter "
+                                        "4. pressed enter"},
+            {"role": "tool", "content": "durduruldu (kullanıcı kesti)"},
+            {"role": "user", "content": "yine saçmaladın ya"},
+            {"role": "user", "content": "napayım boş boş takılmaca aq"}]  # gündelik konuşma: sayılmaz
+    (tmp_path / "s.json").write_text(json.dumps({"messages": msgs}), encoding="utf-8")
+    titles = [f.title for f in night.struggles(tmp_path, 0)]
+    assert "Aynı adımı tekrarladı: reflex" in titles
+    assert "Ekran işinde aynı adım 4 kez: pressed enter" in titles
+    assert "Kullanıcı işi yarıda kesti" in titles
+    assert any(t.startswith("Kullanıcı memnun kalmadı: \"yine saçmaladın") for t in titles)
+    assert not any("takılmaca" in t for t in titles)

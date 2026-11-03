@@ -31,6 +31,33 @@ FT = 0.3048
 NM = 1852.0
 
 
+# Saatin Türkçe bulunma eki: 1'deki, 2'deki, 3'teki, 4'teki, 5'teki, 6'daki, 7'deki, 8'deki, 9'daki, 10'daki, 11'deki,
+# 12'deki (sayının okunuşundaki son ünlü ve sert ünsüze göre). "Saat 3'deki" yanlıştı.
+_CLOCK_EK = {1: "'deki", 2: "'deki", 3: "'teki", 4: "'teki", 5: "'teki", 6: "'daki", 7: "'deki", 8: "'deki",
+             9: "'daki", 10: "'daki", 11: "'deki", 12: "'deki"}
+
+
+_CLOCK_DEN = {1: "'den", 2: "'den", 3: "'ten", 4: "'ten", 5: "'ten", 6: "'dan", 7: "'den", 8: "'den", 9: "'dan",
+              10: "'dan", 11: "'den", 12: "'den"}
+
+
+def clock_from(clock: object) -> str:
+    """"Saat 3'ten kilit" (ayrılma eki; "3'den" yanlıştı)."""
+    try:
+        c = int(clock)
+    except (TypeError, ValueError):
+        return f"{clock}'den"
+    return f"{c}{_CLOCK_DEN.get(c, chr(39) + 'den')}"
+
+
+def clock_loc(clock: object) -> str:
+    try:
+        c = int(clock)
+    except (TypeError, ValueError):
+        return f"{clock}'deki"
+    return f"{c}{_CLOCK_EK.get(c, chr(39) + 'deki')}"
+
+
 @dataclass
 class FlightState:
     t: float                         # simülasyon zamanı (sn)
@@ -503,14 +530,17 @@ class FlightCompanion:
                     elif key[0] == "l":
                         self._follow(t, clock, f"KİLİT · {name}", "warn", "lock")
                     continue
-                if key[0] == "m" and c.get("vision"):  # ekrandan görüldü: türü bilinmiyor
-                    self.say(f"Füze! Saat {clock}. Chaff at, dön!", "critical", "urgent")
+                if key[0] == "m" and c.get("vision"):  # ekrandan görüldü: türü (ve bazen yönü) bilinmiyor
+                    self.say(f"Füze! Saat {clock}. Chaff at, dön!" if clock else "Füze atıldı! Chaff at, dön!",
+                             "critical", "urgent")
                     self._point(t, clock, "FÜZE", "critical", "missile", edge=True)
                 elif key[0] == "m":
                     self.say(f"Füze! Saat {clock}, {name}. Chaff at, dön!", "critical", "urgent")
                     self._point(t, clock, f"FÜZE · {name}", "critical", "missile", edge=True)
                 elif key[0] == "l":
-                    self.say(f"Saat {clock}'den kilit: {name}.", "warn", self._urgent())
+                    self.say(f"Saat {clock_from(clock)} kilit: {name}." if clock and name != "radar" else
+                             (f"Saat {clock_from(clock)} kilitlendin." if clock else "Kilitlendin!"),
+                             "warn", self._urgent())
                     self._point(t, clock, f"KİLİT · {name}", "warn", "lock")
                 elif name != "?" and t - self.threat_said.get(name, -1e9) > 120:
                     self.threat_said[name] = t
@@ -558,7 +588,7 @@ class FlightCompanion:
             self._follow(s.t, c["clock"], f"BURNU SANA · {self._km_short(c['dist_m'])}", "warn", "nose")
             return False
         c = hot[0]
-        self.say(f"Saat {c['clock']}'deki düşman burnunu sana çevirdi, {self._km(c['dist_m'])}. Füze gelebilir!",
+        self.say(f"Saat {clock_loc(c['clock'])} düşman burnunu sana çevirdi, {self._km(c['dist_m'])}. Füze gelebilir!",
                  "warn", self._urgent())
         self._point(s.t, c["clock"], f"BURNU SANA · {self._km_short(c['dist_m'])}", "warn", "nose")
         return True

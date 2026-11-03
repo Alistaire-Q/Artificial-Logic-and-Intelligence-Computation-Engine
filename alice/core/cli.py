@@ -31,6 +31,10 @@ def core_cmd(argv: list[str]) -> int:
 
     sub = argv[0] if argv else "status"
     if sub == "run":
+        from alice import runtime
+
+        if "--once" not in argv and runtime.redirect_core(argv):
+            return 0  # başka bir Python'dan başlatıldı (ör. .venv açılış kısayolu): kayıtlı Python'la yeniden başladı
         cfg = load_config()
         if not service.acquire_lock():
             console.print("[yellow]çekirdek zaten çalışıyor[/]")
@@ -56,7 +60,18 @@ def core_cmd(argv: list[str]) -> int:
         core.greeter.voice = voice  # karşılamadan sonra "Hey Alice" demeden cevap verilebilsin
         if cfg.data.get("voice", {}).get("enabled") and "--once" not in argv:
             core.voice = "listening" if voice is not None else "no-mic"
+        if "--once" not in argv:
+            _start_browser_ext(cfg)
+            from alice import deps
+
+            # Hangi Python'dan başlatılırsa başlatılsın (oturum açılışı .venv, elle sistem Python'u) eksik paket kalmasın
+            deps.heal_in_background(lambda s: print(f"[paketler] {s}", flush=True))
         hud = _start_hud(cfg, core) if (cfg.data.get("hud", {}) or {}).get("enabled") and "--once" not in argv else None
+        if hud is not None:
+            from alice.extras import nowplaying
+            from alice.hud import views as hud_views
+
+            nowplaying.Watcher(hud_views.now_playing).start()  # şarkı değişince Adada kısa süre
         sims = _start_sims(cfg, core, show=_hud_show(hud)) if "--once" not in argv else None
         tl = _start_timeline(cfg, core) if (cfg.data.get("timeline", {}) or {}).get("enabled") and             "--once" not in argv else None
         host = _start_app(cfg, core) if (cfg.data.get("app", {}) or {}).get("in_core", True) and \
@@ -183,6 +198,20 @@ def _start_sims(cfg, core, show=None):
 
     return SimHub(cfg.data.get("sims", {}), core.store, core.notifier, processes=lambda: core.pc.processes,
                   show=show).start()
+
+
+def _start_browser_ext(cfg) -> None:
+    """ALICE tarayıcı eklentisinin bağlanacağı yerel sunucu. Eklenti bağlıyken tarayıcı aracı uzaktan hata ayıklamayı
+    hiç kullanmaz (Opera her açılışta izin sormaz). websockets yoksa ya da port doluysa sessizce eski yol."""
+    port = int(cfg.agent.get("browser_ext_port", 9340) or 0)
+    if not port:
+        return
+    try:
+        from alice.tools import browser_ext
+
+        browser_ext.start_hub(port)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _start_hud(cfg, core):

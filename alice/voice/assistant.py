@@ -823,7 +823,15 @@ class VoiceAssistant:
             if opened is not None:
                 cm, mic = opened
                 try:
-                    self._listen(mic, ptt, wake)
+                    while True:  # beklenmedik bir hata dinlemeyi kalıcı öldürmesin: kaydet, toparlan, sürdür
+                        try:
+                            self._listen(mic, ptt, wake)
+                            break
+                        except Exception as e:  # noqa: BLE001
+                            if self.stop_event.is_set():
+                                break
+                            voice_log(f"dinleme döngüsü hata verdi, yeniden başlıyor: {e!r}")
+                            time.sleep(1.0)
                 finally:
                     cm.__exit__(None, None, None)
         finally:
@@ -896,9 +904,12 @@ class VoiceAssistant:
                         voice_log(f"mikrofon yeniden açıldı: {getattr(mic, 'name', '')}")
                     except Exception as e:  # noqa: BLE001
                         voice_log(f"mikrofon yeniden açılamadı: {e}")
-                if self._live_q is not None:  # canlı konuşmada mikrofon (gürültü süzülerek) Live'a
+                # Bir kez oku: Live kapanırken başka iş parçacığı None yapabiliyor; kontrol ile put arasında olunca
+                # dinleme döngüsü çöküyor ve ALICE yeniden başlatılana kadar hiç duymuyordu (2026-11-02).
+                live_q = self._live_q
+                if live_q is not None:  # canlı konuşmada mikrofon (gürültü süzülerek) Live'a
                     for f in (self.live_gate.feed(frame) if self.live_gate is not None else [frame]):
-                        self._live_q.put(f)
+                        live_q.put(f)
                     continue
                 if wake is not None and wake.detect(frame):
                     self._interrupt()

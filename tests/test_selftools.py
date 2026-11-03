@@ -195,3 +195,20 @@ def test_real_sandbox_runs_test_and_blocks_writes_outside(tmp_path):
     ok, out = selftools.run_tests("steam_recent", selftools.file_text("steam_recent", GOOD, NO_NET, "x"), escape, ctx)
     assert ok, out
     assert not target.exists()
+
+
+def test_future_import_stays_first_and_double_backslash_paths_match():
+    """Canlı kayıt (Steam aracı): başlık "from __future__"ı ikinci sıraya itip SyntaxError verdiriyordu; kodda çift
+    ters eğik çizgiyle yazılan klasör bildirgedekiyle eşleşmiyordu."""
+    import ast
+
+    from alice import selftools
+
+    src = selftools.file_text("steam_x", "from __future__ import annotations\nX: int = 1\n", {"folders": []}, "n")
+    ast.parse(src)  # SyntaxError olmamalı
+    compile(src, "steam_x.py", "exec")
+    assert src.index("from __future__") < src.index("MANIFEST")
+    folder = "C:" + "\\" + "Program Files (x86)" + "\\" + "Steam"
+    doubled = folder.replace("\\", "\\\\") + "\\steamapps"
+    assert selftools._under(doubled, [folder]) and selftools._under(folder.lower() + "/x", [folder])
+    assert not selftools._under("C:/Program Files (x86)/SteamX", [folder])

@@ -222,8 +222,10 @@ def check_ocr(cfg) -> Check:
     ok, why = perceive.ocr_available()
     if ok:
         return Check(name, "ok", "Windows OCR hazır: refleks ekrandaki yazıları da okur")
+    from alice.deps import install_command
+
     return Check(name, "off", f"{why}; refleks sadece erişilebilirlik ağacıyla çalışır",
-                 "pip install -e .[computer]" if "paket" in why else "")
+                 f"ALICE açılışta eksik paketleri kendisi kurar; hemen: {install_command([])}" if "paket" in why else "")
 
 
 def run_all(cfg, cwd=None, network: bool = True) -> list[Check]:

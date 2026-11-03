@@ -160,6 +160,26 @@ def _shortcut_roots() -> list[Path]:
 SHORTCUT_SUFFIXES = (".lnk", ".url", ".appref-ms")
 # URI (ms-settings:, mailto:, steam://...); şema en az iki harf, yani "C:\..." sürücü harfi eşleşmez
 URI_RX = re.compile(r"^[a-z][a-z0-9+.-]+:", re.I)
+# Sürücüyle başlayan ya da klasör içeren dosya yolu (uygulama adı değil): yoksa açmaya çalışılmaz
+FILE_PATH_RX = re.compile(r"^([a-z]:[\\/]|\\\\|~[\\/]|%\w+%[\\/]|/)", re.I)
+
+
+def missing_file(p: Path) -> str:
+    """Olmayan dosya için açıklama + aynı klasördeki en yeni benzer dosyalar (yanlış adla inmiş olabilir)."""
+    msg = f"dosya yok: {p}"
+    try:
+        same = sorted((f for f in p.parent.iterdir() if f.is_file() and f.suffix.lower() == p.suffix.lower()),
+                      key=lambda f: f.stat().st_mtime, reverse=True)[:5]
+    except OSError:
+        same = []
+    if same:
+        msg += ". Aynı klasörde en yeni " + p.suffix + " dosyaları: " + ", ".join(f.name for f in same) + \
+            " (dosya başka adla inmiş olabilir; emin değilsen browser action=download ile yeniden indir)"
+    return msg
+
+
+# Tarayıcıda açılınca indirilen dosyalar (kurulumlar, arşivler): adres çubuğu yerine eklentiyle indirilir
+DOWNLOAD_RX = re.compile(r"\.(exe|msi|msix|zip|7z|rar|dmg|appimage|deb|iso)$", re.I)
 SHORTCUT_TTL = 60.0  # sn: kısayol listesi bu kadar önbellekte
 _shortcut_cache: dict[tuple[str, ...], tuple[float, list[Path]]] = {}
 
@@ -428,6 +448,17 @@ def open_app(target: str) -> str:
     target = (target or "").strip()
     if not target:  # Windows'ta Path("") "." olur: boş hedef çalışma klasörünü açıyordu
         raise ToolError("açılacak hedef boş")
+    if re.match(r"https?://", target, re.I) and DOWNLOAD_RX.search(target.split("?", 1)[0]):
+        # Kurulum/arşiv bağlantısı: tarayıcıda açılınca Opera "Farklı Kaydet" penceresi açıp orada bekliyordu
+        # (ALICE dosya inmeden kurulumu çalıştırmaya kalktı). Doğrudan İndirilenler'e indir.
+        from alice.tools import fetch_file
+
+        return fetch_file.describe(fetch_file.download(target), opened=True)
+    path = Path(os.path.expandvars(target)).expanduser()
+    if FILE_PATH_RX.match(target) and not path.exists():
+        # Var olmayan dosya yolu: Windows'ta "son çare" başlatma "bulunamadı" hata penceresini açıyordu, ALICE de o
+        # pencerede Enter'a basıp duruyordu (olmayan Sonora-Setup.exe; dosya e.exe adıyla inmişti).
+        raise ToolError(missing_file(path))
     if IS_WIN:
         if URI_RX.match(target):
             # ms-settings:nightlight, mailto:, steam:// ... doğrudan: aramaya sokulunca Ayarlar sayfası 42 sn'de açılmıştı.

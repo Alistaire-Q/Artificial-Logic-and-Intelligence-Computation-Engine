@@ -35,9 +35,41 @@ def test_agent_loops_until_done_and_sends_screenshot():
 
 
 def test_agent_stops_on_repeated_action():
+    """Üç kez aynı adım: önce bir kez başka yol denemesi istenir, yine aynısıysa vazgeçilir."""
     s = FakeScreen()
-    res = ComputerAgent(s, lambda m: '{"action": "key", "keys": "enter"}', settle=0).run("x")
-    assert res.status == "fail" and len(s.acts) == 2
+    seen = []
+
+    def ask(m):
+        seen.append(m[1]["content"][0]["text"])
+        return '{"action": "key", "keys": "enter"}'
+
+    res = ComputerAgent(s, ask, settle=0).run("x")
+    assert res.status == "fail" and len(s.acts) == 4
+    assert any("repeated the same action 3 times" in t for t in seen)  # toparlanma uyarısı modele gitti
+    assert any("did not change the screen" in t for t in seen)  # ekran hiç değişmedi: model bunu da bildi
+
+
+class ChangingScreen(FakeScreen):
+    def __init__(self):
+        super().__init__()
+        self.n = 0
+
+    def observe(self):
+        self.n += 1
+        shot = super().observe()
+        shot.png_b64 = f"IMG{self.n}"  # her adımda ekran değişiyor: iş ilerliyor
+        return shot
+
+
+def test_agent_extends_step_limit_once_when_screen_keeps_changing(tmp_path):
+    s = ChangingScreen()
+    n = iter(range(100))
+    res = ComputerAgent(s, lambda m: json.dumps({"action": "scroll", "amount": next(n)}), settle=0).run(
+        "x", max_steps=5)
+    assert res.status == "max_steps" and len(s.acts) == 5 + ComputerAgent.EXTEND_STEPS
+    from alice.computer_agent import load_recipes
+
+    assert load_recipes() and load_recipes()[-1]["status"] == "fail"  # yarım kalan iş de ders olarak kaydedildi
 
 
 def test_point_mapping_uses_ids_and_normalized_coords():

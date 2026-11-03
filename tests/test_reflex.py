@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from alice.decider import Answer, Decision
 from alice.reflex.loop import ReflexLoop, rank
 from alice.reflex.observers import Element, Observation
@@ -130,3 +132,50 @@ def test_login_controls_are_left_to_the_user():
     ReflexLoop(obs, ScriptedDecider([("click_1", 0.9, 0.0), ("done", 0.9, 0.95)]), settle=0).run(
         "telefon numarasıyla giriş yap")
     assert obs.actions == [("click", 1)]
+
+
+def test_desktop_reflex_frames_click_on_hud(monkeypatch):
+    """Reflex artık ekran işlerinin ilk aracı: tıklamadan önce HUD'da halka göstermeli (beklemeden)."""
+    from alice.hud import views
+    from alice.reflex.observers import DesktopObserver
+    from alice.reflex.perceive import Item
+    from alice.tools import computer as comp
+
+    seen, clicks = [], []
+    monkeypatch.setattr(views, "click_target", lambda x, y, action="click", wait=True: seen.append((x, y, action, wait)))
+    monkeypatch.setattr(comp, "_pyautogui", lambda: type("PG", (), {"rightClick": staticmethod(
+        lambda *a: clicks.append(a))})())
+    obs = DesktopObserver.__new__(DesktopObserver)
+    obs._rect = (100, 50, 1000, 800)
+    item = Item("k", "ocr", "text", "Görünüm", rect=(0.4, 0.4, 0.6, 0.5))
+    obs.act("right_click", item)
+    assert seen == [(600, 410, "right_click", False)] and clicks == [(600, 410)]
+    with pytest.raises(ValueError, match="yeri bilinmiyor"):  # HUD değil, eylemin kendi hatası
+        obs.act("right_click", Item("n", "ocr", "text", "yeri yok"))
+    assert len(seen) == 1
+
+
+def test_desktop_reflex_survives_uia_com_error(monkeypatch):
+    """Canlı kayıt: UIA COM hatası (0x80040201) bütün refleksi "ekran okunamadı" ile düşürdü; OCR ile devam etmeli."""
+    import alice.reflex.observers as ob
+    from alice.tools import desktop
+
+    calls = []
+
+    def boom(*a, **k):
+        calls.append(1)
+        raise OSError(-2147220991, "An event was unable to invoke any of the subscribers")
+
+    monkeypatch.setattr(desktop, "collect_ui_elements", boom)
+    monkeypatch.setattr(ob, "foreground_title", lambda: "Program Manager")
+    monkeypatch.setattr(ob, "ocr_available", lambda: (False, ""))
+    monkeypatch.setattr(ob, "focused_control", lambda: None, raising=False)
+    monkeypatch.setattr(ob.time, "sleep", lambda s: None)
+    obs = ob.DesktopObserver.__new__(ob.DesktopObserver)
+    obs.ctx, obs.title, obs.goal, obs.diff, obs.echoes, obs._unparked, obs._rect = None, None, "x", False, (), True, None
+    obs._prev_img, obs._prev_lines = None, []
+    monkeypatch.setattr(obs, "snapshot", lambda hwnd=0: None, raising=False)
+    monkeypatch.setattr(obs, "_target_hwnd", lambda: 0, raising=False)
+    monkeypatch.setattr(obs, "_window", lambda: 0, raising=False)
+    scr = obs.screen("simgeleri gizle")
+    assert scr.title == "Program Manager" and len(calls) == 2  # bir kez yeniden denendi

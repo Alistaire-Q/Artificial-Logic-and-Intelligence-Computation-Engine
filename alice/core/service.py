@@ -198,6 +198,13 @@ class Core:
         from alice.now import Anticipator
 
         self.anticipator = Anticipator(self.store)  # beklenen oyundan önce hazırlık (ses modülü kanca ekler)
+        from alice.anticipate import Morning, QuietGame
+
+        ant = cfg.data.get("anticipate", {}) or {}
+        self.quiet_game = QuietGame(enabled=bool(ant.get("quiet_notifications", True)))
+        self.morning = Morning(cfg) if ant.get("morning", True) else None
+        if ant.get("game_update", True):
+            self.anticipator.hooks.append(self._prep_game_update)
         self._last_prune = 0.0
         self._last_files: float | None = None  # None: dosyalar henüz hiç kontrol edilmedi
         self._lock = threading.Lock()
@@ -280,8 +287,20 @@ class Core:
         # Mod her turda yazılır: aralık hesapları servis kapalıyken bile doğru kalsın diye
         # kapanışta "off" yazılır, ama arada kayıp olursa son mod sonsuza uzamasın.
         self.store.add(MODE_KEY, text=mode, ts=now)
+        try:  # her turda: HUD yeniden başlasa da oyunda olduğunu bilsin (oyunda yalnız tehdit ve uyarılar)
+            from alice.hud import views
+
+            views.game_context(mode == "flight")
+        except Exception:  # noqa: BLE001
+            pass
         if changed:
             self.store.add_event("mode", f"Mod: {MODE_NAMES.get(mode, mode)}", severity="info", topic="mode")
+            try:  # maçta Windows bildirim balonları susar, bitince eski haline
+                did = self.quiet_game.mode(mode)
+                if did:
+                    self.store.add_event("info", did, topic="now")
+            except Exception:  # noqa: BLE001
+                pass
 
     def _reload_if_changed(self) -> None:
         """Kural/görev dosyaları başka süreçten (CLI, ajan aracı) değiştiyse yeniden yükle."""
@@ -338,6 +357,7 @@ class Core:
             ("e-posta tarihleri", lambda: self._mail_dates(mem)),
             ("gece döngüsü", lambda: self._night(mem)),
             ("önsezi", lambda: self.anticipator.check()),
+            ("sabah hazırlığı", self._morning),
         ]
         for name, fn in steps:
             try:
@@ -369,6 +389,29 @@ class Core:
         if mails:
             self.notifier.send(Notification(f"{len(mails)} yeni önemli e-posta", "; ".join(mails[:3]),
                                             "info", "mail", kind="info"))
+
+    def _processes(self) -> set[str]:
+        procs: set[str] = set()
+        for m in self.monitors:
+            procs |= set(getattr(m, "processes", set()))
+        return procs
+
+    def _prep_game_update(self) -> None:
+        from alice import anticipate
+
+        st = anticipate.load_state()
+        msg = anticipate.prep_game_update(self._processes(), lambda t, b: self.notifier.send(
+            Notification(t, b, "info", "now", kind="info")), st)
+        anticipate.save_state(st)
+        if msg:
+            self.store.add_event("info", "Önsezi: oyun güncellemesi", msg, "info", "now")
+
+    def _morning(self) -> None:
+        if getattr(self, "morning", None) is None:  # eski kurulum ya da __init__ atlanmış (testler)
+            return
+        answers = self.morning.check()
+        if answers:
+            self.store.add_event("info", "Önsezi: sabah cevapları hazır", "; ".join(answers), "info", "now")
 
     def _health_report(self) -> None:
         from alice import health_report
@@ -672,12 +715,12 @@ def start_detached() -> bool:
 
     if read_state().get("running"):
         return False
-    exe = Path(sys.executable)
+    from alice import runtime
+
+    exe = runtime.python()  # hep aynı ortam (bkz. alice.runtime)
     kwargs: dict[str, Any] = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL,
                               "cwd": str(Path.home())}
     if sys.platform == "win32":
-        pyw = exe.with_name("pythonw.exe")
-        exe = pyw if pyw.exists() else exe
         kwargs["creationflags"] = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
     else:
         kwargs["start_new_session"] = True
@@ -697,12 +740,13 @@ def install_autostart() -> Path:
     """Oturum açılınca çekirdeği konsolsuz başlat."""
     import subprocess
 
+    from alice import runtime
+
     path = autostart_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    exe = Path(sys.executable)
+    exe = runtime.python()  # açılış da elle başlatmayla aynı Python'u kullansın (bkz. alice.runtime)
     if sys.platform == "win32":
-        pyw = exe.with_name("pythonw.exe")
-        target = pyw if pyw.exists() else exe
+        target = exe
         icon = Path(__file__).resolve().parent.parent / "app" / "static" / "alice.ico"
         ps = ("$s=(New-Object -ComObject WScript.Shell).CreateShortcut('" + str(path).replace("'", "''") + "');"
               f"$s.TargetPath='{target}';$s.Arguments='-m alice core run --tray';"

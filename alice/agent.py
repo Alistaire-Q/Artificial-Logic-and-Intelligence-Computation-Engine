@@ -208,6 +208,12 @@ _PROMISE_RX = re.compile(
     r"(yapaca[ğg][ıi]m|edece[ğg]im|ba[şs]l[ıi]yorum|bakaca[ğg][ıi]m|deneyece[ğg]im|ekleyece[ğg]im|d[üu]zeltece[ğg]im|"
     r"[çc]al[ıi][şs]t[ıi]raca[ğg][ıi]m|kontrol edece[ğg]im|yazaca[ğg][ıi]m|kuraca[ğg][ıi]m|indirece[ğg]im|"
     r"\blet me\b|\bi'll\b|\bi will\b|\bnext,? i\b|\bnow i\b)[^.!?]{0,60}[.:…]*\s*$", re.I)
+# Sonuç bildiren cevap: kanıt kontrolü yalnız bunlarda çalışır (her cevapta ek model çağrısı olmasın)
+_CLAIM_RX = re.compile(
+    r"(yapt[ıi]m|kurdum|kuruldu|indirdim|indirildi|ba[şs]latt[ıi]m|a[çc]t[ıi]m|a[çc][ıi]ld[ıi]|g[öo]nderdim|"
+    r"g[öo]nderildi|tamamlad[ıi]m|tamamland[ıi]|bitti|ayarlad[ıi]m|kaydettim|kaydedildi|sildim|silindi|"
+    r"y[üu]klendi|[çc]al[ıi][şs][ıi]yor|haz[ıi]r|\byok\b|bulunamad[ıi]|bulamad[ıi]m|mevcut de[ğg]il|"
+    r"\bdone\b|\binstalled\b|\bdownloaded\b|\bnot found\b)", re.I)
 
 
 class Agent:
@@ -403,6 +409,8 @@ class Agent:
         sink = _Sink(self.ui, self.cancel)
         self._turn_tools: set[str] = set()
         nudges = 0
+        verified = False
+        self._turn_start = len(self.messages) - 1
         stop_hooks = 3  # Stop hook'u ajanı en fazla bu kadar kez geri çevirebilir (sonsuz döngü olmasın)
         try:
             for _ in range(steps):
@@ -457,6 +465,9 @@ class Agent:
                                                   "saymadı, devam et:\n" + back, "_nudge": True})
                             continue
                     nudge = self._unfinished(msg.get("content") or "") if nudges < self.finish_nudges else ""
+                    if not nudge and not verified:
+                        verified = True  # turda bir kez: doğrulamanın kendisi döngüye girmesin
+                        nudge = self._unverified(msg.get("content") or "")
                     if not nudge:
                         return final
                     nudges += 1
@@ -513,6 +524,47 @@ class Agent:
             return (NUDGE_PREFIX + "Yapacağını söyledin ama yapmadan durdun. Kullanıcıdan bir şey gerekmiyorsa şimdi "
                     "araçlarla yap ve bitince sonucu bildir; gerekiyorsa açıkça sor.")
         return ""
+
+    def _unverified(self, text: str) -> str:
+        """Sonuç söyleyen cevap ("yaptım", "kuruldu", "indirildi", "yok") bu turdaki araç sonuçlarıyla destekleniyor mu?
+        Desteklenmeyen iddia varsa modele gidecek hatırlatma (boş: sorun yok). Hızlı bir model karşılaştırır.
+
+        Sonora kurulumunda ALICE dosya inmeden "indirmeyi başlattım", sürüm sayfasında Setup.exe varken "Windows
+        sürümü yok" dedi: ekranı/araç sonuçlarını varsayımıyla doldurdu. Bu araca özel değil, her işte olabilir."""
+        used = getattr(self, "_turn_tools", set())
+        if (not used or self.role == "voice" or self.permissions.mode == "plan" or self.is_child
+                or not self.config.agent.get("verify_claims", True) or not _CLAIM_RX.search(text)):
+            return ""
+        evidence: list[str] = []
+        for m in self.messages[getattr(self, "_turn_start", 0):]:
+            if m.get("role") == "tool":
+                evidence.append(f"[{m.get('name')}] {str(m.get('content') or '')[:1500]}")
+            elif m.get("role") == "assistant" and m.get("tool_calls"):
+                evidence.append("çağrılar: " + "; ".join(
+                    f"{c['function']['name']}({str(c['function'].get('arguments') or '')[:200]})"
+                    for c in m["tool_calls"]))
+        ask = next((str(m.get("content")) for m in reversed(self.messages[:getattr(self, "_turn_start", 0) + 1])
+                    if m.get("role") == "user"), "")
+        prompt = (
+            "Bir asistanın cevabını, bu turda kullandığı araçların SONUÇLARIYLA karşılaştır. Cevaptaki olgu iddialarını "
+            "(bir işin yapıldığı/bittiği, bir dosyanın indiği/var olduğu, bir şeyin olmadığı/bulunamadığı, bir sayı ya da "
+            "durum) bul. Araç sonuçlarında açıkça dayanağı olmayan ya da sonuçlarla çelişen iddiaları listele. Niyet, "
+            "öneri ve soru iddia değildir. Emin değilsen listeye koyma.\n"
+            'Sadece JSON yaz: {"unsupported": ["kısa iddia", ...]}\n\n'
+            f"KULLANICI İSTEĞİ:\n{ask[:1500]}\n\nARAÇ SONUÇLARI:\n" + "\n".join(evidence)[-9000:]
+            + f"\n\nCEVAP:\n{text[:2500]}")
+        try:
+            res = self.router.chat(str(self.config.agent.get("verify_role", "fast")),
+                                   [{"role": "user", "content": prompt}], temperature=0, max_tokens=400)
+            m = re.search(r"\{.*\}", res.text or "", re.S)
+            bad = [str(x)[:160] for x in (json.loads(m.group(0)).get("unsupported") or [])] if m else []
+        except Exception:  # noqa: BLE001 - doğrulama yapılamadıysa cevabı engelleme
+            return ""
+        if not bad:
+            return ""
+        return (NUDGE_PREFIX + "Cevabındaki şu iddiaların bu turdaki araç sonuçlarında dayanağı yok: "
+                + "; ".join(bad[:5]) + ". Ya bir araçla gerçekten doğrula, ya da kullanıcıya bunu doğrulamadığını "
+                "açıkça söyle. Kontrol etmeden 'yaptım/indirildi/yok' deme.")
 
     def stop(self) -> None:
         """Başka bir thread'den (ör. uygulamadaki Durdur butonu) mevcut turu durdur. Model ya da araç cevabı
@@ -746,7 +798,14 @@ class Agent:
                 result = ToolResult(f"Kullanıcının hook'u bu çağrıyı engelledi: {blocked}", is_error=True)
                 self.ui.tool_end(call["id"], tool.name, result)
                 return result
+        watch = self._watch(tool, args)
         result = self._run_tool(tool, args)
+        if watch is not None and not self.cancel.is_set():
+            from dataclasses import replace
+
+            seen = watch.note()
+            if seen:  # ekranda gerçekte olan: yeni pencere, hata kutusu, UAC, açılmayan program
+                result = replace(result, text=result.text + seen)
         if self.hooks.has("PostToolUse"):
             from dataclasses import replace
 
@@ -759,6 +818,25 @@ class Agent:
         self._log_outward(tool, args, summary, "failed" if result.is_error else "sent", result.text)
         self.ui.tool_end(call["id"], tool.name, result)
         return self._fence(tool, result)
+
+    def _watch(self, tool: Tool, args: dict[str, Any]):
+        """Ekranı etkileyen eylem (tıklama, tuş, program açma, komut) öncesi pencereleri not al; sonra ne değiştiği
+        araç sonucuna eklenir (bkz. alice.tools.outcome). Salt okuma eylemlerinde ve ayar kapalıyken None."""
+        if not self.config.agent.get("observe_outcomes", True):
+            return None
+        try:
+            if tool.name != "run_command" and tool.risk_for(args) != COMPUTER:
+                return None
+        except Exception:  # noqa: BLE001
+            return None
+        if str(args.get("action") or "") in ("screenshot", "list", "snapshot", "text", "tabs", "downloads",
+                                              "cursor_position", "wait"):
+            return None
+        from alice.tools import outcome
+
+        if not outcome.IS_WIN:
+            return None
+        return outcome.Watch(opening=tool.name in ("windows", "app") and args.get("action") in ("open", "launch"))
 
     def _fence(self, tool: Tool, result: ToolResult) -> ToolResult:
         """Dış içerik getiren aracın sonucunu "güvenilmeyen veri" diye işaretle ve turu kirlenmiş say (bkz. guard)."""

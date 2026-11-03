@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import queue
 import socket
 import time
@@ -133,23 +134,131 @@ class FakeCanvas:
         return rec
 
 
-def test_painter_draws_every_kind():
-    c = FakeCanvas()
-    p = window.Painter(c, 1920, 1080, origin=(0, 0))
+ALL_KINDS = ({"kind": "arrow", "clock": 3, "text": "SAM", "severity": "warn"},
+             {"kind": "edge", "clock": 6, "severity": "critical"},
+             {"kind": "label", "text": "merhaba"}, {"kind": "card", "title": "ALICE", "text": "deneme"},
+             {"kind": "box", "x": 100, "y": 100, "w": 50, "h": 40, "text": "düğme"},
+             {"kind": "progress", "value": 0.5, "text": "yükleniyor"})
+
+
+def test_everything_goes_into_one_island_by_priority():
+    """Apple'ın tek yüzey kuralı: tehdit, yakıt, gösterge, kart hep Adada; en önemlisi önde, diğerleri küçük
+    dairede. Ada dışında yalnızca kenar ışığı ve odak halkası çizilir."""
+    from alice.hud import style
+
     m = HudModel(max_items=10)
-    for msg in ({"kind": "arrow", "clock": 3, "text": "SAM", "severity": "warn"},
-                {"kind": "edge", "clock": 6, "severity": "critical"},
-                {"kind": "label", "text": "merhaba"}, {"kind": "card", "title": "ALICE", "text": "deneme"},
-                {"kind": "box", "x": 100, "y": 100, "w": 50, "h": 40, "text": "düğme"},
-                {"kind": "progress", "value": 0.5, "text": "yükleniyor"}):
+    for msg in ALL_KINDS:
         m.apply(msg, 0.0)
-    p.draw(m.visible(), 0.5)
-    names = [o[0] for o in c.ops]
-    assert names[0] == "delete" and "create_polygon" in names and "create_line" in names
-    poly = next(o for o in c.ops if o[0] == "create_polygon")
-    tip_x, tip_y = poly[1][0][0], poly[1][0][1]
-    assert tip_x > 960 + 200 and abs(tip_y - 540) < 1  # saat 3: sağa bakan ok
-    assert any(o[2].get("text") == "merhaba" for o in c.ops)
+    ents = style.entries(m.visible())
+    assert ents[0].kind == "card"  # yeni gelen kart Adayı genişletir (canlı denemede yanda küçük daire kalıyordu)
+    assert [e.severity for e in ents[1:3]] == ["warn", "info"]  # sonra önem sırası
+    crit = style.entries(m.visible() + [_item({"kind": "arrow", "clock": 6, "severity": "critical"}, 99)])
+    assert crit[0].severity == "critical"  # kritik tehdit karttan da önce
+    assert [s.item.kind for s in style.layout(m.visible(), 1920, 1080)] == ["edge", "box"]
+    sam = next(e for e in ents if e.glyph == "arrow")
+    assert sam.title == "SAM" and sam.angle == 90  # saat 3
+    six = style.entries([_item({"kind": "arrow", "clock": 7, "text": "ARKANDA · 900 m", "severity": "critical"})])
+    assert (six[0].title, six[0].value, six[0].angle) == ("Arkanda", "900 m", 210)  # büyük harfle bağırmaz
+    fuel = style.entries([_item({"kind": "label", "text": "YAKIT ~4 dk", "severity": "warn"})])[0]
+    assert (fuel.glyph, fuel.title, fuel.value) == ("drop", "Yakıt", "~4 dk")
+    assert style.tr_sentence("İLERİ GİDİYOR") == "İleri gidiyor" and style.tr_sentence("SAM") == "SAM"
+
+
+def _item(d, seq=1):
+    from alice.hud.model import Item
+
+    return Item(d["kind"], {**d, "severity": d.get("severity", "info")}, 0.0, 9.0, d.get("id", ""), seq)
+
+
+def test_arrow_glyph_points_its_clock_and_edge_glows_in_corner():
+    from PIL import Image
+
+    from alice.hud import style
+
+    def tip_angle(angle):
+        img = Image.new("RGBA", (80, 80), (0, 0, 0, 0))
+        style.glyph(img, "arrow", 40, 40, 60, (0, 145, 255), angle)
+        px = img.load()
+        pts = [(x, y) for y in range(80) for x in range(80) if px[x, y][3] > 200]
+        fx, fy = max(pts, key=lambda p: (p[0] - 40) ** 2 + (p[1] - 40) ** 2)
+        return math.degrees(math.atan2(fx - 40, -(fy - 40))) % 360
+
+    for clock in (1, 3, 4, 7, 10, 12):
+        diff = (tip_angle(clock % 12 * 30) - clock * 30 + 180) % 360 - 180
+        assert abs(diff) < 10, clock  # ok gerçekten saatine bakıyor
+    m = HudModel()
+    m.apply({"kind": "edge", "clock": 4, "severity": "warn"}, 0.0)
+    sp = style.layout(m.visible(), 1920, 1080)[0]
+    assert sp.w == sp.h and sp.x + sp.w == 1920 and sp.y + sp.h == 1080  # saat 4: sağ alt köşede ışık
+
+
+def test_island_springs_to_content_and_fades():
+    from alice.hud import style
+
+    isl = style.Island(1920, 1080)
+    status = style.entries([_item({"kind": "label", "text": "Yakıt ~4 dk", "severity": "warn", "id": "f"})])
+    assert isl.update(status, 0.0)
+    img, moving = isl.frame(0.0)
+    assert moving and img.size == (isl.cw, isl.ch)
+    for i in range(1, 90):
+        img, moving = isl.frame(i / 60)
+    assert not moving and isl.h.x == pytest.approx(38) and isl.shown == 1.0  # kompakt kapsül oturdu
+    assert img.getchannel("A").getbbox() is not None
+    card = style.entries([_item({"kind": "card", "title": "Hatırlatma", "text": "20:00'de maç var.", "id": "c"}, 2)])
+    isl.update(card, 2.0)
+    for i in range(1, 90):
+        isl.frame(2 + i / 60)
+    assert isl.h.x > 60 and isl.w.x > 200  # kart için genişledi
+    isl.update([], 4.0)
+    for i in range(1, 60):
+        isl.frame(4 + i / 60)
+    assert not isl.update([], 5.0)  # söndü
+
+
+def test_critical_edge_fades_out_and_arrow_turns():
+    """Canlı denemede bulunanlar: kritik kenar ışığı nabız yüzünden hiç sönmüyordu; ok yön değişince zıplıyordu."""
+    from alice.hud import style
+
+    m = HudModel()
+    m.apply({"kind": "edge", "clock": 7, "severity": "critical", "id": "e"}, 0.0)
+    sp = style.layout(m.visible(), 1920, 1080)[0]
+    an = style.Anim(0.0)
+    assert an.frame(1.0, sp)[3]  # görünürken nabız atar
+    an.gone_at = 2.0
+    alpha, _, _, moving = an.frame(2.5, sp)
+    assert alpha == 0 and not moving  # temizlenince söner ve biter
+
+    isl = style.Island(1920, 1080)
+    arrow = {"kind": "arrow", "text": "Arkanda · 900 m", "severity": "critical", "id": "six"}
+    isl.update(style.entries([_item({**arrow, "clock": 7})]), 0.0)
+    for i in range(60):
+        isl.frame(i / 60)
+    isl.update(style.entries([_item({**arrow, "clock": 5, "text": "Arkanda · 700 m"})]), 1.0)
+    isl.frame(1.05)
+    assert 150 < isl.angle < 210  # saat 7'den 5'e yolda (zıplamadı)
+    for i in range(30):
+        isl.frame(1.1 + i / 60)
+    assert isl.angle == pytest.approx(150)
+
+
+def test_focus_ring_and_island_render_fast():
+    import time as _t
+
+    from alice.hud import style
+
+    m = HudModel()
+    m.apply({"kind": "box", "x": 300, "y": 300, "w": 120, "h": 40, "text": "tıklıyorum"}, 0.0)
+    m.apply({"kind": "arrow", "clock": 7, "text": "Arkanda · 900 m", "severity": "critical"}, 0.0)
+    sp = style.layout(m.visible(), 1920, 1080)[0]
+    assert style.render(sp, 1080).getbbox() is not None
+    an = style.Anim(0.0)
+    assert an.frame(0.0, sp)[1] > 1 and an.frame(1.0, sp)[1] == 1  # odak halkası dışarıdan oturur
+    isl = style.Island(1920, 1080)
+    isl.update(style.entries(m.visible()), 0.0)
+    t0 = _t.perf_counter()
+    for i in range(60):
+        isl.frame(i / 60)
+    assert (_t.perf_counter() - t0) / 60 < 0.03  # kare başına 30 ms'den az (oyunun yanında)
 
 
 def test_edge_point_and_direction():
@@ -179,21 +288,33 @@ class FakeWin32:
         self.calls.append(("topmost",))
 
 
+class FakeTop:
+    def __init__(self):
+        self.destroyed = False
+
+    def destroy(self):
+        self.destroyed = True
+
+
 def test_window_tick_shows_only_while_items_exist():
-    """Boşken pencere gizli (oyunun FPS'i için), öğe gelince odak almadan görünür, ttl dolunca yine gizlenir."""
-    w = window.HudWindow.__new__(window.HudWindow)
-    w.model, w.inbox, w.win32, w.hwnd = HudModel(), queue.Queue(), FakeWin32(), 42
-    w.canvas = FakeCanvas()
-    w.painter = window.Painter(w.canvas, 800, 600)
-    w.shown, w._drawn, w._topmost_at = False, -1, 0.0
+    """Boşken hiç pencere yok (oyunun FPS'i için), öğe gelince Adanın penceresi odak almadan görünür, ttl dolunca
+    Ada söner ve penceresi kapanır."""
+    hwnds = iter(range(100, 200))
+    w = window.HudWindow(HudModel(), queue.Queue(), win32=FakeWin32(), root=object(), rect=(0, 0, 1920, 1080),
+                         make_slot=lambda root: (FakeTop(), next(hwnds)))
+    w.win32.update_layered = lambda hwnd, img, x, y: w.win32.calls.append(("ulw", hwnd, img.size))
     w.tick()
-    assert w.win32.calls == []
-    w.inbox.put({"kind": "arrow", "clock": 4, "ttl": 0.2})
+    assert w.win32.calls == [] and not w.shown
+    w.inbox.put({"kind": "arrow", "clock": 4, "ttl": 0.2, "id": "sam"})
     w.tick()
-    assert ("show", True) in w.win32.calls and w.shown
+    assert ("style", 100) in w.win32.calls and ("capture", 100) in w.win32.calls  # tıklama geçer, görüntüde yok
+    assert ("show", True) in w.win32.calls and any(c[0] == "ulw" for c in w.win32.calls) and w.shown
+    assert window.ISLAND_KEY in w.slots
     time.sleep(0.25)
-    w.tick()
-    assert w.win32.calls[-1] == ("show", False) and not w.shown
+    for _ in range(40):  # süresi doldu: Ada söner
+        w.tick()
+        time.sleep(0.01)
+    assert w.win32.calls[-1] == ("show", False) and not w.shown and not w.slots
 
 
 # --------------------------------------------------------------- denetleyici
@@ -473,7 +594,8 @@ def test_click_target_previews_before_click(hud_on, monkeypatch):
     waited = []
     monkeypatch.setattr(views.time, "sleep", waited.append)
     assert views.click_target(500, 300, "double_click")
-    assert hud_on[0]["kind"] == "box" and (hud_on[0]["x"], hud_on[0]["y"]) == (472, 272)
+    assert hud_on[0]["kind"] == "cursor" and (hud_on[0]["x"], hud_on[0]["y"]) == (500, 300)  # ALICE'in imleci
+    assert hud_on[0]["action"] == "double_click"
     assert hud_on[0]["text"] == "çift tıklıyorum" and waited == [views.CLICK_PREVIEW]
 
 
@@ -597,3 +719,123 @@ def test_start_hud_adds_system_gauge_hook(monkeypatch):
         assert len(core.hooks) == 1 and isinstance(core.hooks[0], SystemGauges) and core.hooks[0].ttl == 20.0
     finally:
         client.configure(window.PORT, on=False)
+
+
+# ------------------------------------------------- imleç, ses hali, yoğunluk, geçmiş, yönsüz tehdit
+def test_pointer_glides_instead_of_teleporting_and_ripples_on_click():
+    from alice.hud import style
+
+    p = style.Pointer(1080)
+    p.go(100, 100, "click", 0.0)  # ilk kez: hedefte belirir
+    assert p.at(0.0) == (100, 100)
+    p.go(900, 500, "click", 1.0)  # ikinci hedef: bulunduğu yerden kayar
+    mid = p.at(1.0 + p.dur / 2)
+    assert 100 < mid[0] < 900 and 100 < mid[1] < 500  # yolda (ışınlanmadı)
+    assert style.GLIDE_MIN <= p.dur <= style.GLIDE_MAX < 0.4  # tıklama önizlemesi bitmeden oturur
+    assert p.at(1.0 + p.dur) == pytest.approx((900, 500))
+    img, x, y, moving = p.frame(1.0 + p.dur + 0.1)  # oturdu, halka yayılıyor
+    assert img is not None and moving and (x + p.size / 2, y + p.size / 2) == pytest.approx((900, 500))
+    _, _, _, moving = p.frame(1.0 + p.dur + style.RIPPLE + 0.3)
+    assert not moving  # dalga bitti: yeniden çizim yok
+    p.leave(5.0)
+    assert p.frame(5.0 + style.FADE_OUT + 0.01)[0] is None and not p.active  # söndü
+
+
+def test_pointer_starts_from_real_cursor_when_first_shown():
+    from alice.hud import style
+
+    p = style.Pointer(1080)
+    p.go(800, 400, "click", 0.0, origin=(10, 10))
+    assert p.at(0.0) == (10, 10) and p.at(p.dur) == pytest.approx((800, 400))
+
+
+def test_window_draws_pointer_and_drops_it_when_done():
+    hwnds = iter(range(100, 200))
+    w = window.HudWindow(HudModel(), queue.Queue(), win32=FakeWin32(), root=object(), rect=(0, 0, 1920, 1080),
+                         make_slot=lambda root: (FakeTop(), next(hwnds)))
+    pos = []
+    w.win32.update_layered = lambda hwnd, img, x, y: pos.append((hwnd, x, y))
+    w.win32.cursor_pos = lambda: (5, 5)
+    w.inbox.put({"kind": "cursor", "x": 600, "y": 400, "action": "click", "text": "tıklıyorum", "ttl": 1.0,
+                 "id": "computer"})
+    for _ in range(30):
+        w.tick()
+        time.sleep(0.01)
+    assert window.POINTER_KEY in w.slots and window.ISLAND_KEY in w.slots  # imleç + Adada "tıklıyorum"
+    ph = w.slots[window.POINTER_KEY].hwnd
+    xs = [x for h, x, _ in pos if h == ph]
+    assert len(set(xs)) > 3  # pencere adım adım kaydı
+    time.sleep(1.0)
+    for _ in range(60):
+        w.tick()
+        time.sleep(0.01)
+    assert window.POINTER_KEY not in w.slots
+
+
+def test_directionless_threat_shows_radar_not_a_wrong_arrow():
+    from alice.hud import style
+
+    m = HudModel()
+    assert m.apply({"kind": "arrow", "text": "FÜZE", "severity": "critical", "id": "missile"}, 0.0)
+    assert not m.apply({"kind": "arrow"}, 0.0)  # ne yönü ne yazısı var
+    e = style.entries(m.visible())[0]
+    assert e.glyph == "radar" and e.severity == "critical"
+    style.preview([{"kind": "arrow", "text": "FÜZE", "severity": "critical"}])  # çizilebiliyor
+
+
+def test_flash_rate_stays_under_three_per_second():
+    from alice.hud import style
+
+    assert 1 / style.PULSE < 3 and 1 / style.LISTEN_PULSE < 3
+
+
+def test_modes_filter_by_density():
+    m = HudModel()
+    m.apply({"kind": "card", "title": "Takvim", "text": "20:00 maç"}, 0.0)
+    m.apply({"kind": "arrow", "clock": 6, "text": "Arkanda", "severity": "critical", "id": "six"}, 0.0)
+    m.apply({"kind": "label", "text": "Yakıt ~4 dk", "severity": "warn", "id": "fuel"}, 0.0)
+    m.apply({"kind": "card", "title": "Düşürdün", "text": "Bf 109", "id": "kill"}, 0.0)
+    m.apply({"kind": "label", "text": "Dinliyorum", "icon": "wave", "id": "voice"}, 0.0)
+    assert len(m.visible()) == 5  # masaüstü: hepsi
+    m.apply({"kind": "context", "game": True}, 0.0)  # oyunda: bilgi kartı gizlenir
+    assert {i.id for i in m.visible()} == {"six", "fuel", "kill", "voice"}
+    m.apply({"kind": "mode", "value": "quiet"}, 0.0)
+    assert [i.id for i in m.visible()] == ["six"] or {i.id for i in m.visible()} == {"six", "__mode__"}
+    m.apply({"kind": "mode"}, 0.0)  # kısayol: sıradaki moda geçer ve kısaca söyler
+    assert m.mode == "auto" and any(i.id == "__mode__" and "otomatik" in i.data["text"] for i in m.visible())
+
+
+def test_history_hotkey_shows_missed_cards():
+    m = HudModel()
+    m.apply({"kind": "history"}, 0.0)
+    assert "Henüz" in m.items[-1].data["text"]
+    for t in ("Bir", "İki", "Üç", "Dört"):
+        m.apply({"kind": "card", "title": t, "text": f"{t} yazısı", "ttl": 1}, 0.0)
+    m.expire(5.0)
+    m.apply({"kind": "history"}, 5.0)
+    h = m.items[-1]
+    assert h.id == "__history__" and h.data["title"] == "Son bildirimler"
+    assert h.data["text"].index("Dört") < h.data["text"].index("Üç") and "Bir" not in h.data["text"]
+
+
+def test_voice_state_dedupes_and_clears(hud_on, monkeypatch):
+    from alice.hud import views
+
+    monkeypatch.setitem(views._voice, "state", None)
+    monkeypatch.setitem(views._voice, "detail", "")
+    assert views.voice_state("listen")
+    assert not views.voice_state("listen")  # aynı hal: tekrar gönderilmez
+    assert views.voice_state("work", "ekranda")
+    assert views.voice_state(None)
+    assert [m.get("text") for m in hud_on] == ["Dinliyorum", "Çalışıyorum · ekranda", None]
+    assert hud_on[0]["icon"] == "wave" and hud_on[-1] == {"kind": "clear", "id": "voice"}
+
+
+def test_listening_island_animates_wave():
+    from alice.hud import style
+
+    isl = style.Island(1920, 1080)
+    isl.update(style.entries([_item({"kind": "label", "text": "Dinliyorum", "icon": "wave", "id": "voice"})]), 0.0)
+    for i in range(80):
+        _, moving = isl.frame(i / 60)
+    assert moving and isl.calm  # dalga oynuyor ama seyrek çizilebilir

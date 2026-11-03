@@ -360,7 +360,7 @@ def test_phone_server_config_port_hosts_and_urls(fake_server, monkeypatch):
     assert ps.port == 9999 and ps.server.port == 9999 and ps.server.host == "0.0.0.0"
     assert st.allowed_hosts == {"127.0.0.1", "localhost", "10.0.0.7"} and st.watch_store == "STORE"
     assert st.token == phone.token()
-    assert ps.url == f"http://10.0.0.7:9999/quick?t={st.token}"
+    assert ps.url == f"http://10.0.0.7:9999/m?t={st.token}"
     assert ps.watch_url == "http://10.0.0.7:9999/api/watch"
     ps.stop()
     assert ps.server.stopped
@@ -406,7 +406,7 @@ def test_phone_cmd(monkeypatch, capsys):
     class PS:
         def __init__(self, cfg, new_token=False):
             self.new_token = new_token
-            self.url, self.watch_url = "http://ip:1/quick?t=T", "http://ip:1/api/watch"
+            self.url, self.watch_url = "http://ip:1/m?t=T", "http://ip:1/api/watch"
             self.projects_url = "http://ip:1/?t=T#projects"
             self.state = SimpleNamespace(token="T")
             self.stopped = False
@@ -424,7 +424,7 @@ def test_phone_cmd(monkeypatch, capsys):
     patch_sleep(monkeypatch, phone, interrupt)
     assert phone.phone_cmd(["--new-token"]) == 0
     out = capsys.readouterr().out
-    assert made[0].new_token and made[0].stopped and "http://ip:1/quick?t=T" in out and "X-Alice-Token: T" in out
+    assert made[0].new_token and made[0].stopped and "http://ip:1/m?t=T" in out and "X-Alice-Token: T" in out
 
 
 def test_watch_cmd_status_empty_and_usage(capsys):

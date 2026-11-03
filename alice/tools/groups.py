@@ -108,7 +108,7 @@ TOOL_HINTS: dict[str, str] = {
     "clipboard": r"pano|kopyala|yapıştır|clipboard",
     "app": r"whatsapp|instagram|insta\b|tiktok|telegram|dm at|mesaj at|discord'?a yaz",
     "youtube": r"youtube|video|klip|izle|şarkı(yı|sını)? (aç|çal)|\bçal\b",
-    "media": r"müzik|şarkı|ses seviyesi|sesi (aç|kıs|kapat)|duraklat|devam ettir|sonraki|önceki|\bsesi?\b",
+    "media": r"müzik|şarkı|ne çal|çalıyor|çalan|dinliyorum|ses seviyesi|sesi (aç|kıs|kapat)|duraklat|devam ettir|sonraki|önceki|\bsesi?\b",
     "notes": r"\bnot\b|notlar|not al|not et",
     "report": r"rapor|özet|sabah",
     "weather": r"hava|yağmur|kar yağ|derece|sıcak|soğuk|şemsiye|rüzgar",

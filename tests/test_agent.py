@@ -273,3 +273,26 @@ def test_tool_specs_get_lean_when_they_alone_fill_a_tiny_model(workdir):
     specs = [t.spec() for t in all_tools()]
     assert estimate_tokens([], lean_specs(specs)) < estimate_tokens([], specs) * 0.75
     assert {s["function"]["name"] for s in lean_specs(specs)} == {s["function"]["name"] for s in specs}
+
+
+def test_claim_without_evidence_is_sent_back_once(workdir):
+    """Canlı kayıt: ALICE dosya inmeden "indirmeyi başlattım", sürüm sayfasında Setup.exe varken "Windows sürümü yok"
+    dedi. Sonuç bildiren cevap araç sonuçlarıyla desteklenmiyorsa model bir kez doğrulamaya geri gönderilir."""
+    script = [tool_call("list_dir", {"path": "."}),
+              "Sonora-Setup.exe indirildi, kurulum hazır.",  # araç sonucu boş klasör: dayanağı yok
+              '{"unsupported": ["Sonora-Setup.exe indirildi"]}',  # hızlı modelin kararı
+              "Klasörde Sonora-Setup.exe yok; indirmeyi doğrulayamadım."]
+    agent, provs, ui = make_agent(script, workdir, verify_claims=True)
+    out = agent.run_turn("sonorayı indir")
+    assert out == "Klasörde Sonora-Setup.exe yok; indirmeyi doğrulayamadım."
+    nudge = [m for m in agent.messages if m.get("_nudge")]
+    assert len(nudge) == 1 and "dayanağı yok" in nudge[0]["content"] and "Sonora-Setup.exe indirildi" in nudge[0]["content"]
+
+
+def test_supported_claim_passes_and_plain_answers_are_not_checked(workdir):
+    script = [tool_call("list_dir", {"path": "."}), "Klasör boş, hiçbir dosya yok.", '{"unsupported": []}']
+    agent, provs, ui = make_agent(script, workdir, verify_claims=True)
+    assert agent.run_turn("klasörde ne var") == "Klasör boş, hiçbir dosya yok."
+    assert not any(m.get("_nudge") for m in agent.messages)
+    agent2, _, _ = make_agent(["Merhaba! Nasıl yardımcı olayım?"], workdir, verify_claims=True)
+    assert agent2.run_turn("selam") == "Merhaba! Nasıl yardımcı olayım?"  # araç yok, iddia yok: kontrol yok
