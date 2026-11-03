@@ -17,6 +17,7 @@ from typing import Any, Callable
 
 from alice.tools.base import ToolResult
 from alice.voice.audio import Audio, Microphone
+from alice.voice.lang import correction
 from alice.voice.listen import (FOLLOW_MAX, PushToTalk, WakeWord, is_hush, is_yes, make_vad, strip_wake,
                                utterances)
 from alice.voice.speaker import Speaker
@@ -319,6 +320,12 @@ class VoiceAssistant:
         self._score: tuple[Audio, float] | None = None  # (ses, benzerlik): aynı ses iki kez ölçülmesin
         if live is not None:
             live.announce = self._announce  # konuşma kapandıktan sonra biten arka plan işinin sonucu
+            live.on_correction = self._corrected
+        self.decision: dict[str, Any] = {}
+        self._last_wake_at = 0.0
+        # Her cümlenin kararı (ses + karar): çekirdek gerçek ses korpusuna bağlar (bkz. alice/voice/corpus.py)
+        self.on_decision: Callable[[Audio, dict[str, Any], Any], None] | None = None
+        self.on_correct: Callable[[str], None] | None = None
 
     # ---------------------------------------------------------------- olaylar
     def _interrupt(self) -> None:
@@ -403,20 +410,23 @@ class VoiceAssistant:
             if self._awaiting_answer:
                 self._answers.put("hayır")
             self._hush(text)
-            return
+            return self._decide("susturma", woke=True)
         if self._awaiting_answer:
             self._answers.put(text)
-            return
+            return self._decide("cevap", woke=True)
         if self.muted:
             if rest is None and not direct:
-                return  # susturulmuş: sadece "Alice ..." ya da bas-konuş uyandırır
+                return self._decide("susturulmus")  # susturulmuş: sadece "Alice ..." ya da bas-konuş uyandırır
             self.muted = False
             voice_log("susturma kalktı")
         # Uyandırma kelimesi varsa her durumda at; yoksa sadece bas-konuş / takip penceresinde geçerli.
         if rest is not None and (armed or self.wake_phrase):
             text = rest
         elif not armed:
-            return
+            return self._decide("uyandirma_yok")
+        if correction(text):
+            self._corrected(text)  # ALICE'e söylenen düzeltme (klasik yol; Live'da LiveSession.on_correction)
+        self._decide("uyandi" if rest is not None else "takip", woke=True)
         if not text:
             self.speaker.say(pick_ack(self._acks), "calm")
             if self._live_ready():
@@ -479,26 +489,78 @@ class VoiceAssistant:
 
     RECENT_KEEP = 30
 
-    def _keep_recent(self, audio: Audio) -> None:
-        """Son 30 cümlenin sesi ~/.alice/voice/recent'e: "cevap vermedi" denince gerçek ses üzerinde test edilsin."""
+    def _keep_recent(self, audio: Audio):
+        """Son 30 cümlenin sesi ~/.alice/voice/recent'e: "cevap vermedi" denince gerçek ses üzerinde test edilsin.
+        Döner: wav yolu (yanına karar dosyası yazılır) ya da None."""
         try:
             from alice.config import alice_home
 
             d = alice_home() / "voice" / "recent"
             d.mkdir(parents=True, exist_ok=True)
-            audio.save(d / f"{time.strftime('%Y%m%d-%H%M%S')}-{int(time.monotonic() * 1000) % 1000:03d}.wav")
+            path = d / f"{time.strftime('%Y%m%d-%H%M%S')}-{int(time.monotonic() * 1000) % 1000:03d}.wav"
+            audio.save(path)
             for old in sorted(d.glob("*.wav"))[:-self.RECENT_KEEP]:
                 old.unlink()
+                old.with_suffix(".json").unlink(missing_ok=True)
+            return path
         except Exception:  # noqa: BLE001 - kayıt yazılamasa da dinleme sürsün
-            pass
+            return None
+
+    def _decide(self, reason: str, woke: bool = False, **extra: Any) -> None:
+        """Bu cümle için verilen karar: kayıt yan dosyasına ve korpusa gider, gerçek sesle testler bunu karşılaştırır.
+        reason: kisa | ses_izi | gri | susturma | uyandirma_yok | uyandi | takip | stt_hata | halusinasyon |
+        susturulmus | cevap. İlk verilen karar geçerlidir."""
+        d = getattr(self, "decision", None)
+        if isinstance(d, dict) and not d.get("final"):
+            d.update(extra, reason=reason, woke=woke, final=True)
+            if woke:
+                self._last_wake_at = time.monotonic()
 
     def handle_audio(self, audio: Audio, direct: bool, started: float | None = None, ptt: bool = False) -> None:
+        self.decision: dict[str, Any] = {"reason": "?", "woke": False, "direct": direct, "ptt": ptt,
+                                         "armed": self._armed(started), "social": self.social() or "",
+                                         "muted": self.muted, "awaiting": self._awaiting_answer}
+        path = self._keep_recent(audio) if self.keep_recent and audio.seconds >= 0.3 else None
+        self._final_audio = None
+        try:
+            self._handle_audio(audio, direct, started, ptt)
+        finally:
+            d = self.decision
+            d.pop("final", None)
+            final = self._final_audio or audio  # kararın verildiği ses (önceki kısa cümleyle birleşmiş olabilir)
+            if final is not audio:
+                d["joined"] = True
+                if path is not None:
+                    try:
+                        final.save(path)
+                    except Exception:  # noqa: BLE001
+                        pass
+            audio = final
+            score = getattr(self, "_score", None)
+            if score is not None and score[0] is audio:
+                d["spk"] = round(score[1], 3)
+            if self.speaker_gate is not None and getattr(self.speaker_gate, "active", False):
+                d["thr"] = float(getattr(self.speaker_gate, "threshold", 0.0))
+            d["dur"] = round(audio.seconds, 2)
+            if path is not None:
+                try:
+                    import json
+
+                    path.with_suffix(".json").write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+                except Exception:  # noqa: BLE001
+                    pass
+            hook = getattr(self, "on_decision", None)
+            if hook is not None:
+                try:
+                    hook(audio, d, path)
+                except Exception as e:  # noqa: BLE001 - korpus hatası dinlemeyi bozmasın
+                    voice_log(f"korpus kaydı yazılamadı: {e}")
+
+    def _handle_audio(self, audio: Audio, direct: bool, started: float | None, ptt: bool) -> None:
         if audio.seconds < 0.3:
-            return
-        if self.keep_recent:
-            self._keep_recent(audio)
+            return self._decide("kisa")
         if not ptt and not self._voice_first(audio, started):
-            return
+            return self._decide("ses_izi")
         if not ptt and getattr(self, "_barge", False) and self._gate_ready():
             self._barge = False
             if self._is_user(audio):  # gri bölgedeki ses (büyük ihtimalle yankı ya da başkası) sözü kesmesin
@@ -537,15 +599,18 @@ class VoiceAssistant:
                     head, woke, full, audio = better, True, None, ear
             if pre and not woke:
                 self.live.discard(owner=owner)
+            if head is not None:
+                self.decision.update(head=head, path="full" if full else "heard")
+                self._final_audio = audio
             if head is not None and woke and is_hush(head):
                 if pre:
                     self.live.discard(owner=owner)
                 self._hush(head)  # "Alice sus" canlı konuşma açmasın
-                return
+                return self._decide("susturma", woke=True)
             if head is not None and woke and not self._is_user(audio, wake=strip_wake(head) is not None):
                 if pre:
                     self.live.discard(owner=owner)
-                return
+                return self._decide("gri")
             if head is not None and woke and self.muted:
                 self.muted = False
                 voice_log("susturma kalktı")
@@ -555,7 +620,7 @@ class VoiceAssistant:
                         self._unwoken = (audio, time.monotonic())
                     if audio.seconds >= 0.6:
                         voice_log(f"uyandırma yok [{getattr(gate, 'model_name', '?')} {getattr(gate, 'last_seconds', 0):.2f}sn]: {head}")
-                    return  # uyandırma yok: sesi buluta hiç gönderme
+                    return self._decide("uyandirma_yok")  # uyandırma yok: sesi buluta hiç gönderme
                 direct = True  # yerel model "Hey Alice" duydu; bulut yazımı farklı olsa da kabul et
                 if self._live_ready() and not self._busy.is_set():
                     # Canlı konuşma: yazıya çevirmeyi atla, cümlenin sesini doğrudan Live'a ver (~0,5 sn kazanç).
@@ -564,21 +629,22 @@ class VoiceAssistant:
                     self._live_q = queue.Queue()  # bağlanırken söylenenler kaybolmasın: kareler şimdiden biriksin
                     self._pre_text = (full, armed and strip_wake(head) is None)
                     self._jobs.put(audio)
-                    return
+                    return self._decide("uyandi" if strip_wake(head) is not None else "takip", woke=True)
         try:
             text = self.stt.transcribe(audio)
         except STTError as e:
             self.emit(f"anlaşılamadı: {e}")
-            return
+            return self._decide("stt_hata")
         self.emit(f"duyulan: {text}")
+        self.decision.update(head=text, path="stt")
         if is_hallucination(text):
             voice_log(f"duyulan (gürültü sayıldı) [{getattr(self.stt, 'last', '')}]: {text}")
-            return
+            return self._decide("halusinasyon")
         voice_log(f"duyulan [{getattr(self.stt, 'last', '')}]{' (doğrudan)' if direct else ''}: {text}")
         if (not direct and not self._awaiting_answer and not is_hush(text)
                 and (strip_wake(text, strict=self._strict()) is not None or self._armed())
                 and not self._is_user(audio, wake=strip_wake(text, strict=self._strict()) is not None)):
-            return
+            return self._decide("gri")
         self.handle_text(text, direct)
 
     # Ses izi skorlarında kullanıcı ile başkaları iç içe (kabullerin alt %10'u 0,38, retlerin en yükseği 0,42):
@@ -767,6 +833,17 @@ class VoiceAssistant:
             pass
         if not self.muted:
             self.speaker.say(text, "calm")
+
+    def _corrected(self, text: str) -> None:
+        """Kullanıcı az önceki uyanmayı düzeltti ("sana demedim", "yanlış anladın"): korpus o cümleyi etiketler."""
+        if not self._last_wake_at or time.monotonic() - self._last_wake_at > 120:
+            return
+        hook = getattr(self, "on_correct", None)
+        if hook is not None:
+            try:
+                hook(text)
+            except Exception as e:  # noqa: BLE001
+                voice_log(f"korpus düzeltmesi yazılamadı: {e}")
 
     def _hud(self, state: str | None, detail: str = "") -> None:
         """Sesli hal Adada (klasik yol da: eskiden sadece Live gösteriyordu)."""

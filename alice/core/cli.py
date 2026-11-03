@@ -338,6 +338,10 @@ def _start_voice(cfg, core):
                         speaker_gate=SpeakerGate.load(cfg, log=voice_log), social=SocialWatch(cfg, log=voice_log).reason,
                         social_ptt=v.get("social_mode", "wake") == "ptt")
     va.keep_recent = bool(v.get("keep_recent_audio", True))
+    if v.get("corpus", True):  # gerçek ses korpusu: uyanmalar ve düzeltmeler test kaydı olur (alice voice replay)
+        from alice.voice import corpus
+
+        corpus.attach(va, log=voice_log)
     threading.Thread(target=va.run, daemon=True, name="alice-voice").start()
     voice_log(f"ses modülü başladı: {time.monotonic() - t0:.1f} sn")
     return va

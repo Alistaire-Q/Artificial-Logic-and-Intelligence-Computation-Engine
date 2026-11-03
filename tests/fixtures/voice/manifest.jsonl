@@ -1,0 +1,10 @@
+{"id": "alice-saat", "path": "alice-saat.wav", "dur": 1.77, "label": "uyanmaliydi", "bucket": "pozitif", "confidence": "kesin", "labeled_by": "tts", "note": "tr-TR-EmelNeural: Alice, saat kaç?"}
+{"id": "alice-sus", "path": "alice-sus.wav", "dur": 1.36, "label": "uyanmaliydi", "bucket": "pozitif", "confidence": "kesin", "labeled_by": "tts", "note": "tr-TR-AhmetNeural: Alice sus."}
+{"id": "hey-alice-oyun", "path": "hey-alice-oyun.wav", "dur": 2.41, "label": "uyanmaliydi", "bucket": "pozitif", "confidence": "kesin", "labeled_by": "tts", "note": "tr-TR-AhmetNeural: Hey Alice, War Thunder'ı aç."}
+{"id": "alice-naber", "path": "alice-naber.wav", "dur": 1.41, "label": "uyanmaliydi", "bucket": "pozitif", "confidence": "kesin", "labeled_by": "tts", "note": "tr-TR-EmelNeural: Alice naber?"}
+{"id": "alice-ses", "path": "alice-ses.wav", "dur": 2.25, "label": "uyanmaliydi", "bucket": "pozitif", "confidence": "kesin", "labeled_by": "tts", "note": "tr-TR-AhmetNeural: Alice, sesi biraz kıs."}
+{"id": "alisveris", "path": "alisveris.wav", "dur": 2.36, "label": "uyanmamaliydi", "bucket": "negatif-konusma", "confidence": "kesin", "labeled_by": "tts", "note": "tr-TR-EmelNeural: Alışverişe gidiyoruz birazdan."}
+{"id": "alice-e-soyle", "path": "alice-e-soyle.wav", "dur": 1.86, "label": "uyanmamaliydi", "bucket": "negatif-konusma", "confidence": "kesin", "labeled_by": "tts", "note": "tr-TR-AhmetNeural: Alice'e de söyle bunu."}
+{"id": "otur-cabuk", "path": "otur-cabuk.wav", "dur": 2.39, "label": "uyanmamaliydi", "bucket": "negatif-konusma", "confidence": "kesin", "labeled_by": "tts", "note": "tr-TR-AhmetNeural: Otur çabuk, maç başlıyor."}
+{"id": "aksam-mac", "path": "aksam-mac.wav", "dur": 1.93, "label": "uyanmamaliydi", "bucket": "negatif-konusma", "confidence": "kesin", "labeled_by": "tts", "note": "tr-TR-EmelNeural: Bu akşam maç var mı?"}
+{"id": "ispanyolca", "path": "ispanyolca.wav", "dur": 2.13, "label": "uyanmamaliydi", "bucket": "negatif-konusma", "confidence": "kesin", "labeled_by": "tts", "note": "es-ES-ElviraNeural: Abre la canción, por favor."}

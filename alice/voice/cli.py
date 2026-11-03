@@ -10,6 +10,10 @@
   alice voice enroll [--off]          sesini tanıt: ALICE sadece senin sesine cevap versin (--off: kapat)
   alice voice status                  motorlar, kütüphane, opsiyonel paketler
   alice voice gecikme [--days 7]      susmandan ALICE'in ilk sesine kadar geçen süre (özet)
+  alice voice replay [--runs 3] [--label L] [--threshold 0.3]
+                                      gerçek ses korpusunu yeniden oynat: yanlış/kaçan uyanma, ses izi
+  alice voice corpus [stats|import|label|rm <id>]
+                                      gerçek ses korpusu: say, son kayıtları içe al, etiketle, sil
   alice voice models                  hesabında hangi Gemini ses modelleri var (kota harcamaz)
   alice voice install-local           yerel ses motorunu (Chatterbox) ayrı ortama kur
   alice voice on | off                çekirdek açılınca sesli asistan da açılsın / açılmasın
@@ -18,6 +22,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import time
 import webbrowser
 
 from rich.console import Console
@@ -41,6 +47,84 @@ def _parser(prog: str):
     return TrArgumentParser(prog=prog)
 
 
+def _replay(cfg, argv) -> int:
+    from alice.voice import corpus
+
+    p = _parser("alice voice replay")
+    p.add_argument("--runs", type=int, default=1, help="her kaydı kaç kez oynat (kararlılık için 3)")
+    p.add_argument("--label", default="", help="sadece bu etiket (uyanmaliydi, uyanmamaliydi, belirsiz)")
+    p.add_argument("--threshold", type=float, default=None, help="ses izi eşiğini dene (varsayılan: ayardaki)")
+    p.add_argument("--strong", action="store_true", help="sadece kesin/güçlü etiketliler")
+    a = p.parse_args(argv)
+    cases = [c for c in corpus.load_manifest() if (not a.label or c.label == a.label)
+             and (not a.strong or c.strong)]
+    if not cases:
+        console.print("[yellow]korpus boş.[/] Kayıtlar çekirdek açıkken kendiliğinden birikir; şimdi almak için: "
+                      "[bold]alice voice corpus import[/]")
+        return 1
+    console.print(f"[dim]{len(cases)} kayıt yerel Whisper ve ses iziyle oynatılıyor...[/]")
+    va = corpus.build_replay_assistant(threshold=a.threshold)
+    rep = corpus.evaluate(cases, va, runs=a.runs)
+    thr = getattr(va.speaker_gate, "threshold", None)
+    console.print(escape(corpus.format_report(rep, thr)))
+    out = corpus.root() / "results" / f"{time.strftime('%Y%m%d-%H%M%S')}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(rep, ensure_ascii=False, indent=1), encoding="utf-8")
+    console.print(f"[dim]ayrıntı: {escape(str(out))}[/]")
+    return 1 if rep["false_wakes_strong"] else 0
+
+
+def _corpus(cfg, argv) -> int:
+    from alice.voice import corpus
+
+    sub = argv[0] if argv else "stats"
+    cases = corpus.load_manifest()
+    if sub == "stats":
+        from collections import Counter
+
+        console.print(f"[bold]Gerçek ses korpusu[/] ({escape(str(corpus.root()))}): {len(cases)} kayıt, "
+                      f"{sum(c.dur for c in cases) / 60:.1f} dk")
+        for (label, conf), n in sorted(Counter((c.label, c.confidence) for c in cases).items()):
+            console.print(f"  {label:<14} {conf:<6} {n}")
+        return 0
+    if sub == "import":
+        va = corpus.build_replay_assistant()
+        n = corpus.import_recent(va, log=lambda s: console.print(f"[dim]{escape(s)}[/]"))
+        console.print(f"[green]{n} kayıt içe alındı.[/]")
+        return 0
+    if sub == "rm" and len(argv) > 1:
+        ok = corpus.remove(argv[1])
+        console.print("silindi" if ok else "yok")
+        return 0 if ok else 1
+    if sub == "label":
+        todo = corpus.to_label(cases)
+        if not todo:
+            console.print("etiketlenecek kayıt yok")
+            return 0
+        console.print("Her kayıt çalınır. [bold]e[/]: ALICE'e söyledim  [bold]h[/]: ona söylemedim  "
+                      "[bold]m[/]: söyledim ama metni yanlış anladı  [bold]t[/]: tekrar çal  [bold]s[/]: atla  "
+                      "[bold]q[/]: bitir")
+        base = corpus.root()
+        for c in todo:
+            console.print(f"{c.id}  {c.dur:.1f} sn  şimdiki etiket: {c.label} ({c.confidence})  "
+                          f"duyulan: {escape(str(c.orig.get('head') or ''))[:80]}")
+            while True:
+                corpus.play(c.wav(base))
+                ans = input("> ").strip().lower()[:1]
+                if ans != "t":
+                    break
+            if ans == "q":
+                break
+            label = {"e": "uyanmaliydi", "h": "uyanmamaliydi", "m": "yanlis_dokum"}.get(ans)
+            if label:
+                bucket = ("pozitif" if label != "uyanmamaliydi" else c.bucket
+                          if c.bucket in ("baska-konusmaci", "konusma-yok") else "negatif-konusma")
+                corpus.relabel(c.id, label=label, bucket=bucket, confidence="kesin", labeled_by="kullanıcı")
+        return 0
+    console.print("kullanım: alice voice corpus [stats|import|label|rm <id>]")
+    return 2
+
+
 def _latency(cfg, argv) -> int:
     from alice.voice import latency
 
@@ -58,7 +142,8 @@ def voice_cmd(argv: list[str]) -> int:
     rest = argv[1:] if argv and not argv[0].startswith("-") else argv
     cfg = load_config()
     fn = {"on": _on, "off": _off, "install-local": _install_local, "models": _models, "run": _run, "audition": _audition, "use": _use, "library": _library, "say": _say, "test": _test, "enroll": _enroll,
-          "status": _status, "gecikme": _latency, "latency": _latency}.get(sub)
+          "status": _status, "gecikme": _latency, "latency": _latency, "replay": _replay,
+          "corpus": _corpus}.get(sub)
     if fn is None:
         console.print(f"bilinmeyen ses komutu: {sub}", markup=False)
         console.print(__doc__, markup=False)
