@@ -1258,18 +1258,19 @@ class LiveSession:
                 text = f"HATA {type(e).__name__}: {e}"
             self.log(f"live arka plan işi bitti: {name}: {text[:300]}")
             try:
-                self._deliver(name, text)
+                self._deliver(name, text, ws)
             finally:
                 with self._bg_lock:
                     self._tasks = max(0, getattr(self, "_tasks", 1) - 1)
 
         threading.Thread(target=run, daemon=True, name=f"alice-live-bg-{name}").start()
 
-    def _deliver(self, name: str, text: str) -> None:
+    def _deliver(self, name: str, text: str, origin=None) -> None:
         """Arka plan işinin sonucu: konuşma açıksa (başlatan ya da sonra açılan oturum) modele, o da kullanıcıya
         söyler. Kapandıysa announce ile (Ada + ses). İş artık oturumu açık tutmuyor: Discord'da tek tur kapanması
-        boşa çıkıyor, arkadaşlara söylenenler Live'a gidiyordu; "Alice sus" denince sonuç kayboluyordu."""
-        ws = getattr(self, "_ws", None)
+        boşa çıkıyor, arkadaşlara söylenenler Live'a gidiyordu; "Alice sus" denince sonuç kayboluyordu.
+        origin: işi başlatan oturumun bağlantısı (kapandıysa gönderim hata verir, announce'a düşülür)."""
+        ws = getattr(self, "_ws", None) or origin
         if ws is not None:
             turn = getattr(self, "_turn", None)
             if isinstance(turn, dict) and not text.startswith("HATA"):

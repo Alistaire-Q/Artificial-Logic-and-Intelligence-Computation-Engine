@@ -300,16 +300,16 @@ def test_background_counter_returns_to_zero(monkeypatch):
     sent: list[dict] = []
     ws = SimpleNamespace(send=lambda d: sent.append(json.loads(d)))
     s = LiveSession.__new__(LiveSession)
-    s.log, s._bg = (lambda m: None), 0
+    s.log, s._bg, s._tasks = (lambda m: None), 0, 0
     done = threading.Event()
     s.agent = SimpleNamespace(_enable_groups_for=lambda **k: None,
                               _execute_calls=lambda c: done.wait(3) and [ToolResult("bitti")])
     s._run_call(ws, {"id": "b1", "name": "computer_task", "args": {"goal": "x"}})
-    assert s._bg == 1
+    assert s._tasks == 1 and s._bg == 0  # ekran görevi sayılır ama oturumu açık tutmaz
     s._run_call(ws, {"id": "b2", "name": "computer_task", "args": {"goal": "y"}})  # ikincisi reddedilir
     assert "zaten" in json.dumps(sent[-1], ensure_ascii=False)
     done.set()
-    assert wait_for(lambda: s._bg == 0)
+    assert wait_for(lambda: s._tasks == 0)
 
 
 # ---------------------------------------------------- yerel ses sunucusu
