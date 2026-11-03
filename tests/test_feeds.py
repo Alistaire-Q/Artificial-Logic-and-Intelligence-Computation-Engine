@@ -71,7 +71,8 @@ def test_doldurulmamis_sablon_akisi_calismaz(tmp_path, monkeypatch):
                  'args = { region = "EU" }\n', encoding="utf-8")
     monkeypatch.setattr(F, "feeds_path", lambda: p)
     fs, errors = F.load_feeds()
-    assert [f.name for f in fs] == ["bolge"] and any("doldurulmamış" in e for e in errors)
+    assert [(f.name, f.enabled) for f in fs] == [("ornek", False), ("bolge", True)]  # görünür ama yoklanmaz
+    assert any("doldurulmamış" in e for e in errors)
 
 
 def test_dosya_yoksa_sorun_degil(tmp_path, monkeypatch):

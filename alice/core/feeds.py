@@ -195,10 +195,10 @@ def load_feeds(path: Path | None = None) -> tuple[list[Feed], list[str]]:
             continue
         blank = [k for k, v in (raw.get("args") or {}).items() if isinstance(v, str) and _PLACEHOLDER.match(v)]
         if blank:
-            # Şablondaki "KANAL_ID" gibi doldurulmamış değer: akış hiç kurulmamış. Eskiden her 5 dakikada
-            # çalışıp aynı hatayı veriyordu ("ornek" akışı, DISCORD_BOT_TOKEN yok).
-            errors.append(f"akış atlandı: {raw.get('name', '?')}: {', '.join(blank)} doldurulmamış")
-            continue
+            # Şablondaki "KANAL_ID" gibi doldurulmamış değer: akış hiç kurulmamış, kapalı sayılır (listede ve
+            # panelde görünür ama yoklanmaz). Eskiden her 5 dakikada çalışıp aynı hatayı veriyordu ("ornek" akışı).
+            errors.append(f"akış kapalı: {raw.get('name', '?')}: {', '.join(blank)} doldurulmamış")
+            raw = {**raw, "enabled": False}
         try:
             out.append(parse_feed(dict(raw)))
         except ValueError as e:
