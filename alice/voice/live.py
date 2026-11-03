@@ -525,6 +525,8 @@ class LiveSession:
         self._ask: tuple[float, str] | None = None  # oturum kapanırken bekleyen onay sorusu
         # Konuşma kapandıktan sonra biten işin sonucunu kullanıcıya ileten işlev (sesli asistan verir).
         self.announce: Callable[[str], None] | None = None
+        # Kullanıcı az önceki uyanmayı düzeltti / Gemini "Alice" duymadı: gerçek ses korpusu o cümleyi etiketler.
+        self.on_correction: Callable[[str], None] | None = None
 
     @property
     def playing(self) -> bool:
@@ -831,6 +833,7 @@ class LiveSession:
                 return True
             if verdict is False and final:
                 self.log(f"live: Gemini 'Alice' duymadı ({''.join(state['heard'])[:120]!r}), cevap verilmedi")
+                self._corrected("[gemini duymadı] " + "".join(state["heard"])[:120])
                 state["mute"] = True
                 out.clear()
                 done.set()
@@ -1633,6 +1636,7 @@ class LiveSession:
         ts, user, reply = prev
         if time.time() - ts > 120:
             return  # eski bir tura ait değil
+        self._corrected(heard)
         try:
             from alice.evals import record_feedback
 
@@ -1640,6 +1644,14 @@ class LiveSession:
             self.log(f"live düzeltme test setine eklendi: {user[:80]!r} -> {heard[:80]!r}")
         except Exception:  # noqa: BLE001 - kayıt hatası konuşmayı bozmasın
             pass
+
+    def _corrected(self, text: str) -> None:
+        hook = getattr(self, "on_correction", None)
+        if hook is not None:
+            try:
+                hook(text)
+            except Exception:  # noqa: BLE001 - korpus hatası konuşmayı bozmasın
+                pass
 
     def _memory(self):
         mem = getattr(self.agent, "memory", None)

@@ -67,3 +67,18 @@ _CORRECTION = re.compile(
 def correction(text: str) -> bool:
     """"Sana demedim", "yanlış anladın", "saçmaladın", "hayır, ..." gibi bir düzeltme mi?"""
     return bool(_CORRECTION.search(text or ""))
+
+
+# Korpus etiketi için dar sınıflar (bkz. corpus.correction_label)
+_NOT_FOR_ME = re.compile(r"\b(sana (de(me|mi)\w*|söyle(me|mi)\w*|konuşmu\w*|değil)|seslenmedim|seni çağırmadım)\b", re.I)
+_MISHEARD = re.compile(r"\b(yanlış anla\w*|yanlış duy\w*|anlamad[ıi]n|onu demedim|bunu demedim|öyle demedim)\b", re.I)
+
+
+def not_for_me(text: str) -> bool:
+    """"Sana demedim", "seslenmedim": ALICE'e söylenmemişti (yanlış uyanma)."""
+    return bool(_NOT_FOR_ME.search(text or ""))
+
+
+def misheard(text: str) -> bool:
+    """"Yanlış anladın", "onu demedim": ALICE'e söylenmişti ama yanlış duyuldu."""
+    return bool(_MISHEARD.search(text or "")) and not not_for_me(text)
