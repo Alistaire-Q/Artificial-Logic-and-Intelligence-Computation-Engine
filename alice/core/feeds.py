@@ -65,6 +65,8 @@ from alice.core.notify import Notification
 
 FIELD_RX = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_.]*)\}")
 QUIET_RX = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})\s*$")
+# Şablondan kalmış, doldurulmamış değer ("KANAL_ID", "STEAMID1,STEAMID2")
+_PLACEHOLDER = re.compile(r"^(?=.*[_0-9])[A-Z][A-Z0-9_]{3,}(,[A-Z][A-Z0-9_]{3,})*$")
 MAX_SEEN = 200          # akış başına hatırlanan öğe kimliği / izlenen öğe sayısı
 MAX_PER_TICK = 5        # bir turda en fazla bu kadar tek tek bildirim (akış patlarsa ekranı doldurmasın)
 MAX_HELD = 50           # özet için biriktirilen en fazla öğe
@@ -190,6 +192,12 @@ def load_feeds(path: Path | None = None) -> tuple[list[Feed], list[str]]:
     errors: list[str] = []
     for raw in data.get("feed") or []:
         if not isinstance(raw, dict):
+            continue
+        blank = [k for k, v in (raw.get("args") or {}).items() if isinstance(v, str) and _PLACEHOLDER.match(v)]
+        if blank:
+            # Şablondaki "KANAL_ID" gibi doldurulmamış değer: akış hiç kurulmamış. Eskiden her 5 dakikada
+            # çalışıp aynı hatayı veriyordu ("ornek" akışı, DISCORD_BOT_TOKEN yok).
+            errors.append(f"akış atlandı: {raw.get('name', '?')}: {', '.join(blank)} doldurulmamış")
             continue
         try:
             out.append(parse_feed(dict(raw)))

@@ -71,14 +71,14 @@ Aşağıda ilk üç madde için nasıl yapılacağı yazılı. Diğerlerinin ayr
 
 ### Durum (3 Kasım 2026)
 
-#157-#170 main'de. 2-3 Kasım işleri (HUD, telefon, önsezi, tarayıcı eklentisi, gözlem ve kanıt kontrolü, füze görme,
-gece döngüsü) PR #172'de, birleşmeyi bekliyor.
+#157-#174 main'de. 2-3 Kasım işleri (HUD, telefon, önsezi, tarayıcı eklentisi, gözlem ve kanıt kontrolü, füze görme,
+gece döngüsü) #172'de; sesli konuşmanın 12 düzeltmesi #173'te; gerçek ses korpusu #174'te.
 
 | Madde | Durum | Senden beklenen |
 |---|---|---|
 | HUD motoru (Ada) | Apple'ın Dynamic Island kurallarıyla tek "Ada" (açık buzlu cam, marka mavisi, sürekli köşe, yay animasyonu); kenar ışığı. ALICE'in imleci hedefe kayar, tıklamada halka yayılır; dinlerken dalga ve mavi parıltı; oyunda yalnız tehdit ve uyarı (`[hud] mode`, Ctrl+Alt+K); Ctrl+Alt+J son bildirimler; yönsüz tehdide radar simgesi; çalan şarkı. War Thunder'da kenarlıksız pencerede denendi, FPS'e etkisi yok | — |
 | Ekrandan füze görme (#159) | Medal'deki 344 War Thunder klibinden: RWR turkuaz ve uyarı yazıyla (TRACK kilit, LAUNCH füze, dairedeki MSL yön). Turkuaz maske ve kelime düzeyinde OCR; 40 klipte 28'inde füze yakalandı, örneklenen karelerin hepsi gerçek LAUNCH, kare ~8-15 ms. Bölge ekran yüksekliğine göre kendiliğinden, varsayılan açık | Bir maçta "Füze!" ve "Kilitlendin!" anonslarını dinle; geç ya da yanlış gelirse söyle |
-| Kendi aracını yazan ALICE (#160) | Altyapıdaki dört hata düzeldi (kum havuzu çıktısı kayboluyordu, `from __future__` sırası, çift ters eğik çizgili klasör, iki adla görünen kullanıcı klasöründe tmp_path). Steam aracı testi ilk denemede geçiyor; ama son oynanmayı değil son güncellenmeyi sıralıyor | Steam aracını "son oynanma" (`localconfig.vdf`) ile düzeltip kurayım mı |
+| Kendi aracını yazan ALICE (#160) | Altyapıdaki dört hata düzeldi (kum havuzu çıktısı kayboluyordu, `from __future__` sırası, çift ters eğik çizgili klasör, iki adla görünen kullanıcı klasöründe tmp_path). Steam aracı (`steam_recent_list`) son oynanmaya göre (bütün hesapların `localconfig.vdf`'i) düzeltildi ve kuruldu; gerçek veride War Thunder, Deadlock en üstte | — |
 | Gece döngüsü ve rüya modu (#161) | Gece raporu, sabah sorusu, bağlantılar. Artık tek seferlik iş parçacığı ölümleri ve sohbetlerdeki takılmalar da (aynı adımı tekrarlama, ekran işinde aynı tuşa basıp durma, kesilen iş, "yine saçmaladı") isteğiyle birlikte rapora girer; kendiliğinden kod değiştirmez | Sabah sorusuna evet/hayır |
 | Şu an durumu ve önsezi (#162, tamamlandı) | Oyundan önce ses hazırlığı ve Steam güncellemesi, maçta Windows "Rahatsız etmeyin", sabah ilk sorulanın hazır cevabı. "Ne çalıyor": Windows medya oturumu (Spotify, Sonora, tarayıcı), durdur/geç tam çalan uygulamaya | Steam'de War Thunder'ı "her zaman güncel tut"a al |
 | Koçluk ve duygusal zekâ (#163) | Ölüm desenleri, maç içi öğüt, tilt'te daha az konuşma, mola önerisi | — |
@@ -87,6 +87,8 @@ gece döngüsü) PR #172'de, birleşmeyi bekliyor.
 | Sözünü tutan bilgisayar kullanımı | Ekran işleri önce reflex'e (~1 sn/adım), ekran görevi yedek; ekran görevi JPEG ve "ekran durulunca devam" ile hızlı. Ekranı etkileyen her eylemden sonra yeni pencere/hata kutusu/UAC sonuca eklenir; "yaptım/indirildi/yok" diyen cevap araç sonuçlarıyla desteklenmiyorsa bir kez doğrulamaya gönderilir. Olmayan dosya açılmaz, indirmeler Farklı Kaydet'e girmeden doğrudan İndirilenler'e | Sonora gibi bir indirme-kurulum işini baştan sona dene |
 | Tarayıcı eklentisi | Opera'ya ALICE eklentisi: uzaktan hata ayıklama ve izin penceresi yok, indirme/tema ellenmez; sekme, okuma, yazma, tıklama, ekran görüntüsü, indirme listesi. Opera'da kuruldu ve okuma denendi | Opera'da gerçek bir tıklama/yazma işini dene |
 | Tek Python ortamı | ALICE'in Python'u kaydedilir, başka Python'dan başlayan çekirdek kayıtlıyla yeniden başlar; açılışta eksik paketleri kendisi kurar | — |
+| Sesli konuşma (#173) | voice.log'dan 12 madde: "Alış-" ve ek almış "Alice'e" uyandırmaz, Discord'da Gemini de "Alice" duymalı; Türkçe olmayan istekle iş yapılmaz, yabancı/boş cevap susturulur; kanıtsız "yaptım" düzeltilir ve hafızaya olgu diye girmez; onay sorudan sonraki sözden alınır, yanlış pencereye yazılmaz; sağır mikrofon, eski cümle kuyruğu, ses izi gri bölgesi, kendi sesiyle söz kesme, arka plan sonucu, gecikme ölçümü, düzeltmeler test setine | Kendi "Alice" uyandırma modeli ve ses izi profilini oyun/Discord açıkken yenilemek için ses kaydı |
+| Gerçek ses korpusu (#174) | Uyanmalar ve düzeltmeler `~/.alice/voice/corpus`'a birikir; `alice voice replay` gerçek Whisper ve ses iziyle yanlış/kaçan uyanmayı ölçer; `alice voice corpus label` ile çalıp etiketlenir. 30 kayıtta yanlış uyanma 0; repoda kullanıcı sesi içermeyen 10 TTS cümlesi | Normal kullan, oyunda 20-30 kez "Alice ..." de; birkaç gün sonra `alice voice corpus label` |
 | DCS kanat adamları (#170) | Sesle AI gruplarına saldır, yanıma gel, bekle, eve dön. `MissionScripting.lua` değişmedi; sabit komut kabul eden bir DCS hook dosyası kullanılıyor, çekirdek başlarken kurulur. DCS'te denenmedi | Tek oyunculu bir görevde ilk komutu dene; çalışmazsa `dcs.log`'daki `ALICE` satırları |
 
 ### 1. Ekran üstü HUD motoru
@@ -165,13 +167,14 @@ gece döngüsü) PR #172'de, birleşmeyi bekliyor.
 
 ## Şu an seni bekleyenler
 
-* **PR #172'yi birleştir.** 2-3 Kasım işlerinin hepsi orada.
 * **Google bağlantıları koptu.** Google Takvim ve 4 Gmail hesabının izni dolmuş, sağlık raporu her gün bunu söylüyor. `alice connect google_calendar` ve Ayarlar → Kurulum → Gmail ekle (aynı adla).
 * **Ekrandan füze görmeyi bir maçta dinle:** "Füze! Saat 4", "Füze atıldı!", "Kilitlendin!". Geç, eksik ya da yanlış gelirse söyle.
-* **Steam aracı:** ALICE'in yazdığı araç testi geçiyor ama son oynanmayı değil son güncellenmeyi sıralıyor; düzeltip kurmak için onay.
-* **Model listesinde çalışmayanlar:** Vercel AI Gateway kredi kartı istiyor, Ollama kapalı. Kullanmıyorsan listeden çıkaralım, boşuna denenmesinler.
-* **Örnek Discord akışı:** `~/.alice/feeds.toml` içindeki `ornek` akışı hiç kurulmadı. Bir kanal izlemek istiyorsan dolduralım, istemiyorsan silelim.
+* **Gerçek ses korpusu için seslen:** birkaç gün normal kullan, oyunda 20-30 kez "Alice ..." de; sonra `alice voice corpus label` (belirsizler çalınır, e/h/m). Kaçan uyanma oranı ancak o zaman ölçülür.
+* **Opera'da gerçek bir tıklama/yazma işi ve baştan sona bir indir-kur işi:** ALICE'e sesle ya da yazıyla ver; sorun olursa söyle.
 * **Akıllı saat:** Gadgetbridge dışa aktarması hâlâ bağlı değil (`[watch] export_path` boş). Nabız uçuş raporlarına ve duygusal zekâ fikrine bundan gelecek.
+* **Discord akışı:** şablondaki doldurulmamış `ornek` akışı artık çalıştırılmıyor (her 5 dakikada hata veriyordu). Bir kanal izlemek istersen `~/.alice/feeds.toml`'da kanal kimliğini ve `DISCORD_BOT_TOKEN`'ı ver.
+
+Model listesindeki Vercel (kredi kartı istiyor) hiçbir zincirde yok, yalnızca elle seçilir; Ollama yalnızca her şey düşerse denenir ve kapalıyken anında geçilir. İkisi de boşuna beklemiyor, dokunulmadı.
 
 ---
 

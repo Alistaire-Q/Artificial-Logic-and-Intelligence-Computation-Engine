@@ -63,6 +63,17 @@ def test_tanim_okunur_ve_bozuk_olan_atlanir(tmp_path, monkeypatch):
     assert fs[0].interval == 300 and fs[1].enabled is False
 
 
+def test_doldurulmamis_sablon_akisi_calismaz(tmp_path, monkeypatch):
+    # "ornek" akışı her 5 dakikada "DISCORD_BOT_TOKEN yok" diyordu: KANAL_ID hiç doldurulmamıştı.
+    p = tmp_path / "feeds.toml"
+    p.write_text('[[feed]]\nname = "ornek"\nconnector = "discord"\naction = "messages"\n'
+                 'args = { channel_id = "KANAL_ID" }\n[[feed]]\nname = "bolge"\nconnector = "x"\naction = "y"\n'
+                 'args = { region = "EU" }\n', encoding="utf-8")
+    monkeypatch.setattr(F, "feeds_path", lambda: p)
+    fs, errors = F.load_feeds()
+    assert [f.name for f in fs] == ["bolge"] and any("doldurulmamış" in e for e in errors)
+
+
 def test_dosya_yoksa_sorun_degil(tmp_path, monkeypatch):
     monkeypatch.setattr(F, "feeds_path", lambda: tmp_path / "yok.toml")
     assert F.load_feeds() == ([], [])
