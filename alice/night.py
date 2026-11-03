@@ -159,6 +159,92 @@ def crashes(log_text: str) -> list[Finding]:
     return out
 
 
+def thread_deaths(log_text: str) -> list[Finding]:
+    """Arka plan iş parçacığı öldü: tek sefer bile önemli. 2026-11-02'de ses iş parçacığı bir kez çöktü ve ALICE
+    yeniden başlatılana kadar hiçbir şey duymadı; "en az 2 kez" kuralına takılıp rapora girmiyordu."""
+    hits = re.findall(r"(?m)^Exception in thread ([\w.-]+):\n(?:(?:Traceback|[ \t]).*\n)*?(\w[\w.]*(?:Error|Exception)"
+                      r"[^\n]*)", log_text)
+    out = []
+    for (name, err), n in Counter((t, e[:140]) for t, e in hits).most_common(5):
+        out.append(Finding("crash", f"Arka plan işi öldü: {name} ({err[:70]})", err, n,
+                           "O özellik ALICE yeniden başlatılana kadar çalışmadı. Hata yığınına bakıp kaynağını "
+                           "düzelteyim ve iş parçacığı bir daha kalıcı ölmesin."))
+    return out
+
+
+# Kullanıcının bir işin kötü gittiğini söylediği cümleler (sohbet ve ses). Gündelik küfür ("aq", "amk") ve
+# "takılmaca" gibi sözler sayılmaz: kullanıcı onları her mesajda kullanabiliyor.
+FRUSTRATION = re.compile(r"sa[çc]mala|mal gibi|malca|olmad[ıi](?![a-zçğıöşü])|yapamad[ıi]n|yapmad[ıi]n|bi t[üu]rl[üu]|"
+                         r"tak[ıi]ld[ıi]|yanl[ıi][şs] yapt|ignore|duymad[ıi]n|cevap vermedi|berbat|💔", re.I)
+STUCK_REPEAT = 3   # bir turda aynı araç çağrısı bu kadar
+STUCK_STEPS = 4    # bir ekran işi sonucunda aynı adım (ör. "pressed enter") bu kadar
+
+
+def struggles(sessions: Path | None, since: float) -> list[Finding]:
+    """Sohbet kayıtlarından takılmalar: aynı çağrıyı tekrar tekrar yapmak, ekran işinde aynı tuşa basıp durmak,
+    kullanıcının kestiği turlar ve kullanıcının "yine saçmaladı" dediği işler. Her biri neyin istendiğiyle birlikte."""
+    d = sessions or alice_home() / "sessions"
+    out: list[Finding] = []
+    try:
+        files = [f for f in d.glob("*.json") if f.stat().st_mtime >= since]
+    except OSError:
+        return []
+    for f in sorted(files):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        msgs = data.get("messages") if isinstance(data, dict) else data
+        if not isinstance(msgs, list):
+            continue
+        ask, calls, prev_ask = "", Counter(), ""
+        for m in msgs:
+            if not isinstance(m, dict):
+                continue
+            role, content = m.get("role"), m.get("content")
+            text = content if isinstance(content, str) else " ".join(
+                x.get("text", "") for x in content or [] if isinstance(x, dict))
+            if role == "user" and not m.get("_nudge") and not m.get("_image") and not text.startswith("["):
+                if FRUSTRATION.search(text) and prev_ask:
+                    out.append(Finding("stuck", f"Kullanıcı memnun kalmadı: \"{text[:60]}\"",
+                                       f"Önceki istek: \"{prev_ask[:120]}\"", 1,
+                                       "O turdaki araç adımlarına bakıp nerede yanlış gittiğini bulayım ve genel bir "
+                                       "düzeltme önereyim (sadece o işe özel yama değil)."))
+                prev_ask = ask or text
+                ask, calls = text, Counter()
+            elif role == "assistant":
+                for c in m.get("tool_calls") or []:
+                    fn = c.get("function") or {}
+                    key = f"{fn.get('name')}({str(fn.get('arguments') or '')[:120]})"
+                    calls[key] += 1
+                    if calls[key] == STUCK_REPEAT:
+                        out.append(Finding("stuck", f"Aynı adımı tekrarladı: {fn.get('name')}",
+                                           f"İstek: \"{ask[:100]}\"; çağrı: {key[:140]}", STUCK_REPEAT,
+                                           "Neden ilerleyemediğine bakıp bu durumda başka yol deneyecek genel bir kural "
+                                           "ekleyeyim."))
+            elif role == "tool":
+                steps = Counter(s.strip() for s in re.findall(
+                    r"\d+\. ((?:pressed|clicked|typed|right-clicked|double-clicked) .{1,40}?)(?=\s*(?:\(|\||\n|\d+\. |$))",
+                    text))
+                for step, n in steps.items():
+                    if n >= STUCK_STEPS:
+                        out.append(Finding("stuck", f"Ekran işinde aynı adım {n} kez: {step.strip()[:40]}",
+                                           f"İstek: \"{ask[:100]}\"", n,
+                                           "Ekranda beklenmedik bir pencere ya da hata olabilir; ekran işinin bu "
+                                           "durumda durup ne gördüğünü söylemesini sağlayayım."))
+                if "durduruldu (kullanıcı kesti)" in text:
+                    out.append(Finding("stuck", "Kullanıcı işi yarıda kesti", f"İstek: \"{ask[:120]}\"", 1,
+                                       "Kesilmeden önceki adımlara bakıp neyin yanlış gittiğini bulayım."))
+    # aynı şey birden çok kez bulunduysa birleştir
+    merged: dict[str, Finding] = {}
+    for x in out:
+        if x.title in merged:
+            merged[x.title].count += x.count
+        else:
+            merged[x.title] = x
+    return sorted(merged.values(), key=lambda x: -x.count)[:8]
+
+
 # --------------------------------------------------------------------- rüya
 def _day_of(ts: float) -> str:
     """Gece yarısından sonraki saatler önceki güne sayılır (gece 2'de oynanan maç "dün geceki")."""
@@ -229,10 +315,11 @@ def tomorrow(mem: Any, now: float) -> list[str]:
 
 
 # ---------------------------------------------------------------------- akış
-def analyze(store: Any, now: float, voice_log: Path | None = None, core_log: Path | None = None) -> list[Finding]:
+def analyze(store: Any, now: float, voice_log: Path | None = None, core_log: Path | None = None,
+            sessions: Path | None = None) -> list[Finding]:
     since = now - 86400
     events = store.events(since=since, limit=5000)
-    found = repeated_errors(events) + noisy_callouts(events)
+    found = repeated_errors(events) + noisy_callouts(events) + struggles(sessions, since)
     vl = voice_log or alice_home() / "voice.log"
     try:
         lines = vl.read_text(encoding="utf-8", errors="replace").splitlines()[-20000:]
@@ -247,7 +334,8 @@ def analyze(store: Any, now: float, voice_log: Path | None = None, core_log: Pat
     try:
         with cl.open("rb") as f:
             f.seek(max(0, cl.stat().st_size - 400_000))
-            found += crashes(f.read().decode("utf-8", errors="replace"))
+            text = f.read().decode("utf-8", errors="replace")
+            found += thread_deaths(text) + crashes(text)
     except OSError:
         pass
     return found

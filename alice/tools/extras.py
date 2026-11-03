@@ -90,8 +90,9 @@ class Weather(Tool):
 class Media(Tool):
     name = "media"
     description = ("Çalan medyayı (müzik, video) kontrol eder ve ne çaldığını söyler (now): Spotify, Sonora, YouTube, "
-                   "hangi uygulama olursa. Sistem sesi, zamanlı durdurma, bilgisayarı kapatma. Yeni bir şarkı ya da video "
-                   "AÇMAK için değil (youtube ya da browser).")
+                   "hangi uygulama olursa. \"Ne çalıyor\" sorusunda önce bunu kullan (Spotify bağlantısı yalnız Spotify'ı "
+                   "görür). Sistem sesi, zamanlı durdurma, bilgisayarı kapatma. Yeni bir şarkı ya da video AÇMAK için "
+                   "değil (youtube ya da browser).")
     parameters = obj({
         "action": {"type": "string", "enum": ["now", "play_pause", "next", "previous", "stop", "mute", "volume_up",
                                               "volume_down", "set_volume", "pause_in", "shutdown_in",

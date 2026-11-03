@@ -64,6 +64,14 @@ def status() -> dict[str, Any]:
             out["now"] = _now_cache["now"]
     except Exception:  # noqa: BLE001 - veritabanı meşgul: kart yine açılsın
         out.setdefault("events", [])
+    try:  # medya kartında ne çaldığı (Spotify, Sonora, tarayıcı...)
+        from alice.extras import nowplaying
+
+        n = nowplaying.now()
+        if n and (n.get("title") or n.get("artist")):
+            out["playing"] = {k: n.get(k, "") for k in ("title", "artist", "app", "status")}
+    except Exception:  # noqa: BLE001
+        pass
     try:
         from alice.anticipate import ready_line
 
@@ -153,6 +161,11 @@ def action(d: dict[str, Any]) -> str:
     from alice.extras import media
 
     a = str(d.get("action") or "")
+    if a in ("play_pause", "next", "previous"):
+        from alice.extras import nowplaying
+
+        if nowplaying.control(a):  # tam çalan uygulamaya (medya tuşu son odaklanana gidiyordu)
+            return "tamam"
     if a in ("play_pause", "next", "previous", "mute", "volume_up", "volume_down"):
         return media.key(a, int(d.get("times") or (3 if a.startswith("volume") else 1)))
     if a == "set_volume":

@@ -208,6 +208,13 @@ async function refreshStatus() {
   if (s.app) parts.push("Önde: " + s.app);
   if (s.voice) parts.push("Ses: " + (s.voice === "listening" ? "dinliyor" : s.voice));
   $("#nowLine").textContent = parts.join(" · ");
+  const pl = s.playing;
+  $("#playing").hidden = !pl;
+  if (pl) {
+    $("#playTitle").textContent = pl.title || pl.artist;
+    const state = { playing: "çalıyor", paused: "duraklatıldı", stopped: "durdu" }[pl.status] || "";
+    $("#playMeta").textContent = [pl.title ? pl.artist : "", pl.app, state].filter(Boolean).join(" · ");
+  }
 
   const ins = $("#insight");
   ins.innerHTML = "";

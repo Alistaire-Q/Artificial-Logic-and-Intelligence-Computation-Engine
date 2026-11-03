@@ -115,10 +115,15 @@ def _host(url: str) -> str:
     return m.group(1).lower() if m else ""
 
 
+def _norm_path(path: str) -> str:
+    """Karşılaştırma için: ~ açılır, ters/düz ve çift eğik çizgiler tek "/" olur, büyük-küçük harf yok sayılır.
+    Kodda çift ters eğik çizgiyle yazılan klasör bildirgedeki aynı klasörle eşleşmiyordu (Steam aracı denemesi)."""
+    return re.sub(r"[\\/]+", "/", os.path.expanduser(path)).rstrip("/").lower()
+
+
 def _under(path: str, folders: list[str]) -> bool:
-    p = os.path.normcase(os.path.expanduser(path)).rstrip("\\/")
-    return any(p == (f := os.path.normcase(os.path.expanduser(x)).rstrip("\\/")) or p.startswith(f + os.sep)
-               or p.startswith(f + "/") for x in folders)
+    p = _norm_path(path)
+    return any(p == (f := _norm_path(x)) or p.startswith(f + "/") for x in folders)
 
 
 def check_code(code: str, name: str, manifest: dict[str, Any]) -> list[str]:
@@ -187,10 +192,16 @@ def staging_dir(name: str) -> Path:
 
 
 def file_text(name: str, code: str, manifest: dict[str, Any], need: str) -> str:
+    # "from __future__" satırları dosyanın en başında (açıklamadan hemen sonra) olmalı: başlığın arkasında kalınca
+    # yazılan araç SyntaxError veriyordu (Steam aracı denemesi, 2026-11-03).
+    lines = code.strip().splitlines()
+    future = [ln for ln in lines if ln.strip().startswith("from __future__ import")]
+    body = "\n".join(ln for ln in lines if ln not in future)
     head = (f'"""ALICE\'in kendi yazdığı araç: {name}. İhtiyaç: {need.strip()[:200]}\n'
             f'Yazıldığı an: {time.strftime("%Y-%m-%d %H:%M")}. Kayıt: ~/.alice/selftools.json"""\n\n'
-            f"MANIFEST = {manifest!r}\n\n")
-    return head + code.strip() + "\n"
+            + ("\n".join(future) + "\n\n" if future else "")
+            + f"MANIFEST = {manifest!r}\n\n")
+    return head + body.strip() + "\n"
 
 
 def run_tests(name: str, source: str, test: str, ctx: Any, timeout: float = TEST_TIMEOUT) -> tuple[bool, str]:
@@ -202,7 +213,11 @@ def run_tests(name: str, source: str, test: str, ctx: Any, timeout: float = TEST
         old.unlink()
     (d / f"{name}.py").write_text(source, encoding="utf-8")
     (d / f"test_{name}.py").write_text(test, encoding="utf-8")
-    argv = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", f"test_{name}.py"]
+    # Geçici klasör testin kendi klasöründe ve gerçek yolu çözülmüş: kullanıcı klasörü iki adla göründüğünde
+    # (kresu -> Hayat) pytest'in tmp_path'i "normalized and relative path değil" diye çöküyordu.
+    basetemp = (d / "tmp").resolve()
+    argv = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", f"--basetemp={basetemp}",
+            f"test_{name}.py"]
     try:
         argv, env_extra = sandbox.wrap(argv, d, ctx)
     except RuntimeError as e:

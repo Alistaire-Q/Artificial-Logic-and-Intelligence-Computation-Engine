@@ -111,3 +111,14 @@ def test_failed_read_is_not_blamed_on_sandbox(tmp_path):
     c = ToolContext(cwd=proj, config=make_config({"brain": ["a:m"]}, sandbox="on"))
     res = TOOLS["run_command"].run(c, f"Get-Item '{tmp_path / 'yok.exe'}'")
     assert res.is_error and "[sandbox:" not in res.text
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows düşük bütünlük seviyesi")
+def test_sandboxed_command_output_reaches_the_model(tmp_path):
+    """Canlı kayıt: kum havuzundaki komutların çıktısı kayboluyordu; ALICE'in yazdığı aracın testi kalınca neden
+    kaldığı görünmüyor, araç düzeltilemiyordu."""
+    proj = tmp_path / "proje"
+    proj.mkdir()
+    c = ToolContext(cwd=proj, config=make_config({"brain": ["a:m"]}, sandbox="on"))
+    res = TOOLS["run_command"].run(c, "Write-Output merhaba-kum-havuzu; Write-Error hata-satiri")
+    assert "merhaba-kum-havuzu" in res.text and "hata-satiri" in res.text

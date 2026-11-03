@@ -120,6 +120,9 @@ main { padding: 4px max(16px, env(safe-area-inset-right)) calc(96px + env(safe-a
             font-weight: 600; font-size: 15px; transition: transform .12s; }
 .text-btn.strong { background: var(--accent); color: #fff; }
 .vol { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.playing { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 2px 0 10px; text-align: center; }
+.playing b { font-weight: 600; font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.playing span { color: var(--text-2); font-size: 13px; }
 input[type=range] { flex: 1; accent-color: var(--accent); height: 28px; }
 
 input[type=search], #sendText {

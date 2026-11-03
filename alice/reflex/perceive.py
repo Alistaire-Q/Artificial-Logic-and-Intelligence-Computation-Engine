@@ -239,6 +239,23 @@ def ocr_image(img: Any, recognize: Callable[[Any], list[tuple[str, tuple[int, in
     return out
 
 
+def ocr_words(img: Any) -> list[tuple[str, tuple[int, int, int, int]]]:
+    """Görüntüdeki tek tek kelimeler ve piksel kutuları (x, y, en, boy). RWR'daki "M29 F15 MSL" gibi aynı satıra
+    düşen işaretlerin her birinin yeri ayrı gerekir (füzenin yönü MSL'nin konumundan çıkar)."""
+    from winrt.windows.graphics.imaging import BitmapAlphaMode, BitmapPixelFormat, SoftwareBitmap
+    from winrt.windows.storage.streams import DataWriter
+
+    eng = _engine()
+    rgba = img.convert("RGBA")
+    writer = DataWriter()
+    writer.write_bytes(rgba.tobytes())
+    bmp = SoftwareBitmap.create_copy_from_buffer(writer.detach_buffer(), BitmapPixelFormat.RGBA8, rgba.width,
+                                                 rgba.height, BitmapAlphaMode.PREMULTIPLIED)
+    result = _wait(eng.recognize_async(bmp))
+    return [(wd.text, (int(wd.bounding_rect.x), int(wd.bounding_rect.y), int(wd.bounding_rect.width),
+                       int(wd.bounding_rect.height))) for line in result.lines for wd in line.words]
+
+
 def _wait(op: Any) -> Any:
     """WinRT IAsyncOperation'ı bekle. Coroutine değil, sadece await edilebilir; asyncio.run onu kabul etmez. Çağıran
     zaten bir olay döngüsünün içindeyse (çekirdek) asyncio.run patlar: o zaman ayrı bir iş parçacığında beklenir."""

@@ -170,11 +170,16 @@ class SimHub:
         from alice.sims.vision import MissileWatcher, region_of
 
         region = region_of(self.cfg)
-        if region is None:
-            self.store.add_event("info", "Ekrandan füze görme kapalı",
-                                 "RWR bölgesi ayarlı değil: alice vision region X Y GENİŞLİK YÜKSEKLİK", "info",
-                                 "flight")
-            return None
+        if region is None:  # ayarlanmadıysa War Thunder'ın varsayılan RWR yeri (ekran yüksekliğine göre ölçekli)
+            from alice.sims.vision import default_region
+
+            try:
+                import mss
+
+                with mss.MSS() if hasattr(mss, "MSS") else mss.mss() as sct:
+                    region = default_region(int(sct.monitors[1]["height"]))
+            except Exception:  # noqa: BLE001
+                region = default_region(1080)
         w = MissileWatcher(region, self.cfg.get("vision") or {})
         self._parts.append(w)
         return w
