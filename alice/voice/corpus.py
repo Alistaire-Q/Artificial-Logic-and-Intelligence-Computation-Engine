@@ -223,7 +223,14 @@ class Collector:
     def _room(self, kind: str) -> bool:
         day = time.strftime("%Y%m%d")
         if day != self._day:
+            # Bugünkü sayı manifestten: çekirdek her yeniden başladığında sıfırlanınca günlük sınır tutmuyordu
+            # (günde 40 yerine 96 kayıt).
+            today = [c for c in load_manifest(self.base) if c.id.startswith(day)]
+            kinds = {"pozitif": "pos", "negatif-konusma": "neg", "baska-konusmaci": "other"}
             self._day, self._counts = day, {"pos": 0, "neg": 0, "other": 0}
+            for c in today:
+                if c.bucket in kinds:
+                    self._counts[kinds[c.bucket]] += 1
         limit = {"pos": self.POS_PER_DAY, "neg": self.NEG_PER_DAY}.get(kind, self.OTHER_PER_DAY)
         return self._counts[kind] < limit and self._count() < self.MAX_CASES
 

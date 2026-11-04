@@ -166,6 +166,18 @@ def test_negatives_are_capped_and_other_voices_keep_no_text(tmp_path):
     assert len(other) == 1 and other[0].orig["head"] == "" and other[0].confidence == "guclu"
 
 
+def test_daily_limit_survives_restart(tmp_path):
+    c = corpus.Collector(tmp_path)
+    c.NEG_PER_DAY = 2
+    neg = {"woke": False, "reason": "uyandirma_yok", "spk": 0.5, "thr": 0.3, "head": "otur çabuk"}
+    c.on_decision(_audio(), neg)
+    c.on_decision(_audio(), neg)
+    fresh = corpus.Collector(tmp_path)  # çekirdek yeniden başladı: sayaç sıfırlanmamalı
+    fresh.NEG_PER_DAY = 2
+    fresh.on_decision(_audio(), neg)
+    assert len(corpus.load_manifest(tmp_path)) == 2
+
+
 def test_voice_print_reject_imports_as_unsure():
     assert corpus.label_from_decision({"woke": False, "reason": "ses_izi", "spk": 0.27})[0] == "belirsiz"
     assert corpus.label_from_decision({"woke": False, "reason": "uyandirma_yok", "spk": 0.5, "head": ""})[1] == \

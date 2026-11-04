@@ -415,3 +415,14 @@ def test_install_autostart_windows_uses_powershell(monkeypatch, tmp_path):
     assert args[:3] == ["powershell", "-NoProfile", "-Command"] and kw["check"] is True
     ps = args[3]
     assert "it''s" in ps and "$s.Arguments='-m alice core run --tray'" in ps and p.parent.is_dir()
+
+
+def test_same_step_error_is_logged_once_a_day_even_across_restarts():
+    # Takvim izni dolunca aynı hata her yeniden başlatmada yazılıyordu (2 günde 13 kez).
+    events = []
+    store = SimpleNamespace(add_event=lambda *a, **k: events.append(a))
+    err = ConnectionError("token yenilenemedi")
+    service.Core._step_error(SimpleNamespace(store=store), "takvim takibi", err)
+    service.Core._step_error(SimpleNamespace(store=store), "takvim takibi", err)  # yeni süreç gibi: bellek boş
+    service.Core._step_error(SimpleNamespace(store=store), "takvim takibi", ConnectionError("başka hata"))
+    assert len(events) == 2

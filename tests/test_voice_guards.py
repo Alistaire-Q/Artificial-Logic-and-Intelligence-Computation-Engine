@@ -297,3 +297,58 @@ def test_speech_gate_verifies_who_interrupts():
     g.verify = lambda pcm: True
     out = [f for _ in range(60) for f in g.feed(frame)]
     assert any(any(f) for f in out)
+
+
+# ------------------------------------------------------------------ 5 Kasım kontrolünden çıkan düzeltmeler
+def test_recent_utterance_is_heard_even_if_late_but_only_with_wake_word():
+    va = VoiceAssistant(FakeAgent(), FakeSpeaker(), stt=SimpleNamespace(transcribe=lambda a: "", wake_gate=None))
+    seen = []
+    va.handle_audio = lambda audio, direct, started=None, ptt=False: seen.append((audio.seconds, direct, started))
+    a = Audio(b"\1\0" * 16000, 16000)
+    va._utter_q.put((a, True, 123.0, False, time.monotonic() - 12))  # oyunda 12 sn beklemiş, arkasında yenisi yok
+    assert wait_for(lambda: seen == [(1.0, False, None)])  # dinlenir, takip penceresi sayılmaz
+
+
+def test_late_utterance_with_newer_one_behind_is_skipped():
+    va = VoiceAssistant(FakeAgent(), FakeSpeaker(), stt=SimpleNamespace(transcribe=lambda a: "", wake_gate=None))
+    gate, seen = threading.Event(), []
+
+    def handle(audio, direct, started=None, ptt=False):
+        gate.wait(2)
+        seen.append(audio.seconds)
+
+    va.handle_audio = handle
+    first, old, new = (Audio(b"\1\0" * (4000 * n), 16000) for n in (1, 2, 3))
+    va._utter_q.put((first, False, None, False, time.monotonic()))  # işçi bununla meşgul
+    time.sleep(0.1)
+    va._utter_q.put((old, False, None, False, time.monotonic() - 12))
+    va._utter_q.put((new, False, None, False, time.monotonic()))
+    gate.set()
+    assert wait_for(lambda: seen == [0.25, 0.75])
+
+
+def test_gemini_near_spelling_of_a_lone_alice_counts():
+    v = LiveSession._wake_verdict
+    assert v("Annie") is True and v("Alex.") is True and v("Alice saat kaç") is True
+    assert v("89") is False and v("Alışacak, alışacak.") is False and v("Aliye geldi") is False
+    assert v("Bugün Annie ile maça gidiyoruz") is False and v("") is None
+
+
+def test_selective_mode_sends_audio_without_waiting_for_local_text(monkeypatch):
+    calls = []
+
+    class Live:
+        available, single_turn, hushed, last_active = True, False, False, 0.0
+
+        def converse(self, text, frames, stop, **kw):
+            calls.append(kw)
+
+    gate = SimpleNamespace(transcribe=lambda *a: (_ for _ in ()).throw(AssertionError("yerel döküm çalışmamalı")))
+    va = VoiceAssistant(FakeAgent(), FakeSpeaker(), stt=SimpleNamespace(transcribe=lambda a: "", wake_gate=gate),
+                        live=Live(), social=lambda: "Discord")
+    a = Audio(b"\1\0" * 16000, 16000)
+    va._converse_live("", a)
+    assert "hint" not in calls[0] and calls[0]["need_wake"] is True
+    va._pre_text = (None, True)  # "Alice" dedi, tepki aldı; şimdi "naber": bu cümlede "Alice" aranmaz
+    va._converse_live("", a)
+    assert "need_wake" not in calls[1]

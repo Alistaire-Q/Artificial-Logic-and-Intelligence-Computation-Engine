@@ -544,7 +544,12 @@ class FlightCompanion:
                     self._point(t, clock, f"KİLİT · {name}", "warn", "lock")
                 elif name != "?" and t - self.threat_said.get(name, -1e9) > 120:
                     self.threat_said[name] = t
-                    self._info(s, f"Yeni radar: {name}, saat {clock}.")
+                    # Ekrandan görülen radarın türü ve bazen yönü yok: "Yeni radar: radar, saat None" diyordu.
+                    text = (f"Yeni radar: {name}, saat {clock}." if name != "radar" and clock else
+                            f"Yeni radar: {name}." if name != "radar" else
+                            f"Yeni radar, saat {clock}." if clock else "")
+                    if text:
+                        self._info(s, text)
                 break  # füze varsa kilit/yeni radar ayrıca söylenmez
         self._ground_threats(s, [c for c in cs if c.get("kind") == "sam" and c.get("dist_m") is not None])
         planes = [c for c in cs if c.get("kind") == "aircraft" and c.get("dist_m") is not None]

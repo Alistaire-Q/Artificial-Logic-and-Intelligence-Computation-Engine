@@ -731,6 +731,18 @@ def test_rwr_and_minimap_contacts_parse():
     assert got == [(6, 1000, "Fighter"), (3, 3000, "Bomber")]
 
 
+def test_radar_without_type_or_direction_says_nothing_empty():
+    # Ekrandan görülen radar: "Yeni radar: radar, saat None." diyordu (iki günde 6 kez).
+    c, tr, r = make()
+    tr.feed(st(0, ias=0, agl=0.5, alt=50))
+    tr.feed(st(1, ias=80, agl=30))
+    base = {"lock": False, "missile": False, "dist_m": None, "kind": "radar"}
+    tr.feed(st(2, extra={"contacts": [{**base, "id": "v", "clock": None, "name": "radar"}]}))
+    assert not any("Yeni radar" in t for t in r.texts())
+    tr.feed(st(40, extra={"contacts": [{**base, "id": "s", "clock": None, "name": "SA-6"}]}))
+    assert "Yeni radar: SA-6." in r.texts() and not any("None" in t for t in r.texts())
+
+
 def test_threat_callouts_once_and_six_warning():
     c, tr, r = make()
     tr.feed(st(0, ias=0, agl=0.5, alt=50))
