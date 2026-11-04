@@ -459,6 +459,7 @@ class Core:
         seen = {k: v for k, v in seen.items() if now - float(v) < 86400}
         seen[key] = now
         try:
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(seen, ensure_ascii=False), encoding="utf-8")
         except OSError:
             pass
