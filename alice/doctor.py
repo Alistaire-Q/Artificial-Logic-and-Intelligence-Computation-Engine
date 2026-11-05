@@ -125,11 +125,11 @@ def check_calendar(cfg, network: bool = True) -> Check:
                         cache=False)
         except Exception as e:  # noqa: BLE001
             return Check(name, "fail", f"bağlı ama okunamıyor: {str(e)[:120]}",
-                         "Ayarlar → Kurulum → Takvimi bağla (komut: alice connect google_calendar)")
+                         "Sistem → Kurulum → Takvimi bağla (komut: alice connect google_calendar)")
     if ok:
         return Check(name, "ok", "bağlı")
-    fix = "Ayarlar → Kurulum → Google (komut: alice setup google)" if "GOOGLE_CLIENT_ID" in why or \
-        not os.environ.get("GOOGLE_CLIENT_ID") else "Ayarlar → Kurulum → Takvimi bağla (komut: alice connect google_calendar)"
+    fix = "Sistem → Kurulum → Google (komut: alice setup google)" if "GOOGLE_CLIENT_ID" in why or \
+        not os.environ.get("GOOGLE_CLIENT_ID") else "Sistem → Kurulum → Takvimi bağla (komut: alice connect google_calendar)"
     return Check(name, "off", why, fix)
 
 
@@ -140,7 +140,7 @@ def check_gmail(cfg, network: bool = True) -> Check:
 
     accs = gmail.accounts()
     if not accs:
-        return Check(name, "off", "bağlı hesap yok", "Ayarlar → Kurulum → Gmail ekle (komut: alice setup google)")
+        return Check(name, "off", "bağlı hesap yok", "Sistem → Kurulum → Gmail ekle (komut: alice setup google)")
     parts, bad = [], []
     for acc in accs:
         email = store.get(gmail.PREFIX + acc).get("email", "")
@@ -152,7 +152,7 @@ def check_gmail(cfg, network: bool = True) -> Check:
                 continue
         parts.append(f"{acc}" + (f" ({email})" if email else ""))
     if bad:
-        return Check(name, "warn", "; ".join(parts + bad), "bozuk hesabı tekrar bağla: Ayarlar → Kurulum → Gmail ekle (aynı ad)")
+        return Check(name, "warn", "; ".join(parts + bad), "bozuk hesabı tekrar bağla: Sistem → Kurulum → Gmail ekle (aynı ad)")
     return Check(name, "ok", ", ".join(parts))
 
 
@@ -372,7 +372,7 @@ def probe_providers(cfg: Any, emit: Callable[[str], None] = lambda s: None,
                     row.update(status="off", detail="çalışmıyor (yerel model; kurmadıysan sorun değil)")
                     break
                 if err.startswith("[auth]"):
-                    row.update(status="fail", detail=short_err(err) + " · Ayarlar → Anahtarlar'dan kontrol et")
+                    row.update(status="fail", detail=short_err(err) + " · Bağlantılar → Anahtarlar'dan kontrol et")
                     break
                 if "payment" in err.lower() and "required" in err.lower():
                     row.update(status="fail", detail=short_err(err))

@@ -875,7 +875,7 @@ def app_cmd(argv: list[str]) -> int:
     state.watch_updates(pending)
     added = refresh_home()  # güncellemeyle gelen yeni sağlayıcıların anahtar satırları .env'e eklenir
     if added:
-        state.ui.info(f"Yeni anahtar alanları geldi: {', '.join(added)}. Ayarlar → Anahtarlar'dan girebilirsin.")
+        state.ui.info(f"Yeni anahtar alanları geldi: {', '.join(added)}. Bağlantılar → Anahtarlar'dan girebilirsin.")
     rb = updater.consume_rollback("app")
     if rb:
         state.ui.info(f"Son güncelleme ({str(rb.get('from'))[:7]}) açılamadığı için önceki sürüme "
@@ -899,7 +899,7 @@ def app_cmd(argv: list[str]) -> int:
             pass
     console.print(f"[bold magenta]ALICE[/] uygulaması: {server.url}")
     if not state.router.first_available("brain"):
-        state.ui.info("Kullanılabilir model yok. Ayarlar → Anahtarlar'dan bir API anahtarı gir (ör. Gemini, ücretsiz); "
+        state.ui.info("Kullanılabilir model yok. Bağlantılar → Anahtarlar'dan bir API anahtarı gir (ör. Gemini, ücretsiz); "
                       "yeniden başlatmak gerekmez.")
     try:
         if a.window == "none":

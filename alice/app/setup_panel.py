@@ -1,4 +1,4 @@
-"""Ayarlar → Kurulum: kalan komut satırı işleri tek yerde.
+"""Sistem → Kurulum: kalan komut satırı işleri tek yerde.
 
 * Sağlayıcıları dene (`alice doctor`): her sağlayıcıya kısa bir istek, karar motoru, özelliklerin durumu.
 * Modelleri yeniden ölç (`alice models --refresh`) ve rolleri otomatiğe al (`--write`).

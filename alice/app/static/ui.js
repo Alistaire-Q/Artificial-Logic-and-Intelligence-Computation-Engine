@@ -325,6 +325,8 @@ async function revertFile(c) {
 
 /* ================================================================= yan panel */
 function openPanel(tab) {
+  // Yan panel sohbetin parçası: bir bölüm sayfasındayken önce sohbete dönülür.
+  if (app.classList.contains("in-page") && app.dataset.sec !== "projects") showChat();
   if (tab) PREFS.tab = tab;
   PREFS.panel = true;
   savePrefs();
@@ -436,6 +438,10 @@ function paletteItems() {
   act("Eylemler", IC.rewind, "Son mesaja geri sar", "/rewind", () => runCommand("/rewind"));
   act("Eylemler", IC.update, "Güncellemeleri denetle", "GitHub'daki son sürüm", checkUpdate);
   act("Eylemler", IC.gear, "Ayarlar", "", () => showSettings("general"), "Ctrl+,");
+  act("Git", IC.list, "Projeler", "Ajan takımları", () => goSection("projects"));
+  act("Git", IC.bolt, "Otomasyonlar", "Kurallar, zamanlanmış görevler, notlar, kayıtlar", () => goSection("auto"));
+  act("Git", IC.term, "Sistem", "Çekirdek, asistan, ses, kurulum, kullanım", () => goSection("system"));
+  act("Git", IC.plug, "Bağlantılar", "Servisler ve API anahtarları", () => goSection("connect"));
   act("Eylemler", IC.keyboard, "Klavye kısayolları", "", () => showSettings("keys"));
   for (const [k, label] of [["system", "Sistem"], ["light", "Açık"], ["dark", "Koyu"]]) {
     act("Tema", k === "dark" ? IC.moon : IC.sun, `Tema: ${label}`, "", () => setPref("theme", k));
@@ -551,7 +557,7 @@ function setRow(title, sub, control) {
   r.append(t, control);
   return r;
 }
-/* Ayarlar > Asistan: özelliklerin durumu, güvenlik/karşılama ayarları, izin kuralları, Gmail hesapları, skill'ler. */
+/* Sistem > Asistan: özelliklerin durumu, güvenlik/karşılama ayarları, izin kuralları, Gmail hesapları, skill'ler. */
 function assistantPane(pane, data) {
   const d = data || {};
   const v = d.settings || {};
@@ -648,7 +654,7 @@ function assistantPane(pane, data) {
     pane.appendChild(row);
   }
 }
-/* Ayarlar > Ses: Gemini seslerini dinle ve seç (Live ve normal sesli cevap aynı sesle konuşur). */
+/* Sistem > Ses: Gemini seslerini dinle ve seç (Live ve normal sesli cevap aynı sesle konuşur). */
 let previewAudio = null;
 function voicePane(pane, data) {
   const d = data || {};
@@ -657,7 +663,7 @@ function voicePane(pane, data) {
       + "sürer). Seçtiğin ses canlı konuşmada bir sonraki \"Hey Alice\"te geçerli olur."));
   pane.appendChild(el("div", "sec", "Sesimi tanıt"));
   pane.appendChild(enrollCard());
-  if (!d.can_preview) pane.appendChild(el("p", "", "Örnek dinlemek için Gemini anahtarı gerekli (Ayarlar → Anahtarlar)."));
+  if (!d.can_preview) pane.appendChild(el("p", "", "Örnek dinlemek için Gemini anahtarı gerekli (Bağlantılar → Anahtarlar)."));
   pane.appendChild(el("div", "sec", "Sesler"));
   for (const v of d.voices || []) {
     const on = v.name === d.live;
@@ -686,7 +692,7 @@ function voicePane(pane, data) {
     pane.appendChild(row);
   }
 }
-/* Ayarlar > Ses > Sesimi tanıt: okunacak cümle büyük yazılır, mikrofon seviyesi canlı görünür. Kayıt sunucuda
+/* Sistem > Ses > Sesimi tanıt: okunacak cümle büyük yazılır, mikrofon seviyesi canlı görünür. Kayıt sunucuda
    (mikrofonun olduğu bilgisayarda) yürür; burası durumu sık sık okur. Kart ekrandan kalkınca okuma durur. */
 const ENROLL_BUSY = ["preparing", "installing", "downloading", "recording", "testing"];
 function enrollCard() {
@@ -787,7 +793,7 @@ function enrollCard() {
   poll();
   return card;
 }
-/* Ayarlar > Çekirdek: arka plandaki ALICE (bildirimler, görevler, "Hey Alice") ve sesli asistan. Komut satırındaki
+/* Sistem > Çekirdek: arka plandaki ALICE (bildirimler, görevler, "Hey Alice") ve sesli asistan. Komut satırındaki
    alice core status/install/mode ve alice voice on/off/test burada düğme. Durum birkaç saniyede bir tazelenir. */
 const MODE_LABELS = { auto: "Otomatik", normal: "Normal", dev: "Geliştirme", flight: "Uçuş", quiet: "Sessiz" };
 function systemPane(pane) {
@@ -922,7 +928,7 @@ function micTestCard() {
   poll();
   return card;
 }
-/* Ayarlar > Otomasyon: kurallar ("GPU 85'i geçerse haber ver"), zamanlanmış görevler ("her sabah 9'da ...") ve
+/* Otomasyonlar > Otomasyon: kurallar ("GPU 85'i geçerse haber ver"), zamanlanmış görevler ("her sabah 9'da ...") ve
    akışlar (bağlı servisleri izleyip haber verenler). Kural/görev düz cümleyle yazılır; ne anlaşıldığı gösterilir,
    onaylanınca kaydedilir. */
 /* Ortak küçük bileşenler: aç/kapa anahtarı ve simgeli düğme. Sayfalar "Kapat / Aç / Sil" yazılı düğme yığını yerine
@@ -1089,7 +1095,7 @@ function autoPane(pane) {
   }
   reload();
 }
-/* Ayarlar > Notlar: ALICE'e "not al" dediklerin, sabah özeti ve haftalık rapor (alice notes / brief / report). */
+/* Otomasyonlar > Notlar: ALICE'e "not al" dediklerin, sabah özeti ve haftalık rapor (alice notes / brief / report). */
 function scheduleRow(title, sub, info, def, weekdaysOpt, prefix, after) {
   const row = el("div", "list-row sched-row");
   const l = el("span", "l");
@@ -1196,7 +1202,7 @@ function notesPane(pane) {
   }
   load();
 }
-/* Ayarlar > Kayıtlar: ALICE'in kime ne gönderdiği, beğenmediğin cevaplar ve test seti (alice log / alice eval). */
+/* Otomasyonlar > Kayıtlar: ALICE'in kime ne gönderdiği, beğenmediğin cevaplar ve test seti (alice log / alice eval). */
 function logsPane(pane) {
   pane.append(el("h2", "", "Kayıtlar"),
     el("p", "", "ALICE'in senin adına gönderdikleri ve beğenmediğin cevaplar. Beğenmediğin her cevap test setine eklenir; "
@@ -1287,7 +1293,7 @@ function logsPane(pane) {
   }
   refresh();
 }
-/* Ayarlar > Kurulum: sağlayıcıları dene (doctor), modelleri ölç, Google, telefon, DCS, eklentiler, kısayol. */
+/* Sistem > Kurulum: sağlayıcıları dene (doctor), modelleri ölç, Google, telefon, DCS, eklentiler, kısayol. */
 function setupPane(pane) {
   pane.append(el("h2", "", "Kurulum"),
     el("p", "", "Bir kere yapılan işler ve sorun giderme. Bir şey çalışmıyorsa önce \"Hepsini dene\"."));
@@ -1575,7 +1581,7 @@ function scorePane() {
     const rank = (r) => { const i = chain.indexOf(r.ref); return i < 0 ? 1e6 : i; };
     const rows = data.rows.filter((r) => r.ok || chain.includes(r.ref)).sort((a, b) => rank(a) - rank(b) || (b.scores[scoreRole] || 0) - (a.scores[scoreRole] || 0));
     if (!rows.length) {
-      box.appendChild(el("p", "", "Henüz ölçüm yok: Ayarlar → Kurulum → Ücretsiz modelleri ölç."));
+      box.appendChild(el("p", "", "Henüz ölçüm yok: Sistem → Kurulum → Ücretsiz modelleri ölç."));
       return;
     }
     const table = el("div", "score-table");
@@ -1714,7 +1720,7 @@ function memoryPane(pane, data) {
     }
   }
 }
-/* Ayarlar > Anahtarlar: API anahtarlarını uygulamanın içinden gir. Değerin tamamı sunucudan hiç gelmez; sadece son 4 hane. */
+/* Bağlantılar > Anahtarlar: API anahtarlarını uygulamanın içinden gir. Değerin tamamı sunucudan hiç gelmez; sadece son 4 hane. */
 function keysPane(pane, data) {
   const d = data || {};
   pane.append(el("h2", "", "Anahtarlar"),
@@ -1788,7 +1794,7 @@ function keyRow(parts) {
   }
   return row;
 }
-/* Ayarlar > Bağlantılar: servislerin durumu, OAuth bağlanma/çıkış ve izleyen akışlar. */
+/* Bağlantılar: servislerin durumu, OAuth bağlanma/çıkış ve izleyen akışlar. */
 function connectPane(pane, data) {
   const d = data || {};
   pane.append(el("h2", "", "Bağlantılar"),

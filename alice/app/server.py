@@ -39,7 +39,7 @@ STATIC_FILES = {"app.js": "text/javascript", "projects.js": "text/javascript", "
                 "purify.min.js": "text/javascript", "highlight.js": "text/javascript", "icon.svg": "image/svg+xml", "alice.png": "image/png", "quick.js": "text/javascript",
                 "quick.css": "text/css", "m.css": "text/css", "m.js": "text/javascript",
                 "Geist.woff2": "font/woff2", "GeistMono.woff2": "font/woff2"}
-# media-src: Ayarlar → Ses'teki "Dinle" örneği data: adresinden çalınır. Yoktu; default-src 'none' yüzünden
+# media-src: Sistem → Ses'teki "Dinle" örneği data: adresinden çalınır. Yoktu; default-src 'none' yüzünden
 # tarayıcı sesi sessizce engelliyordu.
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
        "media-src 'self' data: blob:; "
@@ -625,7 +625,7 @@ class AppState:
 
     # ----------------------------------------------------------------- bağlantılar
     def connections(self) -> dict[str, Any]:
-        """Ayarlar > Bağlantılar: servislerin durumu ve izleyen akışlar."""
+        """Bağlantılar: servislerin durumu ve izleyen akışlar."""
         from alice.connect.manifest import discover
         from alice.connect.runner import ready
         from alice.core.feeds import load_feeds, state_path
@@ -663,10 +663,10 @@ class AppState:
         if m is None:
             return {"ok": False, "error": f"bağlantı yok: {name}"}
         if m.auth.kind != "oauth2":
-            return {"ok": False, "error": f"{m.label} anahtarla çalışıyor: Ayarlar → Anahtarlar'dan {m.auth.env} gir"}
+            return {"ok": False, "error": f"{m.label} anahtarla çalışıyor: Bağlantılar → Anahtarlar'dan {m.auth.env} gir"}
         cid = os.environ.get(m.auth.client_id_env, "").strip()
         if not cid:
-            return {"ok": False, "error": f"{m.auth.client_id_env} yok; Ayarlar → Anahtarlar'dan gir"}
+            return {"ok": False, "error": f"{m.auth.client_id_env} yok; Bağlantılar → Anahtarlar'dan gir"}
         secret = os.environ.get(m.auth.client_secret_env, "").strip() if m.auth.client_secret_env else ""
 
         def run() -> None:
@@ -755,7 +755,7 @@ class AppState:
             if not re.fullmatch(r"[a-z0-9_-]{1,30}", acc):
                 return {"ok": False, "error": "ad sadece harf, rakam, - ve _ olsun (ör. okul)"}
             if not os.environ.get("GOOGLE_CLIENT_ID", "").strip():
-                return {"ok": False, "error": "önce Google kurulumu: Ayarlar → Kurulum → Google"}
+                return {"ok": False, "error": "önce Google kurulumu: Sistem → Kurulum → Google"}
 
             def run() -> None:
                 try:
@@ -792,7 +792,7 @@ class AppState:
         if not path.is_file():
             tts = make_cloud(self.cfg, f"gemini:{name}")
             if tts is None:
-                return {"ok": False, "error": "örnek için Gemini anahtarı gerekli (Ayarlar → Anahtarlar)"}
+                return {"ok": False, "error": "örnek için Gemini anahtarı gerekli (Bağlantılar → Anahtarlar)"}
             try:
                 audio = tts.synth(self.PREVIEW_TEXT, "happy")
             except TTSError as e:
@@ -818,7 +818,7 @@ class AppState:
 
     @property
     def setup(self):
-        """Ayarlar → Kurulum: doctor, modelleri ölç, Google, telefon, DCS, eklentiler, kısayol."""
+        """Sistem → Kurulum: doctor, modelleri ölç, Google, telefon, DCS, eklentiler, kısayol."""
         if self._setup is None:
             from alice.app.setup_panel import SetupPanel
 
@@ -829,7 +829,7 @@ class AppState:
 
     @property
     def journal(self):
-        """Ayarlar → Notlar ve Kayıtlar."""
+        """Otomasyonlar → Notlar ve Kayıtlar."""
         if self._journal is None:
             from alice.app.journal import Journal
 
@@ -840,7 +840,7 @@ class AppState:
 
     @property
     def automations(self):
-        """Ayarlar → Otomasyon: kurallar, zamanlanmış görevler, akışlar."""
+        """Otomasyonlar → Otomasyon: kurallar, zamanlanmış görevler, akışlar."""
         if self._automations is None:
             from alice.app.automations import Automations
 
@@ -851,7 +851,7 @@ class AppState:
 
     @property
     def system(self):
-        """Ayarlar → Çekirdek: arka plandaki ALICE ve sesli asistan."""
+        """Sistem → Çekirdek: arka plandaki ALICE ve sesli asistan."""
         if self._system is None:
             from alice.app.system import SystemPanel
 
@@ -862,7 +862,7 @@ class AppState:
 
     @property
     def enroll(self):
-        """Ayarlar → Ses → Sesimi tanıt (alice voice enroll'un ekranlı hâli)."""
+        """Sistem → Ses → Sesimi tanıt (alice voice enroll'un ekranlı hâli)."""
         if self._enroll is None:
             from alice.voice.enroll import EnrollSession
 

@@ -144,7 +144,7 @@ Eksik bir paket gereken bir komutu çalıştırırsan ALICE traceback yerine han
 
 Hiç anahtar yoksa ALICE sadece yerel Ollama'yı dener ve bunu açılışta söyler.
 
-**Dosyayla uğraşmak istemezsen:** uygulamada **Ayarlar → Anahtarlar**. Her sağlayıcının yanında "anahtarı al" bağlantısı var; anahtarı yapıştırıp Kaydet'e basınca `.env`'e yazılıyor ve hemen kullanılıyor (yeniden başlatmak gerekmiyor, yeni sağlayıcı arka planda ölçülüp model sırasına giriyor). Anahtarın tamamı arayüze hiç geri gelmiyor, sadece son 4 hanesi görünüyor. Arka plan çekirdeği (sesli asistan) yeni anahtarı bir sonraki açılışında görür.
+**Dosyayla uğraşmak istemezsen:** uygulamada **Bağlantılar → Anahtarlar**. Her sağlayıcının yanında "anahtarı al" bağlantısı var; anahtarı yapıştırıp Kaydet'e basınca `.env`'e yazılıyor ve hemen kullanılıyor (yeniden başlatmak gerekmiyor, yeni sağlayıcı arka planda ölçülüp model sırasına giriyor). Anahtarın tamamı arayüze hiç geri gelmiyor, sadece son 4 hanesi görünüyor. Arka plan çekirdeği (sesli asistan) yeni anahtarı bir sonraki açılışında görür.
 
 `.env`'in yeri: Windows'ta `C:\Users\<kullanıcı>\.alice\.env`, Linux/macOS'ta `~/.alice/.env`. Güncellemeyle yeni bir sağlayıcı gelince ALICE açılışta onun boş satırını (açıklaması ve bağlantısıyla) bu dosyaya kendisi ekler ve haber verir; dolu anahtarlarına dokunmaz. Dosya `.gitignore`'da, GitHub'a gitmez.
 
@@ -176,7 +176,7 @@ Kutudan çıkanlar:
 | `spotify` | OAuth2 + `SPOTIFY_CLIENT_ID` | çalan parça, çal/duraklat/sonraki, arama, cihaz seçimi, çalma listeleri |
 | `google_calendar` | OAuth2 + `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | yaklaşan etkinlikler, arama, doğal dille ekleme ("Cuma 15:00 dişçi"), silme. Bağlıysa çekirdek sınav, maç, randevu gibi etkinlikleri takibe çevirir: ertesi gün ALICE nasıl geçtiğini sorar |
 
-Uygulamada **Ayarlar → Bağlantılar**: her servisin durumu, OAuth olanlar için "Bağlan"/"Çıkış" düğmesi, anahtarla çalışanlar için hangi `.env` değişkeninin eksik olduğu ve altta tanımlı akışlar. Terminalde aynı özet `alice doctor` çıktısında bir satır.
+Uygulamada **Bağlantılar**: her servisin durumu, OAuth olanlar için "Bağlan"/"Çıkış" düğmesi, anahtarla çalışanlar için hangi `.env` değişkeninin eksik olduğu ve altta tanımlı akışlar. Terminalde aynı özet `alice doctor` çıktısında bir satır.
 
 Yavaş değişen veriler (Steam kütüphanesi, YouTube video bilgisi) birkaç dakika hatırlanıyor, ajan aynı şeyi tekrar sorunca istek ağa çıkmıyor; hız sınırına (429) takılınca kısa bir bekleyip bir kez tekrar deneniyor. Mesaj gönderen istekler ağ hatasında tekrar denenmiyor, aynı mesaj iki kez gitmesin diye.
 
@@ -243,7 +243,7 @@ alice feeds --test discord_genel    # şimdi yokla: her öğe için ✓/✗ ve n
 
 `--test` koşulları kurarken en çok işine yarayacak şey: hiçbir şey bildirmeden, hangi mesajın neden geçtiğini ya da elendiğini gösteriyor.
 
-İlk turda hiçbir şey bildirilmiyor (o anki öğeler "görüldü" işaretleniyor), yoksa akışı kurduğun anda son 15 mesaj peş peşe düşerdi. Bir turda en fazla 5 bildirim gidiyor, gerisi "3 yeni öğe daha" diye toplanıyor. Bildirimler mod politikasından geçiyor: uçuş ya da sessiz moddayken susturulup kaydediliyor. Sesli mod açıksa bildirim sesle de söyleniyor. Ayarlar → Bağlantılar'ın altında akışlar ve özet bekleyen öğe sayısı görünüyor.
+İlk turda hiçbir şey bildirilmiyor (o anki öğeler "görüldü" işaretleniyor), yoksa akışı kurduğun anda son 15 mesaj peş peşe düşerdi. Bir turda en fazla 5 bildirim gidiyor, gerisi "3 yeni öğe daha" diye toplanıyor. Bildirimler mod politikasından geçiyor: uçuş ya da sessiz moddayken susturulup kaydediliyor. Sesli mod açıksa bildirim sesle de söyleniyor. Bağlantılar'ın altında akışlar ve özet bekleyen öğe sayısı görünüyor.
 
 ## Uygulama tarifleri: hangi işi hangi yoldan
 
@@ -301,7 +301,9 @@ Tek seferlik kapatmak için `ALICE_UPDATE_MODE=off` ya da `ALICE_NO_UPDATE=1` or
 
 ![Başlangıç](docs/app-baslangic.png)
 
-**Görünüm:** sıcak krem/kömür renkler, cevaplarda serif yazı, araç çağrıları sade açılır satırlar. Yeni sohbette selamlama ve yazma kutusu ortada duruyor. Tema Windows ayarını izliyor ya da Ayarlar'dan açık/koyu sabitlenebiliyor.
+**Görünüm (Grafit):** nötr gri yüzeyler, tek mavi vurgu, her yerde Geist yazı tipi (kod ve yollar Geist Mono). Renk, köşe, boşluk ve yazı boyutları `app.css`'in başındaki değişkenlerden geliyor; telefon arayüzü, hızlı giriş penceresi ve HUD aynı paleti kullanıyor. Yeni sohbette selamlama ve yazma kutusu ortada duruyor. Tema Windows ayarını izliyor ya da Ayarlar'dan açık/koyu sabitlenebiliyor.
+
+**Sol şerit:** Sohbetler, Projeler, Otomasyonlar (kurallar, zamanlanmış görevler, notlar, kayıtlar), Sistem (çekirdek, asistan, ses, kurulum, kullanım), Bağlantılar (servisler, API anahtarları) ve en altta Ayarlar. Her bölüm tam sayfa açılıyor, alt sekmeleri kenar çubuğunda duruyor.
 
 **Yazma kutusu**
 * Enter gönderir, Shift+Enter yeni satır açar.
@@ -312,7 +314,7 @@ Tek seferlik kapatmak için `ALICE_UPDATE_MODE=off` ya da `ALICE_NO_UPDATE=1` or
 
 **Sohbet**
 * Cevaplar akarak geliyor. Model akıl yürütme metni gönderiyorsa açılır bir "düşündü" bölümü olarak görünüyor.
-* Her araç satırında çalışırken dönen bir gösterge ve canlı süre var. Bitince yeşil ya da kırmızı nokta, süre ve sonucun ilk satırları görünüyor.
+* Art arda çalışan araçlar tek bir "adımlar" kartında toplanıyor. Her satırda çalışırken dönen bir gösterge ve canlı süre var. Bitince yeşil ya da kırmızı nokta, süre ve sonucun ilk satırları görünüyor.
 * **Mesaj düzenleme:** gönderdiğin mesajın altındaki Düzenle'ye bas (ya da mesaja çift tıkla). Mesaj yerinde yazı kutusuna döner; Enter ya da Gönder konuşmayı o mesajın öncesine sarar ve yeni metni gönderir. ALICE o sırada çalışıyorsa önce durdurulur. O mesajdan sonra dosya araçlarıyla yapılan değişiklikler geri alınır. Esc vazgeçer.
 * Dosya düzenlemeleri satır numaralı, renklendirilmiş diff olarak açılıyor. Komutlar terminal görünümünde, çıkış koduyla gösteriliyor.
 * Kod blokları sözdizimine göre renkleniyor (Python, JS/TS, PowerShell, bash, JSON, CSS, Lua, SQL, C ailesi...).
@@ -328,15 +330,15 @@ Tek seferlik kapatmak için `ALICE_UPDATE_MODE=off` ya da `ALICE_NO_UPDATE=1` or
 
 **Komut paleti (Ctrl+K):** eylemler, izin modları, düşünme seviyeleri, modeller, slash komutları ve geçmiş sohbetler tek arama kutusunda.
 
-**Ayarlar (Ctrl+,):** Genel (tema, yazı boyutu, araç ayrıntıları, yan panel, izin modu, klasör), Modeller, Araçlar, Hafıza, Kullanım ve Kısayollar sekmeleri.
+**Ayarlar (Ctrl+,):** Genel (tema, yazı boyutu, araç ayrıntıları, yan panel, izin modu, klasör, güncelleme), Modeller, Araçlar, Hafıza ve Kısayollar.
 
 **Geri sarma**
 * Her mesajın altında **Düzenle** ve **Geri sar** var. Konuşma o mesajın öncesine dönüyor.
 * ALICE'in o mesajdan sonra dosya araçlarıyla değiştirdiği ya da oluşturduğu dosyalar eski haline geliyor. Shell komutlarının yaptığı değişiklikler izlenemiyor.
 
-**Kenar çubuğu:** yeni sohbet, sohbetlerde arama, Bugün/Dün/Bu hafta diye gruplanmış geçmiş (üzerine gelince sil), altta Ayarlar. Ctrl+B ile gizlenip açılıyor.
+**Kenar çubuğu:** Sohbetler bölümünde yeni sohbet, sohbetlerde arama, Bugün/Dün/Bu hafta diye gruplanmış geçmiş (üzerine gelince sil); diğer bölümlerde o bölümün sekmeleri. Ctrl+B ile gizlenip açılıyor.
 
-**Durum satırı:** cevap veren model, context doluluğu, bugünkü istek sayısı, karar motoru, git dalı ve oturum süresi.
+**Durum satırı:** cevap veren model, context doluluğu ve bugünkü istek sayısı. Üzerine gelince karar motoru, git dalı ve oturum süresi de görünüyor.
 
 **Pencere ve güvenlik:** Pencere sırasıyla şöyle açılıyor: pywebview kuruluysa gerçek bir uygulama penceresi (Windows'ta Edge WebView2), değilse Edge/Chrome'un adres çubuğu olmayan uygulama modu, o da yoksa varsayılan tarayıcı. Arayüz sadece `127.0.0.1`'de çalışıyor ve her açılışta değişen rastgele bir token istiyor. Böylece tarayıcıda açık başka bir site ALICE'e komut gönderemiyor. Model çıktısı ekrana basılmadan önce DOMPurify ile temizleniyor.
 
@@ -344,7 +346,7 @@ Tek seferlik kapatmak için `ALICE_UPDATE_MODE=off` ya da `ALICE_NO_UPDATE=1` or
 
 ![Komut paleti](docs/app-palet.png)
 
-![Ayarlar](docs/app-ayarlar.png)
+![Otomasyonlar](docs/app-ayarlar.png)
 
 ## Projeler: otonom ajan takımları
 
@@ -728,7 +730,7 @@ alice voice on        # çekirdekle birlikte açılsın (kapatmak: alice voice o
 * **Sesini tanıt:** `alice voice enroll` altı cümle okutur ve sesinin izini çıkarır (çevrimdışı TitaNet modeli, ~40 MB, bir kez indirilir). Bundan sonra "Alice" diyen başka bir ses (Discord'daki arkadaşın, videodaki biri) uyandırmaz. Bas-konuş ve "Alice sus" bu kontrole girmez. Her karşılaştırmanın skoru `voice.log`'a yazılır; seni tanımadığı olursa `[voice] speaker_threshold`'ı biraz düşür. Kapatmak için: `alice voice enroll --off`.
 * **Seçici uyanma:** Discord, TeamSpeak, Zoom ya da Teams mikrofonunu o an kullanıyorsa (sesli kanaldaysan) ya da DCS/War Thunder açıksa, "Alice" cümlenin başında olmalı ("Alice, haritayı aç") ve "Alice" demeden devam penceresi kapanır. Arkadaşına "şu an Alice'le uğraşıyorum" demen onu uyandırmaz. `[voice] social_mode = false` ile kapanır.
 * **Beğenmediğin cevap:** "Bu cevap kötüydü" de ya da uygulamada cevabın altındaki **Beğenmedim**. İstek ve cevap `alice eval` test setine eklenir, sonraki güncellemelerde denenir (`alice eval --feedback`).
-* **Ayarlar → Ses:** 30 Gemini sesini dinleyip seç; canlı konuşmada bir sonraki "Hey Alice"te geçerli.
+* **Sistem → Ses:** 30 Gemini sesini dinleyip seç; canlı konuşmada bir sonraki "Hey Alice"te geçerli.
 * **Ayarlar → Hafıza:** ALICE'in bildiklerini tek tek gör ve sil. Eski "sevgili" rolünden kalan izler (bebeğim, aşkım...) işaretlenir, tek tıkla temizlenir.
 
 ## Hafıza, projeler ve takip
@@ -764,7 +766,7 @@ depth = 3
 
 Hepsinin durumu tek yerde: `alice doctor` (Google araması, anlam araması, hafıza, projeler, Takvim, Gmail hesapları,
 sandbox, karşılama, kurallar/hook/skill, güncelleme sağlığı; eksik olan için ne yapılacağı yazar) ve uygulamada
-**Ayarlar > Asistan**: aynı durum listesi, sandbox/koruma/karşılama/özet/e-posta bildirimi ayarları, "bu projede hep
+**Sistem > Asistan**: aynı durum listesi, sandbox/koruma/karşılama/özet/e-posta bildirimi ayarları, "bu projede hep
 izin ver" ile eklenen kuralları silme, Gmail hesabı ekleme/çıkış, skill ve alt ajan listesi.
 
 **Bilgisayar başına dönünce.** Çekirdek klavye/fare boşta kalma süresine bakar (Windows'ta GetLastInputInfo,
@@ -934,7 +936,7 @@ Eklenti araçları kendi grubunda durur, mesajdaki anahtar kelimelerle ya da `lo
 
 **Başkasına giden mesajlar her modda (yolo hariç) sorulur.** Discord'a mesaj, WhatsApp'tan yazı, Instagram DM, Gmail'den e-posta gibi eylemler ayrı bir risk sınıfında (`send`): dosya düzenlemenin tersine gönderilen mesaj geri alınamıyor, bu yüzden `auto` modda da onay istiyor, `plan` modda hiç yapılmıyor, arka plan görevlerinde (kullanıcı başında değilken) reddediliyor. Onay kartı "Bu mesaj başkasına gidecek" diyor. Spotify'da çal/duraklat gibi kendi cihazını kontrol eden eylemler bu sınıfta değil. Bağlantı tanımında `sends = true`, uygulama tarifinde `sends = ["akış"]` ile işaretleniyor; topluca kapatmak için `[agent] confirm_outward = false`.
 
-**Senin adına gönderilen her şeyin kaydı tutuluyor.** Başkasına giden her eylem `~/.alice/actions.jsonl`'a yazılıyor: gönderilen, senin reddettiğin, plan modunda engellenen ve başarısız olan, mesajın kendisiyle birlikte. `alice log` terminalde, Ayarlar → Bağlantılar'ın altında "Senin adına gönderilenler" arayüzde gösteriyor; sohbette "bugün kime ne yazdın?" diye sorabiliyorsun. Kayıt bilgisayarından çıkmıyor.
+**Senin adına gönderilen her şeyin kaydı tutuluyor.** Başkasına giden her eylem `~/.alice/actions.jsonl`'a yazılıyor: gönderilen, senin reddettiğin, plan modunda engellenen ve başarısız olan, mesajın kendisiyle birlikte. `alice log` terminalde, Bağlantılar'ın altında "Senin adına gönderilenler" arayüzde gösteriyor; sohbette "bugün kime ne yazdın?" diye sorabiliyorsun. Kayıt bilgisayarından çıkmıyor.
 
 Onay sorusunda `a` dersen o araca oturum boyunca izin veriyorsun (tehlikeli kalıplar hariç).
 

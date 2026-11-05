@@ -1,6 +1,6 @@
 """Konuşmacı doğrulama: ALICE sadece kullanıcının sesine cevap versin.
 
-Discord'daki arkadaşların, odadakiler ya da videodaki biri "Alice" deyince ALICE uyanıyordu. Ayarlar → Ses → Sesimi
+Discord'daki arkadaşların, odadakiler ya da videodaki biri "Alice" deyince ALICE uyanıyordu. Sistem → Ses → Sesimi
 tanıt (ya da `alice voice enroll`) kullanıcıdan birkaç cümle okur, sesinden bir "ses izi" (konuşmacı gömmesi) çıkarıp ~/.alice/voice/speaker.json'a
 yazar. Sonra her uyanmada ve "Alice" demeden devam edilen takip penceresinde söylenen cümlenin sesi bu izle
 karşılaştırılır; benzemiyorsa cevap verilmez. Bas-konuş (kullanıcı tuşa bastı) hep kabul edilir.
@@ -223,9 +223,9 @@ class SpeakerGate:
         if self.make_embedder is None:
             why = "model yüklenemiyor"
         elif not available():
-            why = "sherpa-onnx kurulu değil (Ayarlar → Ses → Sesimi tanıt kurar)"
+            why = "sherpa-onnx kurulu değil (Sistem → Ses → Sesimi tanıt kurar)"
         elif not model_path().is_file():
-            why = "ses tanıma modeli yok (Ayarlar → Ses → Sesimi tanıt indirir)"
+            why = "ses tanıma modeli yok (Sistem → Ses → Sesimi tanıt indirir)"
         else:
             try:
                 self.embedder = self.make_embedder()

@@ -1,4 +1,4 @@
-"""Ayarlar → Çekirdek: arka plandaki ALICE ve sesli asistan, komut satırına gerek kalmadan.
+"""Sistem → Çekirdek: arka plandaki ALICE ve sesli asistan, komut satırına gerek kalmadan.
 
 `alice core status|install|uninstall|mode`, `alice voice on|off|test|status` burada düğme olur. Çekirdek ayrı bir
 süreç: başlatma start_detached ile, durdurma ~/.alice/core-stop isteğiyle (çekirdek bir saniye içinde kapanır;

@@ -247,7 +247,7 @@ wake_phrase = true
 # ALICE konuşurken konuşmaya başlarsan susar (Discord'da ve oyunda hariç).
 barge_in = true
 # Discord'da konuşurken ya da oyundayken: "wake" = "Alice" cümlenin başında olmalı ve ses senin sesin olmalı
-# (ses izi, Ayarlar → Ses → Sesimi tanıt); "ptt" = mikrofon ALICE'e tamamen kapalı, sadece bas-konuş tuşu.
+# (ses izi, Sistem → Ses → Sesimi tanıt); "ptt" = mikrofon ALICE'e tamamen kapalı, sadece bas-konuş tuşu.
 social_mode = "wake"
 # ALICE cevap verdikten sonra bu kadar saniye "Hey Alice" demeden devam edebilirsin (en fazla 5).
 # "Alice sus" dersen yeniden "Alice" diyene kadar hiçbir şeyi komut saymaz.
@@ -405,7 +405,7 @@ api_key_env = "GEMINI_API_KEY"
 vision_models = ["gemini-*"]
 max_input_tokens = 1000000
 
-# ChatGPT hesabıyla giriş (ücretsiz plan dahil, Codex limiti): Ayarlar → Kurulum → ChatGPT ile giriş.
+# ChatGPT hesabıyla giriş (ücretsiz plan dahil, Codex limiti): Sistem → Kurulum → ChatGPT ile giriş.
 [providers.chatgpt]
 base_url = "https://chatgpt.com/backend-api/codex"
 auth = "chatgpt"

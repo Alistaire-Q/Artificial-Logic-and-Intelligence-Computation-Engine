@@ -678,7 +678,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: r
   flex: 1; min-width: 0; padding: 8px 12px; border-radius: var(--r-md); border: 1px solid var(--line-strong); background: var(--panel);
   color: var(--text); font: 13px var(--mono); outline: none;
 }
-.dialog input:focus, .page input:focus, .page select:focus, .page textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.dialog input:focus, .dialog textarea:focus, .dialog select:focus, .page input:focus, .page select:focus, .page textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .page input[type=range] { accent-color: var(--accent); }
 .page input[type=checkbox] { accent-color: var(--accent); }
 .key-row { flex-wrap: wrap; }

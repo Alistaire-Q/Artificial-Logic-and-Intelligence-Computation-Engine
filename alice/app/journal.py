@@ -1,4 +1,4 @@
-"""Ayarlar → Notlar ve Kayıtlar: `alice notes`, `alice brief`, `alice report`, `alice log`, `alice eval` uygulamadan.
+"""Otomasyonlar → Notlar ve Kayıtlar: `alice notes`, `alice brief`, `alice report`, `alice log`, `alice eval` uygulamadan.
 
 Notlar: ALICE'e "not al" denenler; ara, ekle, sil. Sabah özeti ve haftalık rapor şimdi gösterilir ya da her gün/hafta
 kendiliğinden gelsin diye görev olarak kurulur. Kayıtlar: ALICE'in kimseye ne gönderdiği (mesaj, e-posta), beğenilmeyen

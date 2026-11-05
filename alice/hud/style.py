@@ -5,10 +5,10 @@ interface-guidelines/live-activities, /materials, /color):
     içinde; birden fazla şey varsa en önemlisi Adada, diğerleri yanında küçük dairelerde (minimal görünüm). Ayrı
     ayrı yüzen paneller yok: HIG yarı saydam katmanları üst üste koymamayı ve tek yüzeyde dönüşümlü göstermeyi
     söylüyor.
-  * apple.com'un açık dili: beyaz-gri buzlu cam (arkasındaki ekran gerçekten bulanıklaşır, üstünde açık tül, kılcal
-    kenar ve üst kenarda ışık), Apple marka paleti: yazı Shark #1D1D1F, vurgu Science Blue #0066CC, cam beyaz ve Athens Gray #F5F5F7. Siyah Ada ve doygun
-    turuncu "oyun arayüzü" gibi duruyordu. Renk sadece simge ve değerde, sadece anlam için; kritikte ince kırmızı
-    çizgi ve yavaş nefes. Renkli nokta, renkli çerçeve yok.
+  * Açık dil: beyaz-gri buzlu cam (arkasındaki ekran gerçekten bulanıklaşır, üstünde açık tül, kılcal
+    kenar ve üst kenarda ışık). Renkler masaüstü ve telefonla aynı Grafit paleti: yazı #18181B, vurgu mavi
+    #2F6BFF, cam beyaz ve zemin #F3F3F4. Siyah Ada ve doygun turuncu "oyun arayüzü" gibi duruyordu. Renk sadece
+    simge ve değerde, sadece anlam için; kritikte ince kırmızı çizgi ve yavaş nefes. Renkli nokta, renkli çerçeve yok.
   * Yazı büyük ve en az orta kalınlıkta (HIG: "large, heavier-weight text"). Segoe UI Variable'ın Display/Text optik
     boyutları SF'nin Windows'taki en yakın karşılığı. Simgeler SF Symbols gibi tek renk, yazıyla aynı ağırlıkta.
   * Eş merkezli kenar boşlukları: içerik kenara sıkı, iç köşeler dış köşeyle uyumlu; köşeler Apple'ın sürekli köşesi
@@ -32,16 +32,16 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 from alice.hud.model import Item, clock_of
 
-# Apple marka paleti: Science Blue #0066CC (tek vurgu), Shark #1D1D1F (yazı), Athens Gray #F5F5F7, beyaz #FFFFFF.
-# Vurgu rengi tek: bilgi ve uyarı aynı mavi, ayrımı simge ve yazı yapar. Kritik tehdit güvenlik için kırmızı kalır
-# (Apple da tehlikeli durumda kırmızı kullanır).
-BRAND_BLUE = (0, 102, 204)       # #0066CC
-SHARK = (29, 29, 31)             # #1D1D1F
-ATHENS = (245, 245, 247)         # #F5F5F7
-RED = (215, 0, 21)               # Apple'ın açık zemindeki kırmızısı: yalnız kritik
-BLUE, GRAY = BRAND_BLUE, (142, 142, 147)
+# Renkler masaüstü ve telefonla aynı Grafit paleti (alice/app/static/app.css :root): vurgu mavi #2F6BFF, yazı #18181B,
+# zemin #F3F3F4. Vurgu rengi tek: bilgi ve uyarı aynı mavi, ayrımı simge ve yazı yapar. Kritik tehdit güvenlik için
+# kırmızı kalır. (Eski adlar korunur; çizim kodu bunları kullanıyor.)
+BRAND_BLUE = (47, 107, 255)      # #2F6BFF  --accent
+SHARK = (24, 24, 27)             # #18181B  --text
+ATHENS = (243, 243, 244)         # #F3F3F4  --side
+RED = (217, 58, 58)              # #D93A3A  --err: yalnız kritik
+BLUE, GRAY = BRAND_BLUE, (155, 155, 163)  # GRAY: --faint
 ORANGE = GREEN = YELLOW = BRAND_BLUE  # eski adlar: paletin dışına çıkılmasın
-GLOW = {"info": (0, 102, 204), "warn": (0, 102, 204), "critical": (255, 56, 60)}  # kenar ışığı
+GLOW = {"info": BRAND_BLUE, "warn": BRAND_BLUE, "critical": (240, 100, 100)}  # kenar ışığı
 COLORS = {"info": BRAND_BLUE, "warn": BRAND_BLUE, "critical": RED}
 LABEL = SHARK                    # ana yazı
 LABEL_2 = (*SHARK, 150)          # ikincil yazı: aynı renk, %59 (paletin dışına çıkmadan hiyerarşi)

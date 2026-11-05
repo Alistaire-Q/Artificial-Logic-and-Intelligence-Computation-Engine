@@ -1,13 +1,16 @@
 /* ALICE hızlı bar: tek satır giriş, altında kısa cevap. */
+@font-face { font-family: "Geist"; src: url("/static/Geist.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
+@font-face { font-family: "Geist Mono"; src: url("/static/GeistMono.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
+/* Renkler masaüstüyle aynı (app.css :root, Grafit). */
 :root {
-  --bg: #faf9f5; --panel: #ffffff; --text: #1f1e1c; --muted: #6c6a62; --line: #e7e4d9;
-  --accent: #c6613f; --err: #c2463c; --code: #f4f2ea;
-  --sans: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
-  --mono: "Cascadia Code", Consolas, ui-monospace, monospace;
+  --bg: #fbfbfb; --panel: #ffffff; --text: #18181b; --muted: #63636b; --line: #e7e7ea;
+  --accent: #2f6bff; --accent-ink: #ffffff; --err: #d93a3a; --code: #f5f5f6;
+  --sans: "Geist", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --mono: "Geist Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
 }
 @media (prefers-color-scheme: dark) {
-  :root { --bg: #262624; --panel: #30302e; --text: #f2f0e8; --muted: #b4b1a6; --line: #3b3a36;
-          --accent: #d97757; --err: #e8796f; --code: #1f1e1d; }
+  :root { --bg: #0e0e10; --panel: #17171a; --text: #ededef; --muted: #a0a0a8; --line: #24242a;
+          --accent: #5b8cff; --err: #f06464; --code: #141417; }
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
@@ -18,7 +21,7 @@ body { background: var(--bg); color: var(--text); font: 15px/1.5 var(--sans); di
 #q { flex: 1; resize: none; border: 0; outline: 0; background: transparent; color: var(--text); font: 17px/1.4 var(--sans); max-height: 120px; }
 #mic { flex: none; width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer; display: grid; place-items: center; }
 #mic svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
-#mic.rec { background: var(--accent); color: #fff; border-color: var(--accent); }
+#mic.rec { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 #attach { position: relative; flex: none; }
 #attach img { height: 40px; max-width: 90px; border-radius: 6px; border: 1px solid var(--line); object-fit: cover; display: block; }
 #attach button { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; border-radius: 50%; border: 0; background: var(--text); color: var(--bg); font-size: 12px; line-height: 18px; padding: 0; cursor: pointer; }
@@ -29,6 +32,6 @@ body { background: var(--bg); color: var(--text); font: 15px/1.5 var(--sans); di
 #out .err { color: var(--err); font-size: 13px; }
 #out pre { background: var(--code); padding: 8px 10px; border-radius: 6px; overflow-x: auto; font: 13px var(--mono); }
 #out code { font-family: var(--mono); font-size: 13px; }
-#out .perm { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 6px 0; font-size: 13px; }
+#out .perm { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin: 6px 0; font-size: 13px; }
 #out .perm button { margin: 6px 6px 0 0; padding: 3px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); cursor: pointer; }
 #foot { display: flex; justify-content: space-between; padding: 6px 14px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); }

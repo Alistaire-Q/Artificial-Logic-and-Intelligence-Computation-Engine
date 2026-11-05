@@ -38,7 +38,7 @@ GEMINI_VOICES = {
     "Aoede": "ferah", "Kore": "kararlı", "Leda": "genç", "Sulafat": "sıcak", "Despina": "akıcı",
     "Achernar": "yumuşak", "Vindemiatrix": "nazik", "Callirrhoe": "rahat", "Autonoe": "parlak",
 }
-# Gemini'nin (TTS ve Live ortak) bütün hazır sesleri ve Google'ın tarifleri; Ayarlar > Ses'te dinlenip seçilir.
+# Gemini'nin (TTS ve Live ortak) bütün hazır sesleri ve Google'ın tarifleri; Sistem > Ses'te dinlenip seçilir.
 ALL_GEMINI_VOICES = {
     "Kore": "kararlı", "Aoede": "ferah", "Leda": "genç", "Sulafat": "sıcak", "Despina": "akıcı",
     "Achernar": "yumuşak", "Vindemiatrix": "nazik", "Callirrhoe": "rahat", "Autonoe": "parlak", "Zephyr": "parlak",
@@ -767,7 +767,7 @@ class TTSRouter:
                  policy: Callable[[], dict[str, Any]] = core_policy, cooldown: float = 300,
                  cache: SpeechCache | None = None, backup: TTS | None = None, premium: TTS | None = None):
         self.premium = premium  # ElevenLabs: varsa her yerde önce o (uçuşta da: ekran kartı kullanmaz)
-        # Anahtar sonradan girilirse (Ayarlar → Anahtarlar) yeniden başlatmadan devreye girsin
+        # Anahtar sonradan girilirse (Bağlantılar → Anahtarlar) yeniden başlatmadan devreye girsin
         self.premium_factory: Callable[[], TTS | None] | None = None
         self._premium_checked = 0.0
         self.cloud = cloud

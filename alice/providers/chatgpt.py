@@ -333,7 +333,7 @@ def fetch_usage(client: httpx.Client | None = None) -> dict[str, Any]:
 def refresh(client: httpx.Client | None = None) -> dict[str, Any]:
     a = load_auth()
     if not a.get("refresh_token"):
-        raise ProviderError("auth", "ChatGPT'ye giriş yapılmamış (Ayarlar → Kurulum → ChatGPT ile giriş)")
+        raise ProviderError("auth", "ChatGPT'ye giriş yapılmamış (Sistem → Kurulum → ChatGPT ile giriş)")
     c = client or httpx.Client(timeout=30.0)
     try:
         r = c.post(f"{ISSUER}/oauth/token", json={"client_id": CLIENT_ID, "grant_type": "refresh_token",
@@ -352,7 +352,7 @@ def refresh(client: httpx.Client | None = None) -> dict[str, Any]:
 def access(client: httpx.Client | None = None) -> dict[str, Any]:
     a = load_auth()
     if not a.get("access_token") and not a.get("refresh_token"):
-        raise ProviderError("auth", "ChatGPT'ye giriş yapılmamış (Ayarlar → Kurulum → ChatGPT ile giriş)")
+        raise ProviderError("auth", "ChatGPT'ye giriş yapılmamış (Sistem → Kurulum → ChatGPT ile giriş)")
     if float(a.get("expires_at") or 0) - REFRESH_EARLY < time.time():
         a = refresh(client)
     return a
