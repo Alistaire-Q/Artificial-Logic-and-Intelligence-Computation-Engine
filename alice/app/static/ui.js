@@ -682,7 +682,8 @@ function voicePane(pane, data) {
         previewAudio.play().catch((e) => toast("ses çalınamadı: " + (e && e.message || e)));
       });
     });
-    const pick = el("button", on ? "btn" : "btn primary", on ? "Seçili" : "Seç");
+    const pick = el("button", on ? "btn ghost on" : "btn", on ? "Seçili" : "Seç");
+    if (on) pick.disabled = true;
     pick.disabled = on;
     pick.addEventListener("click", () => api("/api/voice/set", { voice: v.name }).then((r) => {
       toast(r && r.ok ? v.name + " seçildi; bir sonraki konuşmada bu sesle konuşur" : "kaydedilemedi");
