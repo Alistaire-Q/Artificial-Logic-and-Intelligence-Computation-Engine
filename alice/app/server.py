@@ -1282,6 +1282,9 @@ class AppState:
             (alice_home() / "last_cwd").write_text(str(path), encoding="utf-8")
         except OSError:
             pass
+        from alice.app.folders import remember_dir
+
+        remember_dir(path)
         self.bus.publish({"type": "status", **self.status()})
 
     def github_repos(self, query: str = "") -> list[dict[str, Any]]:
@@ -1503,6 +1506,12 @@ def make_handler(state: AppState):
                     except OSError:
                         updated = 0
                     rows.append({"id": i, "cwd": c, "title": t, "updated": updated})
+                meta = sess.load_meta()
+                for r in rows:
+                    m = meta.get(r["id"]) or {}
+                    if m.get("title"):
+                        r["auto_title"], r["title"] = r["title"], m["title"]
+                    r["pinned"] = bool(m.get("pinned"))
                 return self._json(rows)
             if u.path == "/api/changes":
                 return self._json(session_changes(state.agent.checkpoints, state.ctx.cwd))
@@ -1541,6 +1550,15 @@ def make_handler(state: AppState):
                 from alice.commands import catalog
 
                 return self._json(catalog(state.ctx.cwd))
+            if u.path == "/api/dirs":  # klasör seçici: alt klasörler, hızlı yerler, son kullanılanlar
+                from alice.app import folders
+                from alice.tools.github import clone_root
+
+                out = folders.listing((q.get("path") or [""])[0], (q.get("hidden") or [""])[0] == "1")
+                if out.get("ok"):
+                    out["places"] = folders.places(clone_root(state.cfg))
+                    out["recent"] = folders.recent_dirs()
+                return self._json(out)
             if u.path == "/api/github/repos":
                 from alice.tools.base import ToolError
 
@@ -1769,6 +1787,11 @@ def make_handler(state: AppState):
                                        "ya da sohbet bulunamadı)",
                                        "history": display_history(state.agent.messages, state.agent.tools),
                                        **state.status()})
+                if p == "/api/dirs/mkdir":
+                    from alice.app import folders
+
+                    out = folders.make_dir(str(d.get("parent", "")), str(d.get("name", "")))
+                    return self._json(out, 200 if out["ok"] else 400)
                 if state.chat.busy and p in ("/api/cwd", "/api/compact", "/api/rewind", "/api/changes/revert",
                                              "/api/github/open"):
                     return self._json({"ok": False, "error": "önce mevcut işi durdur"}, 409)
@@ -1801,7 +1824,18 @@ def make_handler(state: AppState):
                     f = sess.sessions_dir() / f"{sid}.json"
                     if sid and f.parent == sess.sessions_dir() and f.exists():
                         f.unlink()
+                        sess.set_meta(sid, title="", pinned=False)
                     return self._json({"ok": True})
+                if p in ("/api/session/rename", "/api/session/pin"):
+                    sid = str(d.get("id", ""))
+                    f = sess.sessions_dir() / f"{sid}.json"
+                    if not sid or f.parent != sess.sessions_dir() or not f.exists():
+                        return self._json({"ok": False, "error": "sohbet yok"}, 404)
+                    if p == "/api/session/rename":
+                        row = sess.set_meta(sid, title=str(d.get("title", "")).strip()[:120])
+                    else:
+                        row = sess.set_meta(sid, pinned=bool(d.get("pinned")))
+                    return self._json({"ok": True, **row})
                 if p == "/api/compact":
                     ok = state.agent.compact()
                     return self._json({"ok": ok, **state.status()})

@@ -5,14 +5,15 @@
    (app.js → projects.js → ui.js → main.js). Yükleme anında çalışan kod sadece önceki dosyaları kullanır. */
 
 /* ==================================================================== menüler */
-function openMenu(anchor, build, align) {
+function openMenu(anchor, build, align, below) {
   const m = $("#menu");
   m.replaceChildren();
   build(m);
   m.hidden = false;
   const r = anchor.getBoundingClientRect();
   const mh = m.offsetHeight, mw = m.offsetWidth;
-  let top = r.top - mh - 6;
+  let top = below ? r.bottom + 4 : r.top - mh - 6;
+  if (below && top + mh > window.innerHeight - 8) top = r.top - mh - 4;
   if (top < 8) top = r.bottom + 6;
   let left = align === "right" ? r.right - mw : r.left;
   left = Math.max(8, Math.min(left, window.innerWidth - mw - 8));
@@ -198,26 +199,139 @@ function confirmDialog(title, text, okLabel) {
 function showImage(src) {
   showDialog((d) => { const i = el("img", "full"); i.src = src; d.appendChild(i); dialogClose(d); });
 }
-function askCwd() {
-  showDialog((d) => {
-    d.append(el("h2", "", "Çalışma klasörü"), el("p", "", "Komutlar ve göreli dosya yolları bu klasöre göre çalışır. Projenin klasörünü seç."));
-    const inp = el("input"); inp.type = "text"; inp.value = S.status.cwd || "";
-    const err = el("div", "note err");
-    const row = el("div", "row");
-    const no = el("button", "btn", "Vazgeç");
-    const ok = el("button", "btn accent", "Değiştir");
-    const submit = async () => {
-      const r = await api("/api/cwd", { path: inp.value });
-      if (!r.ok) { err.textContent = r.error; return; }
-      applyStatus(r); closeDialog(); toast("Klasör değişti");
-    };
-    no.addEventListener("click", closeDialog);
-    ok.addEventListener("click", submit);
-    inp.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
-    row.append(no, ok);
-    d.append(inp, err, row, githubPicker(err));
-    setTimeout(() => { inp.focus(); inp.select(); }, 0);
+/* Klasör seçici: elle yol yazmadan gez ve seç. Solda hızlı yerler ve son kullanılanlar, sağda klasörün alt
+   klasörleri; üstte tıklanabilir yol. GitHub'dan açma ikinci sekmede. pickFolder sadece yolu döndürür
+   (proje penceresi de kullanır); askCwd seçileni çalışma klasörü yapar. */
+function pickFolder(opts) {
+  opts = opts || {};
+  return new Promise((resolve) => {
+    showDialog((d) => {
+      d.classList.add("fp");
+      onDialogClose = () => resolve(null);
+      const head = el("div", "fp-head");
+      head.append(el("h2", "", opts.title || "Klasör seç"));
+      const tabs = el("div", "seg fp-tabs");
+      const tFs = el("button", "on", "Bilgisayar"), tGh = el("button", "", "GitHub");
+      if (opts.github) tabs.append(tFs, tGh);
+      head.append(el("span", "grow"), tabs);
+      const body = el("div", "fp-body");
+      const side = el("nav", "fp-side");
+      const main = el("div", "fp-main");
+      const crumbs = el("div", "fp-crumbs");
+      const tools = el("div", "fp-tools");
+      const filter = el("input"); filter.type = "text"; filter.placeholder = "Bu klasörde ara";
+      const hidden = el("label", "chk"); const hcb = el("input"); hcb.type = "checkbox";
+      hidden.append(hcb, document.createTextNode(" Gizlileri göster"));
+      tools.append(filter, hidden);
+      const list = el("div", "fp-list");
+      const err = el("div", "note err");
+      main.append(crumbs, tools, list, err);
+      body.append(side, main);
+      const foot = el("div", "fp-foot");
+      const cur = el("div", "fp-cur");
+      const mk = el("button", "btn"); mk.append(svg(IC.plus), document.createTextNode("Yeni klasör"));
+      const no = el("button", "btn", "Vazgeç");
+      const ok = el("button", "btn primary", opts.okLabel || "Bu klasörü seç");
+      foot.append(cur, el("span", "grow"), mk, no, ok);
+      const gh = el("div", "fp-gh"); gh.hidden = true;
+      d.append(head, body, gh, foot);
+      let state = null;
+      const go = async (path) => {
+        err.textContent = "";
+        const r = await api("/api/dirs?path=" + encodeURIComponent(path || "") + (hcb.checked ? "&hidden=1" : ""));
+        if (!r || !r.ok) { err.textContent = (r && r.error) || "açılamadı"; return; }
+        state = r; filter.value = ""; draw();
+      };
+      const place = (icon, label, path, sub) => {
+        const b = el("button", "fp-place" + (state && state.path === path ? " on" : ""));
+        b.title = path;
+        b.append(svg(icon), el("span", "t", label));
+        if (sub) b.appendChild(el("small", "", sub));
+        b.addEventListener("click", () => go(path));
+        return b;
+      };
+      const short = (p) => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || p;
+      const draw = () => {
+        side.replaceChildren(el("div", "fp-sec", "Yerler"));
+        for (const pl of state.places || []) side.appendChild(place(IC[pl.icon] || IC.folder, pl.label, pl.path));
+        if ((state.recent || []).length) {
+          side.appendChild(el("div", "fp-sec", "Son kullanılanlar"));
+          for (const r of state.recent) side.appendChild(place(IC.clock, short(r), r));
+        }
+        crumbs.replaceChildren();
+        const up = el("button", "icon-btn"); up.title = "Üst klasör"; up.appendChild(svg(IC.up));
+        up.disabled = !state.parent; up.addEventListener("click", () => go(state.parent));
+        crumbs.appendChild(up);
+        state.crumbs.forEach((c, i) => {
+          const prevName = i ? state.crumbs[i - 1].name.replace(/[\\/]+$/, "") : "x";
+          if (i && prevName) crumbs.appendChild(el("span", "sep", "/"));
+          const b = el("button", "crumb" + (i === state.crumbs.length - 1 ? " on" : ""), c.name.replace(/[\\/]+$/, "") || "/");
+          b.addEventListener("click", () => go(c.path));
+          crumbs.appendChild(b);
+        });
+        cur.replaceChildren(svg(state.git ? IC.branch : IC.folder), el("span", "", state.path));
+        drawList();
+      };
+      const drawList = () => {
+        const f = filter.value.trim().toLocaleLowerCase("tr");
+        const rows = state.dirs.filter((x) => !f || x.name.toLocaleLowerCase("tr").includes(f));
+        list.replaceChildren();
+        if (!rows.length) list.appendChild(el("div", "fp-empty", f ? "Eşleşen klasör yok" : "Alt klasör yok. Bu klasörü seçebilir ya da yeni klasör oluşturabilirsin."));
+        for (const x of rows) {
+          const b = el("button", "fp-row");
+          b.append(svg(IC.folder), el("span", "t", x.name));
+          if (x.git) b.appendChild(el("span", "tag", "git"));
+          b.appendChild(svg(IC.chev, "chev"));
+          b.title = "Aç (çift tıkla: seç)";
+          b.addEventListener("click", () => go(x.path));
+          b.addEventListener("dblclick", (e) => { e.preventDefault(); finish(x.path); });
+          list.appendChild(b);
+        }
+      };
+      const finish = (path) => { onDialogClose = null; closeDialog(); resolve(path); };
+      filter.addEventListener("input", drawList);
+      filter.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { const first = list.querySelector(".fp-row"); if (first) first.click(); }
+        if (e.key === "Backspace" && !filter.value && state.parent) go(state.parent);
+      });
+      hcb.addEventListener("change", () => go(state.path));
+      no.addEventListener("click", closeDialog);
+      ok.addEventListener("click", () => state && finish(state.path));
+      mk.addEventListener("click", () => {
+        const row = el("div", "fp-new");
+        const inp = el("input"); inp.type = "text"; inp.placeholder = "Yeni klasörün adı";
+        const save = el("button", "btn primary", "Oluştur");
+        const create = async () => {
+          const r = await api("/api/dirs/mkdir", { parent: state.path, name: inp.value });
+          if (!r || !r.ok) { err.textContent = (r && r.error) || "olmadı"; return; }
+          go(r.path);
+        };
+        save.addEventListener("click", create);
+        inp.addEventListener("keydown", (e) => { if (e.key === "Enter") create(); if (e.key === "Escape") { e.stopPropagation(); row.remove(); } });
+        row.append(inp, save);
+        list.prepend(row);
+        setTimeout(() => inp.focus(), 0);
+      });
+      if (opts.github) {
+        const show = (g) => {
+          tFs.classList.toggle("on", !g); tGh.classList.toggle("on", g);
+          body.hidden = g; gh.hidden = !g; ok.hidden = g; mk.hidden = g; cur.hidden = g;
+          if (g && !gh.childElementCount) gh.appendChild(githubPicker(err));
+        };
+        tFs.addEventListener("click", () => show(false));
+        tGh.addEventListener("click", () => show(true));
+      }
+      go(opts.start || S.status.cwd || "");
+      setTimeout(() => filter.focus(), 50);
+    });
   });
+}
+async function askCwd() {
+  const path = await pickFolder({ title: "Çalışma klasörü", github: true, okLabel: "Burada çalış" });
+  if (!path) return;
+  const r = await api("/api/cwd", { path });
+  if (!r.ok) return toast(r.error || "Klasör değişmedi");
+  applyStatus(r); toast("Klasör: " + path);
 }
 // GitHub'daki depolar: tıklanınca ~/GitHub altına klonlanır (varsa güncellenir) ve çalışma klasörü olur.
 function githubPicker(err) {
@@ -1912,6 +2026,52 @@ function showProjects() {
   }
   $("#pageView").replaceChildren(page);
 }
+/* Başlarken: boş sohbette, kurulum bitmemişse 3 adım. Her adım gerçek durumdan okunur (anahtar/model var mı,
+   modeller ölçüldü mü, çekirdek çalışıyor mu); hepsi tamamsa ya da kapatılırsa görünmez. */
+async function drawOnboarding() {
+  const box = $("#onboard");
+  if (!box) return;
+  let hidden = false;
+  try { hidden = localStorage.getItem("alice.onboard") === "0"; } catch { /* yok */ }
+  if (hidden) { box.hidden = true; return; }
+  const [all, setup, sys] = await Promise.all([api("/api/models/all"), api("/api/setup"), api("/api/system")]);
+  const hasModel = !!(all && (all.providers || []).some((p) => p.enabled && !p.hidden && (p.models || []).length));
+  const probed = !!(setup && setup.models && (setup.models.probed_at || setup.models.state === "running"));
+  const core = !!(sys && sys.core && sys.core.running);
+  const steps = [
+    [hasModel, IC.key, "Bir model bağla", "Ücretsiz bir API anahtarı yapıştır (Gemini önerilir) ya da ChatGPT hesabınla gir.",
+      "Anahtar ekle", () => showSettings("apikeys")],
+    [probed, IC.gauge, "Modelleri ölç", "Hangi modelin hızlı ve doğru olduğunu bir kez ölçer, sırayı ona göre kurar (~1-2 dk).",
+      "Ölç", () => api("/api/setup/action", { action: "models_refresh" }).then(() => { toast("Ölçüm başladı"); drawOnboarding(); })],
+    [core, IC.term, "Çekirdeği başlat", "Bildirimler, zamanlanmış görevler ve \"Hey Alice\" için arka planda çalışır.",
+      "Başlat", () => api("/api/system/action", { action: "start" }).then(() => { toast("Çekirdek başlatılıyor"); setTimeout(drawOnboarding, 2500); })],
+  ];
+  const done = steps.filter((x) => x[0]).length;
+  if (done === steps.length) { box.hidden = true; return; }
+  box.replaceChildren();
+  const head = el("div", "ob-head");
+  const t = el("div");
+  t.append(el("b", "", "Başlarken"), el("small", "", `${done}/${steps.length} tamam`));
+  const bar = el("i", "ob-bar"); const fill = el("i"); fill.style.width = (100 * done / steps.length) + "%"; bar.appendChild(fill);
+  const x = iconAct(IC.x, "Gizle", () => { try { localStorage.setItem("alice.onboard", "0"); } catch { /* yok */ } box.hidden = true; });
+  head.append(t, bar, x);
+  box.appendChild(head);
+  let nextGiven = false;
+  for (const [ok, icon, title, text, label, run] of steps) {
+    const row = el("div", "ob-step" + (ok ? " done" : ""));
+    const ic = el("span", "ob-ic"); ic.appendChild(svg(ok ? IC.check : icon));
+    const l = el("span", "l"); l.append(el("b", "", title), el("small", "", text));
+    row.append(ic, l);
+    if (!ok) {
+      const b = el("button", nextGiven ? "btn" : "btn primary", label);
+      nextGiven = true;
+      b.addEventListener("click", run);
+      row.appendChild(b);
+    }
+    box.appendChild(row);
+  }
+  box.hidden = false;
+}
 function goSection(sec) {
   if (sec === "chat") showChat();
   else if (sec === "projects") showProjects();
@@ -2324,6 +2484,10 @@ $("#modelBtn").addEventListener("click", modelMenu);
 $("#thinkBtn").addEventListener("click", thinkMenu);
 $("#cwdBtn").addEventListener("click", askCwd);
 $("#newChat").addEventListener("click", newChat);
+$("#chatTitle").addEventListener("click", () => {
+  const s = (S.sessions || []).find((x) => x.id === S.status.session);
+  if (s) renameSession(s, $("#chatTitle"));
+});
 $$(".sg").forEach((b) => b.addEventListener("click", () => {
   input.value = b.dataset.text; autosize(); input.focus();
   input.setSelectionRange(input.value.length, input.value.length);

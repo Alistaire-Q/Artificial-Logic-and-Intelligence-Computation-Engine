@@ -70,3 +70,37 @@ def load(session_id: str | None = None) -> tuple[str, list[dict[str, Any]]] | No
             continue
         return f.stem, data.get("messages", [])
     return None
+
+
+# Kullanıcının verdiği ad ve sabitleme. Oturum dosyası her adımda baştan yazıldığı için ayrı tutulur:
+# {"<id>": {"title": "...", "pinned": true}}
+def _meta_path() -> Path:
+    return alice_home() / "session_meta.json"
+
+
+def load_meta() -> dict[str, dict[str, Any]]:
+    try:
+        data = json.loads(_meta_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def set_meta(session_id: str, **fields: Any) -> dict[str, Any]:
+    """Alanları güncelle; boş başlık ya da False sabitleme alanı siler."""
+    meta = load_meta()
+    row = dict(meta.get(session_id) or {})
+    for k, v in fields.items():
+        if v in ("", None, False):
+            row.pop(k, None)
+        else:
+            row[k] = v
+    if row:
+        meta[session_id] = row
+    else:
+        meta.pop(session_id, None)
+    _meta_path().parent.mkdir(parents=True, exist_ok=True)
+    tmp = _meta_path().with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(_meta_path())
+    return row
