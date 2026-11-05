@@ -73,11 +73,11 @@ function thinkMenu() {
     }
   }, "right");
 }
-async function modelMenu() {
+async function modelMenu(anchor) {
   const all = await api("/api/models/all");
   const provs = (all && all.providers) || [];
   const pinned = all ? all.pinned : (S.status.brain_pinned ? S.status.brain_chain[0] : null);
-  openMenu($("#modelBtn"), (m) => {
+  openMenu(anchor instanceof Element ? anchor : $("#modelBtn"), (m) => {
     m.appendChild(el("div", "menu-title", "Ana model"));
     menuItem(m, IC.spark, "Otomatik", "Zincirdeki ilk uygun model, limit dolunca sıradakine geçer",
       () => pinModel("reset"), !pinned);
@@ -100,7 +100,7 @@ async function modelMenu() {
     }
     m.appendChild(el("div", "menu-sep"));
     menuItem(m, IC.list, "Modelleri yönet", "Sağlayıcı ya da model gizle/göster, durumları gör", () => showSettings("models"));
-  }, "right");
+  }, "right", anchor instanceof Element);
 }
 async function hideModel(name, hidden) {
   const r = await api("/api/models/hide", { name, hidden });
@@ -108,46 +108,126 @@ async function hideModel(name, hidden) {
   applyStatus(r);
   toast((hidden ? "Gizlendi: " : "Gösteriliyor: ") + name);
 }
-function modelsPane(pane, all) {
-  const provs = (all && all.providers) || [];
-  pane.appendChild(el("div", "sec", "Sağlayıcılar ve modeller"));
-  pane.appendChild(el("p", "", "Gizlenen sağlayıcı ya da model otomatik zincirde kullanılmaz ve model menüsünde görünmez. " +
-    "Sabitlediğin model gizli olsa da kullanılır."));
-  const f = el("input"); f.type = "text"; f.placeholder = "Model ara"; f.className = "set-filter";
-  const box = el("div");
-  const toggle = (hidden) => el("button", "act", hidden ? "Göster" : "Gizle");
+/* Modeller: üstte şu an kullanılan model ve düşünme, ortada sağlayıcı kartları (hazır / anahtar bekliyor / gizli),
+   en altta katlanmış "Gelişmiş": puanlama ağırlıkları ve rol sıraları. */
+const PROV_LABEL = { gemini: "Google Gemini", openrouter: "OpenRouter", groq: "Groq", nvidia: "NVIDIA NIM", cerebras: "Cerebras",
+  mistral: "Mistral", sambanova: "SambaNova", cloudflare: "Cloudflare", cohere: "Cohere", vercel: "Vercel AI Gateway",
+  zai: "Z.ai", ollama: "Ollama (yerel)", chatgpt: "ChatGPT hesabı" };
+function modelsPage(pane, data) {
+  const all = data.all || { providers: [] };
+  pane.append(el("h2", "", "Modeller"),
+    el("p", "", "ALICE her iş için en uygun ücretsiz modeli seçer; biri limite takılınca sıradakine geçer. İstersen bir modeli sabitleyebilirsin."));
+  // Şu an kullanılan
+  const hero = el("div", "mp-hero");
+  const cur = S.status.model || "";
+  const [prov, ...rest] = cur.split(":");
+  const hl = el("div", "mp-cur");
+  hl.append(el("small", "", S.status.brain_pinned ? "Sabitlenmiş model" : "Otomatik seçim · şu an"),
+    el("b", "", rest.join(":") || cur || "model yok"), el("span", "mp-prov", PROV_LABEL[prov] || prov || ""));
+  const ha = el("div", "mp-acts");
+  const change = el("button", "btn"); change.append(svg(IC.spark), document.createTextNode("Model seç"));
+  change.addEventListener("click", () => modelMenu(change));
+  ha.appendChild(change);
+  if (S.status.brain_pinned) {
+    const auto = el("button", "btn", "Otomatiğe dön");
+    auto.addEventListener("click", async () => { await pinModel("reset"); showSettings("models"); });
+    ha.appendChild(auto);
+  }
+  hero.append(hl, ha);
+  const think = el("div", "mp-think");
+  think.append(el("span", "lbl", "Düşünme"), segmented(Object.entries(THINK).map(([k, [l]]) => [k, l]), S.status.thinking, (v) => setThinking(v)),
+    el("small", "", (THINK[S.status.thinking] || ["", ""])[1]));
+  hero.appendChild(think);
+  pane.appendChild(hero);
+
+  // Sağlayıcılar
+  const provs = (all.providers || []).slice().sort((a, b) => (b.enabled - a.enabled) || (b.models.length - a.models.length));
+  const ready = provs.filter((p) => p.enabled && !p.hidden).length;
+  const sh = el("div", "mp-sec");
+  sh.append(el("div", "sec", `Sağlayıcılar · ${ready}/${provs.length} hazır`));
+  const f = el("input"); f.type = "search"; f.placeholder = "Model ara";
+  sh.appendChild(f);
+  pane.appendChild(sh);
+  const grid = el("div", "prov-grid");
+  pane.appendChild(grid);
+  const openSet = new Set(provs.filter((p) => p.enabled && !p.hidden && p.models.length).map((p) => p.name).slice(0, 1));
   const draw = () => {
-    box.replaceChildren();
+    grid.replaceChildren();
     const q = f.value.trim().toLowerCase();
     for (const p of provs) {
       const rows = p.models.filter((x) => !q || x.ref.toLowerCase().includes(q));
       if (q && !rows.length) continue;
-      const head = el("div", "list-row prov" + (p.hidden || !p.enabled ? " off" : ""));
+      const st = p.hidden ? "hidden" : p.enabled ? "ok" : "off";
+      const card = el("div", "prov-card " + st + (openSet.has(p.name) || q ? " open" : ""));
+      const head = el("div", "pc-head");
+      const name = el("div", "pc-name");
       const shown = p.models.filter((x) => !x.hidden).length;
-      head.append(el("b", "l plain", p.name),
-        el("span", "r", !p.enabled ? (p.name === "chatgpt" ? "giriş yapılmamış (Kurulum → ChatGPT ile giriş)" : `${p.key} yok`) : p.hidden ? `gizli · ${p.models.length} model` : `${shown}/${p.models.length} model açık`));
-      const hb = toggle(p.hidden);
-      hb.addEventListener("click", async () => { await hideModel(p.name, !p.hidden); showSettings("models"); });
-      head.appendChild(hb);
-      box.appendChild(head);
-      if (p.hidden && !q) continue;
-      for (const x of rows) {
-        const row = el("div", "list-row" + (x.hidden || p.hidden ? " off" : ""));
-        row.append(el("span", "l", x.model),
-          el("span", "r" + (x.status === "hazır" ? " ok" : ""), x.tested ? x.status : x.status + " · ölçülmedi"));
-        const tb = toggle(x.hidden);
-        tb.addEventListener("click", async () => { await hideModel(x.ref, !x.hidden); showSettings("models"); });
-        const pin = el("button", "act" + (all.pinned === x.ref ? " on" : ""), all.pinned === x.ref ? "Sabit" : "Sabitle");
-        pin.addEventListener("click", async () => { await pinModel(all.pinned === x.ref ? "reset" : x.ref); showSettings("models"); });
-        row.append(tb, pin);
-        box.appendChild(row);
+      name.append(el("b", "", PROV_LABEL[p.name] || p.name),
+        el("small", "", st === "ok" ? `${shown}/${p.models.length} model açık` : st === "hidden" ? "gizli" :
+          p.name === "chatgpt" ? "giriş yapılmamış" : `${p.key || "anahtar"} yok`));
+      const pill = el("span", "pill " + (st === "ok" ? "done" : ""), st === "ok" ? "hazır" : st === "hidden" ? "gizli" : "bekliyor");
+      head.append(name, pill);
+      card.appendChild(head);
+      const acts = el("div", "pc-acts");
+      if (!p.enabled && !p.hidden) {
+        const add = el("button", "btn", p.name === "chatgpt" ? "Giriş yap" : "Anahtar ekle");
+        add.addEventListener("click", () => showSettings(p.name === "chatgpt" ? "setup" : "apikeys"));
+        acts.appendChild(add);
       }
+      if (p.models.length) {
+        const more = el("button", "btn ghost", card.classList.contains("open") ? "Modelleri gizle" : `Modeller (${p.models.length})`);
+        more.addEventListener("click", () => { openSet.has(p.name) ? openSet.delete(p.name) : openSet.add(p.name); draw(); });
+        acts.appendChild(more);
+      }
+      const hb = el("button", "btn ghost", p.hidden ? "Göster" : "Gizle");
+      hb.title = p.hidden ? "Otomatik zincire geri al" : "Otomatik zincirde ve model menüsünde kullanılmasın";
+      hb.addEventListener("click", async () => { await hideModel(p.name, !p.hidden); showSettings("models"); });
+      acts.appendChild(hb);
+      card.appendChild(acts);
+      if (card.classList.contains("open") && rows.length) {
+        const list = el("div", "pc-models");
+        for (const x of rows) {
+          const row = el("div", "pc-model" + (x.hidden ? " off" : "") + (all.pinned === x.ref ? " pinned" : ""));
+          const l = el("span", "l");
+          l.append(el("span", "m", x.model), el("small", "", x.tested ? x.status : (x.status === "hazır" ? "hazır · ölçülmedi" : x.status)));
+          const q = el("span", "q"); q.title = "Kalite puanı"; q.style.setProperty("--q", (x.quality || 0) + "%");
+          const pin = el("button", "icon-btn" + (all.pinned === x.ref ? " on" : ""));
+          pin.title = all.pinned === x.ref ? "Sabitlemeyi kaldır" : "Bu modeli sabitle";
+          pin.appendChild(svg(IC.pin));
+          pin.addEventListener("click", async () => { await pinModel(all.pinned === x.ref ? "reset" : x.ref); showSettings("models"); });
+          const tb = switchEl(!x.hidden, x.hidden ? "Göster" : "Gizle", async (on) => { await hideModel(x.ref, !on); showSettings("models"); });
+          row.append(l, q, pin, tb);
+          list.appendChild(row);
+        }
+        card.appendChild(list);
+      }
+      grid.appendChild(card);
     }
-    if (!box.children.length) box.appendChild(el("p", "", q ? "Eşleşen model yok." : "Henüz ölçülmüş model yok."));
+    if (!grid.children.length) grid.appendChild(el("p", "", "Eşleşen model yok."));
   };
   f.addEventListener("input", draw);
   draw();
-  pane.append(f, box);
+
+  // Gelişmiş
+  const adv = el("details", "mp-adv");
+  adv.appendChild(el("summary", "", "Gelişmiş: puanlama ağırlıkları ve rol sıraları"));
+  adv.appendChild(scorePane());
+  const names = { brain: "Ana model", fast: "Hızlı işler", vision: "Görsel", voice: "Sesli" };
+  const chains = el("div", "mp-chains");
+  for (const [role, rows] of Object.entries(data.models || {})) {
+    const c = el("div", "mp-chain");
+    c.appendChild(el("b", "", (names[role] || role) + " sırası"));
+    const ol = el("ol");
+    for (const r of rows) {
+      const li = el("li", r.status === "hazır" ? "ok" : "");
+      li.append(el("span", "", r.ref), el("small", "", r.status));
+      ol.appendChild(li);
+    }
+    c.appendChild(ol);
+    chains.appendChild(c);
+  }
+  adv.appendChild(chains);
+  pane.appendChild(adv);
 }
 async function pinModel(ref) {
   await api("/api/model", { role: "brain", ref });
@@ -1839,20 +1919,25 @@ function memoryPane(pane, data) {
 function keysPane(pane, data) {
   const d = data || {};
   pane.append(el("h2", "", "Anahtarlar"),
-    el("p", "", "Anahtarı yapıştırıp Kaydet: hemen kullanılır, yeniden başlatmak gerekmez. Hepsi bu bilgisayarda "
-      + (d.path || "~/.alice/.env") + " dosyasında durur, GitHub'a gitmez. En az iki model anahtarı (ör. Gemini + Groq) "
-      + "doldurmak, biri kotaya takılınca ALICE'in durmamasını sağlar."));
-  const groups = [["model", "Modeller"], ["connect", "Bağlantılar"]];
+    el("p", "", "Anahtarı yapıştırıp kaydet: hemen kullanılır, yeniden başlatmak gerekmez. Hepsi bu bilgisayarda "
+      + (d.path || "~/.alice/.env") + " dosyasında durur. En az iki model anahtarı (ör. Gemini + Groq), biri kotaya takılınca ALICE'in durmamasını sağlar."));
+  const groups = [["model", "Model sağlayıcıları"], ["connect", "Servisler"]];
   for (const [g, title] of groups) {
-    pane.appendChild(el("div", "sec", title));
-    // İki değer isteyen servis (Cloudflare: token + hesap kimliği) tek kart: aynı başlık iki kez görünmesin.
     const cards = new Map();
-    for (const k of (d.keys || []).filter((x) => x.group === g)) {
+    // Model sağlayıcısına bağlı anahtarlar bir grupta, gerisi (GitHub, ses, Steam...) servisler grubunda.
+    const byKey = Object.fromEntries((d.keys || []).map((x) => [x.key, x]));
+    const isModel = (x) => !!(x.provider || (byKey[x.part_of] || {}).provider);
+    for (const k of (d.keys || []).filter((x) => (g === "model") === isModel(x))) {
       const id = k.part_of || k.key;
       if (!cards.has(id)) cards.set(id, []);
       cards.get(id).push(k);
     }
-    for (const parts of cards.values()) pane.appendChild(keyRow(parts));
+    const list = [...cards.values()].sort((a, b) => (b.every((p) => p.set) - a.every((p) => p.set)));
+    const done = list.filter((parts) => parts.every((p) => p.set)).length;
+    pane.appendChild(el("div", "sec", `${title} · ${done}/${list.length} bağlı`));
+    const grid = el("div", "key-grid");
+    for (const parts of list) grid.appendChild(keyRow(parts));
+    pane.appendChild(grid);
   }
 }
 function keyRow(parts) {
@@ -1860,54 +1945,72 @@ function keyRow(parts) {
   const many = parts.length > 1;
   const all = parts.every((p) => p.set);
   const some = parts.some((p) => p.set);
-  const row = el("div", "list-row key-row");
-  const mark = el("span", "chk " + (all ? "ok" : "off"), all ? "✓" : some ? "!" : "–");
+  const card = el("div", "key-card" + (all ? " set" : some ? " partial" : ""));
+  const head = el("div", "kc-head");
+  const dot = el("span", "kc-dot");
   const l = el("span", "l");
-  const sub = el("small", "");
-  const info = many
-    ? (some && !all ? "eksik: " + parts.filter((p) => !p.set).map((p) => p.field).join(", ") + " · " : "") + "iki değer ister"
-    : k.key + (k.preview ? " · " + k.preview : "") + (k.source === "env" ? " · Windows ortam değişkeninden" : "");
-  sub.append(document.createTextNode(info + (k.help ? " · " + k.help : "")));
+  // "Cohere (deneme anahtarı ücretsiz, ...)": ad başlıkta, parantez içi açıklama alt satırda.
+  const m = /^(.*?)\s*\((.*)\)\s*$/.exec(k.label);
+  const title = m ? m[1] : k.label, note = m ? m[2] : "";
+  const sub = all ? (many ? "bağlı" : (k.preview || "bağlı") + (k.source === "env" ? " · ortam değişkeni" : ""))
+    : some ? "eksik: " + parts.filter((p) => !p.set).map((p) => p.field).join(", ") : (k.help || note || "anahtar yok");
+  l.append(el("b", "", title), el("small", "", sub));
+  l.title = k.label + (k.help ? "\n" + k.help : "");
+  head.append(dot, l);
   if (k.url) {
-    const a = el("a", "", " anahtarı al ↗");
+    const a = el("button", "btn ghost kc-get");
     a.title = k.url;
-    a.addEventListener("click", (e) => { e.preventDefault(); api("/api/open", { url: k.url }); });
-    sub.appendChild(a);
+    a.append(document.createTextNode("Anahtar al"), svg(IC.ext));
+    a.addEventListener("click", () => api("/api/open", { url: k.url }));
+    head.appendChild(a);
   }
-  l.append(el("b", "", k.label), sub);
-  row.append(mark, l);
+  const edit = el("button", "btn", all ? "Değiştir" : "Ekle");
+  head.appendChild(edit);
+  card.appendChild(head);
+  const form = el("div", "kc-form");
+  form.hidden = true;
+  const label = (p) => many ? `${k.label} ${p.field}` : k.label;
+  const send = (p, value, msg) => api("/api/keys/set", { key: p.key, value }).then((r) => {
+    if (!r || !r.ok) return toast((r && r.error) || "kaydedilemedi");
+    toast(msg);
+    showSettings("apikeys");
+  });
+  const inputs = [];
   for (const p of parts) {
-    const edit = el("div", "key-edit");
-    if (many) {
-      const name = el("span", "key-field");
-      name.append(el("b", "", p.field), el("small", "", p.key + (p.preview ? " · " + p.preview : "")
-        + (p.source === "env" ? " · ortam değişkeninden" : "")));
-      edit.appendChild(name);
-    }
-    const what = many ? p.field : "anahtarı";
+    const row = el("div", "kc-row");
+    if (many) row.appendChild(el("span", "kc-field", p.field));
     const inp = el("input");
-    inp.type = "password";
-    inp.autocomplete = "off";
-    inp.spellcheck = false;
-    inp.placeholder = p.set ? `değiştirmek için yeni ${many ? p.field : "anahtarı"} yapıştır` : `${what} yapıştır`;
-    const save = el("button", "btn primary", "Kaydet");
-    const label = many ? `${k.label} ${p.field}` : k.label;
-    const send = (value, msg) => api("/api/keys/set", { key: p.key, value }).then((r) => {
-      if (!r || !r.ok) return toast((r && r.error) || "kaydedilemedi");
-      toast(msg);
-      showSettings("apikeys");
-    });
-    save.addEventListener("click", () => { if (inp.value.trim()) send(inp.value.trim(), label + " kaydedildi"); });
-    inp.addEventListener("keydown", (e) => { if (e.key === "Enter" && inp.value.trim()) send(inp.value.trim(), label + " kaydedildi"); });
-    edit.append(inp, save);
+    inp.type = "password"; inp.autocomplete = "off"; inp.spellcheck = false;
+    inp.placeholder = p.set ? `yeni ${many ? p.field : "anahtar"} yapıştır` : `${many ? p.field : "anahtarı"} yapıştır`;
+    inp.addEventListener("keydown", (e) => { if (e.key === "Enter") saveAll(); if (e.key === "Escape") { form.hidden = true; } });
+    row.appendChild(inp);
     if (p.source === "file") {
-      const del = el("button", "btn", "Sil");
-      del.addEventListener("click", () => send("", label + " silindi"));
-      edit.appendChild(del);
+      const del = iconAct(IC.trash, "Sil", () => send(p, "", label(p) + " silindi"), "danger");
+      row.appendChild(del);
     }
-    row.appendChild(edit);
+    inputs.push([p, inp]);
+    form.appendChild(row);
   }
-  return row;
+  const saveAll = async () => {
+    const filled = inputs.filter(([, inp]) => inp.value.trim());
+    if (!filled.length) return;
+    for (const [p, inp] of filled) await api("/api/keys/set", { key: p.key, value: inp.value.trim() });
+    toast(k.label + " kaydedildi");
+    showSettings("apikeys");
+  };
+  const fr = el("div", "kc-btns");
+  const cancel = el("button", "btn ghost", "Vazgeç");
+  cancel.addEventListener("click", () => { form.hidden = true; });
+  const save = el("button", "btn primary", "Kaydet");
+  save.addEventListener("click", saveAll);
+  fr.append(cancel, save);
+  form.appendChild(fr);
+  card.appendChild(form);
+  edit.addEventListener("click", () => {
+    form.hidden = !form.hidden;
+    if (!form.hidden) setTimeout(() => inputs[0][1].focus(), 0);
+  });
+  return card;
 }
 /* Bağlantılar: servislerin durumu, OAuth bağlanma/çıkış ve izleyen akışlar. */
 function connectPane(pane, data) {
@@ -2141,21 +2244,7 @@ async function showSettings(tab) {
         setRow("Sürüm", "ALICE " + (S.status.version || ""), (() => { const b = el("button", "btn", "Şimdi denetle"); b.addEventListener("click", checkUpdate); return b; })()),
       );
     } else if (tab === "models") {
-      pane.append(el("h2", "", "Modeller"),
-        el("p", "", "Her rol soldan sağa denenir. Limite takılan ya da hata veren model atlanır, kısa süre sonra tekrar denenir."));
-      pane.appendChild(setRow("Düşünme", (THINK[S.status.thinking] || ["", ""])[1],
-        segmented(Object.entries(THINK).map(([k, [l]]) => [k, l]), S.status.thinking, (v) => setThinking(v))));
-      const names = { brain: "Ana model", fast: "Hızlı işler", vision: "Görsel" };
-      pane.appendChild(scorePane());
-      modelsPane(pane, data.all);
-      for (const [role, rows] of Object.entries(data.models || {})) {
-        pane.appendChild(el("div", "sec", (names[role] || role) + " sırası"));
-        for (const r of rows) {
-          const row = el("div", "list-row");
-          row.append(el("span", "l", r.ref), el("span", "r" + (r.status === "hazır" ? " ok" : ""), r.status));
-          pane.appendChild(row);
-        }
-      }
+      modelsPage(pane, data);
     } else if (tab === "tools") {
       const tools = Array.isArray(data.tools) ? data.tools : [];
       pane.append(el("h2", "", "Araçlar"), el("p", "", `${tools.length} araç. MCP sunucularını config.toml'daki [mcp.servers] altına ekleyebilirsin.`));

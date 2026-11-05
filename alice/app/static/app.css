@@ -1725,3 +1725,75 @@ details > summary::marker { color: var(--faint); }
 .ob-step.done .ob-ic { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
 .ob-step.done .l b { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--faint); }
 .ob-step.done .l small { display: none; }
+
+/* ---------------------------------------------------------------- modeller */
+.mp-hero { border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); padding: var(--s4) var(--s5); display: grid; grid-template-columns: 1fr auto; gap: var(--s4) var(--s4); align-items: center; margin-bottom: var(--s5); }
+.mp-cur { display: flex; flex-direction: column; min-width: 0; }
+.mp-cur small { color: var(--faint); font-size: 12px; }
+.mp-cur b { font-size: 20px; font-weight: 600; letter-spacing: -.02em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mp-prov { color: var(--muted); font-size: 13px; }
+.mp-acts { display: flex; gap: var(--s2); }
+.mp-think { grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2) var(--s3); padding-top: var(--s4); border-top: 1px solid var(--line); }
+.mp-think .lbl { font-weight: 500; font-size: 13px; }
+.mp-think small { color: var(--faint); font-size: 12px; }
+.mp-sec { display: flex; align-items: center; gap: var(--s3); margin: var(--s5) 0 var(--s3); }
+.mp-sec .sec { margin: 0; flex: 1; }
+.mp-sec input { max-width: 220px; }
+.prov-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: var(--s3); align-items: start; }
+.prov-card { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--panel); padding: var(--s3) var(--s4); display: flex; flex-direction: column; gap: var(--s3); }
+.prov-card.open { grid-column: 1 / -1; }
+.prov-card.off, .prov-card.hidden { background: transparent; }
+.prov-card.off .pc-name b, .prov-card.hidden .pc-name b { color: var(--muted); }
+.pc-head { display: flex; align-items: flex-start; gap: var(--s3); }
+.pc-name { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.pc-name b { font-weight: 600; }
+.pc-name small { color: var(--faint); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prov-card .pill.done { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
+.pc-acts { display: flex; flex-wrap: wrap; gap: 6px; }
+.pc-acts .btn { padding: 4px 10px; font-size: 12.5px; }
+.pc-models { border-top: 1px solid var(--line); margin: 0 calc(-1 * var(--s4)) calc(-1 * var(--s3)); }
+.pc-model { display: grid; grid-template-columns: 1fr 90px 30px 34px; align-items: center; gap: var(--s3); padding: 8px var(--s4); }
+.pc-model + .pc-model { border-top: 1px solid var(--line); }
+.pc-model .l { display: flex; flex-direction: column; min-width: 0; }
+.pc-model .m { font: 12.5px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-model small { color: var(--faint); font-size: 11.5px; }
+.pc-model.off .m { color: var(--faint); }
+.pc-model .q { height: 5px; border-radius: 5px; background: var(--line); position: relative; overflow: hidden; }
+.pc-model .q::after { content: ""; position: absolute; inset: 0 auto 0 0; width: var(--q); background: var(--accent); opacity: .7; border-radius: 5px; }
+.pc-model .icon-btn { width: 28px; height: 28px; color: var(--faint); }
+.pc-model .icon-btn svg { width: 15px; height: 15px; }
+.pc-model .icon-btn.on { color: var(--accent); background: var(--accent-soft); }
+.pc-model.pinned .m { color: var(--accent); font-weight: 600; }
+.mp-adv { margin-top: var(--s6); border-top: 1px solid var(--line); padding-top: var(--s4); }
+.mp-adv > summary { font-weight: 500; color: var(--muted); padding: var(--s1) 0; }
+.mp-adv[open] > summary { margin-bottom: var(--s3); }
+.mp-chains { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: var(--s3); margin-top: var(--s4); }
+.mp-chain { border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s3) var(--s4); background: var(--panel); }
+.mp-chain b { font-size: 13px; font-weight: 600; }
+.mp-chain ol { margin: var(--s2) 0 0; padding-left: 20px; font-size: 12.5px; }
+.mp-chain li { padding: 2px 0; color: var(--faint); }
+.mp-chain li span { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+.mp-chain li small { display: block; font-size: 11px; }
+.mp-chain li.ok span { color: var(--text); }
+.mp-chain li.ok small { color: var(--ok); }
+
+/* --------------------------------------------------------------- anahtarlar */
+.key-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: var(--s2) var(--s3); margin-bottom: var(--s4); }
+.key-card { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--panel); }
+.key-card:not(.set) { background: transparent; }
+.kc-head { display: flex; align-items: center; gap: var(--s3); padding: 10px var(--s3) 10px var(--s4); }
+.kc-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line-strong); flex: none; }
+.key-card.set .kc-dot { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 18%, transparent); }
+.key-card.partial .kc-dot { background: var(--warn); }
+.kc-head .l { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.kc-head .l b { font-weight: 500; font-size: 13.5px; }
+.kc-head .l small { color: var(--faint); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
+.key-card:not(.set) .kc-head .l small { font-family: var(--sans); }
+.kc-head .btn { padding: 4px 10px; font-size: 12.5px; flex: none; }
+.kc-get svg { width: 12px; height: 12px; }
+.kc-form { border-top: 1px solid var(--line); padding: var(--s3) var(--s4); display: flex; flex-direction: column; gap: var(--s2); }
+.kc-form[hidden] { display: none; }
+.kc-row { display: flex; align-items: center; gap: var(--s2); }
+.kc-field { font-size: 12px; color: var(--muted); width: 90px; flex: none; }
+.kc-btns { display: flex; justify-content: flex-end; gap: var(--s2); }
+.key-card:has(.kc-form:not([hidden])) { grid-column: 1 / -1; box-shadow: var(--shadow); }
