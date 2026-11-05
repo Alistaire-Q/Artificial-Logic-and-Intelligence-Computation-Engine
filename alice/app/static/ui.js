@@ -925,8 +925,26 @@ function micTestCard() {
 /* Ayarlar > Otomasyon: kurallar ("GPU 85'i geçerse haber ver"), zamanlanmış görevler ("her sabah 9'da ...") ve
    akışlar (bağlı servisleri izleyip haber verenler). Kural/görev düz cümleyle yazılır; ne anlaşıldığı gösterilir,
    onaylanınca kaydedilir. */
+/* Ortak küçük bileşenler: aç/kapa anahtarı ve simgeli düğme. Sayfalar "Kapat / Aç / Sil" yazılı düğme yığını yerine
+   bunları kullanır. */
+function switchEl(on, title, onChange) {
+  const b = el("button", "switch" + (on ? " on" : ""));
+  b.setAttribute("role", "switch");
+  b.setAttribute("aria-checked", on ? "true" : "false");
+  b.title = title || (on ? "Açık" : "Kapalı");
+  b.addEventListener("click", () => onChange(!on));
+  return b;
+}
+function iconAct(icon, title, fn, cls) {
+  const b = el("button", "icon-btn" + (cls ? " " + cls : ""));
+  b.title = title;
+  b.setAttribute("aria-label", title);
+  b.appendChild(svg(icon));
+  b.addEventListener("click", fn);
+  return b;
+}
 function autoPane(pane) {
-  pane.append(el("h2", "", "Otomasyon"),
+  pane.append(el("h2", "", "Kurallar ve görevler"),
     el("p", "", "ALICE'in kendiliğinden yaptıkları. Düz cümleyle yaz; ne anladığını gösterir, onaylarsan kaydeder. "
       + "Sesle ya da sohbette \"her sabah 9'da ...\" demek de aynı yere yazar."));
   const body = el("div");
@@ -1004,8 +1022,8 @@ function autoPane(pane) {
       const row = el("div", "list-row" + (r.enabled ? "" : " off"));
       const l = el("span", "l");
       l.append(el("b", "", r.text), el("small", "", r.condition + " · " + r.message + (r.agent ? " · ALICE araştırır" : "") + (r.enabled ? "" : " · kapalı")));
-      row.append(l, small(r.enabled ? "Kapat" : "Aç", () => call("rule_enable", { id: r.id, on: !r.enabled }).then(after())),
-        small("Sil", () => call("rule_rm", { id: r.id }).then(after("kural silindi"))));
+      row.append(l, switchEl(r.enabled, r.enabled ? "Kuralı kapat" : "Kuralı aç", (on) => call("rule_enable", { id: r.id, on }).then(after())),
+        iconAct(IC.trash, "Kuralı sil", () => call("rule_rm", { id: r.id }).then(after("kural silindi")), "danger"));
       body.appendChild(row);
     }
     // Görevler
@@ -1026,8 +1044,8 @@ function autoPane(pane) {
         l.appendChild(det);
       }
       row.append(l, small("Şimdi çalıştır", () => call("task_run", { id: t.id }).then(after(d.core_running ? "bir sonraki çekirdek turunda çalışacak" : "çekirdek açılınca çalışacak"))),
-        small(t.enabled ? "Kapat" : "Aç", () => call("task_enable", { id: t.id, on: !t.enabled }).then(after())),
-        small("Sil", () => call("task_rm", { id: t.id }).then(after("görev silindi"))));
+        switchEl(t.enabled, t.enabled ? "Görevi kapat" : "Görevi aç", (on) => call("task_enable", { id: t.id, on }).then(after())),
+        iconAct(IC.trash, "Görevi sil", () => call("task_rm", { id: t.id }).then(after("görev silindi")), "danger"));
       body.appendChild(row);
     }
     // Akışlar
@@ -1829,10 +1847,73 @@ function connectPane(pane, data) {
 
 const SETTINGS_TABS = [
   ["general", "Genel", IC.gear], ["apikeys", "Anahtarlar", IC.key], ["voice", "Ses", IC.sound], ["models", "Modeller", IC.spark], ["tools", "Araçlar", IC.bolt],
-  ["assistant", "Asistan", IC.shield], ["system", "Çekirdek", IC.term], ["auto", "Otomasyon", IC.list], ["notes", "Notlar", IC.sun], ["logs", "Kayıtlar", IC.check], ["setup", "Kurulum", IC.update],
+  ["assistant", "Asistan", IC.shield], ["system", "Çekirdek", IC.term], ["auto", "Kurallar ve görevler", IC.list], ["notes", "Notlar", IC.sun], ["logs", "Kayıtlar", IC.check], ["setup", "Kurulum", IC.update],
   ["connect", "Bağlantılar", IC.plug], ["memory", "Hafıza", IC.brain], ["usage", "Kullanım", IC.gauge],
   ["keys", "Kısayollar", IC.keyboard],
 ];
+/* Sol şeritteki bölümler. Eskiden hepsi tek bir Ayarlar penceresindeydi; özellikler (otomasyon, çekirdek,
+   bağlantılar) artık kendi tam sayfalarında, Ayarlar'da sadece gerçek ayarlar kalır. */
+const SECTIONS = {
+  auto: ["Otomasyonlar", ["auto", "notes", "logs"]],
+  system: ["Sistem", ["system", "assistant", "voice", "setup", "usage"]],
+  connect: ["Bağlantılar", ["connect", "apikeys"]],
+  settings: ["Ayarlar", ["general", "models", "tools", "memory", "keys"]],
+};
+const secOf = (tab) => Object.keys(SECTIONS).find((k) => SECTIONS[k][1].includes(tab)) || "settings";
+function markSection(sec) {
+  app.dataset.sec = sec;
+  for (const b of document.querySelectorAll("#rail [data-sec]")) b.classList.toggle("on", b.dataset.sec === sec && b.classList.contains("rbtn"));
+  $("#sideTitle").textContent = sec === "chat" ? "Sohbetler" : sec === "projects" ? "Projeler" : SECTIONS[sec][0];
+  const inPage = sec in SECTIONS || (sec === "projects" && !S.proj);
+  if (!(sec in SECTIONS)) $("#sideNav").replaceChildren();
+  app.classList.toggle("in-page", inPage);
+  $("#pageView").hidden = !inPage;
+  if (!inPage) $("#pageView").replaceChildren();
+}
+// Sohbete dön: açık proje ya da sayfa kapanır, son sohbet olduğu gibi durur.
+function showChat() {
+  markSection("chat");
+  if (S.proj) closeProject();
+}
+function showProjects() {
+  if (S.proj) { markSection("projects"); return; }
+  markSection("projects");
+  const page = el("div", "page");
+  const head = el("div", "page-head");
+  const t = el("div");
+  t.append(el("h1", "", "Projeler"),
+    el("p", "", "Büyük işleri ALICE'in yönettiği, paralel çalışan ajan takımları yürütür. Soldan bir proje seç ya da yenisini başlat."));
+  const nb = el("button", "btn primary");
+  nb.append(svg(IC.plus), document.createTextNode("Yeni proje"));
+  nb.addEventListener("click", () => projectDialog(null));
+  head.append(t, el("span", "grow"), nb);
+  page.appendChild(head);
+  const rows = S.projects || [];
+  if (!rows.length) {
+    page.appendChild(emptyState(IC.list, "Henüz proje yok", "Bir hedef yaz; ALICE işi ajanlara böler, biten işi inceler ve sonunda sana özet yazar."));
+  } else {
+    const list = el("div", "card-list");
+    for (const p of rows.slice(0, 30)) {
+      const r = el("button", "card-row");
+      const l = el("span", "l");
+      l.append(el("b", "", p.title || "(adsız)"), el("small", "", p.goal || ""));
+      r.append(el("i", "dot st-" + p.status), l, el("span", "r", `${PROJ_ST[p.status] || p.status} · ${(p.members || []).length} ajan · ${relTime(p.updated || p.created)}`));
+      r.addEventListener("click", () => openProject(p.id));
+      list.appendChild(r);
+    }
+    page.appendChild(list);
+  }
+  $("#pageView").replaceChildren(page);
+}
+function goSection(sec) {
+  if (sec === "chat") showChat();
+  else if (sec === "projects") showProjects();
+  else showSettings(SECTIONS[sec][1][0]);
+  closeSideOnMobile();
+}
+for (const b of document.querySelectorAll("#rail [data-sec]")) b.addEventListener("click", () => goSection(b.dataset.sec));
+markSection("chat");
+
 async function showSettings(tab) {
   tab = tab || "general";
   const data = {
@@ -1846,22 +1927,33 @@ async function showSettings(tab) {
     apikeys: tab === "apikeys" ? await api("/api/keys") : null,
     voice: tab === "voice" ? await api("/api/voice") : null,
   };
-  showDialog((d) => {
-    d.classList.add("settings");
-    const nav = el("nav", "set-nav");
-    nav.appendChild(el("div", "set-h", "Ayarlar"));
-    for (const [k, label, icon] of SETTINGS_TABS) {
-      const b = el("button", k === tab ? "on" : "");
-      b.append(svg(icon), document.createTextNode(label));
-      b.addEventListener("click", () => showSettings(k));
-      nav.appendChild(b);
+  const sec = secOf(tab);
+  if (S.proj) closeProject();
+  if (!$("#overlay").hidden && $("#dialog").classList.contains("settings")) closeDialog();
+  markSection(sec);
+  // Bölümün alt sekmeleri kenar çubuğunda.
+  const nav = $("#sideNav");
+  nav.replaceChildren();
+  const labels = Object.fromEntries(SETTINGS_TABS.map(([k, l, i]) => [k, [l, i]]));
+  for (const k of SECTIONS[sec][1]) {
+    const [label, icon] = labels[k];
+    const b = el("button", "side-item" + (k === tab ? " on" : ""));
+    b.append(svg(icon), el("span", "t", label));
+    b.addEventListener("click", () => showSettings(k));
+    nav.appendChild(b);
+  }
+  {
+    const d = $("#pageView");
+    d.scrollTop = 0;
+    const pane = el("div", "set-pane page");
+    // Dar pencerede kenar çubuğu kapalı: alt sekmeler sayfanın üstünde yatay durur.
+    const tabs = el("div", "page-tabs");
+    for (const b of nav.children) {
+      const c = b.cloneNode(true);
+      c.addEventListener("click", () => b.click());
+      tabs.appendChild(c);
     }
-    const pane = el("div", "set-pane");
-    const x = el("button", "icon-btn set-x");
-    x.title = "Kapat (Esc)";
-    x.appendChild(svg(IC.x));
-    x.addEventListener("click", closeDialog);
-    pane.appendChild(x);
+    pane.appendChild(tabs);
     if (tab === "general") {
       pane.append(el("h2", "", "Genel"));
       pane.append(
@@ -1969,8 +2061,8 @@ async function showSettings(tab) {
         pane.appendChild(row);
       }
     }
-    d.append(nav, pane);
-  });
+    d.replaceChildren(pane);
+  }
 }
 const SHORTCUTS = [
   ["Ctrl+K", "Komut paleti"], ["Ctrl+J", "Yan panel (plan, değişiklikler, bağlam)"], ["Ctrl+O", "Araç ayrıntılarını aç/kapat"],
@@ -2223,7 +2315,6 @@ $("#sendBtn").addEventListener("click", () => (S.busy && !input.value.trim() ? s
 $("#modeBtn").addEventListener("click", modeMenu);
 $("#modelBtn").addEventListener("click", modelMenu);
 $("#thinkBtn").addEventListener("click", thinkMenu);
-$("#settingsBtn").addEventListener("click", () => showSettings("general"));
 $("#cwdBtn").addEventListener("click", askCwd);
 $("#newChat").addEventListener("click", newChat);
 $$(".sg").forEach((b) => b.addEventListener("click", () => {

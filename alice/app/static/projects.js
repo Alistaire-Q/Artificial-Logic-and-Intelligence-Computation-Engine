@@ -128,6 +128,10 @@ function drawProjects() {
   const nav = $("#projects");
   nav.replaceChildren();
   const rows = S.projects || [];
+  // Şeritteki Projeler simgesinde nokta: bir proje cevap ya da onay bekliyor.
+  const dot = $("#projDot");
+  if (dot) dot.hidden = !rows.some((p) => p.questions || (p.members || []).some((m) => m.status === "review"));
+  if (app.dataset.sec === "projects" && !S.proj && typeof showProjects === "function") showProjects();
   if (!rows.length) { nav.appendChild(el("div", "side-empty small", "Henüz proje yok")); return; }
   for (const p of rows.slice(0, 30)) {
     const b = el("button", "proj-row" + (S.proj && S.proj.id === p.id ? " active" : ""));
@@ -146,6 +150,7 @@ async function openProject(id, sel) {
   S.proj = { id, sel: sel || (same ? S.proj.sel : null), tab: same ? S.proj.tab : "chat", data: null };
   $("#app").classList.add("in-project");
   $("#projectView").hidden = false;
+  markSection("projects");
   drawProjects();
   closeSideOnMobile();
   await refreshProject();

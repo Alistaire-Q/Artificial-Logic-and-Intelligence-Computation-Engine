@@ -37,7 +37,8 @@ STATIC = Path(__file__).parent / "static"
 STATIC_FILES = {"app.js": "text/javascript", "projects.js": "text/javascript", "ui.js": "text/javascript",
                 "main.js": "text/javascript", "app.css": "text/css", "marked.min.js": "text/javascript",
                 "purify.min.js": "text/javascript", "highlight.js": "text/javascript", "icon.svg": "image/svg+xml", "alice.png": "image/png", "quick.js": "text/javascript",
-                "quick.css": "text/css", "m.css": "text/css", "m.js": "text/javascript"}
+                "quick.css": "text/css", "m.css": "text/css", "m.js": "text/javascript",
+                "Geist.woff2": "font/woff2", "GeistMono.woff2": "font/woff2"}
 # media-src: Ayarlar → Ses'teki "Dinle" örneği data: adresinden çalınır. Yoktu; default-src 'none' yüzünden
 # tarayıcı sesi sessizce engelliyordu.
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "

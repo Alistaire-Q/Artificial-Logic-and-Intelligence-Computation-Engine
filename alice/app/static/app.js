@@ -72,6 +72,7 @@ function svg(paths, cls) {
   return s;
 }
 const IC = {
+  plus: '<path d="M12 5v14M5 12h14"/>',
   copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h8"/>',
   check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
   rewind: '<path d="M4 12a8 8 0 1 0 2.3-5.6"/><path d="M4 4v4.5h4.5"/>',
@@ -470,13 +471,16 @@ function toolRow(id, name, summary, running) {
     }, 500);
   }
   if (id) S.tools.set(id, t);
+  // Art arda gelen araçlar tek bir "adımlar" kartında toplanır; araya cevap, plan ya da izin kartı girince yeni kart açılır.
+  let box = lastContent();
+  if (!box || !box.classList.contains("steps")) box = add(el("div", "steps"));
   if (GROUP_KIND[name]) {
-    const last = lastContent();
+    const last = box.lastElementChild;
     let g = null;
     if (last && last.classList.contains("tool-group")) g = last;
     else if (last && last.classList.contains("tool") && GROUP_KIND[last._name]) {
       g = makeGroup();
-      list.insertBefore(g, last);
+      box.insertBefore(g, last);
       g._body.appendChild(last);
     }
     if (g) {
@@ -486,7 +490,10 @@ function toolRow(id, name, summary, running) {
       return t;
     }
   }
-  return add(t);
+  const stick = nearBottom();
+  box.appendChild(t);
+  toBottom(stick);
+  return t;
 }
 // 1.8k, 840k, 1M gibi kısa token yazımı.
 function fmtTok(n) {
@@ -766,7 +773,7 @@ function markFinals() {
       const k = kids[j];
       if (k.classList.contains("turn-user")) break;
       if (k.classList.contains("turn-ai") || k.classList.contains("tool") || k.classList.contains("todo") ||
-          k.classList.contains("tool-group") ||
+          k.classList.contains("tool-group") || k.classList.contains("steps") ||
           k.classList.contains("perm")) { final = false; break; }
     }
     n.classList.toggle("final", final && !(S.busy && i === kids.length - 1 - (S.working ? 1 : 0)));
@@ -1006,6 +1013,7 @@ function leaveChat() {
 $("#sessSearch").addEventListener("input", drawSessions);
 $("#sessSearch").addEventListener("keydown", (e) => { if (e.key === "Escape") { e.target.value = ""; drawSessions(); e.target.blur(); } });
 async function resume(id) {
+  if (app.dataset.sec !== "chat") markSection("chat");
   // Proje ekranı açıkken sohbete tıklamak önce projeyi kapatır; aynı sohbetse sadece ona dönülür.
   if (S.proj) { closeProject(); drawSessions(); if (id === S.status.session) { closeSideOnMobile(); return; } }
   if (id === S.status.session) { closeSideOnMobile(); return; }
@@ -1020,6 +1028,7 @@ async function resume(id) {
 }
 async function newChat() {
   if (S.proj) closeProject();
+  markSection("chat");
   const r = await api("/api/new", {});
   if (!r.ok) return toast(r.error || "Yeni sohbet açılamadı");
   leaveChat();
