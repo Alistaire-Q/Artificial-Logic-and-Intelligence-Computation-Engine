@@ -1055,13 +1055,22 @@ class LiveSession:
     @staticmethod
     def _wake_verdict(text: str) -> bool | None:
         """Gemini'nin dökümünde "Alice" (ya da bir yazımı) var mı? Döküm boşsa None (bilinmiyor)."""
-        from alice.voice.listen import _TR, _name_like, strip_wake
+        import difflib
+
+        from alice.voice.listen import _NOT_NAMES, _TR, _name_like, strip_wake
 
         if not text.strip():
             return None
         if strip_wake(text) is not None:
             return True
-        return any(_name_like(w, True) or w.lower().translate(_TR) == "ali" for w in re.findall(r"\w+", text))
+        words = re.findall(r"\w+", text)
+        if any(_name_like(w, True) or w.lower().translate(_TR) == "ali" for w in words):
+            return True
+        # Tek başına söylenen "Alice"i Gemini "Annie", "Alex" diye yazabiliyor. Sadece çok kısa dökümde ve kısa, sesçe
+        # yakın kelimede: "Alışacak, alışacak" ya da uzun bir cümlenin içindeki benzer kelime sayılmaz.
+        first = words[0].lower().translate(_TR) if words else ""
+        return (len(words) <= 2 and 4 <= len(first) <= 6 and first not in _NOT_NAMES
+                and difflib.SequenceMatcher(None, first, "alice").ratio() >= 0.6)
 
     # Bir işi yaptığını söyleyen sözler. "Yok/bulunamadı" gibi okuma sonuçları buraya girmez: onları araç zaten söyler.
     _DONE_RX = re.compile(

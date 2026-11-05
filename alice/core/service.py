@@ -446,13 +446,23 @@ class Core:
             Notification(t, b, "info", "mail", kind="info")))
 
     def _step_error(self, name: str, e: Exception) -> None:
-        key = (name, type(e).__name__, str(e)[:80])
+        key = "|".join((name, type(e).__name__, str(e)[:80]))
         now = time.time()
-        seen = getattr(self, "_step_errors", {})
-        self._step_errors = seen
-        if now - seen.get(key, 0) < 86400:
+        # Diskte: bellekte tutulunca her yeniden başlatmada aynı hata yeniden yazılıyordu (takvim izni, 2 günde 13 kez).
+        path = alice_home() / "step-errors.json"
+        try:
+            seen = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            seen = {}
+        if now - float(seen.get(key, 0)) < 86400:
             return
+        seen = {k: v for k, v in seen.items() if now - float(v) < 86400}
         seen[key] = now
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(seen, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass
         try:
             self.store.add_event("error", f"{name} hata verdi", repr(e)[:300], "warn", "core")
         except Exception:  # noqa: BLE001
@@ -683,6 +693,10 @@ def run_tray(core: Core) -> bool:
         subprocess.Popen([str(pyw if pyw.exists() else exe), "-m", "alice", "app"])
 
     def quit_(icon, item):
+        try:  # sonradan "neden kapandı" sorusu cevapsız kalmasın
+            core.store.add_event("core", "Çekirdek tepsiden kapatıldı", topic="core")
+        except Exception:  # noqa: BLE001
+            pass
         core.stop()
         icon.stop()
 

@@ -776,11 +776,16 @@ class VoiceAssistant:
             self.live.single_turn = bool(self.social())  # Discord'da/oyunda: tek cevap, sonra kapan
         try:
             if audio is not None:
-                hint = self._local_text(audio)
+                social = bool(self.social())
+                follow = self._pre_text[1]  # "Alice" dedi, ALICE tepki verdi: bu cümlede "Alice" geçmesi beklenmez
+                # Seçici modda ilk cümle hep sesle gider: oyun altında yerel döküm saniyelerce bekletiyor (ölçülen
+                # 7,1 sn), metin gidince de Gemini kendi kulağıyla "Alice"i doğrulayamıyordu.
+                hint = None if social else self._local_text(audio)
+                self._pre_text = (None, False)
                 extra: dict[str, Any] = {"hint": hint} if hint else {}
                 if getattr(audio, "ended", None):
                     extra["ended"] = audio.ended  # uçtan uca gecikme: kullanıcının sustuğu an
-                if self.social():
+                if social and not follow:
                     extra["need_wake"] = True  # seçici mod: Gemini de "Alice" duymalı (bkz. LiveSession)
                 self.live.converse("", q, self.stop_event, first_audio=audio.resample(16000).pcm, **extra)
             else:
@@ -807,15 +812,21 @@ class VoiceAssistant:
                 base = last if isinstance(last, (int, float)) and last > 0 else time.monotonic()
                 self.armed_until = base + self.live_follow
 
-    UTTER_MAX_AGE = 8.0  # sn: sırada bundan uzun bekleyen cümle atlanır (artık cevaplamanın anlamı yok)
+    UTTER_MAX_AGE = 8.0  # sn: bundan eski cümle, arkasında yenisi varsa atlanır; "Alice"siz devam da sayılmaz
+    UTTER_HARD_AGE = 20.0  # sn: bundan eskisi her durumda atlanır (artık cevaplamanın anlamı yok)
 
     def _utter_worker(self) -> None:
         while True:
             audio, direct, started, ptt, queued = self._utter_q.get()
             age = time.monotonic() - queued
             if not ptt and not self._awaiting_answer and age > self.UTTER_MAX_AGE:
-                voice_log(f"eski cümle atlandı ({age:.1f} sn sırada bekledi, {audio.seconds:.1f} sn ses)")
-                continue
+                # Oyunda Whisper yavaşlayınca sıradaki tek cümle de atılıyor, içindeki "Alice" duyulmuyordu (iki
+                # günde 59 cümle, çoğu 20 sn altı). Arkasından yenisi gelmediyse dinlenir, ama artık takip penceresi
+                # dolmuştur: sadece açıkça "Alice" denmişse cevap verilir.
+                if age > self.UTTER_HARD_AGE or not self._utter_q.empty():
+                    voice_log(f"eski cümle atlandı ({age:.1f} sn sırada bekledi, {audio.seconds:.1f} sn ses)")
+                    continue
+                direct, started = False, None
             try:
                 self.handle_audio(audio, direct, started, ptt)
             except Exception as e:  # noqa: BLE001 - tek cümle dinlemeyi bozmasın, ama izi kalsın
