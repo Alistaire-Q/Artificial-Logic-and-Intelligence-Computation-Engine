@@ -270,12 +270,15 @@ function renderProject() {
 
   // ---- başlık: başlık, durum ve ilerleme; ikincil işler "⋯" menüsünde
   const head = el("div", "pv-head");
-  const back = el("button", "icon-btn"); back.title = "Sohbete dön";
-  back.innerHTML = '<svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>';
-  back.addEventListener("click", closeProject);
+  // Geri: proje listesine (kenar çubuğundaki Projeler bölümü açık kalır).
+  const back = el("button", "pv-back"); back.title = "Proje listesine dön";
+  back.innerHTML = '<svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg><span>Projeler</span>';
+  back.addEventListener("click", () => { markSection("projects"); closeProject(); });
   const mid = el("div", "grow");
   const t1 = el("div", "pv-trow");
-  t1.append(el("h2", "pv-title", d.title), el("span", "pill " + d.status, PROJ_ST[d.status] || d.status));
+  const h2 = el("h2", "pv-title", d.title);
+  h2.title = d.goal || d.title;
+  t1.append(h2, el("span", "pill " + d.status, PROJ_ST[d.status] || d.status));
   const [done, total] = d.progress || [0, 0];
   const t2 = el("div", "pv-sub");
   t2.append(progressBar(done, total), el("span", "", total ? `${done}/${total} iş onaylandı` : "henüz ajan yok"), el("span", "", relTime(d.created)));
@@ -288,7 +291,9 @@ function renderProject() {
   }
   mid.append(t1, t2);
   const g = (d.goal || "").trim();
-  if (g && g !== d.title.trim()) {
+  // Başlık hedefin kısaltılmışıysa hedefi ayrıca yazma (aynı cümle iki kez görünüyordu).
+  const stem = d.title.trim().replace(/[….]+$/, "");
+  if (g && g !== d.title.trim() && !g.startsWith(stem)) {
     const goal = el("div", "pv-goal", g);
     goal.title = "Tamamını göster";
     goal.addEventListener("click", () => goal.classList.toggle("open"));

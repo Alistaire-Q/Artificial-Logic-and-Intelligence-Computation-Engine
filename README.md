@@ -303,7 +303,11 @@ Tek seferlik kapatmak için `ALICE_UPDATE_MODE=off` ya da `ALICE_NO_UPDATE=1` or
 
 **Görünüm (Grafit):** nötr gri yüzeyler, tek mavi vurgu, her yerde Geist yazı tipi (kod ve yollar Geist Mono). Renk, köşe, boşluk ve yazı boyutları `app.css`'in başındaki değişkenlerden geliyor; telefon arayüzü, hızlı giriş penceresi ve HUD aynı paleti kullanıyor. Yeni sohbette selamlama ve yazma kutusu ortada duruyor. Tema Windows ayarını izliyor ya da Ayarlar'dan açık/koyu sabitlenebiliyor.
 
-**Sol şerit:** Sohbetler, Projeler, Otomasyonlar (kurallar, zamanlanmış görevler, notlar, kayıtlar), Sistem (çekirdek, asistan, ses, kurulum, kullanım), Bağlantılar (servisler, API anahtarları) ve en altta Ayarlar. Her bölüm tam sayfa açılıyor, alt sekmeleri kenar çubuğunda duruyor.
+**Başlarken:** anahtar girilmemişse ya da çekirdek kapalıysa boş sohbette 3 adımlı bir kart çıkıyor (model bağla, modelleri ölç, çekirdeği başlat). Her adım gerçek durumdan okunuyor, hepsi bitince kart kayboluyor.
+
+**Klasör seçmek:** üst çubuktaki klasör etiketine bas. Ev, masaüstü, belgeler, indirilenler, GitHub ve sürücüler solda, son kullandığın klasörler altında; klasörlerde tıklayarak gezip "Burada çalış"a basıyorsun, yol yazmak gerekmiyor. Aynı pencerede yeni klasör açılabiliyor, GitHub sekmesinden depo klonlanabiliyor. Yeni proje penceresindeki Klasör alanında da "Seç" düğmesi var.
+
+**Sol şerit:** Sohbetler, Projeler, Otomasyonlar (kurallar, zamanlanmış görevler, notlar, kayıtlar), Sistem (sağlık, çekirdek, asistan, ses, kurulum, kullanım), Bağlantılar (servisler, API anahtarları) ve en altta Ayarlar. Her bölüm tam sayfa açılıyor, alt sekmeleri kenar çubuğunda duruyor.
 
 **Yazma kutusu**
 * Enter gönderir, Shift+Enter yeni satır açar.
@@ -314,7 +318,7 @@ Tek seferlik kapatmak için `ALICE_UPDATE_MODE=off` ya da `ALICE_NO_UPDATE=1` or
 
 **Sohbet**
 * Cevaplar akarak geliyor. Model akıl yürütme metni gönderiyorsa açılır bir "düşündü" bölümü olarak görünüyor.
-* Art arda çalışan araçlar tek bir "adımlar" kartında toplanıyor. Her satırda çalışırken dönen bir gösterge ve canlı süre var. Bitince yeşil ya da kırmızı nokta, süre ve sonucun ilk satırları görünüyor.
+* Art arda çalışan araçlar tek bir "adımlar" kartında toplanıyor; başlığında özet var ("5 adım · 2 dosya · 1,2 sn"). İş bitince 3 ve daha fazla adımlı, hatasız kartlar kendiliğinden kapanıyor, tıklayınca açılıyor. Her satırda çalışırken dönen bir gösterge ve canlı süre var. Bitince yeşil ya da kırmızı nokta, süre ve sonucun ilk satırları görünüyor.
 * **Mesaj düzenleme:** gönderdiğin mesajın altındaki Düzenle'ye bas (ya da mesaja çift tıkla). Mesaj yerinde yazı kutusuna döner; Enter ya da Gönder konuşmayı o mesajın öncesine sarar ve yeni metni gönderir. ALICE o sırada çalışıyorsa önce durdurulur. O mesajdan sonra dosya araçlarıyla yapılan değişiklikler geri alınır. Esc vazgeçer.
 * Dosya düzenlemeleri satır numaralı, renklendirilmiş diff olarak açılıyor. Komutlar terminal görünümünde, çıkış koduyla gösteriliyor.
 * Kod blokları sözdizimine göre renkleniyor (Python, JS/TS, PowerShell, bash, JSON, CSS, Lua, SQL, C ailesi...).
@@ -336,7 +340,7 @@ Tek seferlik kapatmak için `ALICE_UPDATE_MODE=off` ya da `ALICE_NO_UPDATE=1` or
 * Her mesajın altında **Düzenle** ve **Geri sar** var. Konuşma o mesajın öncesine dönüyor.
 * ALICE'in o mesajdan sonra dosya araçlarıyla değiştirdiği ya da oluşturduğu dosyalar eski haline geliyor. Shell komutlarının yaptığı değişiklikler izlenemiyor.
 
-**Kenar çubuğu:** Sohbetler bölümünde yeni sohbet, sohbetlerde arama, Bugün/Dün/Bu hafta diye gruplanmış geçmiş (üzerine gelince sil); diğer bölümlerde o bölümün sekmeleri. Ctrl+B ile gizlenip açılıyor.
+**Kenar çubuğu:** Sohbetler bölümünde yeni sohbet, sohbetlerde arama, Bugün/Dün/Bu hafta diye gruplanmış geçmiş; her satırın "⋯" menüsünde yeniden adlandır (F2 ya da çift tık), sabitle (Sabitlenenler en üstte) ve sil. Açık sohbetin adı üst çubukta da duruyor, tıklayınca orada da değiştirilebiliyor. Diğer bölümlerde kenar çubuğunda o bölümün sekmeleri var. Ctrl+B ile gizlenip açılıyor.
 
 **Durum satırı:** cevap veren model, context doluluğu ve bugünkü istek sayısı. Üzerine gelince karar motoru, git dalı ve oturum süresi de görünüyor.
 

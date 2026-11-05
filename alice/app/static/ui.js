@@ -752,6 +752,145 @@ function setRow(title, sub, control) {
   return r;
 }
 /* Sistem > Asistan: özelliklerin durumu, güvenlik/karşılama ayarları, izin kuralları, Gmail hesapları, skill'ler. */
+/* Sistem > Sağlık: özelliklerin durumu (alice doctor'ın kontrol listesi) ve sağlayıcıları tek tuşla deneme. Sorunlar
+   en üstte, çalışanlar altta, kapalı olanlar en sonda ve katlanmış. */
+/* Ayarlar > Araçlar: ALICE'in kullanabildiği araçlar, ne işe yaradıklarına göre gruplu. Risk rozeti: okur / yazar /
+   komut çalıştırır / ekranı kullanır / dışarı gönderir. */
+const TOOL_CATS = [
+  ["Dosya ve kod", /^(read_file|write_file|edit_file|multi_edit|list_dir|glob|grep|file_ops|notebook_edit|apply_patch|git|github|find_files)$/],
+  ["Komut", /^(run_command|process_output|process_stop|blender|sandbox)/],
+  ["Web", /^(web_|http_request|browser)/],
+  ["Bilgisayar ve ekran", /^(computer|windows|ui_|clipboard|reflex|system_info|process_list|process_kill|pc|screen|vision)/],
+  ["Ajanlar ve plan", /^(todo|task|team|council|run_plan|ask_user|skill|load_tools|project|agent)/],
+  ["Hafıza ve otomasyon", /^(memory|feedback|rules|schedule|feeds|notes|report|metrics|action_log|weather)/],
+  ["Ev, telefon, medya", /^(wifi|android|tv|samsung|media|youtube|spotify|discord|steam|phone|modem|home|whatsapp|gmail|calendar)/],
+  ["Oyun ve uçuş", /^(flight|dcs|war|sim|game)/],
+];
+const RISK_LABEL = { read: "okur", write: "yazar", exec: "komut", computer: "ekran", network: "ağ", send: "gönderir", danger: "tehlikeli" };
+function toolCat(name) {
+  for (const [c, re] of TOOL_CATS) if (re.test(name)) return c;
+  return "Diğer";
+}
+function toolsPage(pane, tools) {
+  pane.append(el("h2", "", "Araçlar"),
+    el("p", "", `ALICE'in kullanabildiği ${tools.length} araç. MCP sunucularını config.toml'daki [mcp.servers] altına ekleyebilirsin.`));
+  const bar = el("div", "tl-bar");
+  const f = el("input"); f.type = "search"; f.placeholder = "Araç ara";
+  bar.appendChild(f);
+  const chips = el("div", "tl-chips");
+  const cats = ["Hepsi", ...TOOL_CATS.map(([c]) => c), "Diğer"].filter((c) => c === "Hepsi" || tools.some((t) => toolCat(t.name) === c));
+  let cur = "Hepsi";
+  for (const c of cats) {
+    const n = c === "Hepsi" ? tools.length : tools.filter((t) => toolCat(t.name) === c).length;
+    const b = el("button", "chip-btn" + (c === cur ? " on" : ""));
+    b.append(document.createTextNode(c), el("span", "n", String(n)));
+    b.addEventListener("click", () => { cur = c; chips.querySelectorAll(".chip-btn").forEach((x) => x.classList.toggle("on", x === b)); draw(); });
+    chips.appendChild(b);
+  }
+  pane.append(bar, chips);
+  const box = el("div");
+  pane.appendChild(box);
+  const draw = () => {
+    box.replaceChildren();
+    const q = f.value.toLowerCase();
+    const rows = tools.filter((t) => (cur === "Hepsi" || toolCat(t.name) === cur) && (!q || (t.name + t.description).toLowerCase().includes(q)));
+    const groups = new Map();
+    for (const t of rows) { const c = toolCat(t.name); if (!groups.has(c)) groups.set(c, []); groups.get(c).push(t); }
+    for (const [c, list] of groups) {
+      if (cur === "Hepsi") box.appendChild(el("div", "sec", `${c} · ${list.length}`));
+      const grid = el("div", "tool-grid");
+      for (const t of list) {
+        const card = el("div", "tool-card");
+        const [, icon] = verbFor(t.name);
+        const h = el("div", "tc-head");
+        h.append(svg(icon), el("b", "", t.name), el("span", "risk " + t.risk, RISK_LABEL[t.risk] || t.risk));
+        const desc = el("p", "", t.description);
+        desc.title = t.description;
+        card.append(h, desc);
+        grid.appendChild(card);
+      }
+      box.appendChild(grid);
+    }
+    if (!rows.length) box.appendChild(el("p", "", "Eşleşen araç yok."));
+  };
+  f.addEventListener("input", draw);
+  draw();
+  setTimeout(() => f.focus(), 0);
+}
+function healthPane(pane, data) {
+  const d = data || {};
+  const checks = d.checks || [];
+  const by = (st) => checks.filter((c) => c.status === st);
+  const bad = [...by("fail"), ...by("warn")], ok = by("ok"), off = by("off");
+  pane.append(el("h2", "", "Sağlık"),
+    el("p", "", "ALICE'in parçaları çalışıyor mu? Sorun olanlar en üstte, yanında nasıl düzeltileceği yazar."));
+  const tiles = el("div", "hl-tiles");
+  for (const [n, label, cls] of [[bad.length, "dikkat istiyor", bad.length ? "warn" : "ok"], [ok.length, "çalışıyor", "ok"], [off.length, "kapalı", "off"]]) {
+    const t = el("div", "hl-tile " + cls);
+    t.append(el("b", "", String(n)), el("small", "", label));
+    tiles.appendChild(t);
+  }
+  pane.appendChild(tiles);
+  const icon = { ok: IC.check, warn: IC.bolt, fail: IC.x, off: IC.x };
+  const row = (c) => {
+    const r = el("div", "hl-row " + c.status);
+    const ic = el("span", "hl-ic"); ic.appendChild(svg(icon[c.status] || IC.check));
+    const l = el("span", "l");
+    l.append(el("b", "", c.name), el("small", "", c.detail));
+    r.append(ic, l);
+    if (c.fix && c.status !== "ok") r.appendChild(el("span", "hl-fix", c.fix));
+    return r;
+  };
+  if (bad.length) { pane.appendChild(el("div", "sec", "Dikkat istiyor")); const b = el("div", "hl-list"); bad.forEach((c) => b.appendChild(row(c))); pane.appendChild(b); }
+  if (ok.length) { pane.appendChild(el("div", "sec", "Çalışıyor")); const b = el("div", "hl-list"); ok.forEach((c) => b.appendChild(row(c))); pane.appendChild(b); }
+  if (off.length) {
+    const det = el("details", "hl-off");
+    det.appendChild(el("summary", "", `Kapalı (${off.length})`));
+    const b = el("div", "hl-list"); off.forEach((c) => b.appendChild(row(c))); det.appendChild(b);
+    pane.appendChild(det);
+  }
+  // Sağlayıcıları dene (alice doctor)
+  const sec = el("div", "sec", "Model sağlayıcılarını dene");
+  const box = el("div", "hl-doc");
+  pane.append(sec, box);
+  const marks = { ok: "ok", warn: "warn", off: "off", fail: "fail", skip: "off" };
+  let timer = null;
+  const drawDoc = (doc) => {
+    box.replaceChildren();
+    const head = el("div", "hl-doc-head");
+    const l = el("span", "l");
+    l.append(el("b", "", "Hepsini dene"), el("small", "", doc.state === "running" ? ((doc.lines || []).slice(-1)[0] || "başlıyor…")
+      : "Her sağlayıcıya kısa bir istek atar, karar motorunu dener (alice doctor)."));
+    const b = el("button", "btn primary", doc.state === "running" ? "Deneniyor…" : doc.result ? "Yeniden dene" : "Hepsini dene");
+    b.disabled = doc.state === "running";
+    b.addEventListener("click", () => api("/api/setup/action", { action: "doctor_run" }).then(poll));
+    head.append(l, b);
+    box.appendChild(head);
+    if (doc.state === "running") box.appendChild(el("div", "enroll-meter dl sys-indet")).appendChild(el("i"));
+    if (doc.state === "error") box.appendChild(el("div", "enroll-result bad", doc.error));
+    if (doc.state === "done" && doc.result) {
+      const g = el("div", "hl-provs");
+      for (const p of doc.result.providers || []) {
+        const c = el("div", "hl-prov " + (marks[p.status] || "off"));
+        c.append(el("i", "dot"), el("b", "", p.name), el("small", "", (p.model ? p.model + " · " : "") + p.detail));
+        g.appendChild(c);
+      }
+      const dc = el("div", "hl-prov " + (doc.result.decider_ok ? "ok" : "fail"));
+      dc.append(el("i", "dot"), el("b", "", "karar motoru"), el("small", "", doc.result.decider));
+      g.appendChild(dc);
+      box.appendChild(g);
+    }
+  };
+  function poll() {
+    clearTimeout(timer);
+    api("/api/setup").then((s) => {
+      if (!s || !box.isConnected) return;
+      drawDoc(s.doctor || {});
+      if (s.doctor && s.doctor.state === "running") timer = setTimeout(poll, 1000);
+    });
+  }
+  poll();
+}
 function assistantPane(pane, data) {
   const d = data || {};
   const v = d.settings || {};
@@ -760,16 +899,7 @@ function assistantPane(pane, data) {
   const onOff = (section, key, label) => segmented([["1", "Açık"], ["0", "Kapalı"]], v[section + "." + key] === false ? "0" : "1",
     (x) => set(section, key, x === "1", label));
   pane.append(el("h2", "", "Asistan"),
-    el("p", "", "Yeni özelliklerin durumu ve ayarları. Ayrıntılı test için terminalde: alice doctor"));
-  pane.appendChild(el("div", "sec", "Durum"));
-  const mark = { ok: "✓", warn: "!", off: "–", fail: "✗" };
-  for (const c of d.checks || []) {
-    const row = el("div", "list-row");
-    const l = el("span", "l");
-    l.append(el("b", "", c.name), el("small", "", c.detail + (c.fix && c.status !== "ok" ? "  → " + c.fix : "")));
-    row.append(el("span", "chk " + c.status, mark[c.status] || "?"), l);
-    pane.appendChild(row);
-  }
+    el("p", "", "Güvenlik, arama, karşılama ve bildirim ayarları. Özelliklerin çalışıp çalışmadığı Sağlık sekmesinde."));
   pane.appendChild(el("div", "sec", "Ayarlar"));
   pane.append(
     setRow("Komut sandbox'ı", "Otomatik: dış içerik (web, e-posta) okunan turda komutlar proje dışına yazamayan sandbox'ta çalışır",
@@ -858,34 +988,44 @@ function voicePane(pane, data) {
   pane.appendChild(el("div", "sec", "Sesimi tanıt"));
   pane.appendChild(enrollCard());
   if (!d.can_preview) pane.appendChild(el("p", "", "Örnek dinlemek için Gemini anahtarı gerekli (Bağlantılar → Anahtarlar)."));
-  pane.appendChild(el("div", "sec", "Sesler"));
-  for (const v of d.voices || []) {
+  const voices = (d.voices || []).slice().sort((a, b) => (b.name === d.live) - (a.name === d.live));
+  pane.appendChild(el("div", "sec", `Sesler · ${voices.length}`));
+  const grid = el("div", "voice-grid");
+  for (const v of voices) {
     const on = v.name === d.live;
-    const row = el("div", "list-row");
-    const l = el("span", "l");
-    l.append(el("b", "", v.name + (on ? "  ✓" : "")), el("small", "", v.desc + (on ? " · şu an bu ses" : "")));
-    const play = el("button", "btn", "▶ Dinle");
+    const card = el("div", "voice-card" + (on ? " on" : ""));
+    const play = el("button", "vc-play");
+    play.title = d.can_preview ? "Dinle" : "Örnek için Gemini anahtarı gerekli";
     play.disabled = !d.can_preview;
+    play.appendChild(svg('<path d="M8 5v14l11-7z"/>'));
     play.addEventListener("click", () => {
-      play.textContent = "…";
+      card.classList.add("loading");
       api("/api/voice/preview", { voice: v.name }).then((r) => {
-        play.textContent = "▶ Dinle";
+        card.classList.remove("loading");
         if (!r || !r.ok) return toast((r && r.error) || "örnek üretilemedi");
         if (previewAudio) previewAudio.pause();
+        for (const c of grid.querySelectorAll(".voice-card.playing")) c.classList.remove("playing");
+        card.classList.add("playing");
         previewAudio = new Audio("data:audio/wav;base64," + r.audio);
+        previewAudio.addEventListener("ended", () => card.classList.remove("playing"));
         previewAudio.play().catch((e) => toast("ses çalınamadı: " + (e && e.message || e)));
       });
     });
-    const pick = el("button", on ? "btn ghost on" : "btn", on ? "Seçili" : "Seç");
-    if (on) pick.disabled = true;
-    pick.disabled = on;
-    pick.addEventListener("click", () => api("/api/voice/set", { voice: v.name }).then((r) => {
-      toast(r && r.ok ? v.name + " seçildi; bir sonraki konuşmada bu sesle konuşur" : "kaydedilemedi");
-      showSettings("voice");
-    }));
-    row.append(l, play, pick);
-    pane.appendChild(row);
+    const l = el("span", "l");
+    l.append(el("b", "", v.name), el("small", "", v.desc));
+    card.append(play, l);
+    if (on) card.appendChild(el("span", "pill done", "seçili"));
+    else {
+      const pick = el("button", "btn ghost", "Seç");
+      pick.addEventListener("click", () => api("/api/voice/set", { voice: v.name }).then((r) => {
+        toast(r && r.ok ? v.name + " seçildi; bir sonraki konuşmada bu sesle konuşur" : "kaydedilemedi");
+        showSettings("voice");
+      }));
+      card.appendChild(pick);
+    }
+    grid.appendChild(card);
   }
+  pane.appendChild(grid);
 }
 /* Sistem > Ses > Sesimi tanıt: okunacak cümle büyük yazılır, mikrofon seviyesi canlı görünür. Kayıt sunucuda
    (mikrofonun olduğu bilgisayarda) yürür; burası durumu sık sık okur. Kart ekrandan kalkınca okuma durur. */
@@ -1521,36 +1661,7 @@ function setupPane(pane) {
   function draw(d) {
     body.replaceChildren();
     // Sağlayıcılar
-    body.appendChild(el("div", "sec", "Sağlayıcılar ve özellikler"));
-    const doc = d.doctor;
-    const c1 = card("Hepsini dene", "Her model sağlayıcısına kısa bir istek atar, karar motorunu dener, özellikleri kontrol eder (alice doctor).",
-      btn(doc.state === "running" ? "deneniyor…" : "Hepsini dene", () => act("doctor_run").then(done()), doc.state !== "running"));
-    c1.appendChild(jobLines(doc));
-    if (doc.state === "done" && doc.result) {
-      for (const p of doc.result.providers) {
-        const [cls, m] = marks[p.status] || marks.skip;
-        const it = el("div", "auto-line");
-        it.append(el("span", "chk " + cls, m), el("b", "", p.name), el("small", "", (p.model ? p.model + " · " : "") + p.detail));
-        c1.appendChild(it);
-      }
-      const dl = el("div", "auto-line");
-      dl.append(el("span", "chk " + (doc.result.decider_ok ? "ok" : "fail"), doc.result.decider_ok ? "✓" : "✗"), el("b", "", "karar motoru"), el("small", "", doc.result.decider));
-      c1.appendChild(dl);
-      if (doc.result.image) {
-        const im = doc.result.image;
-        const [icls, imk] = marks[im.status] || marks.off;
-        const il = el("div", "auto-line");
-        il.append(el("span", "chk " + icls, imk), el("b", "", "Jev görsel (Box)"), el("small", "", im.detail));
-        c1.appendChild(il);
-      }
-      for (const ch of doc.result.checks) {
-        const [cls, m] = marks[ch.status] || marks.off;
-        const it = el("div", "auto-line");
-        it.append(el("span", "chk " + cls, m), el("b", "", ch.name), el("small", "", ch.detail + (ch.fix && ch.status !== "ok" ? " → " + ch.fix : "")));
-        c1.appendChild(it);
-      }
-    }
-    body.appendChild(c1);
+    body.appendChild(el("div", "sec", "Modeller"));
     // Modeller
     const mo = d.models;
     const c2 = card("Ücretsiz modelleri ölç", (mo.probed_at ? "son ölçüm: " + mo.probed_at + ". " : "henüz ölçülmedi. ")
@@ -1708,7 +1819,7 @@ function setupPane(pane) {
       body.appendChild(card("Masaüstü ve Başlat menüsü", "ALICE'i Windows tuşuna basıp \"ALICE\" yazarak aç.",
         btn("Kısayol oluştur", () => act("shortcut").then(done("kısayol oluşturuldu")))));
     }
-    return doc.state === "running" || mo.state === "running" || (d.chatgpt || {}).state === "running"
+    return (d.doctor || {}).state === "running" || mo.state === "running" || (d.chatgpt || {}).state === "running"
       || (d.chatgpt || {}).models_state === "loading";
   }
   let shown = false;
@@ -2070,7 +2181,7 @@ function connectPane(pane, data) {
 }
 
 const SETTINGS_TABS = [
-  ["general", "Genel", IC.gear], ["apikeys", "Anahtarlar", IC.key], ["voice", "Ses", IC.sound], ["models", "Modeller", IC.spark], ["tools", "Araçlar", IC.bolt],
+  ["health", "Sağlık", IC.gauge], ["general", "Genel", IC.gear], ["apikeys", "Anahtarlar", IC.key], ["voice", "Ses", IC.sound], ["models", "Modeller", IC.spark], ["tools", "Araçlar", IC.bolt],
   ["assistant", "Asistan", IC.shield], ["system", "Çekirdek", IC.term], ["auto", "Kurallar ve görevler", IC.list], ["notes", "Notlar", IC.sun], ["logs", "Kayıtlar", IC.check], ["setup", "Kurulum", IC.update],
   ["connect", "Bağlantılar", IC.plug], ["memory", "Hafıza", IC.brain], ["usage", "Kullanım", IC.gauge],
   ["keys", "Kısayollar", IC.keyboard],
@@ -2079,7 +2190,7 @@ const SETTINGS_TABS = [
    bağlantılar) artık kendi tam sayfalarında, Ayarlar'da sadece gerçek ayarlar kalır. */
 const SECTIONS = {
   auto: ["Otomasyonlar", ["auto", "notes", "logs"]],
-  system: ["Sistem", ["system", "assistant", "voice", "setup", "usage"]],
+  system: ["Sistem", ["health", "system", "assistant", "voice", "setup", "usage"]],
   connect: ["Bağlantılar", ["connect", "apikeys"]],
   settings: ["Ayarlar", ["general", "models", "tools", "memory", "keys"]],
 };
@@ -2193,7 +2304,7 @@ async function showSettings(tab) {
     memory: tab === "memory" ? await api("/api/memory") : null,
     usage: tab === "usage" ? await api("/api/usage") : null,
     connect: tab === "connect" ? await api("/api/connect") : null,
-    assistant: tab === "assistant" ? await api("/api/assistant") : null,
+    assistant: tab === "assistant" || tab === "health" ? await api("/api/assistant") : null,
     apikeys: tab === "apikeys" ? await api("/api/keys") : null,
     voice: tab === "voice" ? await api("/api/voice") : null,
   };
@@ -2246,26 +2357,9 @@ async function showSettings(tab) {
     } else if (tab === "models") {
       modelsPage(pane, data);
     } else if (tab === "tools") {
-      const tools = Array.isArray(data.tools) ? data.tools : [];
-      pane.append(el("h2", "", "Araçlar"), el("p", "", `${tools.length} araç. MCP sunucularını config.toml'daki [mcp.servers] altına ekleyebilirsin.`));
-      const f = el("input"); f.type = "text"; f.placeholder = "Araç ara"; f.className = "set-filter";
-      const listBox = el("div");
-      const draw = () => {
-        listBox.replaceChildren();
-        const q = f.value.toLowerCase();
-        for (const t of tools.filter((t) => !q || (t.name + t.description).toLowerCase().includes(q))) {
-          const row = el("div", "list-row");
-          const [, icon] = verbFor(t.name);
-          const l = el("span", "l");
-          l.append(el("b", "", t.name), el("small", "", t.description));
-          row.append(svg(icon), l, el("span", "risk " + t.risk, t.risk));
-          listBox.appendChild(row);
-        }
-      };
-      f.addEventListener("input", draw);
-      draw();
-      pane.append(f, listBox);
-      setTimeout(() => f.focus(), 0);
+      toolsPage(pane, Array.isArray(data.tools) ? data.tools : []);
+    } else if (tab === "health") {
+      healthPane(pane, data.assistant);
     } else if (tab === "assistant") {
       assistantPane(pane, data.assistant);
     } else if (tab === "voice") {
