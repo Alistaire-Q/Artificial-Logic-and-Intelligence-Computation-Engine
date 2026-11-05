@@ -601,7 +601,7 @@ class LiveSession:
         return unknown or bool(SCREEN_WORDS.search(text or ""))
 
     def current_voice(self) -> str:
-        """Ayarlar > Ses'te seçilen ses: config.toml değiştiyse oradan okunur, çekirdek yeniden başlamadan bir
+        """Sistem > Ses'te seçilen ses: config.toml değiştiyse oradan okunur, çekirdek yeniden başlamadan bir
         sonraki konuşmada geçerli olur."""
         from alice.config import alice_home
 

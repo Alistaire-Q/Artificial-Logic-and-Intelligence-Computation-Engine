@@ -538,7 +538,7 @@ def _enroll(cfg, argv) -> int:
         console.print(f"benzerlik {gate.last_score:.2f} (eşik {gate.threshold:.2f}): "
                       + ("[green]seni tanıdı[/]" if ok else "[red]tanımadı; tekrar kayıt dene ya da config'te "
                                                              "[voice] speaker_threshold'ı düşür[/]"))
-    console.print("Çalışan ALICE yeni ses izini hemen kullanır. Kapatmak için: alice voice enroll --off (ya da Ayarlar → Ses)")
+    console.print("Çalışan ALICE yeni ses izini hemen kullanır. Kapatmak için: alice voice enroll --off (ya da Sistem → Ses)")
     return 0
 
 

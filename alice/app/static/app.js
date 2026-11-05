@@ -72,6 +72,14 @@ function svg(paths, cls) {
   return s;
 }
 const IC = {
+  ext: '<path d="M14 5h5v5M19 5l-8 8M18 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h4"/>',
+  home: '<path d="M4 11l8-7 8 7v8a1 1 0 0 1-1 1h-4v-6h-6v6H5a1 1 0 0 1-1-1z"/>',
+  disk: '<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 14h.01M11 14h6"/>',
+  clock: '<circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/>',
+  up: '<path d="M12 19V5M6 11l6-6 6 6"/>',
+  more: '<circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/>',
+  pin: '<path d="M9 4h6l-1 5 3 3v2H7v-2l3-3zM12 14v6"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
   copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h8"/>',
   check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
   rewind: '<path d="M4 12a8 8 0 1 0 2.3-5.6"/><path d="M4 4v4.5h4.5"/>',
@@ -191,6 +199,7 @@ function greet() {
   const part = h < 5 ? "İyi geceler" : h < 12 ? "Günaydın" : h < 18 ? "İyi günler" : h < 23 ? "İyi akşamlar" : "İyi geceler";
   const name = S.status.user ? `, ${S.status.user}` : "";
   $("#greeting").textContent = part + name;
+  if (typeof drawOnboarding === "function" && !greet._ob) { greet._ob = true; drawOnboarding().finally(() => { greet._ob = false; }); }
 }
 
 /* ================================================================== mesajlar */
@@ -436,6 +445,47 @@ function updateGroup(g) {
   if (errors) g._meta.appendChild(el("span", "d", `${errors} hata`));
 }
 
+// Adımlar kartı: başlıkta özet ("4 adım · 2 dosya · 1,2 sn"), tıklayınca açılıp kapanır. İş bitince 3+ adımlı ve hatasız
+// kartlar kendiliğinden kapanır; ham çıktılar ancak kart açılınca görünür.
+const FILE_TOOLS = new Set(["write_file", "edit_file", "multi_edit", "apply_patch", "notebook_edit"]);
+function makeSteps() {
+  const box = el("div", "steps");
+  const head = el("button", "steps-head");
+  const ic = el("span", "sh-ic");
+  ic.append(svg(IC.check, "ok"), el("i", "spin"));
+  const t = el("b", "sh-t", "Çalışıyor");
+  const meta = el("span", "sh-meta");
+  head.append(ic, t, meta, el("span", "grow"), svg(IC.chev, "tchev"));
+  head.addEventListener("click", () => box.classList.toggle("collapsed"));
+  const body = el("div", "steps-body");
+  box.append(head, body);
+  box._t = t; box._meta = meta; box._body = body; box._t0 = performance.now();
+  return box;
+}
+function updateSteps(box) {
+  if (!box || !box._body) return;
+  const tools = Array.from(box._body.querySelectorAll(".tool"));
+  const running = tools.filter((x) => x.classList.contains("running")).length;
+  const errs = tools.filter((x) => x.classList.contains("err")).length;
+  const files = new Set(tools.filter((x) => FILE_TOOLS.has(x._name)).map((x) => x._summary.split(" ")[0]));
+  box.classList.toggle("running", running > 0);
+  box.classList.toggle("has-err", errs > 0);
+  box._t.textContent = running ? `Çalışıyor · ${tools.length} adım` : `${tools.length} adım`;
+  const parts = [];
+  if (files.size) parts.push(`${files.size} dosya`);
+  if (errs) parts.push(`${errs} hata`);
+  if (!running && box._t1 && box._t1 > box._t0) parts.push(fmtDur((box._t1 - box._t0) / 1000));
+  box._meta.textContent = parts.join(" · ");
+}
+function collapseSteps() {
+  for (const b of $$(".steps")) {
+    if (b._done) continue;
+    b._done = true;
+    const n = b._body.querySelectorAll(".tool").length;
+    if (n >= 3 && !b.classList.contains("has-err") && !PREFS.verbose) b.classList.add("collapsed");
+  }
+}
+
 // Araç satırı (listeye eklemeden): sohbet ve proje konuşmaları aynı parçayı kullanır.
 function makeTool(name, summary, running) {
   const [verb, icon] = verbFor(name);
@@ -470,13 +520,19 @@ function toolRow(id, name, summary, running) {
     }, 500);
   }
   if (id) S.tools.set(id, t);
+  // Art arda gelen araçlar tek bir "adımlar" kartında toplanır; araya cevap, plan ya da izin kartı girince yeni kart açılır.
+  let box = lastContent();
+  if (!box || !box.classList.contains("steps")) box = add(makeSteps());
+  const card = box;
+  box = card._body;
+  setTimeout(() => updateSteps(card), 0);
   if (GROUP_KIND[name]) {
-    const last = lastContent();
+    const last = box.lastElementChild;
     let g = null;
     if (last && last.classList.contains("tool-group")) g = last;
     else if (last && last.classList.contains("tool") && GROUP_KIND[last._name]) {
       g = makeGroup();
-      list.insertBefore(g, last);
+      box.insertBefore(g, last);
       g._body.appendChild(last);
     }
     if (g) {
@@ -486,7 +542,10 @@ function toolRow(id, name, summary, running) {
       return t;
     }
   }
-  return add(t);
+  const stick = nearBottom();
+  box.appendChild(t);
+  toBottom(stick);
+  return t;
 }
 // 1.8k, 840k, 1M gibi kısa token yazımı.
 function fmtTok(n) {
@@ -602,6 +661,8 @@ function finishTool(t, ev, live) {
   t.classList.add(ev.is_error ? "err" : "ok");
   const group = t.parentElement && t.parentElement.closest(".tool-group");
   if (group) setTimeout(() => updateGroup(group), 0);
+  const steps = t.closest(".steps");
+  if (steps) { steps._t1 = live ? performance.now() : 0; setTimeout(() => updateSteps(steps), 0); }
   const body = t._body;
   body.replaceChildren();
   t._meta.replaceChildren();
@@ -612,7 +673,14 @@ function finishTool(t, ev, live) {
     for (let n = t.previousElementSibling; n && !n.classList.contains("turn-user"); n = n.previousElementSibling) {
       if (n.classList.contains("todo")) { n.remove(); break; }
     }
-    t.replaceWith(renderTodo(ev.text || ""));
+    // Plan kartı adımlar kartının içinde değil, hemen altında durur.
+    const todo = renderTodo(ev.text || "");
+    if (steps) {
+      steps.after(todo);
+      t.replaceWith();
+      if (!steps._body.childElementCount) steps.replaceWith();
+      else updateSteps(steps);
+    } else t.replaceWith(todo);
     return;
   }
   if (ev.diff) {
@@ -766,7 +834,7 @@ function markFinals() {
       const k = kids[j];
       if (k.classList.contains("turn-user")) break;
       if (k.classList.contains("turn-ai") || k.classList.contains("tool") || k.classList.contains("todo") ||
-          k.classList.contains("tool-group") ||
+          k.classList.contains("tool-group") || k.classList.contains("steps") ||
           k.classList.contains("perm")) { final = false; break; }
     }
     n.classList.toggle("final", final && !(S.busy && i === kids.length - 1 - (S.working ? 1 : 0)));
@@ -784,7 +852,7 @@ function setBusy(v) {
   document.title = S.busy ? "● ALICE" : "ALICE";
   $("#sendBtn").title = S.busy ? "Durdur (Esc)" : "Gönder (Enter)";
   if (S.busy && !S.cur && !S.working) showWorking("Çalışıyor");
-  if (!S.busy) { hideWorking(); markFinals(); flushQueue(); }
+  if (!S.busy) { hideWorking(); markFinals(); flushQueue(); setTimeout(collapseSteps, 0); }
   if (ended) { turnSummary(); refreshChanges(); }
   setTodo(S.todo);
   updateSend();
@@ -861,7 +929,11 @@ function applyStatus(s) {
   Object.assign(S.status, s);
   const st = S.status;
   if ("team" in s) renderTeam(s.team);
-  if (st.cwd !== undefined) { $("#cwd").textContent = st.cwd; $("#cwdBtn").title = st.cwd; }
+  if (st.cwd !== undefined) {
+    // Üst çubukta sadece klasörün adı; tam yol üzerine gelince.
+    $("#cwd").textContent = st.cwd.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || st.cwd;
+    $("#cwdBtn").title = st.cwd + "\nKlasörü değiştirmek için tıkla";
+  }
   if (st.version) $("#ver").textContent = "ALICE " + st.version;
   if ("update" in s) renderUpdate(s.update);
   if (st.user) { $("#userName").textContent = st.user; $("#avatar").textContent = st.user[0].toUpperCase(); }
@@ -906,6 +978,7 @@ function applyStatus(s) {
   if (s.busy !== undefined && s.busy !== S.busy) setBusy(s.busy);
   for (const p of st.pending || []) (p.type === "ask_choice" ? onChoice : onPermission)(p);
   markSessions();
+  drawChatTitle();
   if (app.classList.contains("empty")) greet();
 }
 async function refreshStatus() { const s = await api("/api/state"); if (s && s.version) applyStatus(s); }
@@ -923,6 +996,7 @@ function renderHistory(items) {
   }
   if (!items || !items.length) setEmpty(true);
   markFinals();
+  setTimeout(collapseSteps, 0);  // özetler (setTimeout ile) yazıldıktan sonra
   toBottom(true);
 }
 async function loadHistory() { renderHistory(await api("/api/history")); }
@@ -959,32 +1033,90 @@ function drawSessions() {
   const rows = (S.sessions || []).filter((s) => !q || (s.title + " " + s.cwd).toLocaleLowerCase("tr").includes(q));
   if (!rows.length) {
     nav.appendChild(el("div", "side-empty", q ? "Eşleşen sohbet yok" : "Henüz sohbet yok"));
+    drawChatTitle();
     return;
   }
+  // Sabitlenenler en üstte, gerisi güne göre.
+  const ordered = [...rows.filter((s) => s.pinned), ...rows.filter((s) => !s.pinned)];
   let group = null;
-  for (const s of rows) {
-    const g = dayGroup(s.updated);
+  for (const s of ordered) {
+    const g = s.pinned ? "Sabitlenenler" : dayGroup(s.updated);
     if (g !== group) { group = g; nav.appendChild(el("div", "side-label", g)); }
-    const b = el("button", "sess");
+    const b = el("div", "sess" + (s.pinned ? " pinned" : ""));
     b.dataset.id = s.id;
+    b.tabIndex = 0;
     b.title = `${s.title}\n${s.cwd}`;
     b.appendChild(el("span", "st", s.title || "(boş)"));
     b.appendChild(el("small", "when", relTime(s.updated)));
-    const del = el("span", "del");
-    del.title = "Sil";
-    del.appendChild(svg(IC.trash));
-    del.addEventListener("click", async (e) => {
-      e.stopPropagation();
-      if (!(await confirmDialog("Sohbet silinsin mi?", "Bu sohbet geçmişten kalıcı olarak silinecek.", "Sil"))) return;
-      await api("/api/session/delete", { id: s.id });
-      if (s.id === S.status.session) newChat();
-      loadSessions();
-    });
-    b.appendChild(del);
+    const more = el("button", "more");
+    more.title = "Diğer";
+    more.setAttribute("aria-label", "Sohbet işlemleri");
+    more.appendChild(svg(IC.more));
+    more.addEventListener("click", (e) => { e.stopPropagation(); sessionMenu(more, s); });
+    b.appendChild(more);
     b.addEventListener("click", () => resume(s.id));
+    b.addEventListener("keydown", (e) => { if (e.key === "Enter") resume(s.id); if (e.key === "F2") renameSession(s); });
+    b.addEventListener("dblclick", (e) => { e.preventDefault(); renameSession(s); });
     nav.appendChild(b);
   }
   markSessions();
+  drawChatTitle();
+}
+function sessionMenu(anchor, s) {
+  openMenu(anchor, (m) => {
+    menuItem(m, IC.edit, "Yeniden adlandır", "F2 ya da çift tıkla", () => renameSession(s));
+    menuItem(m, IC.pin, s.pinned ? "Sabitlemeyi kaldır" : "Sabitle", s.pinned ? "" : "Listenin en üstünde durur", async () => {
+      await api("/api/session/pin", { id: s.id, pinned: !s.pinned });
+      loadSessions();
+    });
+    menuItem(m, IC.trash, "Sil", "Geçmişten kalıcı olarak", async () => {
+      if (!(await confirmDialog("Sohbet silinsin mi?", `"${s.title || "(boş)"}" geçmişten kalıcı olarak silinecek.`, "Sil"))) return;
+      const r = await api("/api/session/delete", { id: s.id });
+      if (r && r.ok === false) return toast(r.error || "Silinemedi");
+      if (s.id === S.status.session) newChat();
+      loadSessions();
+    });
+  }, "right", true);
+}
+// Yerinde yeniden adlandırma: satırdaki ya da üst çubuktaki başlık yazı kutusuna döner. Enter kaydeder, Esc vazgeçer;
+// boş bırakmak otomatik başlığa döndürür.
+function renameSession(s, host) {
+  const span = host || document.querySelector(`.sess[data-id="${CSS.escape(s.id)}"] .st`);
+  if (!span) return;
+  const inp = el("input", "rename-in");
+  inp.type = "text";
+  inp.value = s.title || "";
+  inp.placeholder = s.auto_title || "Sohbet adı";
+  const done = async (save) => {
+    if (inp._done) return;
+    inp._done = true;
+    const value = inp.value.trim();
+    inp.replaceWith(span);
+    if (save && value !== (s.title || "")) {
+      span.textContent = value || s.auto_title || s.title;
+      await api("/api/session/rename", { id: s.id, title: value });
+      await loadSessions();
+    }
+  };
+  inp.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") done(true);
+    if (e.key === "Escape") done(false);
+  });
+  inp.addEventListener("click", (e) => e.stopPropagation());
+  inp.addEventListener("blur", () => done(true));
+  span.replaceWith(inp);
+  inp.focus(); inp.select();
+}
+// Üst çubuk: açık sohbetin adı (tıklayınca yeniden adlandırılır).
+function drawChatTitle() {
+  const t = $("#chatTitle");
+  if (!t) return;
+  const s = (S.sessions || []).find((x) => x.id === S.status.session);
+  t.textContent = s ? (s.title || "(boş)") : "Yeni sohbet";
+  t.classList.toggle("new", !s);
+  t.title = s ? "Yeniden adlandırmak için tıkla" : "";
+  t.disabled = !s;
 }
 // Öndeki sohbet ve arkada hâlâ çalışanlar (bir sohbet çalışırken başka sohbete geçilebilir).
 function markSessions() {
@@ -1006,6 +1138,7 @@ function leaveChat() {
 $("#sessSearch").addEventListener("input", drawSessions);
 $("#sessSearch").addEventListener("keydown", (e) => { if (e.key === "Escape") { e.target.value = ""; drawSessions(); e.target.blur(); } });
 async function resume(id) {
+  if (app.dataset.sec !== "chat") markSection("chat");
   // Proje ekranı açıkken sohbete tıklamak önce projeyi kapatır; aynı sohbetse sadece ona dönülür.
   if (S.proj) { closeProject(); drawSessions(); if (id === S.status.session) { closeSideOnMobile(); return; } }
   if (id === S.status.session) { closeSideOnMobile(); return; }
@@ -1020,6 +1153,7 @@ async function resume(id) {
 }
 async function newChat() {
   if (S.proj) closeProject();
+  markSection("chat");
   const r = await api("/api/new", {});
   if (!r.ok) return toast(r.error || "Yeni sohbet açılamadı");
   leaveChat();

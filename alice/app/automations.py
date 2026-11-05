@@ -1,4 +1,4 @@
-"""Ayarlar → Otomasyon: kurallar, zamanlanmış görevler ve akışlar (`alice rules`, `alice tasks`, `alice feeds`).
+"""Otomasyonlar → Otomasyon: kurallar, zamanlanmış görevler ve akışlar (`alice rules`, `alice tasks`, `alice feeds`).
 
 Kural ve görev komut satırındaki gibi düz cümleyle yazılır ("GPU 85 dereceyi 2 dakika geçerse haber ver",
 "her sabah 9'da Discord'u özetle"). Hızlı model cümleyi çevirir, uygulama ne anladığını gösterir, kullanıcı onaylayınca

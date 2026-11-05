@@ -1,38 +1,40 @@
 /* ALICE telefon uygulaması. iOS'un gruplanmış listeleri ve alt sekme çubuğu; renkler iOS sistem renkleri. */
+@font-face { font-family: "Geist"; src: url("/static/Geist.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
+/* Yapı iOS'un gruplanmış listeleri ve alt sekme çubuğu; renkler masaüstüyle aynı Grafit paleti (app.css :root). */
 :root {
   color-scheme: light;
-  --bg: #f2f2f7;
+  --bg: #f3f3f4;
   --card: #ffffff;
-  --fill: rgba(120, 120, 128, 0.12);
-  --sep: rgba(60, 60, 67, 0.18);
-  --text: #000000;
-  --text-2: rgba(60, 60, 67, 0.62);
-  --accent: #007aff;
-  --green: #34c759;
-  --orange: #ff9500;
-  --red: #ff3b30;
-  --bubble-me: #007aff;
-  --bubble: #e9e9eb;
-  --bar: rgba(249, 249, 249, 0.86);
-  --radius: 12px;
-  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, system-ui, sans-serif;
+  --fill: rgba(24, 24, 27, 0.06);
+  --sep: #e7e7ea;
+  --text: #18181b;
+  --text-2: #63636b;
+  --accent: #2f6bff;
+  --green: #1f9d55;
+  --orange: #c27c0e;
+  --red: #d93a3a;
+  --bubble-me: #2f6bff;
+  --bubble: #ffffff;
+  --bar: rgba(251, 251, 251, 0.86);
+  --radius: 14px;
+  --font: "Geist", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, system-ui, sans-serif;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
-    --bg: #000000;
-    --card: #1c1c1e;
-    --fill: rgba(118, 118, 128, 0.24);
-    --sep: rgba(84, 84, 88, 0.6);
-    --text: #ffffff;
-    --text-2: rgba(235, 235, 245, 0.6);
-    --accent: #0a84ff;
-    --green: #30d158;
-    --orange: #ff9f0a;
-    --red: #ff453a;
-    --bubble-me: #0a84ff;
-    --bubble: #262628;
-    --bar: rgba(22, 22, 24, 0.86);
+    --bg: #0a0a0b;
+    --card: #17171a;
+    --fill: rgba(237, 237, 239, 0.08);
+    --sep: #24242a;
+    --text: #ededef;
+    --text-2: #a0a0a8;
+    --accent: #5b8cff;
+    --green: #3ccf7a;
+    --orange: #e6a23c;
+    --red: #f06464;
+    --bubble-me: #2f6bff;
+    --bubble: #1c1c20;
+    --bar: rgba(14, 14, 16, 0.86);
   }
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -55,7 +57,7 @@ svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width:
   max(20px, env(safe-area-inset-left));
   background: var(--bar); backdrop-filter: saturate(180%) blur(20px); -webkit-backdrop-filter: saturate(180%) blur(20px);
 }
-#top h1 { margin: 0; font-size: 34px; font-weight: 700; letter-spacing: 0.01em; }
+#top h1 { margin: 0; font-size: 32px; font-weight: 650; letter-spacing: -0.025em; }
 .conn { font-size: 13px; color: var(--orange); }
 
 main { padding: 4px max(16px, env(safe-area-inset-right)) calc(96px + env(safe-area-inset-bottom))

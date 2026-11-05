@@ -37,8 +37,9 @@ STATIC = Path(__file__).parent / "static"
 STATIC_FILES = {"app.js": "text/javascript", "projects.js": "text/javascript", "ui.js": "text/javascript",
                 "main.js": "text/javascript", "app.css": "text/css", "marked.min.js": "text/javascript",
                 "purify.min.js": "text/javascript", "highlight.js": "text/javascript", "icon.svg": "image/svg+xml", "alice.png": "image/png", "quick.js": "text/javascript",
-                "quick.css": "text/css", "m.css": "text/css", "m.js": "text/javascript"}
-# media-src: Ayarlar → Ses'teki "Dinle" örneği data: adresinden çalınır. Yoktu; default-src 'none' yüzünden
+                "quick.css": "text/css", "m.css": "text/css", "m.js": "text/javascript",
+                "Geist.woff2": "font/woff2", "GeistMono.woff2": "font/woff2"}
+# media-src: Sistem → Ses'teki "Dinle" örneği data: adresinden çalınır. Yoktu; default-src 'none' yüzünden
 # tarayıcı sesi sessizce engelliyordu.
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
        "media-src 'self' data: blob:; "
@@ -624,7 +625,7 @@ class AppState:
 
     # ----------------------------------------------------------------- bağlantılar
     def connections(self) -> dict[str, Any]:
-        """Ayarlar > Bağlantılar: servislerin durumu ve izleyen akışlar."""
+        """Bağlantılar: servislerin durumu ve izleyen akışlar."""
         from alice.connect.manifest import discover
         from alice.connect.runner import ready
         from alice.core.feeds import load_feeds, state_path
@@ -662,10 +663,10 @@ class AppState:
         if m is None:
             return {"ok": False, "error": f"bağlantı yok: {name}"}
         if m.auth.kind != "oauth2":
-            return {"ok": False, "error": f"{m.label} anahtarla çalışıyor: Ayarlar → Anahtarlar'dan {m.auth.env} gir"}
+            return {"ok": False, "error": f"{m.label} anahtarla çalışıyor: Bağlantılar → Anahtarlar'dan {m.auth.env} gir"}
         cid = os.environ.get(m.auth.client_id_env, "").strip()
         if not cid:
-            return {"ok": False, "error": f"{m.auth.client_id_env} yok; Ayarlar → Anahtarlar'dan gir"}
+            return {"ok": False, "error": f"{m.auth.client_id_env} yok; Bağlantılar → Anahtarlar'dan gir"}
         secret = os.environ.get(m.auth.client_secret_env, "").strip() if m.auth.client_secret_env else ""
 
         def run() -> None:
@@ -754,7 +755,7 @@ class AppState:
             if not re.fullmatch(r"[a-z0-9_-]{1,30}", acc):
                 return {"ok": False, "error": "ad sadece harf, rakam, - ve _ olsun (ör. okul)"}
             if not os.environ.get("GOOGLE_CLIENT_ID", "").strip():
-                return {"ok": False, "error": "önce Google kurulumu: Ayarlar → Kurulum → Google"}
+                return {"ok": False, "error": "önce Google kurulumu: Sistem → Kurulum → Google"}
 
             def run() -> None:
                 try:
@@ -791,7 +792,7 @@ class AppState:
         if not path.is_file():
             tts = make_cloud(self.cfg, f"gemini:{name}")
             if tts is None:
-                return {"ok": False, "error": "örnek için Gemini anahtarı gerekli (Ayarlar → Anahtarlar)"}
+                return {"ok": False, "error": "örnek için Gemini anahtarı gerekli (Bağlantılar → Anahtarlar)"}
             try:
                 audio = tts.synth(self.PREVIEW_TEXT, "happy")
             except TTSError as e:
@@ -817,7 +818,7 @@ class AppState:
 
     @property
     def setup(self):
-        """Ayarlar → Kurulum: doctor, modelleri ölç, Google, telefon, DCS, eklentiler, kısayol."""
+        """Sistem → Kurulum: doctor, modelleri ölç, Google, telefon, DCS, eklentiler, kısayol."""
         if self._setup is None:
             from alice.app.setup_panel import SetupPanel
 
@@ -828,7 +829,7 @@ class AppState:
 
     @property
     def journal(self):
-        """Ayarlar → Notlar ve Kayıtlar."""
+        """Otomasyonlar → Notlar ve Kayıtlar."""
         if self._journal is None:
             from alice.app.journal import Journal
 
@@ -839,7 +840,7 @@ class AppState:
 
     @property
     def automations(self):
-        """Ayarlar → Otomasyon: kurallar, zamanlanmış görevler, akışlar."""
+        """Otomasyonlar → Otomasyon: kurallar, zamanlanmış görevler, akışlar."""
         if self._automations is None:
             from alice.app.automations import Automations
 
@@ -850,7 +851,7 @@ class AppState:
 
     @property
     def system(self):
-        """Ayarlar → Çekirdek: arka plandaki ALICE ve sesli asistan."""
+        """Sistem → Çekirdek: arka plandaki ALICE ve sesli asistan."""
         if self._system is None:
             from alice.app.system import SystemPanel
 
@@ -861,7 +862,7 @@ class AppState:
 
     @property
     def enroll(self):
-        """Ayarlar → Ses → Sesimi tanıt (alice voice enroll'un ekranlı hâli)."""
+        """Sistem → Ses → Sesimi tanıt (alice voice enroll'un ekranlı hâli)."""
         if self._enroll is None:
             from alice.voice.enroll import EnrollSession
 
@@ -1281,6 +1282,9 @@ class AppState:
             (alice_home() / "last_cwd").write_text(str(path), encoding="utf-8")
         except OSError:
             pass
+        from alice.app.folders import remember_dir
+
+        remember_dir(path)
         self.bus.publish({"type": "status", **self.status()})
 
     def github_repos(self, query: str = "") -> list[dict[str, Any]]:
@@ -1502,6 +1506,12 @@ def make_handler(state: AppState):
                     except OSError:
                         updated = 0
                     rows.append({"id": i, "cwd": c, "title": t, "updated": updated})
+                meta = sess.load_meta()
+                for r in rows:
+                    m = meta.get(r["id"]) or {}
+                    if m.get("title"):
+                        r["auto_title"], r["title"] = r["title"], m["title"]
+                    r["pinned"] = bool(m.get("pinned"))
                 return self._json(rows)
             if u.path == "/api/changes":
                 return self._json(session_changes(state.agent.checkpoints, state.ctx.cwd))
@@ -1540,6 +1550,15 @@ def make_handler(state: AppState):
                 from alice.commands import catalog
 
                 return self._json(catalog(state.ctx.cwd))
+            if u.path == "/api/dirs":  # klasör seçici: alt klasörler, hızlı yerler, son kullanılanlar
+                from alice.app import folders
+                from alice.tools.github import clone_root
+
+                out = folders.listing((q.get("path") or [""])[0], (q.get("hidden") or [""])[0] == "1")
+                if out.get("ok"):
+                    out["places"] = folders.places(clone_root(state.cfg))
+                    out["recent"] = folders.recent_dirs()
+                return self._json(out)
             if u.path == "/api/github/repos":
                 from alice.tools.base import ToolError
 
@@ -1768,6 +1787,11 @@ def make_handler(state: AppState):
                                        "ya da sohbet bulunamadı)",
                                        "history": display_history(state.agent.messages, state.agent.tools),
                                        **state.status()})
+                if p == "/api/dirs/mkdir":
+                    from alice.app import folders
+
+                    out = folders.make_dir(str(d.get("parent", "")), str(d.get("name", "")))
+                    return self._json(out, 200 if out["ok"] else 400)
                 if state.chat.busy and p in ("/api/cwd", "/api/compact", "/api/rewind", "/api/changes/revert",
                                              "/api/github/open"):
                     return self._json({"ok": False, "error": "önce mevcut işi durdur"}, 409)
@@ -1800,7 +1824,18 @@ def make_handler(state: AppState):
                     f = sess.sessions_dir() / f"{sid}.json"
                     if sid and f.parent == sess.sessions_dir() and f.exists():
                         f.unlink()
+                        sess.set_meta(sid, title="", pinned=False)
                     return self._json({"ok": True})
+                if p in ("/api/session/rename", "/api/session/pin"):
+                    sid = str(d.get("id", ""))
+                    f = sess.sessions_dir() / f"{sid}.json"
+                    if not sid or f.parent != sess.sessions_dir() or not f.exists():
+                        return self._json({"ok": False, "error": "sohbet yok"}, 404)
+                    if p == "/api/session/rename":
+                        row = sess.set_meta(sid, title=str(d.get("title", "")).strip()[:120])
+                    else:
+                        row = sess.set_meta(sid, pinned=bool(d.get("pinned")))
+                    return self._json({"ok": True, **row})
                 if p == "/api/compact":
                     ok = state.agent.compact()
                     return self._json({"ok": ok, **state.status()})

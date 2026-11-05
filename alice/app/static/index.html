@@ -17,36 +17,53 @@
 </head>
 <body>
 <div id="app" class="empty">
+  <nav id="rail" aria-label="Bölümler">
+    <button class="rail-logo" data-sec="chat" title="ALICE"><img src="/static/alice.png" alt="Alice"></button>
+    <button class="rbtn" data-sec="chat" title="Sohbetler">
+      <svg viewBox="0 0 24 24"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4 3v-3a2 2 0 0 1-2-2z"/></svg>
+    </button>
+    <button class="rbtn" data-sec="projects" title="Projeler: paralel çalışan ajan takımları">
+      <svg viewBox="0 0 24 24"><rect x="3.5" y="4" width="7" height="7" rx="1.5"/><rect x="13.5" y="4" width="7" height="7" rx="1.5"/><rect x="3.5" y="14" width="7" height="6" rx="1.5"/><rect x="13.5" y="14" width="7" height="6" rx="1.5"/></svg>
+      <i class="rdot" id="projDot" hidden></i>
+    </button>
+    <button class="rbtn" data-sec="auto" title="Otomasyonlar: kurallar, görevler, notlar">
+      <svg viewBox="0 0 24 24"><path d="M13 3L5 13h6l-1 8 8-10h-6z"/></svg>
+    </button>
+    <button class="rbtn" data-sec="system" title="Sistem: çekirdek, asistan, ses">
+      <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h6v6H9zM9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"/></svg>
+    </button>
+    <button class="rbtn" data-sec="connect" title="Bağlantılar ve anahtarlar">
+      <svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>
+    </button>
+    <span class="grow"></span>
+    <button class="rbtn" data-sec="settings" id="settingsBtn" title="Ayarlar (Ctrl+,)">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      <span id="ver"></span>
+    </button>
+    <span class="avatar" id="avatar" title="ALICE">A</span>
+    <span id="userName" hidden>ALICE</span>
+  </nav>
+
   <aside id="sidebar">
     <div class="side-top">
-      <div class="brand"><img src="/static/alice.png" alt="Alice"><span>ALICE</span></div>
+      <h2 id="sideTitle">Sohbetler</h2>
+      <button class="icon-btn" id="newChat" title="Yeni sohbet (Ctrl+Shift+O)">
+        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
+      <button class="icon-btn" id="newProject" title="Yeni proje: paralel çalışan ajan takımı">
+        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
       <button class="icon-btn" id="collapseSide" title="Kenar çubuğunu gizle (Ctrl+B)">
         <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg>
       </button>
     </div>
-    <button id="newChat" class="new-chat">
-      <span class="plus"><svg viewBox="0 0 24 24"><path d="M12 6v12M6 12h12"/></svg></span>
-      Yeni sohbet
-    </button>
     <label class="side-search">
       <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.3-4.3"/></svg>
       <input id="sessSearch" type="text" placeholder="Sohbetlerde ara" spellcheck="false" autocomplete="off">
     </label>
-    <div class="side-sec">
-      <span>Projeler</span>
-      <button class="icon-btn" id="newProject" title="Yeni proje: paralel çalışan ajan takımı">
-        <svg viewBox="0 0 24 24"><path d="M12 6v12M6 12h12"/></svg>
-      </button>
-    </div>
     <nav id="projects"></nav>
     <nav id="sessions"></nav>
-    <div class="side-foot">
-      <button class="user-chip" id="settingsBtn" title="Modeller ve ayarlar">
-        <span class="avatar" id="avatar">A</span>
-        <span class="user-meta"><b id="userName">ALICE</b><small id="ver"></small></span>
-        <svg viewBox="0 0 24 24" class="chev-ud"><path d="M8 9l4-4 4 4M8 15l4 4 4-4"/></svg>
-      </button>
-    </div>
+    <nav id="sideNav"></nav>
   </aside>
 
   <main>
@@ -54,6 +71,7 @@
       <button class="icon-btn" id="openSide" title="Kenar çubuğunu göster (Ctrl+B)">
         <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg>
       </button>
+      <button id="chatTitle" class="chat-title new" disabled>Yeni sohbet</button>
       <button id="cwdBtn" class="cwd-chip" title="Çalışma klasörünü değiştir">
         <svg viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v7a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5z"/></svg>
         <span id="cwd">…</span>
@@ -77,6 +95,7 @@
     </header>
 
     <section id="projectView" hidden></section>
+    <section id="pageView" hidden></section>
 
     <section id="scroller">
       <div id="hero">
@@ -138,6 +157,7 @@
         </div>
         <input type="file" id="fileInput" accept="image/*" multiple hidden>
       </div>
+      <div id="onboard" hidden></div>
       <div id="suggest">
         <button class="sg" data-text="Bu klasördeki projeyi incele ve ne yaptığını kısaca anlat">
           <svg viewBox="0 0 24 24"><path d="M8 6l-5 6 5 6M16 6l5 6-5 6"/></svg>Kod</button>
@@ -154,12 +174,12 @@
         <span id="stCtx" title="Context doluluğu, sınırda otomatik özetlenir"><i class="meter"><i></i></i><span></span></span>
         <span class="sep">·</span>
         <span id="stReq"></span>
-        <span class="sep">·</span>
-        <span id="stDec"></span>
-        <span class="sep st-br">·</span>
-        <span id="stBranch" class="st-br"></span>
-        <span class="sep">·</span>
-        <span id="stClock" title="Oturum süresi"></span>
+        <span class="sep st-more">·</span>
+        <span id="stDec" class="st-more"></span>
+        <span class="sep st-br st-more">·</span>
+        <span id="stBranch" class="st-br st-more"></span>
+        <span class="sep st-more">·</span>
+        <span id="stClock" class="st-more" title="Oturum süresi"></span>
       </div>
     </div>
   </main>
