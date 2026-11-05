@@ -1587,6 +1587,7 @@ input, select, textarea, button { font-family: inherit; }
 input[type=checkbox], input[type=radio] {
   appearance: none; -webkit-appearance: none; flex: none; width: 16px; height: 16px; margin: 0; display: inline-grid; place-content: center;
   border: 1.5px solid var(--line-strong); border-radius: var(--r-xs); background: var(--panel); cursor: pointer; vertical-align: -3px;
+  color: var(--text); font: inherit;
   transition: background .12s, border-color .12s;
 }
 input[type=radio] { border-radius: 50%; }
