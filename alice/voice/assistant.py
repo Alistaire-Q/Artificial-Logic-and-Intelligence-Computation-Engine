@@ -1163,9 +1163,26 @@ def live_text_options(v: dict[str, Any]) -> dict[str, Any]:
 
 
 def make_live(cfg, agent):
-    """[voice] mode = "live" ise Gemini Live oturumu (anahtar ve websockets varsa)."""
-    if str(cfg.data.get("voice", {}).get("mode", "live")) != "live":
+    """[voice] mode = "live" ise canlı konuşma oturumu.
+
+    live_backend = "auto": önce ChatGPT Realtime (yerel Claude Code proxy'si üzerinden; ses kalitesi en iyi),
+    olmazsa Gemini Live. "chatgpt": yalnız ChatGPT. "gemini": yalnız Gemini."""
+    v = cfg.data.get("voice", {})
+    if str(v.get("mode", "live")) != "live":
         return None
+    backend = str(v.get("live_backend", "auto") or "auto").strip().lower()
+    if backend in ("auto", "chatgpt", "realtime", "openai"):
+        try:
+            from alice.voice.live_chatgpt import RealtimeSession
+
+            rt = RealtimeSession(cfg, agent, log=voice_log)
+            if rt.available:
+                voice_log(f"canlı konuşma: ChatGPT realtime ({rt.model})")
+                return rt
+        except Exception as e:  # noqa: BLE001 - gerçek zamanlı uç yoksa Gemini'ye düş
+            voice_log(f"ChatGPT realtime kullanılamıyor: {e}")
+        if backend != "auto":
+            return None
     from alice.voice.live import LiveSession
 
     live = LiveSession(cfg, agent, log=voice_log)

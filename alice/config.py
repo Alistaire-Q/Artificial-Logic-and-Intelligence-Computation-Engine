@@ -183,6 +183,12 @@ enabled = false
 mode = "live"
 live_voice = "Kore"
 live_models = ["gemini-3.8-live", "gemini-3.1-flash-live-preview", "gemini-2.5-flash-native-audio-latest"]
+# Canlı konuşmanın arka ucu: auto (önce ChatGPT Realtime — yerel Claude Code proxy'si üzerinden, en doğal ses —,
+# olmazsa Gemini Live), chatgpt (yalnız ChatGPT), gemini (yalnız Gemini).
+live_backend = "auto"
+# ChatGPT Realtime modeli ve sesi (proxy'nin /v1/realtime ucu).
+live_realtime_model = "gpt-realtime-2.1"
+live_realtime_voice = "marin"
 # Alice sustuktan sonra bu kadar saniye kimse konuşmazsa canlı konuşma kapanır, yeniden "Hey Alice" beklenir
 # (en fazla 5: yanındakilerle konuşurken söylenenler komut sanılmasın).
 live_idle = 5

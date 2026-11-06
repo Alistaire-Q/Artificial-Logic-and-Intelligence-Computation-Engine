@@ -84,6 +84,10 @@ yerel Claude Code proxy'si (`cliproxy` sağlayıcısı, CLIProxyAPI). Proxy hesa
 (Bağlantılar → Anahtarlar → "Claude Code proxy"): Claude, ChatGPT (Codex), Antigravity, Kimi, xAI; birden çok
 hesapta istekler sırayla paylaştırılıyor ve biri limite takılınca otomatik sıradakine geçiliyor. Ayrıntılar README'de.
 
+ALICE Live (canlı konuşma) artık iki arka uçlu: varsayılan **ChatGPT Realtime** (aynı yerel proxy üzerinden
+`/v1/realtime`; ses en doğal, araçlar function calling ile) ve yedek **Gemini Live**. `[voice] live_backend =
+"auto"` önce ChatGPT'yi dener, olmazsa Gemini'ye düşer.
+
 | Madde | Durum | Senden beklenen |
 |---|---|---|
 | HUD motoru (Ada) | Apple'ın Dynamic Island kurallarıyla tek "Ada" (açık buzlu cam, marka mavisi, sürekli köşe, yay animasyonu); kenar ışığı. ALICE'in imleci hedefe kayar, tıklamada halka yayılır; dinlerken dalga ve mavi parıltı; oyunda yalnız tehdit ve uyarı (`[hud] mode`, Ctrl+Alt+K); Ctrl+Alt+J son bildirimler; yönsüz tehdide radar simgesi; çalan şarkı. War Thunder'da kenarlıksız pencerede denendi, FPS'e etkisi yok | — |

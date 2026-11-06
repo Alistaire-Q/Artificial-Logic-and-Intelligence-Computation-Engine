@@ -747,6 +747,16 @@ alice voice on        # çekirdekle birlikte açılsın (kapatmak: alice voice o
 * Live yokken kullanılan normal sesli yolda (yazıya çevir, model, ses) "neden", "nasıl", "anlat", "karşılaştır", "plan yap" gibi düşünmesi gereken sorular en hızlı model yerine beyin modeline gidiyor; komutlar hızlı modelde kalıyor (`smart_route`).
 * Ses tanıma ipuçlarına projelerinin adları ve hafızadaki özel adlar (kişiler, oyunlar) ekleniyor; Türkçe cümle içinde bozulan adlar daha az karışıyor.
 
+**ALICE Live (canlı konuşma) arka ucu.** "Hey Alice"ten sonra sesten sese konuşmayı iki arka uç yapabilir:
+
+* **ChatGPT Realtime (varsayılan):** Yerel Claude Code proxy'si (CLIProxyAPI) üzerinden ChatGPT (Codex) hesabınla OpenAI Realtime uyumlu `/v1/realtime` ucunu kullanır. Ses en doğal olan bu: mikrofon 24 kHz PCM olarak akar, model susunca cevap üretir, araya girersen anında susar, ALICE'in araçları function calling ile çalışır (izin/onay yolu aynı). Proxy açık değilse ALICE açılışta kendisi başlatır; ChatGPT hesabı bağlı değilse Gemini Live'a düşer.
+  * `[voice] live_backend = "auto" | "chatgpt" | "gemini"` (auto: önce ChatGPT, olmazsa Gemini).
+  * `[voice] live_realtime_model = "gpt-realtime-2.1"`, `live_realtime_voice = "marin"`.
+  * Gereken: `~/.alice/cliproxy` kurulu ve ChatGPT hesabı Bağlantılar → Anahtarlar → "Claude Code proxy" kartından bağlı.
+* **Gemini Live (yedek):** `GEMINI_API_KEY` varsa eski canlı konuşma aynen çalışır (Gemini sesleri, `live_models`, `live_voice`).
+
+İkisi de yoksa ya da bağlanamazsa ALICE 5 dakika normal sesli yola (yazıya çevir → model → ses) döner. Ayrıntılar `[voice]` ayarlarında; model/ses adları `~/.alice/config.toml`dan değiştirilir.
+
 `[voice] enabled = true` yaparsan çekirdek (`alice core run`) sesli asistanı da başlatır ve bildirimleri seslendirir. Sessiz modda bildirimler sadece yazılı gelir.
 
 ### Sadece sana cevap versin, kendi kendine uyanmasın
