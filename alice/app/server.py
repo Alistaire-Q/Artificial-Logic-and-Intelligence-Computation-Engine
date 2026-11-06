@@ -427,11 +427,13 @@ class AppState:
     def _start_cliproxy(self) -> None:
         """Yerel Claude Code proxy'si (CLIProxyAPI) kuruluysa açılışta kendiliğinden başlat."""
         try:
-            if not bool(self.cfg.data.get("cliproxy", {}).get("auto_start", True)):
+            cl = self.cfg.data.get("cliproxy", {}) or {}
+            if not bool(cl.get("auto_start", True)):
                 return
             from alice.app import cliproxy
 
-            cliproxy.start_in_background()
+            cliproxy.start_in_background(install=bool(cl.get("auto_install", True)),
+                                         version=str(cl.get("version") or ""))
         except Exception:  # noqa: BLE001 - proxy yoksa ALICE açılışı etkilenmesin
             pass
 
@@ -1938,6 +1940,10 @@ def make_handler(state: AppState):
                     what = p.rsplit("/", 1)[1]
                     if what == "login":
                         return self._json(cliproxy.login_url(str(d.get("provider", ""))))
+                    if what == "install":
+                        from alice.app import cliproxy_setup
+
+                        return self._json(cliproxy_setup.install_async())
                     if what == "remove":
                         return self._json(cliproxy.remove(str(d.get("name", ""))))
                 if p == "/api/cliproxy/login/status":

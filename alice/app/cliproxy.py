@@ -41,6 +41,11 @@ def home() -> Any:
     return alice_home() / "cliproxy"
 
 
+def binary_name() -> str:
+    """Platforma göre çalıştırılabilir dosya adı."""
+    return "cli-proxy-api.exe" if os.name == "nt" else "cli-proxy-api"
+
+
 def settings() -> dict[str, Any]:
     """Klasör, port ve yönetim anahtarı. Kurulu değilse installed=False, anahtar yoksa key=""."""
     h = home()
@@ -60,7 +65,7 @@ def settings() -> dict[str, Any]:
     except OSError:
         pass
     return {"dir": h, "port": port, "key": key,
-            "installed": (h / "cli-proxy-api.exe").exists() or (h / "config.yaml").exists()}
+            "installed": (h / binary_name()).exists()}
 
 
 def _req(method: str, path: str) -> dict[str, Any]:
@@ -108,9 +113,9 @@ def start(wait_seconds: float = 8.0) -> dict[str, Any]:
         if now - _last_start < START_RETRY_SECONDS and _last_start:
             return {"ok": False, "error": "az önce denendi; biraz sonra yeniden denenecek"}
         _last_start = now
-        exe = s["dir"] / "cli-proxy-api.exe"
+        exe = s["dir"] / binary_name()
         if not exe.exists():
-            return {"ok": False, "error": "cli-proxy-api.exe bulunamadı"}
+            return {"ok": False, "error": f"{binary_name()} bulunamadı"}
         try:
             log = open(s["dir"] / "server.out.log", "ab")  # noqa: SIM115 - çocuk süreç yazacak
         except OSError:
@@ -145,9 +150,20 @@ def ensure_started() -> dict[str, Any]:
     return start()
 
 
-def start_in_background() -> None:
-    """ALICE açılışını bekletmeden proxy'yi başlatmayı dene."""
-    threading.Thread(target=ensure_started, daemon=True, name="alice-cliproxy").start()
+def start_in_background(install: bool = False, version: str = "") -> None:
+    """ALICE açılışını bekletmeden proxy'yi (gerekirse önce kurup) başlatmayı dene."""
+
+    def run() -> None:
+        if install:
+            try:
+                from alice.app import cliproxy_setup
+
+                cliproxy_setup.ensure_installed(version)
+            except Exception:  # noqa: BLE001 - indirme başarısızsa proxy'siz devam
+                pass
+        ensure_started()
+
+    threading.Thread(target=run, daemon=True, name="alice-cliproxy").start()
 
 
 def _pct(value: Any) -> int | None:

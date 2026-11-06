@@ -528,9 +528,13 @@ api_key_env = ""
 vision_models = ["*vl*", "llava*", "gemma3*"]
 max_input_tokens = 32000
 
-# Yerel Claude Code proxy'si (CLIProxyAPI, ~/.alice/cliproxy). ALICE açılınca kendisi başlatır.
+# Yerel Claude Code proxy'si (CLIProxyAPI, ~/.alice/cliproxy). ALICE açılınca gerekirse kendisi indirir ve başlatır.
 [cliproxy]
 auto_start = true
+# Kurulu değilse GitHub sürümünden otomatik indirip kur (checksum doğrulanır); false: karttan "Kur"a basılır.
+auto_install = true
+# Boş = denenmiş sabit sürüm; "latest" ya da "v8.0.57" gibi bir etiket de yazılabilir.
+version = ""
 
 # git / GitHub araçlarının kuralları. Anahtar: .env'deki GITHUB_TOKEN, yoksa GitHub MCP sunucusunun anahtarı,
 # yoksa GITHUB_MODELS_TOKEN, yoksa `gh auth token`.

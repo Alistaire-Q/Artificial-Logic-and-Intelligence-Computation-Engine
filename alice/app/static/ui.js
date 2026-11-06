@@ -2181,8 +2181,39 @@ function proxyStatusCard(d, refresh) {
   head.append(el("span", "kc-dot"), l);
   const body = el("div", "cp-body");
   if (!d.installed) {
-    body.appendChild(el("p", "cp-note", "Claude Pro/Max, ChatGPT ve diğer aboneliklerini ALICE'te kullanmak için CLIProxyAPI'yi "
-      + (d.dir || "~/.alice/cliproxy") + " klasörüne kur (adımlar README'de: Claude Code proxy). Kurulunca ALICE onu kendisi başlatır."));
+    body.appendChild(el("p", "cp-note", "CLIProxyAPI kurulu değil. ALICE GitHub sürümünden otomatik indirip kurabilir "
+      + "(~25 MB, checksum doğrulanır; " + (d.dir || "~/.alice/cliproxy") + "). Kurulumdan sonra proxy kendisi başlar, "
+      + "hesapları aşağıdan bağlarsın."));
+    const install = el("button", "btn primary", "Kur (otomatik)");
+    install.addEventListener("click", () => {
+      install.disabled = true;
+      install.textContent = "İndiriliyor…";
+      api("/api/cliproxy/install", {}).then((r) => {
+        if (!r || !r.ok) {
+          toast((r && r.error) || "kurulum başlatılamadı");
+          install.disabled = false;
+          install.textContent = "Kur (otomatik)";
+          return;
+        }
+        toast("CLIProxyAPI indiriliyor…");
+        let n = 0;
+        const timer = setInterval(async () => {
+          n += 1;
+          const st = await api("/api/cliproxy");
+          if (st && st.installed) {
+            clearInterval(timer);
+            toast("CLIProxyAPI kuruldu");
+            refresh();
+          } else if (n > 90) {
+            clearInterval(timer);
+            toast("kurulum tamamlanmadı; README'deki manuel yolu dene");
+            install.disabled = false;
+            install.textContent = "Kur (otomatik)";
+          }
+        }, 2000);
+      });
+    });
+    body.appendChild(install);
   } else {
     body.appendChild(el("p", "cp-note cp-err", "Proxy açılamadı" + (d.error ? ": " + d.error : "") + "."));
     const retry = el("button", "btn", "Yeniden dene");

@@ -16,6 +16,7 @@ def proxy_home(tmp_path, monkeypatch):
     home.mkdir()
     (home / "config.yaml").write_text("server:\n  port: 8317\n", encoding="utf-8")
     (home / "keys.txt").write_text("api_key=test-client\nmanagement_key=test-yonetim\n", encoding="utf-8")
+    (home / cliproxy.binary_name()).write_bytes(b"")
     monkeypatch.setattr(cliproxy, "home", lambda: home)
     return home
 
@@ -144,7 +145,7 @@ def test_start_skips_when_not_installed(tmp_path, monkeypatch):
 
 
 def test_start_launches_detached_process(proxy_home, monkeypatch):
-    (proxy_home / "cli-proxy-api.exe").write_bytes(b"")
+
     checks = {"n": 0}
 
     def fake_running():
@@ -162,7 +163,7 @@ def test_start_launches_detached_process(proxy_home, monkeypatch):
     monkeypatch.setattr(cliproxy.subprocess, "Popen", Popen)
     r = cliproxy.start(wait_seconds=5)
     assert r == {"ok": True, "started": True}
-    assert spawned["args"][0].endswith("cli-proxy-api.exe")
+    assert spawned["args"][0].endswith(cliproxy.binary_name())
     assert spawned["args"][-1].endswith("config.yaml")
     assert spawned["kw"]["cwd"].endswith("cliproxy")
 
