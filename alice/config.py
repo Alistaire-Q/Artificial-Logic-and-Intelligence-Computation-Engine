@@ -490,11 +490,41 @@ max_input_tokens = 128000
 models = ["@cf/zai-org/glm-4.7-flash", "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
           "@cf/google/gemma-4-26b-a4b-it", "@cf/meta/llama-4-scout-17b-16e-instruct"]
 
+# Anthropic: resmi Claude API (console.anthropic.com, kullandıkça ücretli). Resmi anthropic paketiyle konuşulur
+# (pip install anthropic). Ücretli olduğu için otomatik zincire girmez; model menüsünden ya da
+#   /model brain anthropic:claude-opus-5-5
+# ile seç.
+[providers.anthropic]
+base_url = "https://api.anthropic.com"
+api_key_env = "ANTHROPIC_API_KEY"
+kind = "anthropic"
+vision_models = ["claude-*"]
+max_input_tokens = 1000000
+auto = false
+models = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"]
+
+# Claude Code proxy (yerel CLIProxyAPI): Claude Pro/Max, ChatGPT (Codex), Antigravity gibi abonelikleri bu
+# bilgisayarda OpenAI uyumlu uca çevirir (varsayılan http://127.0.0.1:8317/v1). Hesaplar uygulamadaki
+# Bağlantılar → Anahtarlar → "Claude Code proxy" kartından eklenir; kotayı harcadığı için otomatik zincire
+# girmez, model menüsünden seçilir. Kurulum: README → "Claude Code proxy (CLIProxyAPI)".
+[providers.cliproxy]
+base_url = "http://127.0.0.1:8317/v1"
+api_key_env = "CLIPROXY_API_KEY"
+auto = false
+vision_models = ["claude-*"]
+max_input_tokens = 1000000
+models = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1",
+          "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6.1-terra", "gpt-6-chat-thinking"]
+
 [providers.ollama]
 base_url = "http://localhost:11434/v1"
 api_key_env = ""
 vision_models = ["*vl*", "llava*", "gemma3*"]
 max_input_tokens = 32000
+
+# Yerel Claude Code proxy'si (CLIProxyAPI, ~/.alice/cliproxy). ALICE açılınca kendisi başlatır.
+[cliproxy]
+auto_start = true
 
 # git / GitHub araçlarının kuralları. Anahtar: .env'deki GITHUB_TOKEN, yoksa GitHub MCP sunucusunun anahtarı,
 # yoksa GITHUB_MODELS_TOKEN, yoksa `gh auth token`.
@@ -554,6 +584,10 @@ ZAI_API_KEY=
 COHERE_API_KEY=
 # Vercel AI Gateway ($5/ay ücretsiz kredi, Claude/GPT; elle seçilir) -> https://vercel.com/d?to=/[team]/~/ai/api-keys
 AI_GATEWAY_API_KEY=
+# Anthropic (resmi Claude API, kullandıkça ücretli; elle seçilir) -> https://console.anthropic.com/settings/keys
+ANTHROPIC_API_KEY=
+# Claude Code proxy (yerel CLIProxyAPI; Claude, ChatGPT vb. abonelikler, elle seçilir) -> ~/.alice/cliproxy/keys.txt
+CLIPROXY_API_KEY=
 # Cloudflare Workers AI (günde 10.000 neuron ücretsiz) -> https://dash.cloudflare.com/profile/api-tokens
 # ("Workers AI" izinli token). Hesap kimliği: dash.cloudflare.com, sağ paneldeki "Account ID".
 CLOUDFLARE_API_TOKEN=
@@ -860,12 +894,36 @@ class ProviderConfig:
     auto: bool = True
     # "chatgpt": API anahtarı yerine ChatGPT hesabıyla giriş (alice/providers/chatgpt.py)
     auth: str = ""
+    # API biçimi: "" OpenAI uyumlu (çoğu sağlayıcı), "anthropic" resmi Claude API (alice/providers/anthropic_api.py)
+    kind: str = ""
+    # Arayüzden eklenen OpenAI uyumlu sunucu: Anahtarlar sayfasından silinebilir.
+    custom: bool = False
+    # Anahtar havuzunda tek bir anahtarın istemcisi bu alanla kurulur (alice/providers/keypool.py).
+    key_override: str = ""
+
+    @property
+    def api_keys(self) -> list[str]:
+        """Sağlayıcının bütün anahtarları: GEMINI_API_KEY, sonra GEMINI_API_KEY_2, _3... (sırayla, boşlar atlanır).
+        Birden fazlaysa istekler aralarında paylaştırılır, kotası dolan ya da sınıra takılan anahtar beklerken
+        diğerleriyle devam edilir."""
+        if self.key_override:
+            return [self.key_override]
+        if not self.api_key_env:
+            return []
+        out = [os.environ.get(self.api_key_env, "").strip()]
+        rx = re.compile(rf"{re.escape(self.api_key_env)}_(\d+)")
+        extra = sorted((int(m.group(1)), v.strip()) for k, v in os.environ.items() if (m := rx.fullmatch(k)))
+        out += [v for _, v in extra]
+        seen: list[str] = []
+        for k in out:
+            if k and k not in seen:
+                seen.append(k)
+        return seen
 
     @property
     def api_key(self) -> str | None:
-        if not self.api_key_env:
-            return None
-        return os.environ.get(self.api_key_env) or None
+        keys = self.api_keys
+        return keys[0] if keys else None
 
     @property
     def needs_key(self) -> bool:
@@ -921,6 +979,8 @@ class Config:
                 models=[str(m) for m in p.get("models", [])],
                 auto=bool(p.get("auto", True)),
                 auth=str(p.get("auth", "")),
+                kind=str(p.get("kind", "")),
+                custom=bool(p.get("custom", False)),
             )
         return out
 
@@ -949,6 +1009,24 @@ def set_config_value(section: str, key: str, value: Any) -> Path:
         text = text[:sec.end()] + body + text[end:]
     path.write_text(text, encoding="utf-8")
     return path
+
+
+def remove_config_section(section: str) -> bool:
+    """~/.alice/config.toml'dan [section] bölümünü (bir sonraki bölüm başlığına kadar) sil. Yoksa False."""
+    import re
+
+    path = alice_home() / "config.toml"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    sec = re.search(rf"(?m)^\[{re.escape(section)}\]\s*$", text)
+    if not sec:
+        return False
+    nxt = re.search(r"(?m)^\[", text[sec.end():])
+    end = sec.end() + nxt.start() if nxt else len(text)
+    path.write_text((text[:sec.start()].rstrip() + "\n\n" + text[end:].lstrip()).strip() + "\n", encoding="utf-8")
+    return True
 
 
 def default_config_dict() -> dict[str, Any]:

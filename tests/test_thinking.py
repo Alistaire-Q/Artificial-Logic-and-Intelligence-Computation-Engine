@@ -14,6 +14,10 @@ def test_params_per_provider():
     assert thinking.params("chatgpt", "gpt-6-luna", "off") == {"reasoning_effort": "none"}
     assert thinking.params("chatgpt", "gpt-6-luna", "medium") == {"reasoning_effort": "medium"}
     assert thinking.params("chatgpt", "gpt-6-luna", "max") == {"reasoning_effort": "max"}
+    # Yerel Claude Code proxy: seviye olduğu gibi gider (proxy Claude/Codex modellerine çevirir)
+    assert thinking.params("cliproxy", "claude-opus-5-5", "off") == {"reasoning_effort": "none"}
+    assert thinking.params("cliproxy", "gpt-5.6-terra", "max") == {"reasoning_effort": "max"}
+    assert thinking.params("cliproxy", "claude-opus-5-5", "xhigh") == {"reasoning_effort": "xhigh"}
     # xhigh/max sadece ChatGPT'de: diğerlerine high gider
     assert thinking.params("gemini", "gemini-3.6-flash", "xhigh") == {"reasoning_effort": "high"}
     assert thinking.params("openrouter", "x/y", "max") == {"reasoning": {"effort": "high"}}

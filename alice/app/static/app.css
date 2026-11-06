@@ -1797,6 +1797,59 @@ details > summary::marker { color: var(--faint); }
 .kc-field { font-size: 12px; color: var(--muted); width: 90px; flex: none; }
 .kc-btns { display: flex; justify-content: flex-end; gap: var(--s2); }
 .key-card:has(.kc-form:not([hidden])) { grid-column: 1 / -1; box-shadow: var(--shadow); }
+.kc-strategy { display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap; margin: 0 0 var(--s3); }
+.kc-strategy small { color: var(--muted); font-size: 12.5px; }
+.kc-pool { display: flex; flex-direction: column; gap: 6px; border-bottom: 1px dashed var(--line); padding-bottom: var(--s3); margin-bottom: 2px; }
+.kc-key { display: flex; align-items: center; gap: var(--s2); font-size: 12.5px; }
+.kc-key code { font-family: var(--mono); font-size: 12px; }
+.kc-key small { color: var(--muted); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kc-key.ok .kc-dot { background: var(--ok); }
+.kc-key.wait .kc-dot { background: var(--warn); }
+.kc-key.bad .kc-dot { background: var(--err); }
+.kc-key .icon-btn { width: 26px; height: 26px; }
+.kc-key code { max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kc-add { display: flex; gap: var(--s2); }
+.kc-add input, .kc-add select { flex: 1; min-width: 0; }
+.kc-hint { color: var(--faint); font-size: 11.5px; line-height: 1.4; }
+/* abonelik hesapları (Claude Code proxy) */
+.cp-card { grid-column: 1 / -1; }
+.cp-card .kc-head .l small { font-family: var(--sans); }
+.cp-card.partial .kc-dot { background: var(--warn); }
+.cp-body { display: flex; flex-direction: column; gap: 2px; padding: 0 var(--s4) var(--s3); }
+.cp-body:empty { display: none; }
+.cp-body > .btn { align-self: flex-start; margin-top: var(--s2); }
+.cp-note { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+.cp-err { color: var(--err); }
+.cp-acc { display: grid; grid-template-columns: minmax(0, 1fr) 170px 150px auto; align-items: center; gap: var(--s3);
+  padding: 9px 0; border-top: 1px solid var(--line); }
+.cp-acc:first-child { border-top: 0; }
+.cp-who { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
+.cp-who b { font-weight: 500; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cp-acc.off .cp-who b { color: var(--muted); }
+.cp-quota { display: flex; flex-direction: column; gap: 4px; }
+.cp-quota small { color: var(--faint); font-size: 11px; font-variant-numeric: tabular-nums; }
+.cp-bar { display: block; height: 4px; border-radius: 2px; background: var(--hover); overflow: hidden; }
+.cp-bar i { display: block; height: 100%; background: var(--accent); border-radius: 2px; }
+.cp-bar i.high { background: var(--warn); }
+.cp-bar i.full { background: var(--err); }
+.cp-state { font-size: 12px; display: flex; align-items: center; gap: 6px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cp-state::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--line-strong); flex: none; }
+.cp-state.ok::before { background: var(--ok); }
+.cp-state.wait::before { background: var(--warn); }
+.cp-state.bad { color: var(--err); }
+.cp-state.bad::before { background: var(--err); }
+.cp-acts { display: flex; align-items: center; gap: 4px; justify-content: flex-end; }
+.cp-acts .btn { padding: 3px 10px; font-size: 12px; }
+.cp-acts .icon-btn { width: 28px; height: 28px; }
+.cp-flow { border-top: 1px solid var(--line); padding: var(--s3) var(--s4); display: flex; flex-direction: column; gap: var(--s2);
+  background: var(--accent-soft); }
+.cp-flow[hidden] { display: none; }
+.cp-section .key-grid { align-items: start; }
+.kc-head > .btn[hidden] { display: none; }
+.cp-flow-btns { display: flex; gap: var(--s2); }
+.cp-flow + .cp-body:not(:empty) { padding-top: var(--s2); }
+.cp-body > .kc-hint { padding-top: var(--s2); }
+@media (max-width: 720px) { .cp-acc { grid-template-columns: minmax(0, 1fr) auto; } .cp-quota { grid-column: 1 / -1; grid-row: 2; } }
 
 /* ------------------------------------------------------------------ araçlar */
 .tl-bar { display: flex; gap: var(--s3); margin-bottom: var(--s3); }

@@ -66,6 +66,7 @@ Ekim 2026 itibarıyla ücretsiz katmanları taradım. Rakamlar sık değişiyor,
 | **Cohere** | Trial anahtarı ücretsiz (ayda sınırlı istek, ticari kullanım yok). Command A ailesi, araç çağırma destekli | brain yedeği |
 | **Cloudflare Workers AI** | Günde 10.000 "neuron" ücretsiz: Kimi K2.5, GLM 4.7 Flash, Llama 3.3 70B, Gemma 4. Büyük modelde günde ~150-300 bin token. Adreste hesap kimliği var, `CLOUDFLARE_ACCOUNT_ID` de gerekiyor | brain yedeği |
 | **Vercel AI Gateway** | Hesap başına 30 günde 5$ kredi; Claude, GPT, Gemini aynı anahtarla. Kredi harcadığı için otomatik sıraya **girmiyor**, sadece elle: `/model brain vercel:anthropic/claude-sonnet-5.5` | elle seçilen güçlü model |
+| **Anthropic (Claude API)** | Resmi API, kullandıkça ücretli (console.anthropic.com). Claude Opus 5.5, Sonnet 5.5, Haiku 5.5, Fable 5.1. Resmi `anthropic` paketiyle konuşuyor (`pip install anthropic`). Ücretli olduğu için otomatik sıraya **girmiyor**: model menüsünden ya da `/model brain anthropic:claude-opus-5-5` | elle seçilen güçlü model |
 | **Ollama (yerel)** | Limitsiz, offline, GPU'na bağlı | her zincirin sonunda son çare |
 
 Bu tablodakilere ek olarak `.env`'e anahtar yazarsan **Mistral** ve **SambaNova** da otomatik ölçülüp zincire girer. Varsayılan `config.toml`'da brain zincirinin başında NVIDIA'daki GLM 5.3 (1M bağlam) duruyor, ardından `auto` (ölçülen en iyi ücretsiz modeller), en sonda yerel Ollama.
@@ -138,6 +139,7 @@ Eksik bir paket gereken bir komutu çalıştırırsan ALICE traceback yerine han
 * `COHERE_API_KEY`: https://dashboard.cohere.com/api-keys
 * `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`: https://dash.cloudflare.com/profile/api-tokens ("Workers AI" izinli token; hesap kimliği panelin sağında)
 * `AI_GATEWAY_API_KEY`: https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai%2Fapi-keys (Vercel, 5$ kredi, sadece elle seçilir)
+* `ANTHROPIC_API_KEY`: https://console.anthropic.com/settings/keys (resmi Claude API, ücretli, sadece elle seçilir)
 * `TYPESAFE_API_KEY`: Jev erişimi alırsan
 * `GITHUB_TOKEN`: git ve GitHub araçları için (opsiyonel, ayrıntı aşağıda)
 * `BRAVE_SEARCH_API_KEY`: web aramada Brave kullanmak için (opsiyonel)
@@ -145,6 +147,24 @@ Eksik bir paket gereken bir komutu çalıştırırsan ALICE traceback yerine han
 Hiç anahtar yoksa ALICE sadece yerel Ollama'yı dener ve bunu açılışta söyler.
 
 **Dosyayla uğraşmak istemezsen:** uygulamada **Bağlantılar → Anahtarlar**. Her sağlayıcının yanında "anahtarı al" bağlantısı var; anahtarı yapıştırıp Kaydet'e basınca `.env`'e yazılıyor ve hemen kullanılıyor (yeniden başlatmak gerekmiyor, yeni sağlayıcı arka planda ölçülüp model sırasına giriyor). Anahtarın tamamı arayüze hiç geri gelmiyor, sadece son 4 hanesi görünüyor. Arka plan çekirdeği (sesli asistan) yeni anahtarı bir sonraki açılışında görür.
+
+**Anahtar havuzu (birden çok hesap):** Aynı sağlayıcıya birden fazla anahtar ekleyebilirsin: Anahtarlar'da sağlayıcının kartını açıp "bir anahtar daha yapıştır", ya da `.env`'de `GEMINI_API_KEY_2=`, `GEMINI_API_KEY_3=`... İstekler anahtarlar arasında sırayla paylaşılır (ya da "Biri bitince diğerine geç" seçilirse ilki bitene kadar o kullanılır; `[agent] key_strategy = "fill-first"`). Bir anahtar 429'a takılınca o anahtar o modelde sunucunun söylediği kadar bekler, istek hemen sıradaki anahtarla tekrarlanır; günlük kotası dolan anahtar o modelde ertesi sıfırlanmaya kadar kapanır (ALICE yeniden başlasa da hatırlanır, `~/.alice/key-cooldowns.json`); geçersiz anahtar oturum boyunca atlanır. Bütün anahtarlar tükenince router her zamanki gibi sıradaki modele geçer. Kartta her anahtarın son 4 hanesi, kaç istek yaptığı ve hangi modelde ne kadar beklediği görünür.
+
+**Kendi sunucun ya da başka bir OpenAI uyumlu servis:** Anahtarlar → **OpenAI uyumlu sunucu ekle**: ad, adres (ör. `http://localhost:1234/v1`), varsa anahtar ve istersen model listesi. ALICE önce `/models`'u dener; cevap gelirse `config.toml`'a `[providers.<ad>]` olarak yazar, modeller ölçülüp otomatik sıraya girer. LM Studio, vLLM, LiteLLM ya da kendi proxy'n için. Kartındaki çöp kutusuyla kaldırılır.
+
+**Claude Code proxy (CLIProxyAPI):** Claude Pro/Max, ChatGPT (Codex), Google Antigravity, Kimi ve xAI aboneliklerini bu bilgisayarda OpenAI uyumlu tek bir uca çeviren yerel köprü. ALICE onu `cliproxy` sağlayıcısı olarak tanır: `http://127.0.0.1:8317/v1`, anahtar `.env`'deki `CLIPROXY_API_KEY`. Abonelik kotasını harcadığı için otomatik zincire **girmez**; model menüsünden `claude-opus-5-5`, `gpt-5.6-terra` gibi bir model seçilir.
+
+**Hesapları uygulamadan bağla:** Bağlantılar → Anahtarlar → **Claude Code proxy (hesaplar)** kartı. Servisi seç, **Hesap ekle (giriş)** düğmesine bas; tarayıcıda o servisin giriş sayfası açılır, kendi hesabınla giriş yaparsın. Giriş bitince hesap kartta görünür (e-posta, sağlayıcı, kota yüzdesi). Hesabı karttan kaldırabilirsin. Aynı servise birden çok hesap ekleyebilirsin: istekler hesaplar arasında sırayla paylaştırılır (`routing.strategy: round-robin`), bir hesap limite ya da kotaya takılınca proxy beklemeden sıradakine geçer. Kimlik bilgileri `~/.alice/cliproxy/auths/` altında, bu bilgisayarda durur.
+
+**Model ve düşünme:** Model menüsünde proxy'nin bütün modelleri görünür (Claude ve GPT ailesi; `cliproxy:claude-opus-5-5`, `cliproxy:gpt-5.6-terra`…). **Düşünme** çubuğuyla `off / low / medium / high / xhigh / max` seçilir; proxy bunu Claude'un uyarlamalı düşünmesine ve Codex'in reasoning effort'una çevirir (en yüksek seviye, Codex'teki "ultracode" ayarının karşılığı). Modeli elle sabitlemek yerine `[roles]` zincirine yazarsan Claude limiti dolunca otomatik olarak sıradaki modele (ör. GPT) geçer.
+
+Kurulum bir kez:
+1. [CLIProxyAPI sürümlerinden](https://github.com/router-for-me/CLIProxyAPI/releases) Windows zip'ini indir, `~/.alice/cliproxy/` klasörüne çıkar (`cli-proxy-api.exe`).
+2. `config.yaml`, `keys.txt` ve `auths/` oradadır; istemci anahtarı `keys.txt`'te. Hesapları yukarıdaki karttan bağla (istersen terminalden `cli-proxy-api -claude-login` / `-codex-login` de çalışır).
+3. ALICE açılınca proxy'yi **kendisi başlatır** (`[cliproxy] auto_start = true`). Elle başlatmak istersen `~/.alice/cliproxy/start.ps1` (ya da `cli-proxy-api.exe -config config.yaml`).
+4. `CLIPROXY_API_KEY` `.env`'de yoksa Anahtarlar sayfasındaki satıra `keys.txt`'teki değeri yaz.
+
+Not: Abonelikleri CLIProxy üzerinden kullanmak sağlayıcıların kullanım koşullarına aykırı olabilir ve hesabın kısıtlanma riski taşır. Resmî API anahtarları (yukarıdaki Anthropic satırı), z.ai ya da başka sağlayıcılar risksiz alternatiflerdir.
 
 `.env`'in yeri: Windows'ta `C:\Users\<kullanıcı>\.alice\.env`, Linux/macOS'ta `~/.alice/.env`. Güncellemeyle yeni bir sağlayıcı gelince ALICE açılışta onun boş satırını (açıklaması ve bağlantısıyla) bu dosyaya kendisi ekler ve haber verir; dolu anahtarlarına dokunmaz. Dosya `.gitignore`'da, GitHub'a gitmez.
 
@@ -882,7 +902,28 @@ Saat verisi geldiğinde:
 * Nabzın uçuş dışında 10 dakika boyunca 125'in üstünde kalırsa ALICE "iyi misin?" diye sorar. Yanlış alarm olmasın diye önce hızlı karar modeline danışır.
 * Uçuş raporunda nabız grafiği de çıkar.
 
-**Telefondan ALICE:** `alice phone` bir adres ve QR kod gösterir (`pip install qrcode` kuruluysa). Aynı Wi-Fi'deyken telefonun tarayıcısında açınca hızlı bar gelir. Adresteki uzun anahtar olmadan erişilemez, anahtar `~/.alice/phone-token` dosyasında durur (`--new-token` ile değişir). Bağlantı yerel ağda düz HTTP olduğu için sadece güvendiğin ağda aç. Telefonda mikrofon çalışmaz, yazarak sorarsın.
+**Telefondan ALICE (Android uygulaması):**
+
+1. Bilgisayarda **Sistem → Kurulum → Telefondan ALICE**'yi aç (ya da terminalde `alice phone`). Bir QR kod ve adres çıkar.
+2. QR'yi telefonun kamerasıyla okut. Telefon ve bilgisayar aynı Wi-Fi'de olmalı. Uygulama henüz yoksa sayfa tarayıcıda açılır: **Daha fazla → Android uygulamasını kur** APK'yı bilgisayardan indirir. Android "bilinmeyen kaynak" izni ister; bir kez ver.
+3. Uygulamayı açıp QR'yi yeniden okut (ya da kameradan okutunca "ALICE ile aç"ı seç).
+
+Uygulamada beş sekme var:
+* **Sohbet:** geçmiş sohbetler (uzun bas: adlandır, sabitle, sil), adımlar kartı, görsel ekleme, mod/model/düşünme seçimi. Mikrofon düğmesine dokununca telefonun konuşma tanıması açılır, söylediğin canlı yazıya dökülür, susunca gönderilir.
+* **Projeler:** kartlar, ajanın sorusuna karttan cevap, ajanın konuşması, inceleme (onayla / düzeltme iste), yeni proje.
+* **Bilgisayar:** canlı ekran (dokun: tam boy), CPU/RAM/GPU/sıcaklık ve son 10 dakikanın küçük grafikleri, çalan şarkı, açık pencereler (dokun: öne getir), bilgisayarda yaz/aç/panoya kopyala, kilitle/uyku/HUD/kapat.
+* **Bildirim:** ALICE'in izin istediği işler, seçenekli soruları ve projelerin soruları; bilgisayardaki olayların zaman çizgisi.
+* **Daha fazla:** bugünün özeti, Rahatsız etme ve "Hey Alice" anahtarları, otomasyonlar, notlar, sağlık, model, görünüm, bağlantı.
+
+Uygulama kapalıyken de ALICE izin istediğinde bildirim gelir; bildirimdeki **İzin ver / Reddet** ile uygulamayı açmadan cevaplarsın. Bilgisayardaki önemli uyarılar (GPU ısındı, disk doldu) ve projelerin soruları da bildirim olarak düşer. Bunun için uygulama sessiz bir "ALICE bağlı" bildirimiyle arka planda bağlı kalır.
+
+Adresteki uzun anahtar olmadan erişilemez; anahtar `~/.alice/phone-token` dosyasında durur (`alice phone --new-token` ile değişir, sonra uygulamada **Daha fazla → Bağlantı**'dan yeniden okut). Bağlantı yerel ağda düz HTTP olduğu için sadece güvendiğin ağda aç. Uygulama olmadan telefonun tarayıcısında da aynı sayfa açılır; orada sesle yazma telefonun ses kaydedicisiyle yapılır.
+
+**Arama:** Sohbet ekranının üstündeki telefon düğmesiyle ALICE'i ararsın; ALICE de seni arayabilir ("yarım saat sonra beni ara", bir hatırlatma, bitince haber vermesi gereken bir iş). Gelen aramada uygulama açıksa arama ekranı açılır ve zil çalar, kapalıysa kilit ekranında tam ekran "ALICE arıyor" bildirimi gelir (**Aç / Reddet**); 45 saniyede açılmazsa cevapsız arama olarak kalır. Görüşmede telefonun konuşma tanıması dinler (söylediğin canlı yazıya dökülür), susunca söylediğin bilgisayara gider; ALICE'in cevabı bilgisayarda cümle cümle sese çevrilip telefonda çalınır, yani cevabın tamamını beklemeden konuşmaya başlar. ALICE konuşurken ortadaki resme dokunursan susar ve seni dinler. Görüşme ayrı bir sohbet olarak kaydedilir, ALICE'in bütün araçları açıktır; izin isteyen bir iş olursa onay kartı arama ekranında çıkar. "Görüşürüz", "kapat" deyince ALICE vedalaşıp kapatır. Bilgisayar ses üretemezse (anahtar ya da kota yok) telefon cümleyi kendi sesiyle okur. Sessiz, Yaz (sesli konuşamayacağın yerde yazarak) ve Kapat düğmeleri var. Telefonun tarayıcısında düz HTTP'de mikrofon açılmadığı için arama Android uygulamasında çalışır.
+
+**Güncelleme:** Arayüzün kendisi bilgisayardan geldiği için çoğu yenilik telefona hiçbir şey kurmadan gelir. Uygulamanın kendisi değişince GitHub `android/` değişikliğinde APK'yı derleyip `android-apk` dalına koyar; bilgisayardaki ALICE bu dalı yarım saatte bir çeker, telefondaki uygulama da birkaç saatte bir (ya da açılınca) sorar ve yeni sürümü kendisi kurar. Android 12 ve sonrasında sormadan kurulur; ilk seferde "bu kaynaktan uygulama yükle" izni bir kez istenir. Elle bakmak için **Daha fazla → Uygulama**.
+
+Android bir uygulamayı ancak aynı anahtarla imzalanmış sürümle günceller. Anahtar GitHub'da Settings → Secrets and variables → Actions altında durur: `ALICE_KEYSTORE_B64` (base64 .jks) ve `ALICE_KEYSTORE_PASSWORD`; anahtar adı `alice` değilse `ALICE_KEY_ALIAS`. Bu değişkenler yoksa APK derlenir ama telefonlara yayınlanmaz.
 
 ## Ev: bilgisayar, Wi-Fi, TV ve telefon
 

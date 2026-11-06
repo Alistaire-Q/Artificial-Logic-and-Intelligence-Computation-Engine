@@ -1,0 +1,54 @@
+plugins {
+    id "com.android.application"
+}
+
+// Sürüm: CI'da çalıştırma numarası (her derleme bir öncekinin üstüne kurulur), yerelde 1.
+def ciBuild = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInteger()
+
+android {
+    namespace "com.hayatexe.alice"
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.hayatexe.alice"
+        minSdk 26
+        // 35 ile Android kenardan kenara çizimi zorunlu kılıyor; sayfa güvenli alanları kendisi bilmediği için 34.
+        targetSdk 34
+        versionCode ciBuild
+        versionName "0.2.${ciBuild}"
+    }
+
+    signingConfigs {
+        // ALICE_KEYSTORE verilirse (CI'da gizli değişkenden) sürüm o anahtarla imzalanır: telefondaki uygulama
+        // silinmeden güncellenir. Verilmezse Android'in hata ayıklama anahtarı kullanılır.
+        release {
+            def ks = System.getenv("ALICE_KEYSTORE")
+            if (ks && new File(ks).exists()) {
+                storeFile new File(ks)
+                // Depoda/CI'da duran anahtar JKS: Java 17'nin varsayılanı PKCS12 olduğu için açıkça söylenir.
+                storeType System.getenv("ALICE_KEYSTORE_TYPE") ?: "JKS"
+                storePassword System.getenv("ALICE_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("ALICE_KEY_ALIAS") ?: "alice"
+                keyPassword System.getenv("ALICE_KEY_PASSWORD") ?: System.getenv("ALICE_KEYSTORE_PASSWORD")
+            } else {
+                initWith signingConfigs.debug
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation "com.journeyapps:zxing-android-embedded:4.3.0"
+}

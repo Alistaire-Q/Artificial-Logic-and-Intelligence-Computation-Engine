@@ -184,6 +184,8 @@ def classify_error(status: int, body: str, headers: dict[str, str] | None = None
             return ProviderError("quota", short, status, retry_after)
         return ProviderError("rate_limit", short, status, retry_after)
     if status in (400, 422):
+        if any(h in low for h in ("credit balance", "insufficient credits", "insufficient_quota")):
+            return ProviderError("quota", short, status)  # Claude API: "Your credit balance is too low" (400)
         if any(h in low for h in _NOT_FOUND_HINTS):
             return ProviderError("not_found", short, status)
         if any(h in low for h in _TOO_LARGE_HINTS):

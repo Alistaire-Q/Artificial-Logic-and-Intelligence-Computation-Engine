@@ -236,7 +236,9 @@ def probe(router, ref: str, specs: list[dict[str, Any]] | None = None, timeout: 
     pc = router.providers_cfg[p]
     from alice.providers.chatgpt import make_client
 
-    client = make_client(pc, timeout=timeout)
+    from alice.providers.keypool import client_for
+
+    client = client_for(pc, lambda c: make_client(c, timeout=timeout))
     msgs = clean_messages([
         {"role": "system", "content": "You are ALICE, an agent on the user's Windows PC. Use tools to act."},
         {"role": "user", "content": PROBE_PROMPT},

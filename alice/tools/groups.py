@@ -77,11 +77,12 @@ GROUPS: dict[str, tuple[set[str], str, str]] = {
              "tartışıp oylar)",
              r"takım|ekip|paralel|aynı anda|ajanlar|ajan çağır|orkestra|alt ajan|subagent|multi.?agent|büyük (iş|proje|"
              r"kod)|codebase|kod tabanı|refactor|yeniden düzenle|kurul|eleştir|tartış|savun|artı.*eksi|incele"),
-    "personal": ({"notes", "report", "media", "youtube", "weather", "feedback"},
-                 "notlar, sabah/PC raporu, müzik, YouTube'da video açma, ses seviyesi, hava durumu, beğenilmeyen cevap",
+    "personal": ({"notes", "report", "media", "youtube", "weather", "feedback", "phone_call"},
+                 "notlar, sabah/PC raporu, müzik, YouTube'da video açma, ses seviyesi, hava durumu, beğenilmeyen cevap, "
+                 "kullanıcıyı telefondan arama",
                  r"\bnot\b|notlar|not al|rapor|özet|sabah|müzik|şarkı|ses seviyesi|sesi aç|sesi kıs|spotify|"
                  r"kapat .*dakika|dakika sonra|youtube|video|klip|izle|\bçal\b|hava|yağmur|kar yağ|derece|sıcak|soğuk|"
-                 r"şemsiye|beğenmedim|yanlış (yaptın|cevap)|kötü cevap"),
+                 r"şemsiye|beğenmedim|yanlış (yaptın|cevap)|kötü cevap|beni ara|ara beni|telefon(la|dan)? ara"),
     "projects": ({"projects"}, "kullanıcının projeleri (repo, Unity, Python...) ve ayrıntıları",
                  r"proje|repo\b|depo(su|m|yu)?\b|unity|godot|kodum|oyunum|oyunumu|uygulamam|scriptim|programım|"
                  r"son commit|nerede duruyor|hangi klasör"),
@@ -113,6 +114,7 @@ TOOL_HINTS: dict[str, str] = {
     "report": r"rapor|özet|sabah",
     "weather": r"hava|yağmur|kar yağ|derece|sıcak|soğuk|şemsiye|rüzgar",
     "feedback": r"beğenmedim|yanlış (yaptın|cevap)|kötü cevap|saçmaladın|öyle deme",
+    "phone_call": r"beni ara|ara beni|telefon(la|dan|uma)? ara|arar mısın|arayabilir misin|çaldır",
 }
 _HINT_RX = {name: re.compile(rx, re.I) for name, rx in TOOL_HINTS.items()}
 _HINTED_GROUPS = {TOOL_TO_GROUP[n] for n in TOOL_HINTS}

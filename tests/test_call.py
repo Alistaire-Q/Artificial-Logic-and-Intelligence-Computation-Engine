@@ -1,0 +1,180 @@
+"""Uygulama içi arama: kullanıcı ALICE'i arar, ALICE kullanıcıyı arar; cevap cümle cümle sese çevrilir."""
+
+from __future__ import annotations
+
+import queue
+import time
+from types import SimpleNamespace as NS
+
+import httpx
+import pytest
+
+from alice.app import call
+from alice.app.server import AppServer, AppState
+from tests.conftest import FakeProvider, make_config
+
+
+class FakeTTS:
+    def __init__(self, fail=False):
+        self.fail, self.said = fail, []
+
+    def synth(self, text, emotion="calm"):
+        if self.fail:
+            raise RuntimeError("kota")
+        self.said.append(text)
+        return NS(to_wav=lambda: b"RIFF" + text.encode("utf-8"))
+
+
+@pytest.fixture
+def setup(workdir):
+    cfg = make_config({"brain": ["a:m"], "fast": ["a:m"], "vision": ["a:m"]})
+    prov = FakeProvider("a", [])
+    state = AppState(cfg, workdir, "auto", provider_factory=lambda pc: prov)
+    tts = FakeTTS()
+    state._calls = call.CallManager(state, tts_factory=lambda: tts)
+    events = state.bus.subscribe()
+    yield state, prov, tts, events
+    call.register(None)
+
+
+def wait_for(events, pred, timeout=10.0):
+    seen = []
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            ev = events.get(timeout=0.1)
+        except queue.Empty:
+            continue
+        seen.append(ev)
+        if pred(ev):
+            return ev, seen
+    raise AssertionError(f"olay gelmedi; görülenler: {[e.get('type') for e in seen]}")
+
+
+def test_user_calls_alice_and_gets_spoken_answer_sentence_by_sentence(setup):
+    state, prov, tts, events = setup
+    r = state.call_action("start", {})
+    assert r["ok"] and r["state"] == "active" and not r["outbound"]
+    ev, _ = wait_for(events, lambda e: e["type"] == "call_audio")
+    assert ev["audio"] and ev["text"] in call.GREETINGS
+    assert state.calls.audio(r["id"], ev["n"]).startswith(b"RIFF")
+    prov.script.append("Saat beşi on geçiyor. Bir de yağmur başlamış, şemsiye al.")
+    assert state.call_action("say", {"id": r["id"], "text": "saat kaç"})["turn"] == 1
+    done, seen = wait_for(events, lambda e: e["type"] == "call_turn_done")
+    spoken = [e["text"] for e in seen if e["type"] == "call_audio"]
+    while not done["end"] and len(spoken) < 2:  # ses sırası tur bitişinden sonra da akabilir
+        spoken.append(wait_for(events, lambda e: e["type"] == "call_audio")[0]["text"])
+    assert spoken == ["Saat beşi on geçiyor.", "Bir de yağmur başlamış, şemsiye al."] and not done["end"]
+    # Görüşme kendi sohbetinde: sesli konuşma talimatı ve saat bilgisiyle.
+    sent = prov.calls[-1]["messages"]
+    assert "Telefon görüşmesi" in sent[0]["content"] and "saat kaç" in sent[-1]["content"]
+    assert [x["who"] for x in state.calls.view()["lines"]] == ["alice", "user", "alice"]
+
+
+def test_alice_marks_end_and_bye_phrase_hangs_up_without_model(setup):
+    state, prov, tts, events = setup
+    cid = state.call_action("start", {})["id"]
+    prov.script.append("Tamam, görüşürüz! [kapat]")
+    state.call_action("say", {"id": cid, "text": "bu kadardı"})
+    done, _ = wait_for(events, lambda e: e["type"] == "call_turn_done")
+    assert done["end"] and all("[kapat]" not in t for t in tts.said)
+    n = len(prov.calls)
+    state.call_action("say", {"id": cid, "text": "görüşürüz"})
+    done, _ = wait_for(events, lambda e: e["type"] == "call_turn_done" and e["turn"] == 2)
+    assert done["end"] and len(prov.calls) == n  # veda modele gitmedi
+    assert state.call_action("hangup", {"id": cid})["ok"]
+    wait_for(events, lambda e: e["type"] == "call_end" and e["reason"] == "hangup")
+    assert not state.call_action("say", {"id": cid, "text": "alo"})["ok"]
+
+
+def test_alice_rings_user_who_answers(setup):
+    state, prov, tts, events = setup
+    call.register(state.calls)
+    from alice.tools.phonecall import PhoneCall
+
+    res = PhoneCall().run(state.ctx, message="Selam, ilacını içme vakti.", reason="Hatırlatma: ilaç")
+    assert "Telefon çalıyor" in res.text
+    ev, _ = wait_for(events, lambda e: e["type"] == "call")
+    assert ev["from"] == "alice" and ev["reason"] == "Hatırlatma: ilaç"
+    # Kullanıcı tam o sırada kendisi ararsa yeni arama açılmaz, çalan arama açılır.
+    assert state.call_action("start", {})["id"] == ev["id"]
+    view = state.calls.view()
+    assert view["state"] == "active" and view["outbound"]
+    spoken, _ = wait_for(events, lambda e: e["type"] == "call_audio")
+    assert spoken["text"] == "Selam, ilacını içme vakti."
+    ctx_msgs = state.calls.call.chat.agent.messages
+    assert "Kullanıcıyı telefondan aradın (Hatırlatma: ilaç)" in ctx_msgs[-2]["content"]
+
+
+def test_declined_and_missed_calls(setup, monkeypatch):
+    state, prov, tts, events = setup
+    cid = state.call_action("ring", {"reason": "Proje bitti", "message": "Proje bitti, bakmak ister misin?"})["id"]
+    state.call_action("decline", {"id": cid})
+    ev, _ = wait_for(events, lambda e: e["type"] == "call_end")
+    assert ev["reason"] == "declined" and ev["outbound"]
+    monkeypatch.setattr(call, "RING_SECONDS", 0.2)
+    state.call_action("ring", {"reason": "Uyarı", "message": "GPU 90 derece."})
+    ev, seen = wait_for(events, lambda e: e["type"] == "call_end")
+    assert ev["reason"] == "missed"
+    info, _ = wait_for(events, lambda e: e["type"] == "info")
+    assert "açmadın" in info["text"]
+
+
+def test_without_speech_engine_text_still_goes_to_phone(setup):
+    state, prov, tts, events = setup
+    tts.fail = True
+    cid = state.call_action("start", {})["id"]
+    ev, _ = wait_for(events, lambda e: e["type"] == "call_audio")
+    assert ev["audio"] is False and ev["text"]  # telefon kendi sesiyle okur
+    assert state.calls.audio(cid, ev["n"]) is None
+
+
+def test_phone_call_tool_without_bridge():
+    from alice.tools.base import ToolError
+    from alice.tools.phonecall import PhoneCall
+
+    call.register(None)
+    with pytest.raises(ToolError, match="telefon köprüsü kapalı"):
+        PhoneCall().run(NS(), message="selam")
+
+
+def test_http_endpoints(setup):
+    state, prov, tts, events = setup
+    srv = AppServer(state).start()
+    try:
+        c = httpx.Client(base_url=srv.url.split("/?")[0], headers={"X-Alice-Token": state.token}, timeout=10)
+        r = c.post("/api/call/start", json={}).json()
+        ev, _ = wait_for(events, lambda e: e["type"] == "call_audio")
+        a = c.get("/api/call/audio", params={"id": r["id"], "n": ev["n"]})
+        assert a.status_code == 200 and a.headers["content-type"] == "audio/wav"
+        assert c.get("/api/call").json()["state"] == "active"
+        assert c.get("/api/call/audio", params={"id": r["id"], "n": 99}).status_code == 404
+        assert not c.post("/api/call/say", json={"id": "yok", "text": "x"}).json()["ok"]
+        assert httpx.get(srv.url.split("/?")[0] + "/api/call").status_code == 403  # anahtarsız olmaz
+        assert c.post("/api/call/hangup", json={"id": r["id"]}).json()["ok"]
+    finally:
+        srv.stop()
+
+
+def test_permission_asked_in_call_is_answered_from_phone(workdir):
+    """Görüşmenin kendi sohbeti var: izin isteği öndeki sohbete değil ona gitmeli (önceden cevapsız kalıyordu)."""
+    from tests.conftest import tool_call
+
+    cfg = make_config({"brain": ["a:m"], "fast": ["a:m"], "vision": ["a:m"]})
+    prov = FakeProvider("a", [tool_call("write_file", {"path": "not.txt", "content": "süt al"}), "Yazdım."])
+    state = AppState(cfg, workdir, "ask", provider_factory=lambda pc: prov)
+    state._calls = call.CallManager(state, tts_factory=FakeTTS)
+    events = state.bus.subscribe()
+    srv = AppServer(state).start()
+    try:
+        c = httpx.Client(base_url=srv.url.split("/?")[0], headers={"X-Alice-Token": state.token}, timeout=10)
+        cid = c.post("/api/call/start", json={}).json()["id"]
+        c.post("/api/call/say", json={"id": cid, "text": "not al: süt al"})
+        perm, _ = wait_for(events, lambda e: e["type"] == "permission")
+        assert perm["sid"] == state.calls.view()["sid"]
+        assert any(p["id"] == perm["id"] for p in c.get("/api/state").json()["pending"])
+        assert c.post("/api/permission", json={"id": perm["id"], "answer": "y"}).json()["ok"]
+        wait_for(events, lambda e: e["type"] == "call_turn_done")
+        assert (workdir / "not.txt").read_text(encoding="utf-8") == "süt al"
+    finally:
+        srv.stop()

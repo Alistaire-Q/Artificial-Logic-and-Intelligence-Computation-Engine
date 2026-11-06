@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: light dark; --bg: #f6f6f7; --text: #18181b; --muted: #63636b; --line: #e4e4e8; --card: #fff; --accent: #2f6bff; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #0a0a0b; --text: #ededef; --muted: #a0a0a8; --line: #232329; --card: #151518; --accent: #5b8cff; } }
+  body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; justify-content: center; padding: 32px 24px; box-sizing: border-box;
+    background: var(--bg); color: var(--text); font: 16px/1.5 system-ui, sans-serif; }
+  h1 { font-size: 26px; letter-spacing: -.02em; margin: 0 0 8px; }
+  p { color: var(--muted); margin: 0 0 8px; }
+  ul { color: var(--muted); padding-left: 20px; margin: 8px 0 24px; }
+  button { width: 100%; padding: 15px; border-radius: 14px; border: 1px solid var(--line); background: var(--card); color: var(--text); font: 600 16px system-ui; margin-top: 10px; }
+  button.p { background: var(--accent); border-color: var(--accent); color: #fff; }
+  small { color: var(--muted); font-size: 12px; margin-top: 16px; word-break: break-all; }
+</style>
+</head>
+<body>
+  <h1>Bilgisayara ulaşılamıyor</h1>
+  <p id="host"></p>
+  <ul>
+    <li>Bilgisayar açık ve ALICE çalışıyor mu?</li>
+    <li>Telefon ve bilgisayar aynı Wi-Fi'de mi?</li>
+    <li>Bilgisayarın IP adresi değişmiş olabilir: bağlantıyı yeniden kur.</li>
+  </ul>
+  <button class="p" onclick="AliceNative.retry()">Yeniden dene</button>
+  <button onclick="AliceNative.reconfigure()">Bağlantıyı değiştir</button>
+  <small id="why"></small>
+  <script>
+    const q = new URLSearchParams(location.search);
+    document.getElementById("host").textContent = q.get("host") ? "Adres: " + q.get("host") : "";
+    document.getElementById("why").textContent = q.get("why") || "";
+    setTimeout(() => AliceNative.retry(), 15000);
+  </script>
+</body>
+</html>

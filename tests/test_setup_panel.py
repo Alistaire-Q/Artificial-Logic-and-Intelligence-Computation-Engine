@@ -104,7 +104,8 @@ def test_phone_toggle_restarts_core_and_shows_qr(monkeypatch):
     monkeypatch.setattr(service, "read_state", lambda: {"running": True})
     assert p.action("phone_enable", {"on": True})["ok"] and p.system.calls == ["restart"]
     ph = p.view()["phone"]
-    assert ph["enabled"] and "/quick?t=" in ph["url"]
+    assert ph["enabled"] and "/m?t=" in ph["url"]  # telefon uygulamasının adresi (Android uygulaması bunu tanır)
+    assert ph["app"] == {"available": False}  # APK henüz bilgisayara inmedi
     tok = ph["url"].split("t=")[1]
     assert p.action("phone_new_token", {})["ok"] and p.view()["phone"]["url"].split("t=")[1] != tok
     assert p.system.calls == ["restart", "restart"]

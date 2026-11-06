@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ALICE bilgisayardaki sunucuya ev ağında düz HTTP ile bağlanır (adres anahtarı taşır, sadece yerel ağ).
+     Tailscale gibi bir yolla HTTPS kullanılırsa o da çalışır. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

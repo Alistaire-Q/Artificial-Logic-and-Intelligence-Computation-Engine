@@ -1772,14 +1772,18 @@ function setupPane(pane) {
     // Telefon
     body.appendChild(el("div", "sec", "Telefon"));
     const ph = d.phone;
-    const c4 = card("Telefondan ALICE", "Aynı Wi-Fi'deki telefonun tarayıcısından yazarak sor, projeleri izle. Çekirdek açıkken çalışır.",
+    const c4 = card("Telefondan ALICE", "Android uygulamasıyla sohbet, sesle yazma, projeler, bilgisayar kontrolü ve onay bildirimleri. Aynı Wi-Fi'de, çekirdek açıkken çalışır.",
       segmented([[true, "Açık"], [false, "Kapalı"]], !!ph.enabled, (on) => act("phone_enable", { on }).then(done(on ? "telefon köprüsü açılıyor" : "telefon köprüsü kapatıldı"))));
     if (ph.enabled) {
       const box = el("div", "phone-box");
       // Resim olarak: satır içi SVG'yi uygulamanın simge kuralı (svg { fill: none; stroke }) boyayıp siliyordu.
       if (ph.qr) { const q = el("img", "phone-qr"); q.alt = "QR kod"; q.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(ph.qr); box.appendChild(q); }
       const info = el("div", "phone-info");
-      info.append(el("small", "", "Telefonun kamerasıyla okut ya da adresi aç:"), el("code", "", ph.url));
+      info.append(el("small", "", "QR'yi telefonun kamerasıyla okut. Uygulama kuruluysa \"ALICE ile aç\"ı seç; değilse sayfa tarayıcıda açılır ve uygulamayı kurmayı önerir."), el("code", "", ph.url));
+      const app = ph.app || {};
+      info.appendChild(el("small", "", app.available
+        ? `Android uygulaması ${app.version_name} bilgisayarda hazır. Yeni sürüm çıkınca telefondaki uygulama kendini günceller.`
+        : "Android uygulaması henüz bilgisayara inmedi" + (app.error ? ` (${app.error})` : "") + ". GitHub'da derlenince kendiliğinden iner."));
       if (!ph.qr_lib) info.appendChild(el("small", "", "QR kod için: pip install qrcode"));
       info.appendChild(btn("Yeni anahtar", () => act("phone_new_token").then(done("eski adres artık çalışmaz"))));
       box.appendChild(info);
@@ -2046,10 +2050,232 @@ function keysPane(pane, data) {
     const list = [...cards.values()].sort((a, b) => (b.every((p) => p.set) - a.every((p) => p.set)));
     const done = list.filter((parts) => parts.every((p) => p.set)).length;
     pane.appendChild(el("div", "sec", `${title} · ${done}/${list.length} bağlı`));
+    if (g === "model") {
+      // Anahtar havuzu: bir sağlayıcıya birden çok anahtar eklenince istekler nasıl paylaştırılsın.
+      const row = el("div", "kc-strategy");
+      row.append(el("small", "", "Bir sağlayıcıda birden çok anahtar varsa:"),
+        segmented([["round-robin", "Sırayla kullan"], ["fill-first", "Biri bitince diğerine geç"]], d.strategy || "round-robin",
+          (v) => api("/api/keys/strategy", { strategy: v }).then((r) => toast(r && r.ok ? "kaydedildi" : (r && r.error) || "olmadı"))));
+      pane.appendChild(row);
+    }
     const grid = el("div", "key-grid");
     for (const parts of list) grid.appendChild(keyRow(parts));
+    if (g === "model") grid.appendChild(serverCard());
     pane.appendChild(grid);
+    if (g === "model") cliproxySection(pane);  // abonelik hesapları: model sağlayıcılarının hemen altında
   }
+}
+/* Anahtar havuzu: sağlayıcının ek anahtarları ve her birinin durumu (hazır, beklemede, kapalı). */
+function keyPool(k) {
+  const box = el("div", "kc-pool");
+  const pool = k.pool || [];
+  const extra = k.extra || [];
+  if (pool.length > 1) {
+    for (const x of pool) {
+      const waits = Object.entries(x.waiting || {});
+      const st = x.state === "beklemede" && waits.length
+        ? "beklemede · " + waits.slice(0, 2).map(([m, sec]) => `${m.split("/").pop()} ${sec > 3600 ? Math.round(sec / 3600) + " sa" : sec > 60 ? Math.round(sec / 60) + " dk" : sec + " sn"}`).join(", ")
+        : x.state;
+      const r = el("div", "kc-key " + (x.state === "hazır" ? "ok" : x.state === "kapalı" ? "bad" : "wait"));
+      r.append(el("span", "kc-dot"), el("code", "", x.preview), el("small", "", st + (x.uses ? ` · ${x.uses} istek` : "")));
+      if (x.error && x.state === "kapalı") r.title = x.error;
+      const ex = x.index > 1 ? extra[x.index - 2] : null;
+      if (ex && ex.source === "file") r.appendChild(iconAct(IC.trash, "Bu anahtarı sil", () => api("/api/keys/set", { key: ex.key, value: "" })
+        .then((res) => { toast(res && res.ok ? "anahtar silindi" : (res && res.error) || "silinemedi"); showSettings("apikeys"); }), "danger"));
+      box.appendChild(r);
+    }
+  }
+  const add = el("div", "kc-add");
+  const inp = el("input");
+  inp.type = "password"; inp.autocomplete = "off"; inp.spellcheck = false;
+  inp.placeholder = "bir anahtar daha yapıştır (başka hesap)";
+  const go = el("button", "btn", "Ekle");
+  go.addEventListener("click", () => {
+    if (!inp.value.trim()) return inp.focus();
+    api("/api/keys/add", { base: k.key, value: inp.value.trim() }).then((r) => {
+      if (!r || !r.ok) return toast((r && r.error) || "eklenemedi");
+      toast("Anahtar eklendi: istekler artık aralarında paylaşılıyor");
+      showSettings("apikeys");
+    });
+  });
+  inp.addEventListener("keydown", (e) => { if (e.key === "Enter") go.click(); });
+  add.append(inp, go);
+  box.appendChild(add);
+  box.appendChild(el("small", "kc-hint", "Aynı sağlayıcıdan başka hesapların anahtarları: biri sınıra ya da günlük kotaya takılınca ALICE beklemeden diğeriyle devam eder."));
+  return box;
+}
+/* Kendi sunucun ya da OpenAI uyumlu başka bir servis (LM Studio, vLLM, LiteLLM, bir proxy): adresle ekle. */
+function serverCard() {
+  const card = el("div", "key-card");
+  const head = el("div", "kc-head");
+  const l = el("span", "l");
+  l.append(el("b", "", "OpenAI uyumlu sunucu ekle"), el("small", "", "LM Studio, vLLM, LiteLLM, kendi proxy'n ya da başka bir bulut"));
+  const open = el("button", "btn", "Ekle");
+  head.append(el("span", "kc-dot"), l, open);
+  card.appendChild(head);
+  const form = el("div", "kc-form");
+  form.hidden = true;
+  const field = (label, ph, type) => {
+    const row = el("div", "kc-row");
+    const i = el("input");
+    i.type = type || "text"; i.placeholder = ph; i.spellcheck = false; i.autocomplete = "off";
+    row.append(el("span", "kc-field", label), i);
+    form.appendChild(row);
+    return i;
+  };
+  const name = field("Ad", "ör. lmstudio");
+  const url = field("Adres", "http://localhost:1234/v1");
+  const key = field("Anahtar", "yoksa boş bırak", "password");
+  const models = field("Modeller", "boşsa sunucudan okunur (virgülle)");
+  const fr = el("div", "kc-btns");
+  const cancel = el("button", "btn ghost", "Vazgeç");
+  cancel.addEventListener("click", () => { form.hidden = true; });
+  const save = el("button", "btn primary", "Dene ve ekle");
+  const send = (force) => {
+    save.disabled = true;
+    api("/api/providers/add", { name: name.value.trim(), base_url: url.value.trim(), key: key.value.trim(), models: models.value.trim(), force })
+      .then((r) => {
+        save.disabled = false;
+        if (r && r.ok) { toast(`${r.name} eklendi` + (r.models && r.models.length ? ` · ${r.models.length} model` : "")); return showSettings("apikeys"); }
+        if (r && r.can_force) { save.textContent = "Yine de ekle"; save.onclick = () => send(true); }
+        toast((r && r.error) || "eklenemedi");
+      });
+  };
+  save.addEventListener("click", () => send(false));
+  fr.append(cancel, save);
+  form.appendChild(fr);
+  card.appendChild(form);
+  open.addEventListener("click", () => { form.hidden = !form.hidden; if (!form.hidden) setTimeout(() => name.focus(), 0); });
+  return card;
+}
+/* Abonelikler (Claude Code proxy, CLIProxyAPI): her servis ayrı kart. Kartın "Giriş yap" düğmesi o servisin giriş
+   sayfasını tarayıcıda açar; kullanıcı kendi hesabıyla girince proxy hesabı saklar, kart kendiliğinden tazelenir.
+   Aynı serviste birden çok hesap varsa istekler sırayla paylaşılır, biri sınıra takılınca diğerine geçilir. */
+function cliproxySection(pane) {
+  const box = el("div", "cp-section");
+  pane.appendChild(box);
+  const busy = (a) => a.disabled || a.quota_blocked || a.cooldown || a.needs_sign_in;
+  const refresh = () => api("/api/cliproxy").then((d) => draw(d || {}));
+  const draw = (d) => {
+    box.replaceChildren();
+    const accs = d.accounts || [];
+    const ready = accs.filter((a) => !busy(a)).length;
+    box.appendChild(el("div", "sec", "Abonelikler · " + (d.running ? `${accs.length} hesap, ${ready} hazır` : "Claude Code proxy")));
+    if (!d.installed || !d.running) { box.appendChild(proxyStatusCard(d, refresh)); return; }
+    const grid = el("div", "key-grid");
+    const names = Object.fromEntries((d.providers || []).map((p) => [p.key, p.name]));
+    const keys = (d.providers || []).map((p) => p.key);
+    for (const a of accs) if (!keys.includes(a.provider)) { keys.push(a.provider); names[a.provider] = a.provider_name || a.provider; }
+    // Hesabı olan servisler önce.
+    keys.sort((x, y) => accs.some((a) => a.provider === y) - accs.some((a) => a.provider === x));
+    for (const k of keys) grid.appendChild(serviceCard(k, names[k], accs.filter((a) => a.provider === k), refresh));
+    box.appendChild(grid);
+  };
+  refresh();
+}
+function proxyStatusCard(d, refresh) {
+  const card = el("div", "key-card cp-card" + (d.installed ? " partial" : ""));
+  const head = el("div", "kc-head");
+  const l = el("span", "l");
+  l.append(el("b", "", "Claude Code proxy"), el("small", "", d.installed ? "çalışmıyor" : "kurulu değil"));
+  head.append(el("span", "kc-dot"), l);
+  const body = el("div", "cp-body");
+  if (!d.installed) {
+    body.appendChild(el("p", "cp-note", "Claude Pro/Max, ChatGPT ve diğer aboneliklerini ALICE'te kullanmak için CLIProxyAPI'yi "
+      + (d.dir || "~/.alice/cliproxy") + " klasörüne kur (adımlar README'de: Claude Code proxy). Kurulunca ALICE onu kendisi başlatır."));
+  } else {
+    body.appendChild(el("p", "cp-note cp-err", "Proxy açılamadı" + (d.error ? ": " + d.error : "") + "."));
+    const retry = el("button", "btn", "Yeniden dene");
+    retry.addEventListener("click", () => { retry.disabled = true; retry.textContent = "Başlatılıyor…"; refresh(); });
+    head.appendChild(retry);
+  }
+  card.append(head, body);
+  return card;
+}
+function serviceCard(key, name, accs, refresh) {
+  const ready = accs.filter((a) => !(a.disabled || a.quota_blocked || a.cooldown || a.needs_sign_in)).length;
+  const card = el("div", "key-card" + (accs.length ? " cp-card" : "") + (ready ? " set" : accs.length ? " partial" : ""));
+  const head = el("div", "kc-head");
+  const l = el("span", "l");
+  l.append(el("b", "", name), el("small", "", accs.length ? `${accs.length} hesap · ${ready} hazır` : "bağlı hesap yok"));
+  const go = el("button", accs.length ? "btn" : "btn primary", accs.length ? "Hesap ekle" : "Giriş yap");
+  go.title = name + " giriş sayfasını tarayıcıda açar";
+  head.append(el("span", "kc-dot"), l, go);
+  const flow = el("div", "cp-flow");
+  flow.hidden = true;
+  const body = el("div", "cp-body");
+  card.append(head, flow, body);
+  let poll = null;
+  const stop = () => { if (poll) clearInterval(poll); poll = null; };
+  const login = () => {
+    go.hidden = true;
+    flow.hidden = false;
+    flow.replaceChildren(el("small", "kc-hint", name + " giriş sayfası hazırlanıyor…"));
+    api("/api/cliproxy/login", { provider: key }).then((r) => {
+      if (!r || !r.ok) {
+        go.hidden = false;
+        flow.replaceChildren(el("small", "kc-hint cp-err", (r && r.error) || "giriş başlatılamadı"));
+        return;
+      }
+      const msg = el("p", "cp-note", `Tarayıcıda ${name} giriş sayfası açıldı. Eklemek istediğin hesapla giriş yap; bitince hesap burada kendiliğinden görünür.`);
+      const again = el("button", "btn", "Sayfayı yeniden aç");
+      again.title = r.url;
+      again.addEventListener("click", () => api("/api/open", { url: r.url }));
+      const cancel = el("button", "btn ghost", "Vazgeç");
+      cancel.addEventListener("click", () => { stop(); api("/api/cliproxy/login/cancel", { state: r.state }); flow.hidden = true; go.hidden = false; });
+      const row = el("div", "cp-flow-btns");
+      row.append(again, cancel);
+      flow.replaceChildren(msg, row);
+      api("/api/open", { url: r.url });  // masaüstünde sistem tarayıcısında (iç pencere giriş sayfasını açamayabilir)
+      let n = 0;
+      stop();
+      poll = setInterval(async () => {
+        n += 1;
+        const st = await api("/api/cliproxy/login/status", { state: r.state });
+        if (st && st.status === "ok") { stop(); toast(name + " hesabı eklendi"); refresh(); }
+        else if (n > 90 || (st && st.status === "error")) {
+          stop();
+          msg.textContent = (st && st.error) || (n > 90 ? "Zaman aşımı: giriş tamamlanmadı." : "Giriş tamamlanmadı.");
+          msg.classList.add("cp-err");
+        }
+      }, 2000);
+    });
+  };
+  go.addEventListener("click", login);
+  for (const a of accs) {
+    const blocked = a.disabled || a.quota_blocked || a.cooldown || a.needs_sign_in;
+    const row = el("div", "cp-acc" + (blocked ? " off" : ""));
+    const who = el("div", "cp-who");
+    who.appendChild(el("b", "", a.email || a.name));
+    const state = a.needs_sign_in ? "yeniden giriş gerekli" : a.disabled ? "kapalı" : a.cooldown ? "beklemede · " + a.cooldown
+      : a.quota_blocked ? "kota doldu" : "hazır";
+    const q = el("div", "cp-quota");
+    if (a.quota && a.quota.percent != null) {
+      const pct = Math.max(0, Math.min(100, a.quota.percent));
+      const bar = el("span", "cp-bar");
+      const fill = el("i", pct >= 100 ? "full" : pct >= 85 ? "high" : "");
+      fill.style.width = pct + "%";
+      bar.appendChild(fill);
+      q.append(bar, el("small", "", `${a.quota.label || "kota"} · %${pct} kullanıldı`));
+      if (a.quota.reset) q.title = "Sıfırlanma: " + a.quota.reset;
+    }
+    const acts = el("div", "cp-acts");
+    if (a.needs_sign_in) {
+      const re = el("button", "btn", "Giriş yap");
+      re.addEventListener("click", login);
+      acts.appendChild(re);
+    }
+    acts.appendChild(iconAct(IC.trash, "Hesabı kaldır", () => {
+      confirmDialog("Hesap kaldırılsın mı?", (a.email || a.name) + " · " + name, "Kaldır").then((ok) => {
+        if (!ok) return;
+        api("/api/cliproxy/remove", { name: a.name }).then((r) => { toast(r && r.ok ? "hesap kaldırıldı" : (r && r.error) || "kaldırılamadı"); refresh(); });
+      });
+    }, "danger"));
+    row.append(who, q, el("span", "cp-state " + (blocked ? (a.needs_sign_in ? "bad" : "wait") : "ok"), state), acts);
+    body.appendChild(row);
+  }
+  if (accs.length > 1) body.appendChild(el("small", "kc-hint", "İstekler bu hesaplar arasında sırayla paylaşılır; biri sınıra takılınca beklemeden diğerine geçilir."));
+  return card;
 }
 function keyRow(parts) {
   const k = parts[0];
@@ -2075,9 +2301,15 @@ function keyRow(parts) {
     a.addEventListener("click", () => api("/api/open", { url: k.url }));
     head.appendChild(a);
   }
+  if (k.custom) head.appendChild(iconAct(IC.trash, "Sunucuyu kaldır", () => api("/api/providers/remove", { name: k.provider })
+    .then((r) => { toast(r && r.ok ? k.label + " kaldırıldı" : (r && r.error) || "kaldırılamadı"); showSettings("apikeys"); }), "danger"));
   const edit = el("button", "btn", all ? "Değiştir" : "Ekle");
   head.appendChild(edit);
   card.appendChild(head);
+  const pooled = !many && k.provider && k.set;
+  if (pooled && (k.pool || []).length > 1) {
+    l.querySelector("small").textContent = `${k.pool.length} anahtar · ` + k.pool.filter((x) => x.state === "hazır").length + " hazır";
+  }
   const form = el("div", "kc-form");
   form.hidden = true;
   const label = (p) => many ? `${k.label} ${p.field}` : k.label;
@@ -2117,6 +2349,10 @@ function keyRow(parts) {
   fr.append(cancel, save);
   form.appendChild(fr);
   card.appendChild(form);
+  if (pooled) {
+    form.prepend(keyPool(k));
+    if ((k.pool || []).length > 1) inputs[0][1].placeholder = "1. anahtarı değiştir";
+  }
   edit.addEventListener("click", () => {
     form.hidden = !form.hidden;
     if (!form.hidden) setTimeout(() => inputs[0][1].focus(), 0);

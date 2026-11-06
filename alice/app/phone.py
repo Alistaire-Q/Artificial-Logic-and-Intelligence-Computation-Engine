@@ -6,7 +6,8 @@ Yerel ağa açılan ayrı bir sunucu (varsayılan port 8765). Telefonda adres:
 Anahtar ~/.alice/phone-token dosyasında kalıcıdır; böylece telefondaki yer imi ve otomasyon
 her açılışta çalışır. `alice phone --new-token` ile değiştirilir.
 
-Not: Yerel ağda düz HTTP olduğu için tarayıcı mikrofonu telefonda açmaz; yazarak sorulur.
+Android uygulaması (android/) aynı sayfayı açar; konuşma tanıma, bildirim, arama ve QR ile bağlanma ekler. APK'yı
+bilgisayar verir (/api/phone/app.apk, bkz. phone_apk.py); uygulama yeni sürüm çıkınca kendini oradan günceller. Tarayıcıda düz HTTP'de mikrofon açılmaz; orada sesli yazma telefonun ses kaydedicisiyle yapılır.
 """
 
 from __future__ import annotations
@@ -58,10 +59,22 @@ class PhoneServer:
         self.state.watch_store = store or Store()
         self.port = int(port if port is not None else cfg.data.get("phone", {}).get("port", 8765))
         self.server = AppServer(self.state, self.port, host="0.0.0.0", owns_state=state is None).start()
+        from alice.app import phone_apk
+
+        phone_apk.refresh_async()  # telefon uygulamasının son sürümü bilgisayarda hazır olsun
+        from alice.app import call
+
+        calls = getattr(self.state, "calls", None)  # testlerde sahte durum olabilir
+        if calls is not None:
+            call.register(calls)  # ALICE telefonla arayabilsin (phone_call aracı)
 
     @property
     def url(self) -> str:
         return f"http://{self.ip}:{self.server.httpd.server_address[1]}/m?t={self.state.token}"
+
+    @property
+    def app_url(self) -> str:
+        return f"http://{self.ip}:{self.server.httpd.server_address[1]}/api/phone/app.apk?t={self.state.token}"
 
     @property
     def projects_url(self) -> str:
@@ -72,6 +85,10 @@ class PhoneServer:
         return f"http://{self.ip}:{self.server.httpd.server_address[1]}/api/watch"
 
     def stop(self) -> None:
+        from alice.app import call
+
+        if call.current() is getattr(self.state, "_calls", None):
+            call.register(None)
         self.server.stop()
         if self._own_store and self.state.watch_store is not None:
             self.state.watch_store.close()
@@ -100,7 +117,9 @@ def phone_cmd(argv: list[str]) -> int:
     cfg = load_config()
     ps = PhoneServer(cfg, new_token="--new-token" in argv)
     console.print(f"[bold magenta]ALICE telefon köprüsü[/] açık.\n"
-                  f"Telefonda aç (aynı Wi-Fi): [bold]{ps.url}[/]\n"
+                  f"QR'yi telefonun kamerasıyla okut (aynı Wi-Fi): [bold]{ps.url}[/]\n"
+                  f"Uygulama kuruluysa \"ALICE ile aç\"ı seç; değilse sayfa tarayıcıda açılır, oradan kur.\n"
+                  f"Android uygulaması (doğrudan): {ps.app_url}\n"
                   f"Projeler (izle, cevapla, onayla): {ps.projects_url}\n"
                   f"Canlı saat verisi: POST {ps.watch_url}  başlık X-Alice-Token: {ps.state.token}  "
                   'gövde {"hr": 88}')
