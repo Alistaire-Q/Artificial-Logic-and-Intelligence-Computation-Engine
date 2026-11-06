@@ -154,3 +154,27 @@ def test_http_endpoints(setup):
         assert c.post("/api/call/hangup", json={"id": r["id"]}).json()["ok"]
     finally:
         srv.stop()
+
+
+def test_permission_asked_in_call_is_answered_from_phone(workdir):
+    """Görüşmenin kendi sohbeti var: izin isteği öndeki sohbete değil ona gitmeli (önceden cevapsız kalıyordu)."""
+    from tests.conftest import tool_call
+
+    cfg = make_config({"brain": ["a:m"], "fast": ["a:m"], "vision": ["a:m"]})
+    prov = FakeProvider("a", [tool_call("write_file", {"path": "not.txt", "content": "süt al"}), "Yazdım."])
+    state = AppState(cfg, workdir, "ask", provider_factory=lambda pc: prov)
+    state._calls = call.CallManager(state, tts_factory=FakeTTS)
+    events = state.bus.subscribe()
+    srv = AppServer(state).start()
+    try:
+        c = httpx.Client(base_url=srv.url.split("/?")[0], headers={"X-Alice-Token": state.token}, timeout=10)
+        cid = c.post("/api/call/start", json={}).json()["id"]
+        c.post("/api/call/say", json={"id": cid, "text": "not al: süt al"})
+        perm, _ = wait_for(events, lambda e: e["type"] == "permission")
+        assert perm["sid"] == state.calls.view()["sid"]
+        assert any(p["id"] == perm["id"] for p in c.get("/api/state").json()["pending"])
+        assert c.post("/api/permission", json={"id": perm["id"], "answer": "y"}).json()["ok"]
+        wait_for(events, lambda e: e["type"] == "call_turn_done")
+        assert (workdir / "not.txt").read_text(encoding="utf-8") == "süt al"
+    finally:
+        srv.stop()

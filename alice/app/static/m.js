@@ -201,7 +201,10 @@ window.addEventListener("popstate", () => {
 });
 // Android uygulaması geri tuşunu buraya yollar: true dönerse uygulama kapanmaz.
 window.aliceBack = () => {
-  if (CALL && CALL.state) { callBack(); return true; }
+  if (CALL) {  // görüşmede geri tuşu görüşmeden çıkmasın
+    if (!$("#sheet").hidden) closeSheet(null); else toast("Görüşmeyi bitirmek için Kapat'a bas");
+    return true;
+  }
   if (!$("#sheet").hidden) { closeSheet(null); return true; }
   if (!$("#viewer").hidden) { closeViewer(); return true; }
   if (STACK[S.tab].length) { pop(S.tab); return true; }
@@ -745,386 +748,6 @@ function putAndSend(text) {
   send();
 }
 
-/* ================================================================== ARAMA */
-/* Uygulama içi arama. Ses bilgisayarda üretilir: telefonun söylediği /api/call/say'e gider, ALICE'in cevabı
-   cümle cümle `call_audio` olayıyla gelir (hazırsa WAV, değilse telefon kendi sesiyle okur). Android'de konuşma
-   tanıma native köprüden (window.aliceVoice), tarayıcıda SpeechRecognition'dan; ikisi de yoksa kayıt + /api/transcribe. */
-const CALL = {
-  id: null, state: "", outbound: false, reason: "", lines: [], listening: false, partial: "",
-  audio: null, pending: 0, queue: Promise.resolve(), endAfterTurn: false, timer: null, t0: 0,
-  recognition: null, rec: null, stream: null, recChunks: [],
-};
-
-function callOpen() {
-  const o = $("#call");
-  if (!o) return;
-  o.hidden = false;
-  document.body.classList.add("oncall");
-}
-function callClose() {
-  const o = $("#call");
-  if (o) o.hidden = true;
-  document.body.classList.remove("oncall");
-  clearInterval(CALL.timer);
-  CALL.id = CALL.state = "";
-  CALL.listening = false;
-  CALL.pending = 0;
-  CALL.endAfterTurn = false;
-}
-function callTime() {
-  const s = Math.max(0, Math.round(Date.now() / 1000 - CALL.t0));
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
-}
-function callBtn(cls, icon, label, onClick) {
-  const b = el("button", "call-btn " + cls);
-  b.type = "button";
-  b.setAttribute("aria-label", label);
-  b.appendChild(svg(icon));
-  b.addEventListener("click", () => { haptic(); onClick(); });
-  return b;
-}
-function callRender() {
-  const root = $("#call");
-  if (!root) return;
-  root.classList.toggle("ringing", CALL.state === "ringing");
-  root.classList.toggle("ended", CALL.state === "ended");
-  root.classList.toggle("listening", !!CALL.listening);
-  const st = $("#callStatus"), note = $("#callNote"), lines = $("#callLines"), acts = $("#callActions"), hint = $("#callHint");
-  if (!st) return;
-  if (CALL.state === "ringing") {
-    st.textContent = "ALICE arıyor…";
-    hint.textContent = "Açmak için yeşil düğmeye dokun.";
-  } else if (CALL.state === "active") {
-    st.textContent = callTime();
-    hint.textContent = CALL.listening ? "Dinliyorum, sen susunca ALICE cevap verir." : "ALICE konuşuyor…";
-  } else if (CALL.state === "ended") {
-    st.textContent = "Görüşme bitti";
-    hint.textContent = "";
-  } else {
-    st.textContent = "Bağlanıyor…";
-    hint.textContent = "";
-  }
-  note.hidden = !CALL.reason || CALL.state === "ended";
-  note.textContent = CALL.reason || "";
-  lines.replaceChildren();
-  for (const l of (CALL.lines || []).slice(-20)) {
-    const d = el("div", "l" + (l.who === "user" ? " me" : ""));
-    d.appendChild(el("small", "", l.who === "user" ? "Sen" : "ALICE"));
-    d.appendChild(document.createTextNode(l.text));
-    lines.appendChild(d);
-  }
-  if (lines.lastChild) lines.scrollTop = lines.scrollHeight;
-  acts.replaceChildren();
-  if (CALL.state === "ringing") {
-    acts.append(callBtn("no", "phone", "Reddet", () => declineCall()), callBtn("ok", "phone", "Aç", () => answerCall()));
-  } else if (CALL.state === "active") {
-    acts.append(callBtn("mut", CALL.listening ? "stop" : "mic", CALL.listening ? "Sessiz" : "Konuş", () => toggleCallMic()),
-                callBtn("no", "phone", "Kapat", () => hangupCall()));
-  }
-}
-function callTicker() {
-  clearInterval(CALL.timer);
-  CALL.timer = setInterval(() => {
-    if (CALL.state !== "active" || CALL.listening) return;
-    const st = $("#callStatus");
-    if (st) st.textContent = callTime();
-  }, 1000);
-}
-
-async function startCall() {
-  if (CALL.state === "ringing" || CALL.state === "active") { callOpen(); callRender(); return; }
-  CALL.state = "connecting";
-  CALL.reason = "";
-  CALL.lines = [];
-  CALL.t0 = Date.now() / 1000;
-  callOpen();
-  callRender();
-  const r = await api("/api/call/start", {});
-  if (!r || r.ok === false) {
-    toast((r && r.error) || "Arama başlatılamadı");
-    callClose();
-    return;
-  }
-  CALL.id = r.id;
-  CALL.state = r.state || "active";
-  CALL.outbound = !!r.outbound;
-  CALL.t0 = r.started || r.answered || Date.now() / 1000;
-  CALL.lines = r.lines || [];
-  callRender();
-  callTicker();
-  callListen();
-}
-function incomingCall(ev) {
-  if (CALL.state === "active") return; // zaten konuşuluyor; ikinci arama yok
-  CALL.id = ev.id;
-  CALL.state = "ringing";
-  CALL.outbound = true;
-  CALL.reason = ev.reason || "";
-  CALL.lines = [];
-  CALL.t0 = Date.now() / 1000;
-  callOpen();
-  callRender();
-  haptic(500);
-  try { if (NATIVE && NATIVE.notify) NATIVE.notify("ALICE arıyor", ev.reason || ev.text || "", "call-" + ev.id); } catch (e) { /* yok */ }
-}
-async function answerCall() {
-  const r = await api("/api/call/answer", { id: CALL.id });
-  if (!r || r.ok === false) { toast((r && r.error) || "Açılamadı"); callClose(); return; }
-  CALL.state = "active";
-  CALL.t0 = r.answered || Date.now() / 1000;
-  CALL.lines = r.lines || [];
-  callRender();
-  callTicker();
-  callListen();
-}
-async function declineCall() {
-  const id = CALL.id;
-  callClose();
-  if (id) await api("/api/call/decline", { id });
-}
-async function hangupCall(quiet) {
-  const id = CALL.id;
-  callStopAudio();
-  callStopListen();
-  callClose();
-  if (id) await api("/api/call/hangup", { id });
-  if (!quiet) toast("Görüşme kapatıldı");
-}
-function callBack() {
-  if (CALL.state === "ringing") declineCall();
-  else hangupCall();
-}
-function callState(ev) {
-  if (!ev) return;
-  const view = $("#call");
-  if (view && view.hidden && ev.state === "ended") { CALL.state = ""; return; }
-  if (CALL.id && ev.id && ev.id !== CALL.id) return;
-  if (!CALL.id && ev.id) CALL.id = ev.id;
-  if (!CALL.state) { CALL.state = "active"; CALL.t0 = ev.answered || Date.now() / 1000; callOpen(); callTicker(); }
-  if (ev.state) CALL.state = ev.state;
-  if (ev.reason !== undefined) CALL.reason = ev.reason;
-  if (ev.lines) CALL.lines = ev.lines;
-  callRender();
-}
-function callTurnDone(ev) {
-  if (CALL.id && ev.id && ev.id !== CALL.id) return;
-  if (ev.end) CALL.endAfterTurn = true;
-}
-function callEnded(ev) {
-  if (CALL.id && ev.id && ev.id !== CALL.id) return;
-  callStopAudio();
-  callStopListen();
-  clearInterval(CALL.timer);
-  if ($("#call") && $("#call").hidden) { CALL.state = ""; CALL.endAfterTurn = false; return; }
-  CALL.state = "ended";
-  CALL.endAfterTurn = false;
-  CALL.reason = ev.reason === "missed" ? "Cevapsız arama" : ev.reason === "declined" ? "Reddedildi" : "";
-  callRender();
-  setTimeout(() => { if (CALL.state === "ended") callClose(); }, 1600);
-}
-
-/* --- telefonun sesi: dinleme --------------------------------------------------------------- */
-function callVoice(ev) {
-  if (!CALL.listening) return;
-  if (ev.type === "partial") CALL.partial = ev.text || "";
-  else if (ev.type === "level") return;
-  else if (ev.type === "final") {
-    const t = (ev.text || "").trim();
-    CALL.partial = "";
-    CALL.listening = false;
-    if (t) callSay(t);
-    else if (CALL.state === "active") setTimeout(callListen, 300);
-    callRender();
-  } else if (ev.type === "error") CALL.listening = false;
-  else if (ev.type === "end") {
-    const t = (CALL.partial || "").trim();
-    CALL.partial = "";
-    CALL.listening = false;
-    if (t) callSay(t);
-    else if (CALL.state === "active") setTimeout(callListen, 400);
-    callRender();
-  }
-}
-function callStopListen() {
-  if (CALL.recognition) {
-    try { CALL.recognition.onend = null; CALL.recognition.stop(); } catch (e) { /* yok */ }
-    CALL.recognition = null;
-  }
-  if (CALL.rec) {
-    try { CALL.rec.onstop = null; CALL.rec.stop(); } catch (e) { /* yok */ }
-    CALL.rec = null;
-  }
-  if (CALL.stream) { try { CALL.stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* yok */ } CALL.stream = null; }
-  if (NATIVE && NATIVE.cancelListening) { try { NATIVE.cancelListening(); } catch (e) { /* yok */ } }
-  CALL.listening = false;
-}
-function callListen() {
-  if (CALL.state !== "active" || CALL.listening || CALL.pending > 0) return;
-  if (NATIVE && NATIVE.listen) {
-    CALL.listening = true;
-    callRender();
-    try { NATIVE.listen("tr-TR"); } catch (e) { CALL.listening = false; }
-    return;
-  }
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (SR) {
-    try {
-      const rec = new SR();
-      rec.lang = "tr-TR";
-      rec.interimResults = true;
-      rec.continuous = false;
-      rec.maxAlternatives = 1;
-      CALL.recognition = rec;
-      CALL.listening = true;
-      callRender();
-      rec.onresult = (e) => {
-        let t = "";
-        for (let i = e.resultIndex; i < e.results.length; i++) if (e.results[i].isFinal) t += e.results[i][0].transcript;
-        CALL.partial = (CALL.partial ? CALL.partial + " " : "") + t;
-        if (e.results[e.results.length - 1].isFinal) {
-          const said = CALL.partial.trim();
-          CALL.partial = "";
-          CALL.listening = false;
-          CALL.recognition = null;
-          try { rec.stop(); } catch (e2) { /* yok */ }
-          if (said) callSay(said);
-          else if (CALL.state === "active") setTimeout(callListen, 300);
-          callRender();
-        }
-      };
-      rec.onerror = () => { CALL.listening = false; CALL.recognition = null; };
-      rec.onend = () => {
-        if (CALL.recognition !== rec) return;
-        CALL.recognition = null;
-        if (CALL.listening) {
-          CALL.listening = false;
-          if (CALL.state === "active") setTimeout(callListen, 400);
-        }
-      };
-      rec.start();
-      return;
-    } catch (e) { CALL.recognition = null; CALL.listening = false; }
-  }
-  callRecStart();
-}
-async function callRecStart() {
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    CALL.stream = stream;
-    CALL.recChunks = [];
-    const rec = new MediaRecorder(stream);
-    CALL.rec = rec;
-    rec.ondataavailable = (e) => { if (e.data.size) CALL.recChunks.push(e.data); };
-    rec.start(250);
-    CALL.listening = true;
-    callRender();
-  } catch (e) {
-    CALL.listening = false;
-    toast("Mikrofon izni verilmedi");
-  }
-}
-async function callRecStop() {
-  const rec = CALL.rec;
-  if (!rec) return;
-  CALL.listening = false;
-  CALL.rec = null;
-  await new Promise((res) => { rec.onstop = res; try { rec.stop(); } catch (e) { res(); } });
-  if (CALL.stream) { try { CALL.stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* yok */ } CALL.stream = null; }
-  const blob = new Blob(CALL.recChunks, { type: rec.mimeType || "audio/webm" });
-  CALL.recChunks = [];
-  callRender();
-  if (!blob.size) return;
-  const b64 = await new Promise((res) => {
-    const r = new FileReader();
-    r.onload = () => res(String(r.result).split(",")[1] || "");
-    r.readAsDataURL(blob);
-  });
-  const r = await api("/api/transcribe", { audio: b64, mime: blob.type || "audio/webm" });
-  if (r && r.ok !== false && r.text) callSay(r.text);
-  else { toast((r && r.error) || "Ses anlaşılamadı"); setTimeout(callListen, 600); }
-}
-function toggleCallMic() {
-  if (CALL.listening) {
-    if (CALL.rec) callRecStop();
-    else { callStopListen(); callRender(); }
-    return;
-  }
-  callStopAudio();
-  callListen();
-}
-
-/* --- ALICE'in sesi: çal / oku --------------------------------------------------------------- */
-function callStopAudio() {
-  if (CALL.audio) { try { CALL.audio.pause(); } catch (e) { /* yok */ } CALL.audio = null; }
-  if (window.speechSynthesis) { try { speechSynthesis.cancel(); } catch (e) { /* yok */ } }
-}
-function callPlay(url) {
-  return new Promise((resolve) => {
-    const a = new Audio(url);
-    CALL.audio = a;
-    const done = () => { if (CALL.audio === a) CALL.audio = null; resolve(); };
-    a.onended = done;
-    a.onerror = done;
-    a.play().catch(done);
-  });
-}
-function callSpeak(text) {
-  return new Promise((resolve) => {
-    if (!window.speechSynthesis || !text) return resolve();
-    try {
-      speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(text);
-      u.lang = "tr-TR";
-      u.rate = 1.03;
-      const v = speechSynthesis.getVoices().find((x) => /^tr/i.test(x.lang));
-      if (v) u.voice = v;
-      u.onend = resolve;
-      u.onerror = resolve;
-      speechSynthesis.speak(u);
-    } catch (e) { resolve(); }
-  });
-}
-function callAudio(ev) {
-  if (CALL.id && ev.id && ev.id !== CALL.id) return;
-  if (ev.text) {
-    CALL.lines.push({ who: "alice", text: ev.text });
-    callRender();
-  }
-  CALL.pending += 1;
-  callStopListen();
-  callRender();
-  CALL.queue = CALL.queue.then(async () => {
-    if (CALL.state !== "active") { CALL.pending = Math.max(0, CALL.pending - 1); return; }
-    try {
-      if (ev.audio) {
-        await callPlay(`/api/call/audio?t=${encodeURIComponent(TOKEN)}&id=${encodeURIComponent(ev.id || CALL.id)}&n=${ev.n}`);
-      } else {
-        await callSpeak(ev.text);
-      }
-    } catch (e) { /* ses yok: devam */ }
-    CALL.pending = Math.max(0, CALL.pending - 1);
-    if (CALL.pending === 0) {
-      if (CALL.endAfterTurn) {
-        setTimeout(() => { if (CALL.state === "active") hangupCall(true); }, 700);
-      } else {
-        callListen();
-      }
-      callRender();
-    }
-  });
-}
-async function callSay(text) {
-  if (CALL.state !== "active") return;
-  CALL.lines.push({ who: "user", text });
-  CALL.partial = "";
-  callRender();
-  const r = await api("/api/call/say", { id: CALL.id, text });
-  if (r && r.ok === false) {
-    toast(r.error || "Gönderilemedi");
-    setTimeout(callListen, 700);
-  }
-}
-
 /* ================================================================== PROJELER */
 const PST = { planning: "planlanıyor", running: "çalışıyor", review: "incelemede", needs_you: "seni bekliyor", done: "bitti", stopped: "durdu", failed: "olmadı" };
 const MST = { running: "çalışıyor", planning: "planlıyor", review: "inceleme bekliyor", asking: "soruyor", waiting: "bekliyor", done: "onaylandı",
@@ -1566,6 +1189,7 @@ function addPending(ev, kind) {
   if (!ev || !ev.id || S.pending.has(ev.id)) return;
   S.pending.set(ev.id, Object.assign({ kind, at: Date.now() / 1000 }, ev));
   updateBellBadge();
+  if (CALL && ev.sid && ev.sid === CALL.sid) { haptic(60); drawCall(); }
   if (S.tab === "bell") renderBell();
   if (document.hidden && NATIVE && NATIVE.notify) {
     try { NATIVE.notify("ALICE onay istiyor", kind === "choice" ? ev.question : (PERM_TEXT[ev.name] || "İzin istiyor") + " " + (ev.summary || ""), "perm-" + ev.id); } catch (e) { /* yok */ }
@@ -1574,6 +1198,7 @@ function addPending(ev, kind) {
 function dropPending(id) {
   if (!S.pending.delete(id)) return;
   updateBellBadge();
+  if (CALL) drawCall();
   if (S.tab === "bell") renderBell();
 }
 function updateBellBadge() {
@@ -1930,6 +1555,331 @@ function openHealth() {
   }, "Daha fazla");
 }
 
+/* ================================================================== ARAMA */
+/* Telefonla ALICE arasında sesli görüşme. Telefon konuşma tanımayla dinler (Android uygulaması), söylenen bilgisayara
+   gider; ALICE'in cevabı bilgisayarda cümle cümle sese çevrilip burada çalınır (ses yoksa telefon kendi sesiyle okur).
+   ALICE konuşurken ortadaki yuvarlağa dokunmak onu susturur ve dinlemeye geçer. */
+let CALL = null;
+const CALL_END_TEXT = { missed: "Cevapsız arama", declined: "Arama reddedildi", hangup: "Görüşme bitti", silence: "Sessiz kaldın, görüşme bitti" };
+function callUI() {
+  let root = $("#call");
+  if (!root) {
+    root = el("div", "call");
+    root.id = "call";
+    document.body.appendChild(root);
+  }
+  return root;
+}
+function fmtDur(s) { return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`; }
+function drawCall() {
+  const c = CALL;
+  const root = callUI();
+  if (!c) { root.hidden = true; root.replaceChildren(); document.body.classList.remove("in-call"); return; }
+  root.hidden = false;
+  document.body.classList.add("in-call");
+  root.replaceChildren();
+  root.className = "call " + c.state + (c.outbound ? " outbound" : "") + (c.mode ? " m-" + c.mode : "");
+  const top = el("div", "c-top");
+  const title = c.state === "ringing" ? (c.outbound ? "ALICE arıyor" : "Aranıyor…") : "ALICE";
+  const sub = c.state === "ringing" ? (c.reason || "Sesli arama") : fmtDur((Date.now() - c.t0) / 1000);
+  top.append(el("b", "", title), el("small", "c-time", sub));
+  const orb = el("button", "c-orb");
+  orb.setAttribute("aria-label", c.mode === "speaking" ? "Sustur ve konuş" : "Konuş");
+  const img = el("img");
+  img.src = "/static/alice.png";
+  img.alt = "";
+  orb.append(el("i", "r1"), el("i", "r2"), img);
+  orb.addEventListener("click", () => { if (c.state === "active") { haptic(14); bargeIn(); } });
+  const perm = [...S.pending.values()].find((p) => p.sid && p.sid === c.sid);
+  const mode = el("div", "c-mode", c.state === "ringing" ? "" : perm ? "Onayını bekliyor" : { listening: c.muted ? "Mikrofon kapalı" : "Dinliyorum", thinking: "Düşünüyor…",
+    speaking: "Konuşuyor · dokun, araya gir", idle: "" }[c.mode || "idle"] || "");
+  const said = el("div", "c-said", c.caption || "");
+  const heard = el("div", "c-heard", c.heard ? "“" + c.heard + "”" : "");
+  const mid = el("div", "c-mid");
+  mid.append(orb, mode, said, heard);
+  if (perm) mid.appendChild(callPermission(perm));
+  const bar = el("div", "c-bar");
+  if (c.state === "ringing" && c.outbound) {
+    bar.append(callBtn("x", "Reddet", "red", () => { api("/api/call/decline", { id: c.id }); endCall("declined"); }),
+      callBtn("phone", "Aç", "green", () => answerCall()));
+  } else {
+    bar.append(callBtn("mic", c.muted ? "Sesi aç" : "Sessiz", c.muted ? "on" : "", () => toggleMute()),
+      callBtn("phone", "Kapat", "red hang", () => hangup()),
+      callBtn("type", "Yaz", "", () => typeInCall()));
+  }
+  root.append(top, mid, bar);
+}
+function callBtn(icon, label, cls, fn) {
+  const w = el("div", "c-btn " + (cls || ""));
+  const b = el("button");
+  b.setAttribute("aria-label", label);
+  b.appendChild(svg(icon));
+  b.addEventListener("click", () => { haptic(12); fn(); });
+  w.append(b, el("small", "", label));
+  return w;
+}
+function callPermission(p) {
+  const box = el("div", "c-perm");
+  box.append(el("small", "", PERM_TEXT[p.name] || "İzin istiyor"), el("code", "", p.summary || p.question || ""));
+  const row = el("div", "btns");
+  row.append(btn("btn", "Reddet", () => api("/api/permission", { id: p.id, answer: "n" }).then(() => dropPending(p.id))),
+    btn("btn p", "İzin ver", () => api("/api/permission", { id: p.id, answer: "y" }).then(() => dropPending(p.id))));
+  box.appendChild(row);
+  return box;
+}
+function newCall(id, opts) {
+  CALL = Object.assign({ id, state: "active", outbound: false, reason: "", queue: [], turn: 0, turnDone: 0, endAfter: false,
+    mode: "thinking", caption: "", heard: "", text: "", listening: false, muted: false, silence: 0, t0: Date.now(), sid: "",
+    audio: new Audio(), timer: null }, opts || {});
+  CALL.audio.preload = "auto";
+  CALL.timer = setInterval(() => { const t = $("#call .c-time"); if (t && CALL && CALL.state === "active") t.textContent = fmtDur((Date.now() - CALL.t0) / 1000); }, 1000);
+  try { if (NATIVE && NATIVE.keepScreen) NATIVE.keepScreen(true); } catch (e) { /* yok */ }
+  drawCall();
+}
+async function startCall() {
+  if (CALL) return drawCall();
+  if (!NATIVE || !NATIVE.listen) return toast("Sesli arama için Android uygulaması gerekli");
+  newCall("", { state: "ringing", outbound: false });
+  const r = await api("/api/call/start", {});
+  if (!r || !r.ok) { endCall(); return toast((r && r.error) || "Aranamadı"); }
+  CALL.id = r.id;
+  CALL.state = "active";
+  CALL.outbound = !!r.outbound;
+  CALL.t0 = Date.now();
+  CALL.sid = r.sid || "";
+  drawCall();
+  // Selam, "arama başladı" cevabından önce gelmiş olabilir: kimlik belli olunca bekleyen olayları işle.
+  const early = CALL.early || [];
+  CALL.early = [];
+  for (const ev of early) if (ev.id === r.id) (handlers[ev.type] || (() => {}))(ev);
+}
+function incomingCall(ev) {
+  if (CALL && CALL.id === ev.id) return;
+  if (CALL) return;
+  newCall(ev.id, { state: "ringing", outbound: true, reason: ev.reason || "", caption: ev.text || "" });
+  CALL.mode = "idle";
+  // Uygulama arkadaysa zili bildirim çalar; burada da çalarsa iki kez çalardı.
+  if (!document.hidden) { try { if (NATIVE && NATIVE.ring) NATIVE.ring(true); else haptic(400); } catch (e) { /* yok */ } }
+  drawCall();
+}
+async function answerCall() {
+  const c = CALL;
+  if (!c) return;
+  try { if (NATIVE && NATIVE.ring) NATIVE.ring(false); } catch (e) { /* yok */ }
+  if (!NATIVE || !NATIVE.listen) toast("Dinlemek için Android uygulaması gerekli; ALICE'i yine de duyarsın");
+  const r = await api("/api/call/answer", { id: c.id });
+  if (!r || r.ok === false) { endCall(); return toast((r && r.error) || "Görüşme açılamadı"); }
+  c.state = "active";
+  c.t0 = Date.now();
+  // İlk cümle bu cevaptan önce gelip çalmaya başlamış (hatta bitmiş) olabilir.
+  if (c.mode === "speaking") return drawCall();
+  if (c.queue.length) return playNext();
+  if (c.played) return startCallListening();
+  c.mode = "thinking";
+  drawCall();
+}
+function callState(ev) {
+  if (earlyEvent(ev)) return;
+  if (!CALL || ev.id !== CALL.id) {
+    if (!CALL && ev.state === "active" && ev.outbound === false) return;  // başka cihazdan açılan görüşme
+    return;
+  }
+  if (ev.state === "ended") return endCall(ev.end_reason);
+  if (ev.state === "active" && CALL.state !== "active") { CALL.state = "active"; CALL.t0 = Date.now(); }
+  if (ev.sid) CALL.sid = ev.sid;
+  if (ev.lines && ev.lines.length && !CALL.caption) CALL.caption = ev.lines.filter((l) => l.who === "alice").map((l) => l.text).pop() || "";
+  drawCall();
+}
+function earlyEvent(ev) {
+  if (!CALL || CALL.id) return false;
+  (CALL.early = CALL.early || []).push(ev);
+  return true;
+}
+function callAudio(ev) {
+  if (earlyEvent(ev)) return;
+  const c = CALL;
+  if (!c || ev.id !== c.id || ev.turn < c.turn) return;
+  c.queue.push(ev);
+  if (c.listening) stopCallListening();
+  if (c.mode !== "speaking") playNext();
+}
+function callTurnDone(ev) {
+  if (earlyEvent(ev)) return;
+  const c = CALL;
+  if (!c || ev.id !== c.id || ev.turn < c.turn) return;
+  c.turnDone = ev.turn;
+  c.endAfter = !!ev.end;
+  if (c.mode !== "speaking" && !c.queue.length) afterSpeech();
+}
+function playNext() {
+  const c = CALL;
+  if (!c) return;
+  const seg = c.queue.shift();
+  if (!seg) {
+    if (c.turnDone >= c.turn) afterSpeech();
+    else { c.mode = "thinking"; drawCall(); }
+    return;
+  }
+  c.mode = "speaking";
+  c.played = true;
+  c.caption = seg.turn === c.capTurn ? (c.caption + " " + seg.text).trim() : seg.text;
+  c.capTurn = seg.turn;
+  c.heard = "";
+  drawCall();
+  const next = () => { if (CALL === c && c.mode === "speaking") playNext(); };
+  if (seg.audio) {
+    c.audio.onended = next;
+    c.audio.onerror = () => speakText(seg.text, next);
+    c.audio.src = `/api/call/audio?id=${encodeURIComponent(c.id)}&n=${seg.n}&t=${encodeURIComponent(TOKEN)}`;
+    c.audio.play().catch(() => speakText(seg.text, next));
+  } else speakText(seg.text, next);
+}
+// Bilgisayar sesi üretemediyse telefonun kendi sesi; o da yoksa yazı ekranda kalır, okuma süresi kadar beklenir.
+function speakText(text, done) {
+  if (NATIVE && NATIVE.speak) {
+    window.aliceSpoke = () => { window.aliceSpoke = null; done(); };
+    try { NATIVE.speak(text); return; } catch (e) { /* yok */ }
+  }
+  setTimeout(done, Math.min(8000, 600 + text.length * 55));
+}
+function afterSpeech() {
+  const c = CALL;
+  if (!c) return;
+  if (c.state !== "active") { c.mode = "idle"; return drawCall(); }
+  if (c.endAfter) { setTimeout(() => hangup(), 400); return; }
+  startCallListening();
+}
+function startCallListening() {
+  const c = CALL;
+  if (!c) return;
+  c.mode = "listening";
+  c.text = "";
+  c.heard = "";
+  drawCall();
+  if (c.muted || !NATIVE || !NATIVE.listen) return;
+  c.listening = true;
+  try { NATIVE.listen("tr-TR"); } catch (e) { c.listening = false; }
+}
+function stopCallListening() {
+  const c = CALL;
+  if (!c || !c.listening) return;
+  c.listening = false;
+  try { NATIVE.cancelListening(); } catch (e) { /* yok */ }
+}
+function callVoice(ev) {
+  const c = CALL;
+  if (!c) return;
+  if (ev.type === "partial") { c.heard = ((c.text ? c.text + " " : "") + (ev.text || "")).trim(); return drawCallHeard(); }
+  if (ev.type === "final") { c.text = ((c.text ? c.text + " " : "") + (ev.text || "")).trim(); c.heard = c.text; return drawCallHeard(); }
+  if (ev.type === "level") return levelOrb(ev.level || 0);
+  if (ev.type === "error" || ev.type === "end") {
+    c.listening = false;
+    const text = (c.text || c.heard || "").trim();
+    if (text) { c.silence = 0; return sayInCall(text); }
+    if (c.muted || c.mode !== "listening") return;
+    c.silence += 1;
+    if (c.silence >= 4) { toast(CALL_END_TEXT.silence); return hangup(); }
+    setTimeout(() => { if (CALL === c && c.mode === "listening" && !c.listening) startCallListening(); }, 250);
+  }
+}
+function drawCallHeard() {
+  const h = $("#call .c-heard");
+  if (h && CALL) h.textContent = CALL.heard ? "“" + CALL.heard + "”" : "";
+}
+function levelOrb(lv) {
+  const o = $("#call .c-orb");
+  if (o) o.style.setProperty("--lv", String(Math.max(0, Math.min(1, lv))));
+}
+async function sayInCall(text) {
+  const c = CALL;
+  if (!c) return;
+  c.mode = "thinking";
+  c.heard = text;
+  c.queue = [];
+  c.turn += 1;  // eski turun gecikmiş cümleleri okunmasın
+  drawCall();
+  const r = await api("/api/call/say", { id: c.id, text });
+  if (CALL !== c) return;
+  if (!r || !r.ok) { toast((r && r.error) || "Gönderilemedi"); return startCallListening(); }
+  c.turn = r.turn;
+}
+function bargeIn() {
+  const c = CALL;
+  if (!c) return;
+  c.queue = [];
+  try { c.audio.pause(); } catch (e) { /* yok */ }
+  try { if (NATIVE && NATIVE.stopSpeaking) NATIVE.stopSpeaking(); } catch (e) { /* yok */ }
+  c.turn += 1;
+  if (c.muted) { c.muted = false; }
+  startCallListening();
+}
+function toggleMute() {
+  const c = CALL;
+  if (!c) return;
+  c.muted = !c.muted;
+  if (c.muted) stopCallListening();
+  if (!c.muted && c.mode === "listening") startCallListening();
+  else drawCall();
+}
+function typeInCall() {
+  let inp;
+  openSheet((box) => {
+    box.append(el("h3", "", "ALICE'e yaz"));
+    inp = el("input", "field");
+    inp.placeholder = "Söylemek istediğin…";
+    const go = () => { const t = inp.value.trim(); closeSheet(); if (t) { stopCallListening(); sayInCall(t); } };
+    inp.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+    const row = el("div", "btns");
+    row.append(btn("btn", "Vazgeç", () => closeSheet()), btn("btn p", "Gönder", go));
+    box.append(inp, row);
+    setTimeout(() => inp.focus(), 50);
+  });
+}
+function hangup() {
+  const c = CALL;
+  if (!c) return;
+  if (c.id) api("/api/call/hangup", { id: c.id });
+  endCall("hangup");
+}
+function callEnded(ev) {
+  if (CALL && ev.id === CALL.id) endCall(ev.reason);
+  else if (!CALL && ev.reason === "missed") toast("Cevapsız arama: " + (ev.text || "ALICE"));
+}
+function endCall(reason) {
+  const c = CALL;
+  if (!c) return;
+  CALL = null;
+  clearInterval(c.timer);
+  try { c.audio.pause(); } catch (e) { /* yok */ }
+  try { if (NATIVE) { NATIVE.ring && NATIVE.ring(false); NATIVE.stopSpeaking && NATIVE.stopSpeaking(); NATIVE.keepScreen && NATIVE.keepScreen(false); } } catch (e) { /* yok */ }
+  if (c.listening) { try { NATIVE.cancelListening(); } catch (e) { /* yok */ } }
+  drawCall();
+  if (reason && reason !== "hangup") toast(CALL_END_TEXT[reason] || "Görüşme bitti");
+  else if (c.state === "active") toast("Görüşme bitti · " + fmtDur((Date.now() - c.t0) / 1000));
+  loadSessions();
+}
+// Android uygulaması bildirimden "Aç" ya da "Reddet" ile açılınca buraya yollar.
+window.aliceCallIntent = async (it) => {
+  const cur = await api("/api/call");
+  if (!cur || !cur.id || (it.id && cur.id !== it.id) || cur.state === "ended") return toast("Arama artık yok");
+  if (it.action === "decline") { api("/api/call/decline", { id: cur.id }); if (CALL) endCall("declined"); return; }
+  if (cur.state === "ringing") {
+    if (!CALL) incomingCall({ id: cur.id, reason: cur.reason, text: (cur.lines || [])[0] ? cur.lines[0].text : "" });
+    if (it.action === "answer") answerCall();
+  } else if (!CALL) resumeCall();
+};
+// Sayfa yenilenirse süren görüşmeye dön.
+async function resumeCall() {
+  const cur = await api("/api/call");
+  if (!cur || !cur.id || cur.state === "ended" || CALL) return;
+  if (cur.state === "ringing" && cur.outbound) return incomingCall({ id: cur.id, reason: cur.reason, text: "" });
+  if (cur.state === "active" && NATIVE && NATIVE.listen) {
+    newCall(cur.id, { state: "active", outbound: cur.outbound, t0: (cur.answered || cur.started) * 1000 });
+    CALL.caption = (cur.lines || []).filter((l) => l.who === "alice").map((l) => l.text).pop() || "";
+    startCallListening();
+  }
+}
+
 /* ================================================================== açılış */
 const RENDER = {
   chat: () => { if (!S.chatBuilt) buildChat(); else { drawChatHead(); drawChips(); } },
@@ -1940,6 +1890,7 @@ const RENDER = {
 };
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) return;
+  if (CALL && CALL.state === "ringing" && CALL.outbound) { try { NATIVE && NATIVE.ring && NATIVE.ring(true); } catch (e) { /* yok */ } }
   if (S.tab === "pc") { refreshPc(); grabShot(); }
   api("/api/state").then(applyStatus);
   loadProjects();
@@ -1958,18 +1909,5 @@ connect();
   const hash = location.hash.replace("#", "");
   show(RENDER[hash] ? hash : RENDER[saved] ? saved : "chat");
   drawChatHead();
-  // Uygulama açılırken süren bir görüşme varsa ekranı geri getir (ör. arama bildiriminden dönüş).
-  api("/api/call").then((c) => {
-    if (!c || !c.id || CALL.state) return;
-    CALL.id = c.id;
-    CALL.state = c.state;
-    CALL.outbound = !!c.outbound;
-    CALL.reason = c.reason || "";
-    CALL.lines = c.lines || [];
-    CALL.t0 = c.answered || c.started || Date.now() / 1000;
-    callOpen();
-    callRender();
-    callTicker();
-    if (c.state === "active") callListen();
-  });
+  resumeCall();
 })();

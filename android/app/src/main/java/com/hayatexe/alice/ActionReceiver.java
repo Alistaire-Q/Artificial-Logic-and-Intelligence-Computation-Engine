@@ -20,19 +20,11 @@ public class ActionReceiver extends BroadcastReceiver {
         return PendingIntent.getBroadcast(c, req, i, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
     }
 
-    /** "ALICE arıyor" bildirimindeki Reddet: aramayı uygulamayı açmadan kapatır. */
-    static PendingIntent declineCall(Context c, String callId, int notifId) {
-        Intent i = new Intent(c, ActionReceiver.class);
-        i.putExtra("callId", callId);
-        i.putExtra("notif", notifId);
-        return PendingIntent.getBroadcast(c, ("call" + callId).hashCode(), i,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-    }
-
     @Override
     public void onReceive(Context c, Intent i) {
-        String callId = i.getStringExtra("callId");
-        if (callId != null) {
+        String callId = i.getStringExtra("call_id");
+        if (callId != null) {  // gelen aramada "Reddet": uygulamayı açmadan kapat
+            Calls.cancel(c);
             decline(c, callId, i.getIntExtra("notif", 0));
             return;
         }

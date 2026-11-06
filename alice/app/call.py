@@ -67,7 +67,7 @@ class Call:
     def view(self) -> dict[str, Any]:
         return {"id": self.id, "state": self.state, "outbound": self.outbound, "reason": self.reason,
                 "started": self.started, "answered": self.answered, "end_reason": self.end_reason,
-                "turn": self.turn, "lines": self.lines[-30:]}
+                "turn": self.turn, "lines": self.lines[-30:], "sid": self.chat.sid if self.chat is not None else ""}
 
 
 class CallManager:

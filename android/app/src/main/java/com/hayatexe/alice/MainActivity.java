@@ -21,6 +21,9 @@ import android.os.Vibrator;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
+import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
+import android.view.WindowManager;
 import android.view.View;
 import android.view.Window;
 import android.webkit.JavascriptInterface;
@@ -36,6 +39,7 @@ import android.webkit.WebViewClient;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.Locale;
 
 /**
  * ALICE telefon uygulaması: bilgisayardaki ALICE'in telefon arayüzünü (/m) tam ekran açar ve sayfaya
@@ -49,6 +53,10 @@ public class MainActivity extends Activity {
     private SpeechRecognizer speech;
     private final Handler ui = new Handler(Looper.getMainLooper());
     private boolean pageFailed;
+    private TextToSpeech tts;
+    private boolean ttsReady;
+    private String pendingSpeech;
+    private String pendingCall;  // bildirimden açılan arama: sayfa yüklenince sayfaya verilir
 
     @Override
     protected void onCreate(Bundle state) {
@@ -81,6 +89,16 @@ public class MainActivity extends Activity {
     }
 
     private void load(Intent i) {
+        String callId = i != null ? i.getStringExtra("call_id") : null;
+        if (callId != null) {
+            Calls.cancel(this);
+            if (Build.VERSION.SDK_INT >= 27) { setShowWhenLocked(true); setTurnScreenOn(true); }
+            try {
+                pendingCall = new JSONObject().put("id", callId).put("action", i.getStringExtra("call_action")).toString();
+            } catch (Exception ignored) { }
+            i.removeExtra("call_id");
+            if (web.getUrl() != null && web.getUrl().startsWith(Prefs.base(this)) && !pageFailed) { deliverCall(); return; }
+        }
         String tab = i != null ? i.getStringExtra("tab") : null;
         String url = Prefs.appUrl(this) + (tab != null ? "#" + tab : "");
         if (tab != null && web.getUrl() != null && web.getUrl().startsWith(Prefs.base(this))) {
@@ -112,6 +130,11 @@ public class MainActivity extends Activity {
                 if (u.toString().startsWith(Prefs.base(MainActivity.this))) return false;
                 try { startActivity(new Intent(Intent.ACTION_VIEW, u)); } catch (Exception ignored) { }
                 return true;
+            }
+
+            @Override
+            public void onPageFinished(WebView v, String url) {
+                if (url != null && url.startsWith(Prefs.base(MainActivity.this))) ui.postDelayed(MainActivity.this::deliverCall, 600);
             }
 
             @Override
@@ -149,6 +172,41 @@ public class MainActivity extends Activity {
                 });
             }
         });
+    }
+
+    private void deliverCall() {
+        if (pendingCall == null || web == null) return;
+        String js = "window.aliceCallIntent && aliceCallIntent(" + pendingCall + ")";
+        pendingCall = null;
+        web.evaluateJavascript(js, null);
+    }
+
+    /** Görüşmede bilgisayar ses üretemezse ALICE'in cümlesini telefonun kendi sesi okur. */
+    private void speakNow(String text) {
+        if (tts == null) {
+            pendingSpeech = text;
+            tts = new TextToSpeech(this, st -> {
+                ttsReady = st == TextToSpeech.SUCCESS;
+                if (ttsReady) {
+                    tts.setLanguage(new Locale("tr", "TR"));
+                    tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                        @Override public void onStart(String id) { }
+                        @Override public void onDone(String id) { spoke(); }
+                        @Override public void onError(String id) { spoke(); }
+                    });
+                }
+                String t = pendingSpeech;
+                pendingSpeech = null;
+                if (t != null) speakNow(t);
+            });
+            return;
+        }
+        if (!ttsReady) { spoke(); return; }
+        tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "alice-" + System.nanoTime());
+    }
+
+    private void spoke() {
+        ui.post(() -> { if (web != null) web.evaluateJavascript("window.aliceSpoke && aliceSpoke()", null); });
     }
 
     /** Bilgisayara ulaşılamadı: uygulamanın içindeki küçük hata sayfası (yeniden dene / adresi değiştir). */
@@ -190,6 +248,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         if (speech != null) speech.destroy();
+        if (tts != null) tts.shutdown();
+        Calls.ring(this, false);
         if (web != null) web.destroy();
         super.onDestroy();
     }
@@ -294,6 +354,16 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface public void notify(String title, String body, String tag) {
             EventService.notifyAlert(MainActivity.this, title, body, tag, "bell", null);
+        }
+
+        @JavascriptInterface public void ring(boolean on) { Calls.ring(MainActivity.this, on); }
+        @JavascriptInterface public void speak(String text) { ui.post(() -> speakNow(text)); }
+        @JavascriptInterface public void stopSpeaking() { ui.post(() -> { if (tts != null) tts.stop(); }); }
+        @JavascriptInterface public void keepScreen(boolean on) {
+            ui.post(() -> {
+                if (on) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            });
         }
 
         @JavascriptInterface public void setBadge(int n) { /* başlatıcı rozeti bildirim sayısından gelir */ }

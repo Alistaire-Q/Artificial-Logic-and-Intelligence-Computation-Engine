@@ -624,7 +624,7 @@ class AppState:
             "busy": a.busy or self._queued,
             "session": self.sid,
             "running": self.running(),
-            "pending": list(self.ui.pending.values()),
+            "pending": [p for ui in self.all_uis() for p in ui.pending.values()],
             "brain_chain": self.router.chain("brain"),
             "brain_pinned": "brain" in self.router.role_overrides,
             "thinking": self.router.thinking_level("brain"),
@@ -961,6 +961,17 @@ class AppState:
         except KeyError as e:
             return {"ok": False, "error": str(e.args[0]) if e.args else "görüşme yok"}
         return {"ok": False, "error": f"bilinmeyen işlem: {action}"}
+
+    def all_uis(self) -> list[Any]:
+        """Bütün canlı sohbetlerin arayüzleri: öndeki, arkada çalışanlar ve telefon görüşmesi. İzin ve seçim cevabı
+        hangisi sorduysa ona gider (önceden sadece öndeki sohbete gidiyordu, arkadaki sohbetin sorusu cevapsız kalırdı)."""
+        with self._chats_lock:
+            chats = [self.chat, *self.background.values()]
+        calls = getattr(self, "_calls", None)
+        c = calls.active() if calls is not None else None
+        if c is not None and c.chat is not None:
+            chats.append(c.chat)
+        return [ch.ui for ch in chats]
 
     # ------------------------------------------------------------------ Anahtarlar sekmesi
     def keys(self) -> dict[str, Any]:
@@ -1964,9 +1975,11 @@ def make_handler(state: AppState):
                     state.stop()
                     return self._json({"ok": True})
                 if p == "/api/permission":
-                    return self._json({"ok": state.ui.answer(str(d.get("id")), str(d.get("answer")))})
+                    pid, ans = str(d.get("id")), str(d.get("answer"))
+                    return self._json({"ok": any(ui.answer(pid, ans) for ui in state.all_uis())})
                 if p == "/api/choice":
-                    return self._json({"ok": state.ui.answer_choice(str(d.get("id")), str(d.get("answer") or ""))})
+                    pid, ans = str(d.get("id")), str(d.get("answer") or "")
+                    return self._json({"ok": any(ui.answer_choice(pid, ans) for ui in state.all_uis())})
                 if p == "/api/open":
                     url = str(d.get("url", ""))
                     if url.startswith(("http://", "https://")):
