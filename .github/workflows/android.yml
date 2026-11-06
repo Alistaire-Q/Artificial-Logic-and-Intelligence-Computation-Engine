@@ -37,21 +37,25 @@ jobs:
       - name: İmza anahtarı
         env:
           KS_B64: ${{ secrets.ALICE_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.ALICE_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.ALICE_KEY_ALIAS }}
         run: |
           if [ -n "$KS_B64" ]; then
             echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/alice.jks"
             echo "ALICE_KEYSTORE=$RUNNER_TEMP/alice.jks" >> "$GITHUB_ENV"
+            echo "ALICE_KEYSTORE_PASSWORD=$KS_PASS" >> "$GITHUB_ENV"
+            echo "ALICE_KEY_ALIAS=${KS_ALIAS:-alice}" >> "$GITHUB_ENV"
             echo "SIGNED=1" >> "$GITHUB_ENV"
           else
             echo "::warning::ALICE_KEYSTORE_B64 gizli değişkeni yok: APK geçici anahtarla imzalanıyor ve yayınlanmayacak."
-            mkdir -p ~/.android
-            keytool -genkeypair -keystore ~/.android/debug.keystore -storepass android -keypass android \
-              -alias androiddebugkey -dname "CN=Android Debug,O=Android,C=US" -keyalg RSA -keysize 2048 -validity 10000
+            keytool -genkeypair -keystore "$RUNNER_TEMP/debug.keystore" -storetype JKS \
+              -storepass android -keypass android -alias androiddebugkey \
+              -dname "CN=Android Debug,O=Android,C=US" -keyalg RSA -keysize 2048 -validity 10000
+            echo "ALICE_KEYSTORE=$RUNNER_TEMP/debug.keystore" >> "$GITHUB_ENV"
+            echo "ALICE_KEYSTORE_PASSWORD=android" >> "$GITHUB_ENV"
+            echo "ALICE_KEY_ALIAS=androiddebugkey" >> "$GITHUB_ENV"
           fi
       - name: Derle
-        env:
-          ALICE_KEYSTORE_PASSWORD: ${{ secrets.ALICE_KEYSTORE_PASSWORD }}
-          ALICE_KEY_ALIAS: ${{ secrets.ALICE_KEY_ALIAS }}
         run: ./gradlew --no-daemon assembleRelease
       - run: cp app/build/outputs/apk/release/app-release.apk ALICE.apk
       - uses: actions/upload-artifact@v4
