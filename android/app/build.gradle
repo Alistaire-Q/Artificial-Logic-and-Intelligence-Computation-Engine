@@ -25,6 +25,8 @@ android {
             def ks = System.getenv("ALICE_KEYSTORE")
             if (ks && new File(ks).exists()) {
                 storeFile new File(ks)
+                // Depoda/CI'da duran anahtar JKS: Java 17'nin varsayılanı PKCS12 olduğu için açıkça söylenir.
+                storeType System.getenv("ALICE_KEYSTORE_TYPE") ?: "JKS"
                 storePassword System.getenv("ALICE_KEYSTORE_PASSWORD")
                 keyAlias System.getenv("ALICE_KEY_ALIAS") ?: "alice"
                 keyPassword System.getenv("ALICE_KEY_PASSWORD") ?: System.getenv("ALICE_KEYSTORE_PASSWORD")

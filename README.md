@@ -152,6 +152,16 @@ Hiç anahtar yoksa ALICE sadece yerel Ollama'yı dener ve bunu açılışta söy
 
 **Kendi sunucun ya da başka bir OpenAI uyumlu servis:** Anahtarlar → **OpenAI uyumlu sunucu ekle**: ad, adres (ör. `http://localhost:1234/v1`), varsa anahtar ve istersen model listesi. ALICE önce `/models`'u dener; cevap gelirse `config.toml`'a `[providers.<ad>]` olarak yazar, modeller ölçülüp otomatik sıraya girer. LM Studio, vLLM, LiteLLM ya da kendi proxy'n için. Kartındaki çöp kutusuyla kaldırılır.
 
+**Claude Code proxy (CLIProxyAPI):** Claude Pro/Max aboneliğini bu bilgisayarda OpenAI uyumlu bir uca çeviren yerel köprü. ALICE onu `cliproxy` sağlayıcısı olarak tanır: `http://127.0.0.1:8317/v1`, anahtar `.env`'deki `CLIPROXY_API_KEY`. Abonelik kotasını harcadığı için otomatik zincire **girmez**; model menüsünden `claude-opus-5-5`, `claude-sonnet-5-5` gibi bir model seçilir.
+
+Kurulum bir kez:
+1. [CLIProxyAPI sürümlerinden](https://github.com/router-for-me/CLIProxyAPI/releases) Windows zip'ini indir, `~/.alice/cliproxy/` klasörüne çıkar (`cli-proxy-api.exe`).
+2. `config.yaml` ve `auths/` klasörü oradadır; istemci anahtarı `~/.alice/cliproxy/keys.txt`'te durur. Hesabı değiştirmek için `cli-proxy-api -claude-login` çalıştır (tarayıcı açılır, kendi hesabınla giriş yaparsın). Birden çok Claude hesabı bağlarsan `auths/` altında her hesap için bir dosya olur ve CLIProxyAPI istekleri aralarında paylaştırır; ALICE tarafında değişiklik gerekmez.
+3. `~/.alice/cliproxy/start.ps1` ile arka planda başlat (ya da `cli-proxy-api.exe -config config.yaml`). ALICE açıkken proxy'nin açık olması gerekir.
+4. Anahtarlar sayfasında `CLIPROXY_API_KEY` satırına `keys.txt`'teki değeri yaz (betik ilk kurulumda `.env`'e kendisi yazar).
+
+Not: Claude aboneliğini Claude Code dışındaki bir istemciden kullanmak Anthropic'in kullanım koşullarına aykırı olabilir ve hesabın kısıtlanma riski taşır. Resmî Claude API anahtarı (yukarıdaki Anthropic satırı), z.ai ya da başka sağlayıcılar risksiz alternatiflerdir.
+
 `.env`'in yeri: Windows'ta `C:\Users\<kullanıcı>\.alice\.env`, Linux/macOS'ta `~/.alice/.env`. Güncellemeyle yeni bir sağlayıcı gelince ALICE açılışta onun boş satırını (açıklaması ve bağlantısıyla) bu dosyaya kendisi ekler ve haber verir; dolu anahtarlarına dokunmaz. Dosya `.gitignore`'da, GitHub'a gitmez.
 
 Sonra:

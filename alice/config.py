@@ -503,6 +503,17 @@ max_input_tokens = 1000000
 auto = false
 models = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"]
 
+# Claude Code proxy (yerel CLIProxyAPI): Claude Pro/Max aboneliğini bu bilgisayarda OpenAI uyumlu uca çevirir
+# (varsayılan http://127.0.0.1:8317/v1). Abonelik kotasını harcadığı için otomatik zincire girmez; menüden seçilir.
+# Kurulum: README → "Claude Code proxy (CLIProxyAPI)".
+[providers.cliproxy]
+base_url = "http://127.0.0.1:8317/v1"
+api_key_env = "CLIPROXY_API_KEY"
+auto = false
+vision_models = ["claude-*"]
+max_input_tokens = 1000000
+models = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"]
+
 [providers.ollama]
 base_url = "http://localhost:11434/v1"
 api_key_env = ""
@@ -569,6 +580,8 @@ COHERE_API_KEY=
 AI_GATEWAY_API_KEY=
 # Anthropic (resmi Claude API, kullandıkça ücretli; elle seçilir) -> https://console.anthropic.com/settings/keys
 ANTHROPIC_API_KEY=
+# Claude Code proxy (yerel CLIProxyAPI; Claude Pro/Max aboneliği, elle seçilir) -> ~/.alice/cliproxy/keys.txt
+CLIPROXY_API_KEY=
 # Cloudflare Workers AI (günde 10.000 neuron ücretsiz) -> https://dash.cloudflare.com/profile/api-tokens
 # ("Workers AI" izinli token). Hesap kimliği: dash.cloudflare.com, sağ paneldeki "Account ID".
 CLOUDFLARE_API_TOKEN=

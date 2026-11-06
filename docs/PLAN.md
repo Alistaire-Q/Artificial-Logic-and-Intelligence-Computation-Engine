@@ -74,6 +74,14 @@ Aşağıda ilk üç madde için nasıl yapılacağı yazılı. Diğerlerinin ayr
 #157-#174 main'de. 2-3 Kasım işleri (HUD, telefon, önsezi, tarayıcı eklentisi, gözlem ve kanıt kontrolü, füze görme,
 gece döngüsü) #172'de; sesli konuşmanın 12 düzeltmesi #173'te; gerçek ses korpusu #174'te.
 
+### Durum (6 Kasım 2026)
+
+#175-#178: masaüstü Grafit arayüzü (#177), telefon uygulaması — yeni `/m` arayüzü, Android WebView uygulaması,
+sesle yazma, izin/soru bildirimleri (#178), uygulamanın kendini güncellemesi ve imza anahtarı, anahtar havuzu +
+resmî Claude API + arayüzden OpenAI uyumlu sunucu. Uygulama içi arama (kullanıcı ALICE'i arar, ALICE kullanıcıyı
+arar; PC tarafı `alice/app/call.py` + `phone_call` aracı, telefon tarafında arama ekranı, kilitliyken bildirim) ve
+yerel Claude Code proxy'si (`cliproxy` sağlayıcısı, CLIProxyAPI) aynı dalda. Ayrıntılar README'de.
+
 | Madde | Durum | Senden beklenen |
 |---|---|---|
 | HUD motoru (Ada) | Apple'ın Dynamic Island kurallarıyla tek "Ada" (açık buzlu cam, marka mavisi, sürekli köşe, yay animasyonu); kenar ışığı. ALICE'in imleci hedefe kayar, tıklamada halka yayılır; dinlerken dalga ve mavi parıltı; oyunda yalnız tehdit ve uyarı (`[hud] mode`, Ctrl+Alt+K); Ctrl+Alt+J son bildirimler; yönsüz tehdide radar simgesi; çalan şarkı. War Thunder'da kenarlıksız pencerede denendi, FPS'e etkisi yok | — |
