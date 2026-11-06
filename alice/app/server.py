@@ -1679,6 +1679,10 @@ def make_handler(state: AppState):
                 if wav is None:
                     return self._send(404, b"not found", "text/plain")
                 return self._send(200, wav, "audio/wav")
+            if u.path == "/api/cliproxy":  # Claude Code proxy hesapları (CLIProxyAPI)
+                from alice.app import cliproxy
+
+                return self._json(cliproxy.status())
             if u.path == "/api/remote/windows":
                 from alice.app import remote
 
@@ -1905,6 +1909,22 @@ def make_handler(state: AppState):
                     return self._json({"ok": True, "added": new})
                 if p.startswith("/api/call/"):
                     return self._json(state.call_action(p.rsplit("/", 1)[1], d))
+                if p.startswith("/api/cliproxy/"):
+                    from alice.app import cliproxy
+
+                    what = p.rsplit("/", 1)[1]
+                    if what == "login":
+                        return self._json(cliproxy.login_url(str(d.get("provider", ""))))
+                    if what == "remove":
+                        return self._json(cliproxy.remove(str(d.get("name", ""))))
+                if p == "/api/cliproxy/login/status":
+                    from alice.app import cliproxy
+
+                    return self._json(cliproxy.login_state(str(d.get("state", ""))))
+                if p == "/api/cliproxy/login/cancel":
+                    from alice.app import cliproxy
+
+                    return self._json(cliproxy.cancel_login(str(d.get("state", ""))))
                 if p == "/api/keys/set":
                     r = state.set_key(str(d.get("key", "")), str(d.get("value", "")))
                     return self._json(r, 200 if r.get("ok") else 400)

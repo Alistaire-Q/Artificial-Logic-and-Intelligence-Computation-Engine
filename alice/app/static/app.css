@@ -1807,8 +1807,9 @@ details > summary::marker { color: var(--faint); }
 .kc-key.wait .kc-dot { background: var(--warn); }
 .kc-key.bad .kc-dot { background: var(--err); }
 .kc-key .icon-btn { width: 26px; height: 26px; }
+.kc-key code { max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kc-add { display: flex; gap: var(--s2); }
-.kc-add input { flex: 1; }
+.kc-add input, .kc-add select { flex: 1; min-width: 0; }
 .kc-hint { color: var(--faint); font-size: 11.5px; line-height: 1.4; }
 
 /* ------------------------------------------------------------------ araçlar */

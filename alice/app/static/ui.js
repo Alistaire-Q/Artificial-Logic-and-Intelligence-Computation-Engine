@@ -2061,6 +2061,7 @@ function keysPane(pane, data) {
     const grid = el("div", "key-grid");
     for (const parts of list) grid.appendChild(keyRow(parts));
     if (g === "model") grid.appendChild(serverCard());
+    if (g === "model") grid.appendChild(cliproxyCard());
     pane.appendChild(grid);
   }
 }
@@ -2145,6 +2146,96 @@ function serverCard() {
   form.appendChild(fr);
   card.appendChild(form);
   open.addEventListener("click", () => { form.hidden = !form.hidden; if (!form.hidden) setTimeout(() => name.focus(), 0); });
+  return card;
+}
+/* Claude Code proxy (CLIProxyAPI): hesaplar burada yönetilir. Giriş tarayıcıda, kullanıcının kendi hesabıyla
+   yapılır; birden çok hesapta proxy istekleri sırayla paylaştırır, biri limite takılınca sıradakine geçer. */
+function cliproxyCard() {
+  const card = el("div", "key-card");
+  const head = el("div", "kc-head");
+  const dot = el("span", "kc-dot");
+  const l = el("span", "l");
+  l.append(el("b", "", "Claude Code proxy (hesaplar)"),
+    el("small", "", "Claude, ChatGPT, Antigravity… hesaplarını bağla; biri limite takılınca sıradakine geçilir"));
+  head.append(dot, l);
+  card.appendChild(head);
+  const body = el("div", "kc-pool");
+  card.appendChild(body);
+  const paint = (d) => {
+    body.replaceChildren();
+    dot.className = "kc-dot " + (d && d.running ? "ok" : "bad");
+    if (!d || !d.installed) {
+      body.appendChild(el("small", "kc-hint",
+        "CLIProxyAPI kurulu değil. Kurulum: ~/.alice/cliproxy (ALICE README → Claude Code proxy)."));
+      return;
+    }
+    if (!d.running) {
+      body.appendChild(el("small", "kc-hint",
+        "Proxy kapalı" + (d.error ? ": " + d.error : "") + " · ~/.alice/cliproxy/start.ps1 ile başlat."));
+    }
+    for (const a of d.accounts || []) {
+      const busy = a.disabled || a.quota_blocked || a.cooldown;
+      const row = el("div", "kc-key " + (busy ? "wait" : "ok"));
+      const q = a.quota && a.quota.label ? ` · ${a.quota.label} %${a.quota.percent}` : "";
+      const extra = a.needs_sign_in ? " · yeniden giriş gerekli"
+        : a.disabled ? " · kapalı"
+          : a.cooldown ? " · beklemede " + a.cooldown
+            : a.quota_blocked ? " · kota doldu" : "";
+      row.append(el("span", "kc-dot"), el("code", "", a.email || a.name),
+        el("small", "", (a.provider_name || a.provider) + q + extra));
+      row.appendChild(iconAct(IC.trash, "Hesabı kaldır", () => {
+        confirmDialog("Hesap kaldırılsın mı?", (a.email || a.name) + " · " + (a.provider_name || a.provider), "Kaldır")
+          .then((ok) => {
+            if (!ok) return;
+            api("/api/cliproxy/remove", { name: a.name }).then((r) => {
+              toast(r && r.ok ? "hesap kaldırıldı" : (r && r.error) || "kaldırılamadı");
+              refresh();
+            });
+          });
+      }, "danger"));
+      body.appendChild(row);
+    }
+    if (!(d.accounts || []).length) {
+      body.appendChild(el("small", "kc-hint", "Henüz hesap yok. Aşağıdan bir servis seçip kendi hesabınla giriş yap."));
+    }
+    if (d.running) {
+      const add = el("div", "kc-add");
+      const sel = el("select");
+      for (const p of d.providers || []) { const o = el("option", "", p.name); o.value = p.key; sel.appendChild(o); }
+      const go = el("button", "btn", "Hesap ekle (giriş)");
+      go.addEventListener("click", () => {
+        go.disabled = true;
+        api("/api/cliproxy/login", { provider: sel.value }).then((r) => {
+          go.disabled = false;
+          if (!r || !r.ok) return toast((r && r.error) || "giriş başlatılamadı");
+          const link = el("a", "btn primary", "Giriş sayfasını aç");
+          link.href = r.url; link.target = "_blank"; link.rel = "noopener noreferrer";
+          const hint = el("small", "kc-hint", "Tarayıcıda kendi hesabınla giriş yap; bitince hesap burada görünür.");
+          add.replaceChildren(link, hint);
+          try { link.click(); } catch (e) { /* tarayıcı engellediyse elle tıklanır */ }
+          let n = 0;
+          const timer = setInterval(async () => {
+            n += 1;
+            const s = await api("/api/cliproxy/login/status", { state: r.state });
+            if (s && s.status === "ok") {
+              clearInterval(timer);
+              toast("Hesap eklendi");
+              refresh();
+            } else if (n > 90 || (s && s.status === "error")) {
+              clearInterval(timer);
+              hint.textContent = (s && (s.error || (s.status === "error" ? "giriş tamamlanmadı" : ""))) || "zaman aşımı";
+            }
+          }, 2000);
+        });
+      });
+      add.append(sel, go);
+      body.appendChild(add);
+      body.appendChild(el("small", "kc-hint", "Birden çok hesap: istekler sırayla paylaştırılır; bir hesap limite " +
+        "takılınca proxy beklemeden sıradakine geçer (round-robin + otomatik failover)."));
+    }
+  };
+  const refresh = () => api("/api/cliproxy").then(paint);
+  refresh();
   return card;
 }
 function keyRow(parts) {

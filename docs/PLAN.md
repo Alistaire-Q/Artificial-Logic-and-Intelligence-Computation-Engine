@@ -80,7 +80,9 @@ gece döngüsü) #172'de; sesli konuşmanın 12 düzeltmesi #173'te; gerçek ses
 sesle yazma, izin/soru bildirimleri (#178), uygulamanın kendini güncellemesi ve imza anahtarı, anahtar havuzu +
 resmî Claude API + arayüzden OpenAI uyumlu sunucu. Uygulama içi arama (kullanıcı ALICE'i arar, ALICE kullanıcıyı
 arar; PC tarafı `alice/app/call.py` + `phone_call` aracı, telefon tarafında arama ekranı, kilitliyken bildirim) ve
-yerel Claude Code proxy'si (`cliproxy` sağlayıcısı, CLIProxyAPI) aynı dalda. Ayrıntılar README'de.
+yerel Claude Code proxy'si (`cliproxy` sağlayıcısı, CLIProxyAPI). Proxy hesapları uygulamadan bağlanıyor
+(Bağlantılar → Anahtarlar → "Claude Code proxy"): Claude, ChatGPT (Codex), Antigravity, Kimi, xAI; birden çok
+hesapta istekler sırayla paylaştırılıyor ve biri limite takılınca otomatik sıradakine geçiliyor. Ayrıntılar README'de.
 
 | Madde | Durum | Senden beklenen |
 |---|---|---|

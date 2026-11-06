@@ -503,16 +503,18 @@ max_input_tokens = 1000000
 auto = false
 models = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"]
 
-# Claude Code proxy (yerel CLIProxyAPI): Claude Pro/Max aboneliğini bu bilgisayarda OpenAI uyumlu uca çevirir
-# (varsayılan http://127.0.0.1:8317/v1). Abonelik kotasını harcadığı için otomatik zincire girmez; menüden seçilir.
-# Kurulum: README → "Claude Code proxy (CLIProxyAPI)".
+# Claude Code proxy (yerel CLIProxyAPI): Claude Pro/Max, ChatGPT (Codex), Antigravity gibi abonelikleri bu
+# bilgisayarda OpenAI uyumlu uca çevirir (varsayılan http://127.0.0.1:8317/v1). Hesaplar uygulamadaki
+# Bağlantılar → Anahtarlar → "Claude Code proxy" kartından eklenir; kotayı harcadığı için otomatik zincire
+# girmez, model menüsünden seçilir. Kurulum: README → "Claude Code proxy (CLIProxyAPI)".
 [providers.cliproxy]
 base_url = "http://127.0.0.1:8317/v1"
 api_key_env = "CLIPROXY_API_KEY"
 auto = false
 vision_models = ["claude-*"]
 max_input_tokens = 1000000
-models = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"]
+models = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1",
+          "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6.1-terra", "gpt-6-chat-thinking"]
 
 [providers.ollama]
 base_url = "http://localhost:11434/v1"
