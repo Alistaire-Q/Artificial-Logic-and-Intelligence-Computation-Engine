@@ -112,10 +112,13 @@ class SetupPanel:
         from alice.app.phone import lan_ip, token
 
         p = self.cfg.data.get("phone", {})
-        out: dict[str, Any] = {"enabled": bool(p.get("enabled")), "url": "", "qr": "",
+        from alice.app.phone import APP_URL
+
+        out: dict[str, Any] = {"enabled": bool(p.get("enabled")), "url": "", "qr": "", "app_url": APP_URL,
                                "qr_lib": importlib.util.find_spec("qrcode") is not None}
         if out["enabled"]:
-            url = f"http://{lan_ip()}:{int(p.get('port', 8765))}/quick?t={token()}"
+            # Telefon uygulamasının adresi: Android uygulaması bu QR'yi (…/m?t=…) tanır, yoksa tarayıcıda açılır.
+            url = f"http://{lan_ip()}:{int(p.get('port', 8765))}/m?t={token()}"
             out.update(url=url, qr=qr_svg(url))
         return out
 

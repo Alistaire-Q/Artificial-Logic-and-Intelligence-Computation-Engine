@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Bildirim çubuğu simgesi: tek renk "A" (Android bildirim simgelerini beyaz maske olarak çizer). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M11.2,3h1.6l6.7,18h-2.3l-1.8,-5H8.6l-1.8,5H4.5L11.2,3zM9.3,14h5.4L12,6.6L9.3,14z" />
+</vector>

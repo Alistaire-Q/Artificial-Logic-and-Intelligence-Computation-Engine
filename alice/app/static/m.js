@@ -630,7 +630,7 @@ function voiceSheet() {
     root = el("div", "voice");
     const top = el("div", "row");
     info = el("span", "", "Dinliyorum · 0:00");
-    top.append(info, el("span", "", "Bırakınca gönderir"));
+    top.append(info, el("span", "", "Susunca gönderir"));
     wave = el("div", "wave");
     for (let i = 0; i < 18; i++) wave.appendChild(el("i"));
     heard = el("div", "heard", "");

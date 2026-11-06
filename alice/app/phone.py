@@ -6,7 +6,8 @@ Yerel ağa açılan ayrı bir sunucu (varsayılan port 8765). Telefonda adres:
 Anahtar ~/.alice/phone-token dosyasında kalıcıdır; böylece telefondaki yer imi ve otomasyon
 her açılışta çalışır. `alice phone --new-token` ile değiştirilir.
 
-Not: Yerel ağda düz HTTP olduğu için tarayıcı mikrofonu telefonda açmaz; yazarak sorulur.
+Android uygulaması (android/, APP_URL'den indirilir) aynı sayfayı açar; konuşma tanıma, bildirim ve QR ile bağlanma
+ekler. Tarayıcıda düz HTTP'de mikrofon açılmaz; orada sesli yazma telefonun ses kaydedicisiyle yapılır.
 """
 
 from __future__ import annotations
@@ -17,6 +18,10 @@ import time
 from pathlib import Path
 
 from alice.config import Config, alice_home
+from alice.updater import REPO
+
+# GitHub'daki "android" sürümüne CI'ın yüklediği APK (.github/workflows/android.yml).
+APP_URL = f"https://github.com/{REPO}/releases/download/android/ALICE.apk"
 
 
 def lan_ip() -> str:
@@ -100,7 +105,8 @@ def phone_cmd(argv: list[str]) -> int:
     cfg = load_config()
     ps = PhoneServer(cfg, new_token="--new-token" in argv)
     console.print(f"[bold magenta]ALICE telefon köprüsü[/] açık.\n"
-                  f"Telefonda aç (aynı Wi-Fi): [bold]{ps.url}[/]\n"
+                  f"Telefon uygulaması (Android): {APP_URL}\n"
+                  f"QR'yi telefonun kamerasıyla okut, \"ALICE ile aç\"ı seç (aynı Wi-Fi): [bold]{ps.url}[/]\n"
                   f"Projeler (izle, cevapla, onayla): {ps.projects_url}\n"
                   f"Canlı saat verisi: POST {ps.watch_url}  başlık X-Alice-Token: {ps.state.token}  "
                   'gövde {"hr": 88}')

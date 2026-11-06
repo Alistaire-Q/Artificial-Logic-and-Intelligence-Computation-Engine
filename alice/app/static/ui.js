@@ -1772,14 +1772,18 @@ function setupPane(pane) {
     // Telefon
     body.appendChild(el("div", "sec", "Telefon"));
     const ph = d.phone;
-    const c4 = card("Telefondan ALICE", "Aynı Wi-Fi'deki telefonun tarayıcısından yazarak sor, projeleri izle. Çekirdek açıkken çalışır.",
+    const c4 = card("Telefondan ALICE", "Android uygulamasıyla sohbet, sesle yazma, projeler, bilgisayar kontrolü ve onay bildirimleri. Aynı Wi-Fi'de, çekirdek açıkken çalışır.",
       segmented([[true, "Açık"], [false, "Kapalı"]], !!ph.enabled, (on) => act("phone_enable", { on }).then(done(on ? "telefon köprüsü açılıyor" : "telefon köprüsü kapatıldı"))));
     if (ph.enabled) {
       const box = el("div", "phone-box");
       // Resim olarak: satır içi SVG'yi uygulamanın simge kuralı (svg { fill: none; stroke }) boyayıp siliyordu.
       if (ph.qr) { const q = el("img", "phone-qr"); q.alt = "QR kod"; q.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(ph.qr); box.appendChild(q); }
       const info = el("div", "phone-info");
-      info.append(el("small", "", "Telefonun kamerasıyla okut ya da adresi aç:"), el("code", "", ph.url));
+      info.append(el("small", "", "1. Telefona uygulamayı kur:"));
+      const dl = el("a", "", "ALICE.apk indir ↗");
+      dl.addEventListener("click", (e) => { e.preventDefault(); api("/api/open", { url: ph.app_url }); });
+      info.appendChild(dl);
+      info.append(el("small", "", "2. QR'yi telefonun kamerasıyla okut, \"ALICE ile aç\"ı seç (uygulama yoksa tarayıcıda açılır):"), el("code", "", ph.url));
       if (!ph.qr_lib) info.appendChild(el("small", "", "QR kod için: pip install qrcode"));
       info.appendChild(btn("Yeni anahtar", () => act("phone_new_token").then(done("eski adres artık çalışmaz"))));
       box.appendChild(info);

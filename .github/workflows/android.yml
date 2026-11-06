@@ -1,0 +1,64 @@
+name: Android
+
+# Telefon uygulamasını (android/) derler. main'e gelince APK "android" sürümüne (release) yüklenir:
+#   https://github.com/<sahip>/<depo>/releases/download/android/ALICE.apk
+# İmza: depo gizli değişkenlerinde ALICE_KEYSTORE_B64 (base64 .jks) ve ALICE_KEYSTORE_PASSWORD varsa her sürüm aynı
+# anahtarla imzalanır ve telefondaki uygulama silinmeden güncellenir. Yoksa her derlemede yeni bir hata ayıklama
+# anahtarı kullanılır; o zaman güncellemek için eski uygulamayı silip yenisini kurmak gerekir.
+
+on:
+  push:
+    branches: [main, master]
+    paths: ["android/**", ".github/workflows/android.yml"]
+  pull_request:
+    paths: ["android/**", ".github/workflows/android.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: İmza anahtarı
+        env:
+          KS_B64: ${{ secrets.ALICE_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/alice.jks"
+            echo "ALICE_KEYSTORE=$RUNNER_TEMP/alice.jks" >> "$GITHUB_ENV"
+          else
+            mkdir -p ~/.android
+            keytool -genkeypair -keystore ~/.android/debug.keystore -storepass android -keypass android \
+              -alias androiddebugkey -dname "CN=Android Debug,O=Android,C=US" -keyalg RSA -keysize 2048 -validity 10000
+          fi
+      - name: Derle
+        env:
+          ALICE_KEYSTORE_PASSWORD: ${{ secrets.ALICE_KEYSTORE_PASSWORD }}
+        run: ./gradlew --no-daemon assembleRelease
+      - run: cp app/build/outputs/apk/release/app-release.apk ALICE.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ALICE-apk
+          path: android/ALICE.apk
+      - name: Sürüme yükle
+        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view android >/dev/null 2>&1 || gh release create android --title "ALICE telefon uygulaması" \
+            --notes "Android uygulaması. Telefonda indirip kur; bilgisayarda alice phone'un QR kodunu okut." --latest=false
+          gh release upload android ALICE.apk --clobber

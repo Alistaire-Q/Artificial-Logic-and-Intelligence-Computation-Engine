@@ -882,7 +882,24 @@ Saat verisi geldiğinde:
 * Nabzın uçuş dışında 10 dakika boyunca 125'in üstünde kalırsa ALICE "iyi misin?" diye sorar. Yanlış alarm olmasın diye önce hızlı karar modeline danışır.
 * Uçuş raporunda nabız grafiği de çıkar.
 
-**Telefondan ALICE:** `alice phone` bir adres ve QR kod gösterir (`pip install qrcode` kuruluysa). Aynı Wi-Fi'deyken telefonun tarayıcısında açınca hızlı bar gelir. Adresteki uzun anahtar olmadan erişilemez, anahtar `~/.alice/phone-token` dosyasında durur (`--new-token` ile değişir). Bağlantı yerel ağda düz HTTP olduğu için sadece güvendiğin ağda aç. Telefonda mikrofon çalışmaz, yazarak sorarsın.
+**Telefondan ALICE (Android uygulaması):**
+
+1. Bilgisayarda **Sistem → Kurulum → Telefondan ALICE**'yi aç (ya da terminalde `alice phone`). Bir QR kod ve adres çıkar.
+2. Telefona uygulamayı kur: [ALICE.apk](https://github.com/hayatexe/Artificial-Logic-and-Intelligence-Computation-Engine/releases/download/android/ALICE.apk). Android "bilinmeyen kaynak" izni ister; bir kez ver.
+3. QR'yi telefonun kamerasıyla okut ve "ALICE ile aç"ı seç (ya da uygulamanın içinden "QR kodu okut"). Telefon ve bilgisayar aynı Wi-Fi'de olmalı.
+
+Uygulamada beş sekme var:
+* **Sohbet:** geçmiş sohbetler (uzun bas: adlandır, sabitle, sil), adımlar kartı, görsel ekleme, mod/model/düşünme seçimi. Mikrofon düğmesine dokununca telefonun konuşma tanıması açılır, söylediğin canlı yazıya dökülür, susunca gönderilir.
+* **Projeler:** kartlar, ajanın sorusuna karttan cevap, ajanın konuşması, inceleme (onayla / düzeltme iste), yeni proje.
+* **Bilgisayar:** canlı ekran (dokun: tam boy), CPU/RAM/GPU/sıcaklık ve son 10 dakikanın küçük grafikleri, çalan şarkı, açık pencereler (dokun: öne getir), bilgisayarda yaz/aç/panoya kopyala, kilitle/uyku/HUD/kapat.
+* **Bildirim:** ALICE'in izin istediği işler, seçenekli soruları ve projelerin soruları; bilgisayardaki olayların zaman çizgisi.
+* **Daha fazla:** bugünün özeti, Rahatsız etme ve "Hey Alice" anahtarları, otomasyonlar, notlar, sağlık, model, görünüm, bağlantı.
+
+Uygulama kapalıyken de ALICE izin istediğinde bildirim gelir; bildirimdeki **İzin ver / Reddet** ile uygulamayı açmadan cevaplarsın. Bilgisayardaki önemli uyarılar (GPU ısındı, disk doldu) ve projelerin soruları da bildirim olarak düşer. Bunun için uygulama sessiz bir "ALICE bağlı" bildirimiyle arka planda bağlı kalır.
+
+Adresteki uzun anahtar olmadan erişilemez; anahtar `~/.alice/phone-token` dosyasında durur (`alice phone --new-token` ile değişir, sonra uygulamada **Daha fazla → Bağlantı**'dan yeniden okut). Bağlantı yerel ağda düz HTTP olduğu için sadece güvendiğin ağda aç. Uygulama olmadan telefonun tarayıcısında da aynı sayfa açılır; orada sesle yazma telefonun ses kaydedicisiyle yapılır.
+
+APK'yi GitHub her `android/` değişikliğinde kendisi derler. Telefondaki uygulamanın silinmeden güncellenmesi için depoya bir imza anahtarı ekle: `keytool -genkeypair -keystore alice.jks -alias alice -keyalg RSA -validity 10000`, sonra GitHub'da Settings → Secrets → Actions'a `ALICE_KEYSTORE_B64` (`base64 -w0 alice.jks` çıktısı) ve `ALICE_KEYSTORE_PASSWORD`. Anahtar yoksa her derleme farklı imzalanır ve güncellemek için eski uygulamayı silmek gerekir.
 
 ## Ev: bilgisayar, Wi-Fi, TV ve telefon
 
