@@ -26,11 +26,26 @@ from alice.voice.live import AudioOut, LiveError, LiveUI, sanitize_schema
 REALTIME_PROMPT = """# Canlı sesli konuşma
 Kullanıcıyla sesli, canlı konuşuyorsun. Doğal, sıcak ve kısa konuş (genelde 1-2 cümle), Türkçe.
 Liste, kod, uzun yol ya da sayı okuma; gerekirse ekrana koyduğunu söyle.
-Bir iş istenince ilgili aracı hemen çağır. Sen hiçbir şey demeden araç çağırırsan kullanıcı kısa bir
-"Bir saniye." duyar; araç sonucundan sonra bunu tekrarlama, doğrudan sonucu söyle.
+Sen hızlı bir ses modelisin; bilgi, açıklama, plan, kod, hesap, güncel bir şey ya da ALICE'in araçlarıyla
+yapılacak bir iş istenince `think` aracını çağır. Önce tek kısa cümleyle ("Bir bakayım.") haber ver, sonra
+`think`in döndürdüğü sonucu kendi cümlelerinle, kısa ve doğal biçimde anlat. Sonucu olduğu gibi okuma.
+`think` bir soru sorduysa (güçlü modelin sana ihtiyacı olan bilgi) o soruyu kullanıcıya aynen ilet ve cevabını
+bekle; cevabı yine `think` aracına istek olarak ver. Bir iş sürüyorsa aynı konuşmayı sürdür.
+Sen hiçbir şey demeden araç çağırırsan kullanıcı kısa bir "Bir saniye." duyar; araç sonucundan sonra bunu
+tekrarlama, doğrudan sonucu söyle.
 Araçların vermediği sayıları ve durumları asla uydurma; bilmiyorsan söyle.
 Mikrofon oyun/video/başkalarının konuşmasını da duyar; sana söylenmemiş, anlamsız ya da Türkçe olmayan
 cümlelere cevap verme, sessiz kal. Her zaman Türkçe konuş."""
+
+THINK_TOOL = {
+    "type": "function",
+    "name": "think",
+    "description": ("Bilgi, açıklama, plan, kod, hesap, güncel bilgi ya da ALICE'in araçlarıyla yapılacak işleri "
+                    "güçlü modele devret. Sonucu kullanıcıya kısa cümlelerle anlat; soru dönerse kullanıcıya ilet."),
+    "parameters": {"type": "object", "properties": {
+        "request": {"type": "string", "description": "Kullanıcının isteği; eksiksiz, olduğu gibi"}},
+        "required": ["request"]},
+}
 
 HUSH_WORDS = ("sus", "sussana", "kes", "yeter", "boşver", "kapat")
 
@@ -71,6 +86,9 @@ class RealtimeSession:
         self.idle = min(float(v.get("live_idle", 5)), 5)
         self.silence_ms = int(v.get("live_silence_ms", 600))
         self.tools_on = bool(v.get("live_tools", True))
+        # Hızlı ses modeli zayıf: bilgi/plan/kod/araç işlerini güçlü modele devreden think aracı.
+        self.think = bool(v.get("live_think", True))
+        self._think_lock = threading.Lock()
         self.gated = False
         self.hushed = False
         self.last_active = 0.0
@@ -139,8 +157,9 @@ class RealtimeSession:
         return (base + "\n\n" + REALTIME_PROMPT)[:12000]
 
     def _tool_specs(self) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = [THINK_TOOL] if self.think else []
         if not self.tools_on:
-            return []
+            return out
         tools = getattr(self.agent, "tools", None)
         if isinstance(tools, dict):
             raw = [t.spec() for name, t in tools.items() if not name.startswith("mcp__") and name != "load_tools"]
@@ -148,8 +167,7 @@ class RealtimeSession:
             try:
                 raw = self.agent.tool_specs()
             except Exception:  # noqa: BLE001
-                return []
-        out: list[dict[str, Any]] = []
+                return out
         for spec in raw:
             f = spec.get("function", spec)
             if not f.get("name"):
@@ -306,7 +324,9 @@ class RealtimeSession:
                         break
                     if frame:
                         send_pcm(resample_16_to_24(frame))
-                        touch()
+                        # Sessizlik kareleri oturumu açık tutmasın: 5 sn kimse konuşmazsa kapanır.
+                        if any(frame):
+                            touch()
                 if pending_audio:
                     send_pcm(pending_audio)
                     pending_audio = b""
@@ -370,9 +390,17 @@ class RealtimeSession:
                     continue
                 elif kind == "error":
                     self.log(f"realtime hata: {json.dumps(ev.get('error') or ev, ensure_ascii=False)[:300]}")
-                    err = (ev.get("error") or {}).get("code") or ""
-                    if err in ("invalid_api_key", "insufficient_quota", "session_expired"):
-                        raise LiveError(f"realtime: {err}")
+                    info = ev.get("error") or {}
+                    err = str(info.get("code") or info.get("type") or "")
+                    msg = str(info.get("message") or "")
+                    if err in ("invalid_api_key", "session_expired"):
+                        raise LiveError(f"realtime oturumu geçersiz: {err}. {msg[:120]}")
+                    if any(k in (err + msg).lower() for k in ("rate limit", "quota", "exhausted", "billing", "429")):
+                        # Kota/limit doldu: her "Hey Alice"te yeniden denemek yerine VoiceAssistant
+                        # bir saat normal sesli yola döner (LiveError.limited bunu message'dan anlar).
+                        raise LiveError(f"realtime quota/rate limit: {err}. {msg[:160]}")
+                    if err in ("invalid_model",):
+                        raise LiveError(f"realtime modeli desteklenmiyor: {msg[:160]}")
         finally:
             self.agent.ui = old_ui
             try:
@@ -427,6 +455,8 @@ class RealtimeSession:
             self.log(f"realtime: araç sonucu gönderilemedi: {e}")
 
     def _run_tool(self, call: dict[str, Any]) -> ToolResult:
+        if call.get("function", {}).get("name") == "think":
+            return self._think(str(call["function"].get("arguments") or "{}"))
         if self._tools_q is None:
             q: queue.Queue = queue.Queue()
             self._tools_q = q
@@ -437,6 +467,36 @@ class RealtimeSession:
             self.log(f"realtime araç takıldı: {call['function']['name']}")
             return ToolResult(f"{call['function']['name']} {self.TOOL_TIMEOUT:.0f} sn içinde bitmedi", is_error=True)
         return job["res"]
+
+    def _think(self, raw: str) -> ToolResult:
+        """Hızlı ses modelinin işi güçlü modele devretmesi: ALICE ajanı isteği kendi araçlarıyla yürütür.
+
+        Ajanın cevabı (bir soru da olabilir) modele döner; canlı model onu kullanıcıya söyler. Aynı ajan
+        nesnesi kullanıldığı için sonraki `think` çağrıları konuşmayı kaldığı yerden sürdürür."""
+        try:
+            args = json.loads(raw or "{}")
+            request = str(args.get("request") or "").strip()
+        except (TypeError, ValueError):
+            return ToolResult("think: argüman geçerli JSON değil", is_error=True)
+        if not request:
+            return ToolResult("think: istek boş", is_error=True)
+        if not self._think_lock.acquire(timeout=2):
+            return ToolResult("think: önceki istek hâlâ çalışıyor, bitince tekrar sor", is_error=True)
+        try:
+            text = request
+            try:
+                from alice.voice.assistant import with_clock
+
+                text = with_clock(request)
+            except Exception:  # noqa: BLE001 - saat eklenemezse istek olduğu gibi gider
+                pass
+            try:
+                reply = str(self.agent.run_turn(text) or "").strip()
+            except Exception as e:  # noqa: BLE001 - canlı konuşma düşmesin
+                return ToolResult(f"think hatası: {type(e).__name__}: {e}", is_error=True)
+            return ToolResult(reply or "Güçlü model boş cevap döndürdü.", is_error=not reply)
+        finally:
+            self._think_lock.release()
 
     def _tool_worker(self, q: "queue.Queue[dict[str, Any]]") -> None:
         try:

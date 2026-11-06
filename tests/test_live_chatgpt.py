@@ -83,7 +83,41 @@ def test_session_config_has_audio_vad_and_tools():
     assert session["model"] == "gpt-realtime-2.1"
     assert session["audio"]["output"]["voice"] == "marin"
     assert session["audio"]["input"]["turn_detection"]["silence_duration_ms"] == 600
-    assert session["tools"][0]["name"] == "weather"
+    names = [t["name"] for t in session["tools"]]
+    assert "think" in names and "weather" in names
+
+
+def test_think_delegates_to_agent():
+    s = make_session()
+    s.agent.run_turn = lambda text: "Güçlü model cevabı: 23 derece"
+    call = {"id": "c", "type": "function",
+            "function": {"name": "think", "arguments": json.dumps({"request": "hava nasıl?"})}}
+    res = s._run_tool(call)
+    assert not res.is_error and "23 derece" in res.text
+
+
+def test_silence_frames_do_not_keep_session_open():
+    ws = FakeWS([{"type": "session.created"}])
+    s = make_session(live_idle=0.3)
+    s._connect = lambda url, secret: ws
+    s._secret = lambda: "test-secret"  # noqa: SLF001
+    s._out_factory = RecordingOut
+    frames: queue.Queue = queue.Queue()
+    stop = threading.Event()
+    running = threading.Event()
+    running.set()
+
+    def mic():
+        while running.is_set():
+            frames.put(b"\x00\x00" * 480)  # sessizlik
+            time.sleep(0.03)
+
+    threading.Thread(target=mic, daemon=True).start()
+    t0 = time.monotonic()
+    s.converse("", frames, stop)
+    elapsed = time.monotonic() - t0
+    running.clear()
+    assert elapsed < 2.0  # sessizlikte kapanır (5 sn'lik ayar burada 0.3 sn)
 
 
 def test_converse_plays_audio_and_sends_mic_frames():

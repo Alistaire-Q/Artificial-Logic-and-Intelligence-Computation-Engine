@@ -750,8 +750,11 @@ alice voice on        # çekirdekle birlikte açılsın (kapatmak: alice voice o
 **ALICE Live (canlı konuşma) arka ucu.** "Hey Alice"ten sonra sesten sese konuşmayı iki arka uç yapabilir:
 
 * **ChatGPT Realtime (varsayılan):** Yerel Claude Code proxy'si (CLIProxyAPI) üzerinden ChatGPT (Codex) hesabınla OpenAI Realtime uyumlu `/v1/realtime` ucunu kullanır. Ses en doğal olan bu: mikrofon 24 kHz PCM olarak akar, model susunca cevap üretir, araya girersen anında susar, ALICE'in araçları function calling ile çalışır (izin/onay yolu aynı). Proxy açık değilse ALICE açılışta kendisi başlatır; ChatGPT hesabı bağlı değilse Gemini Live'a düşer.
+  * **Zayıf ses modeli, güçlü beyin:** Canlı model bilgi/plan/kod/araç işlerini bir `think` aracıyla ALICE'in güçlü modeline (brain zinciri, ör. Opus) devreder; güçlü modelin cevabını (ve sorduğu soruyu) canlı model kullanıcıya sesli anlatır. Kapatmak için `[voice] live_think = false`.
   * `[voice] live_backend = "auto" | "chatgpt" | "gemini"` (auto: önce ChatGPT, olmazsa Gemini).
   * `[voice] live_realtime_model = "gpt-realtime-2.1"`, `live_realtime_voice = "marin"`.
+  * Sessizlikte 5 saniye sonra oturum ve bağlantı kapanır; konuşma yokken sürekli istek gitmez. Kota/limit hatasında ALICE bir saat normal sesli yola döner, aynı isteği tekrar tekrar denemez.
+  * Not: Bu yol Codex canlı ses modelini kullanır; ChatGPT uygulamasındaki **GPT-Live-1.1 / Quip** sesi API'de sunulmuyor, proxy de sesi `marin`e sabitliyor. Yani konuşma gerçek sesten-sese modelle oluyor, düz TTS değil; ama uygulamadaki "Quip" tonu değil.
   * Gereken: `~/.alice/cliproxy` kurulu ve ChatGPT hesabı Bağlantılar → Anahtarlar → "Claude Code proxy" kartından bağlı.
 * **Gemini Live (yedek):** `GEMINI_API_KEY` varsa eski canlı konuşma aynen çalışır (Gemini sesleri, `live_models`, `live_voice`).
 
