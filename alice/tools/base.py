@@ -23,6 +23,7 @@ class ToolResult:
     images: list[str] = field(default_factory=list)  # base64 PNG
     is_error: bool = False
     diff: str = ""  # arayüzde gösterilecek unified diff (modele gitmez)
+    files: list[dict[str, Any]] = field(default_factory=list)  # kullanıcıya kart olarak gösterilecek dosyalar (send_file)
 
 
 class ToolError(Exception):

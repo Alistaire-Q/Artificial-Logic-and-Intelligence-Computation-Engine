@@ -189,6 +189,8 @@ live_backend = "auto"
 # ChatGPT Realtime modeli ve sesi (proxy'nin /v1/realtime ucu).
 live_realtime_model = "gpt-realtime-2.1"
 live_realtime_voice = "marin"
+# Hoparlör yankısının ALICE'in cevabını yarıda kesmesini önler. Kulaklıkla gerçek barge-in istersen false yap.
+live_realtime_echo_guard = true
 # Alice sustuktan sonra bu kadar saniye kimse konuşmazsa canlı konuşma kapanır, yeniden "Hey Alice" beklenir
 # (en fazla 5: yanındakilerle konuşurken söylenenler komut sanılmasın).
 live_idle = 5
@@ -404,6 +406,21 @@ openrouter_jev_model = "~typesafe/jev-latest"
 openrouter_jev_api_key_env = "OPENROUTER_API_KEY"
 # Bu güvenin altındaki kararlar reflex döngüsünde beyne (System 2) devredilir.
 min_confidence = 0.55
+
+# Jev ile otomatik model yönlendirme (alice/providers/jev_route.py). Her mesajda Jev birkaç küçük yargı verir
+# (kod mu, ne kadar düşünme, kaç adımlı iş, sohbet mi); kod katmanı seçer:
+#   strong: kod, derin düşünme, çok adımlı iş -> aşağıdaki modeller, sonra beyin zinciri
+#   light : sohbet ya da kısa soru            -> "light" (boşsa hızlı/fast zinciri), sonra beyin zinciri
+#   normal: geri kalan her şey                -> beyin zinciri
+# TypeSafe anahtarı yoksa, Jev hata verirse ya da menüden model sabitlendiyse her zaman normal zincir.
+[routing]
+enabled = true
+strong = ["cliproxy:claude-opus-5-5", "chatgpt:gpt-5.6-terra"]
+light = []
+# Sesli konuşmanın think'i de yönlendirilsin mi. Seste hız önce: sadece ağır işler (strong) voice_strong'a gider,
+# gerisi [voice] live_think_models sırasıyla devam eder.
+voice = true
+voice_strong = ["cliproxy:claude-sonnet-5-5"]
 
 [providers.gemini]
 base_url = "https://generativelanguage.googleapis.com/v1beta/openai"

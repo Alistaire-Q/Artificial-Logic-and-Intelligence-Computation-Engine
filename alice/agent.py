@@ -293,6 +293,8 @@ class Agent:
         self.ctx.state["tool_names"] = tuple(self.tools)
         enabled |= groups_for_text(text, self.tools)
         enabled |= {g for g in map(group_of, tool_names) if g}
+        if getattr(getattr(self, "permissions", None), "mode", "") == "plan" and not getattr(self, "is_child", False):
+            enabled.add("plan")  # plan modunda exit_plan_mode hep hazır olsun
 
     def spawn_child(self) -> "Agent":
         return Agent(self.config, self.router, list(self.tools.values()), self.ctx, self.permissions, self.ui,
@@ -353,9 +355,51 @@ class Agent:
         self.refresh_memory()
         self.sync_catalog()
         recall = self._recall(user_text)
-        final = self._run_turn(user_text, max_steps, images, recall)
+        old_role = self.role
+        routed = self._route_role(user_text)
+        if routed:
+            self.role = routed
+        try:
+            final = self._run_turn(user_text, max_steps, images, recall)
+        finally:
+            self.role = old_role
         self._remember_turn(user_text, final)
         return final
+
+    ROUTE_ROLES = {"strong": "route-strong", "light": "route-light"}
+
+    def _route_role(self, user_text: str) -> str | None:
+        """Jev ile bu tur için model katmanı (alice/providers/jev_route.py). Sadece ana beyin turunda; menüden
+        elle seçilen model (sabitleme) ya da kapalı [routing] varken dokunulmaz. None = bugünkü zincir."""
+        rc = self.config.data.get("routing", {}) or {}
+        router = self.router
+        if (not rc.get("enabled") or self.is_child or self.role != "brain"
+                or "brain" in getattr(router, "role_overrides", {"brain": 1})):
+            return None
+        from alice.providers import jev_route
+
+        prev = ""
+        for m in reversed(self.messages[1:]):
+            if m.get("role") == "assistant" and isinstance(m.get("content"), str) and m["content"].strip():
+                prev = m["content"]
+                break
+        log = getattr(router, "on_event", None) or (lambda s: None)
+        r = jev_route.route(self.config, user_text, prev, log=log)
+        try:
+            log(f"yönlendirme: {r.tier} ({r.reason}) {r.signals} {r.latency:.2f} sn")
+        except Exception:  # noqa: BLE001
+            pass
+        role = self.ROUTE_ROLES.get(r.tier)
+        if role is None:
+            return None
+        try:
+            chain = jev_route.tier_chain(router, self.config, r.tier)
+        except Exception:  # noqa: BLE001 - zincir kurulamazsa bugünkü davranış
+            return None
+        if not chain:
+            return None
+        router.role_overrides[role] = chain
+        return role
 
     def _run_turn(self, user_text: str, max_steps: int | None, images: list[str] | None, recall: str) -> str:
         from alice.mentions import expand_mentions

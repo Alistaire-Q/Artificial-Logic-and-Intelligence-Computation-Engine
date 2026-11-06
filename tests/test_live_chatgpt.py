@@ -83,8 +83,40 @@ def test_session_config_has_audio_vad_and_tools():
     assert session["model"] == "gpt-realtime-2.1"
     assert session["audio"]["output"]["voice"] == "marin"
     assert session["audio"]["input"]["turn_detection"]["silence_duration_ms"] == 600
+    assert session["audio"]["input"]["turn_detection"]["interrupt_response"] is False
     names = [t["name"] for t in session["tools"]]
     assert "think" in names and "weather" in names
+
+
+def test_tool_schema_types_are_lowercase_for_realtime():
+    s = make_session()
+    s.agent.tools = {"read_file": NS(spec=lambda: {
+        "name": "read_file", "description": "dosya oku",
+        "parameters": {"type": "OBJECT", "properties": {
+            "path": {"type": "STRING"}, "count": {"type": "INTEGER"}}, "required": ["path"]}})}
+    session = s._session_config()["session"]
+    params = [t for t in session["tools"] if t["name"] == "read_file"][0]["parameters"]
+    assert params["type"] == "object"
+    assert params["properties"]["path"]["type"] == "string"
+    assert params["properties"]["count"]["type"] == "integer"
+
+
+def test_secret_uses_proxy_key_and_converse_sends_session_update():
+    """client_secrets 64 KiB sınırına takılmasın: proxy anahtarıyla bağlan, oturumu WS'ten güncelle."""
+    s = make_session()
+    s._proxy = {"base": "http://127.0.0.1:8317", "key": "proxy-key"}  # noqa: SLF001
+    assert s._secret() == "proxy-key"  # noqa: SLF001
+    assert s._send_update is True  # noqa: SLF001
+    ws = FakeWS([{"type": "session.created"}])
+    s._connect = lambda url, secret: ws
+    s._out_factory = RecordingOut
+    frames: queue.Queue = queue.Queue()
+    stop = threading.Event()
+    t = threading.Thread(target=s.converse, args=("", frames, stop), daemon=True)
+    t.start()
+    t.join(5)
+    updates = [m for m in ws.sent if m.get("type") == "session.update"]
+    assert updates and updates[0]["session"]["audio"]["output"]["voice"] == "marin"
 
 
 def test_think_delegates_to_agent():
@@ -144,6 +176,215 @@ def test_converse_plays_audio_and_sends_mic_frames():
     appends = [m for m in ws.sent if m.get("type") == "input_audio_buffer.append"]
     assert appends and len(base64.b64decode(appends[0]["audio"])) == 720 * 2
     assert ws.closed
+
+
+def test_echo_guard_drops_mic_frames_while_assistant_audio_is_playing():
+    """Hoparlör yankısı yeni tur açıp Realtime cevabını iptal etmemeli."""
+    class SpeakingOut(RecordingOut):
+        def put(self, pcm):
+            super().put(pcm)
+            self.playing = True
+
+    ws = FakeWS([
+        {"type": "session.created"},
+        {"type": "response.output_audio.delta", "delta": base64.b64encode(b"\\x01\\x02" * 12).decode()},
+    ])
+    out = SpeakingOut()
+    s = make_session(live_idle=0.5)
+    s._connect = lambda url, secret: ws
+    s._secret = lambda: "test-secret"  # noqa: SLF001
+    s._out_factory = lambda: out
+    frames: queue.Queue = queue.Queue()
+    stop = threading.Event()
+    t = threading.Thread(target=s.converse, args=("", frames, stop), daemon=True)
+    t.start()
+    end = time.monotonic() + 2
+    while not out.playing and time.monotonic() < end:
+        time.sleep(0.01)
+    frames.put(b"\\x10\\x00" * 480)  # hoparlörden mikrofona geri dönen 30 ms kare
+    time.sleep(0.1)
+    stop.set()
+    t.join(3)
+    assert not [m for m in ws.sent if m.get("type") == "input_audio_buffer.append"]
+
+
+class TimedOut(RecordingOut):
+    """Gelen sesi gerçek zamanda çalıyormuş gibi: put'tan sonra `secs` boyunca playing True; close() kalanı keser."""
+
+    def __init__(self, secs):
+        super().__init__()
+        self.secs = secs
+        self.until = 0.0
+        self.closed_while_playing = None
+
+    @property
+    def playing(self):
+        return time.monotonic() < self.until
+
+    @playing.setter
+    def playing(self, value):
+        pass
+
+    def put(self, pcm):
+        super().put(pcm)
+        self.until = time.monotonic() + self.secs
+
+    def close(self):
+        self.closed_while_playing = self.playing
+
+
+def test_single_turn_waits_until_answer_is_played():
+    """Discord/oyunda tek cevap: response.done gelince ses bitmeden kapanıp cümleyi kesmemeli."""
+    ws = FakeWS([
+        {"type": "session.created"},
+        {"type": "response.output_audio.delta", "delta": base64.b64encode(b"\x01\x02" * 12).decode()},
+        {"type": "response.done", "response": {"status": "completed"}},
+    ])
+    out = TimedOut(0.6)
+    s = make_session()
+    s.single_turn = True
+    s._connect = lambda url, secret: ws
+    s._secret = lambda: "test-secret"  # noqa: SLF001
+    s._out_factory = lambda: out
+    t0 = time.monotonic()
+    s.converse("selam", queue.Queue(), threading.Event())
+    assert time.monotonic() - t0 >= 0.5
+    assert out.closed_while_playing is False
+
+
+def test_idle_window_starts_after_assistant_stops_talking():
+    """Ses gerçek zamandan hızlı gelir: sessizlik süresi son paketten değil, ALICE sustuktan sonra sayılmalı."""
+    ws = FakeWS([
+        {"type": "session.created"},
+        {"type": "response.output_audio.delta", "delta": base64.b64encode(b"\x01\x02" * 12).decode()},
+        {"type": "response.done", "response": {"status": "completed"}},
+    ])
+    out = TimedOut(0.8)
+    s = make_session(live_idle=0.3)
+    s._connect = lambda url, secret: ws
+    s._secret = lambda: "test-secret"  # noqa: SLF001
+    s._out_factory = lambda: out
+    t0 = time.monotonic()
+    s.converse("selam", queue.Queue(), threading.Event())
+    elapsed = time.monotonic() - t0
+    assert elapsed >= 0.8 + 0.3 - 0.05  # çalma + tam sessizlik penceresi
+    assert out.closed_while_playing is False
+
+
+def test_hush_still_cuts_immediately():
+    ws = FakeWS([
+        {"type": "session.created"},
+        {"type": "response.output_audio.delta", "delta": base64.b64encode(b"\x01\x02" * 12).decode()},
+        {"type": "conversation.item.input_audio_transcription.completed", "transcript": "Alice sus"},
+    ])
+    out = TimedOut(5.0)
+    s = make_session()
+    s._connect = lambda url, secret: ws
+    s._secret = lambda: "test-secret"  # noqa: SLF001
+    s._out_factory = lambda: out
+    t0 = time.monotonic()
+    s.converse("selam", queue.Queue(), threading.Event())
+    assert time.monotonic() - t0 < 2.0 and s.hushed
+
+
+def test_next_session_gets_previous_turns_and_log_has_reply():
+    """Discord'da her cümle yeni oturum: önceki konuşma talimata girmeli, log ALICE'in cevabını ve aracı yazmalı."""
+    logs = []
+    ws = FakeWS([
+        {"type": "session.created"},
+        {"type": "response.output_audio_transcript.done", "transcript": "Bir bakayım."},
+        {"type": "response.function_call_arguments.done", "call_id": "c1", "name": "think",
+         "arguments": "{\"request\": \"YouTube'da video aç\"}"},
+        {"type": "response.done", "response": {"status": "completed"}},
+        {"type": "response.output_audio_transcript.done", "transcript": "Açtım."},
+    ])
+    s = make_session()
+    s.log = logs.append
+    s._connect = lambda url, secret: ws
+    s._secret = lambda: "test-secret"  # noqa: SLF001
+    s._run_tool = lambda call: ToolResult("tamam")  # noqa: SLF001
+    s.converse("Alice, bana video açar mısın?", queue.Queue(), threading.Event())
+    line = [m for m in logs if m.startswith("realtime duyulan:")][0]
+    assert "video açar mısın" in line and "Bir bakayım. Açtım." in line and "think(" in line
+    instr = s._session_config()["session"]["instructions"]
+    assert "Az önceki konuşma" in instr and "video açar mısın" in instr and "Açtım." in instr
+    assert "aksan" in instr  # telaffuz talimatı kırpılmadı
+
+
+def test_voice_choice_and_unsupported_voice_falls_back():
+    assert make_session(live_realtime_voice="Cedar")._session_config()["session"]["audio"]["output"]["voice"] == "cedar"
+    # "quip" sunucuda yok: tüm session.update reddedilmesin
+    assert make_session(live_realtime_voice="quip")._session_config()["session"]["audio"]["output"]["voice"] == "marin"
+
+
+def test_session_stays_open_while_tool_runs():
+    """think 1 sn sürse de oturum 0,2 sn'lik sessizlikte kapanmamalı; sonuç modele gönderilmeli."""
+    ws = FakeWS([
+        {"type": "session.created"},
+        {"type": "response.function_call_arguments.done", "call_id": "c1", "name": "think",
+         "arguments": "{\"request\": \"video aç\"}"},
+        {"type": "response.done", "response": {"status": "completed"}},
+    ])
+    s = make_session(live_idle=0.2)
+    s._connect = lambda url, secret: ws
+    s._secret = lambda: "test-secret"  # noqa: SLF001
+
+    def slow(call):
+        time.sleep(1.0)
+        return ToolResult("açıldı")
+
+    s._run_tool = slow  # noqa: SLF001
+    s.converse("selam", queue.Queue(), threading.Event())
+    assert any((m.get("item") or {}).get("type") == "function_call_output" for m in ws.sent)
+
+
+def test_late_think_result_is_announced_when_session_closed():
+    s = make_session()
+    said = []
+    s.announce = said.append
+    s._run_tool = lambda call: ToolResult("YouTube'da bir video açtım.")  # noqa: SLF001
+
+    def closed(obj):
+        raise RuntimeError("bağlantı kapalı")
+
+    s._handle_calls([{"id": "c", "type": "function", "function": {"name": "think", "arguments": "{}"}}], closed)
+    assert said == ["YouTube'da bir video açtım."]
+
+
+def test_think_uses_fast_think_models_and_restores_role():
+    s = make_session(live_think_models=["gemini:fast", "chatgpt:big"])
+    seen = []
+    router = NS(role_overrides={}, auto_chain=lambda r: [], chain=lambda r: [])
+    s.agent.router = router
+    s.agent.role = "voice"
+    s.agent.run_turn = lambda text: seen.append(s.agent.role) or "tamam"
+    res = s._think(json.dumps({"request": "hava nasıl"}))  # noqa: SLF001
+    assert not res.is_error and seen == ["live-think"] and s.agent.role == "voice"
+    assert router.role_overrides["live-think"] == ["gemini:fast", "chatgpt:big"]
+
+
+def test_think_routes_heavy_request_to_voice_strong(monkeypatch):
+    from alice.providers import jev_route
+
+    s = make_session(live_think_models=["gemini:fast"])
+    s.cfg.data["routing"] = {"enabled": True, "voice_strong": ["cliproxy:claude-sonnet-5-5"]}
+    monkeypatch.setattr(jev_route, "route", lambda *a, **k: jev_route.Route("strong", "derin düşünme"))
+    router = NS(role_overrides={}, auto_chain=lambda r: [], chain=lambda r: [])
+    s.agent.router, s.agent.role = router, "voice"
+    s.agent.run_turn = lambda text: "plan hazır"
+    assert not s._think(json.dumps({"request": "haftalık spor programı çıkar"})).is_error  # noqa: SLF001
+    assert router.role_overrides["live-think"] == ["cliproxy:claude-sonnet-5-5", "gemini:fast"]
+
+
+def test_audio_out_counts_held_chunk_as_playing():
+    from alice.voice.live import AudioOut
+
+    o = AudioOut.__new__(AudioOut)
+    o.q = queue.Queue()
+    o.busy_until = 0.0
+    assert not o.playing
+    o._holding = True  # noqa: SLF001 - parça kuyruktan alındı, ön tampon bekleniyor
+    assert o.playing
 
 
 def test_converse_runs_tool_and_sends_result():

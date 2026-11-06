@@ -88,6 +88,26 @@ def account_key(provider: str) -> str:
     return f"{provider}:*:free"
 
 
+def _hidden_match(ref: str, hidden: set[str]) -> bool:
+    """Gizli mi: tam ad, sağlayıcı adı ya da desen ("cliproxy:kimi-*": proxy'deki bütün Kimi modelleri)."""
+    if ref in hidden or ref.partition(":")[0] in hidden:
+        return True
+    from fnmatch import fnmatchcase
+
+    return any("*" in h and fnmatchcase(ref, h) for h in hidden)
+
+
+def _short_error(err: str) -> str:
+    """Ölçüm hatasından okunur kısım: '[quota] {"error":{"message":"…"}}' -> mesaj."""
+    m = re.search(r'\\?"message\\?"\s*:\s*\\?"((?:[^"\\]|\\[^"])*)', err)  # ölçüm kaydı kırpılmış olabilir
+    if m:
+        try:
+            return json.loads(f'"{m.group(1)}"')[:300]
+        except ValueError:
+            return m.group(1)[:300]
+    return re.sub(r"^\[\w+\]\s*", "", err).strip()[:300]
+
+
 def parse_ref(ref: str) -> tuple[str, str]:
     provider, sep, model = ref.partition(":")
     if not sep or not model:
@@ -353,8 +373,7 @@ class Router:
         return {str(x) for x in self.config.agent.get("hidden_models") or []}
 
     def is_hidden(self, ref: str) -> bool:
-        h = self.hidden()
-        return ref in h or ref.partition(":")[0] in h
+        return _hidden_match(ref, self.hidden())
 
     def set_hidden(self, name: str, hidden: bool) -> list[str]:
         cur = [str(x) for x in self.config.agent.get("hidden_models") or []]
@@ -362,7 +381,7 @@ class Router:
         self.config.data.setdefault("agent", {})["hidden_models"] = cur
         return cur
 
-    def catalog_view(self) -> list[dict[str, Any]]:
+    def catalog_view(self) -> list[dict[str, Any]]:  # noqa: C901
         """Sağlayıcıya göre gruplanmış bütün bilinen modeller: ölçümde çalışanlar ve zincirlerde yazılı olanlar."""
         res = self.auto_cache.get("results") or {}
         dead = self._cached_dead()
@@ -371,6 +390,14 @@ class Router:
         for name, pc in self.providers_cfg.items():
             if not pc.auto and pc.enabled and pc.models:  # ücretli, elle seçilen (Claude API): menüde görünsün
                 refs.update(f"{name}:{m}" for m in pc.models)
+        cp = self.providers_cfg.get("cliproxy")
+        if cp is not None and cp.enabled and getattr(self, "_real_clients", False):
+            try:  # proxy'ye bağlı hesapların gerçek model listesi (Kimi, Antigravity, yeni hesaplar)
+                from alice.app.cliproxy import live_models, tidy_models
+
+                refs.update(f"cliproxy:{m}" for m in tidy_models(live_models()))
+            except Exception:  # noqa: BLE001
+                pass
         cg = self.providers_cfg.get("chatgpt")
         if cg is not None and cg.auth == "chatgpt" and cg.enabled:
             from alice.providers.chatgpt import cached_models, ensure_models
@@ -391,11 +418,18 @@ class Router:
                     continue
                 r = res.get(ref) or {}
                 rows.append({"ref": ref, "model": ref.partition(":")[2], "status": self.available(ref)[1],
-                             "hidden": ref in hidden, "quality": r.get("quality", ranking.quality(ref)),
+                             "hidden": ref in hidden or (_hidden_match(ref, hidden) and name == "cliproxy"),
+                             "quality": r.get("quality", ranking.quality(ref)),
                              "latency": round(float(r.get("latency") or 0), 1), "tested": bool(r)})
             rows.sort(key=lambda x: (-x["quality"], x["latency"] or 99, x["ref"]))
             entry = {"name": name, "enabled": bool(pc.enabled), "hidden": name in hidden,
                      "key": pc.api_key_env, "models": rows}
+            if not rows and pc.enabled:
+                # Hiç çalışan modeli yok ama denendi: sağlayıcının hatasını göster. Eskiden arayüzden eklenen sunucu
+                # (ör. ücretsiz modelleri hesaba kapalı OrcaRouter) "eklendi" deyip listede hiç görünmüyordu.
+                failed = [v for r, v in res.items() if r.partition(":")[0] == name and not v.get("ok")]
+                if failed:
+                    entry["error"] = _short_error(str(failed[-1].get("error") or ""))
             if pc.auth == "chatgpt":
                 from alice.providers.chatgpt import limit_note, models_error, models_state
 
@@ -403,6 +437,31 @@ class Router:
                              error=models_error() if pc.enabled and not rows else "",
                              loading=pc.enabled and not rows and models_state() == "loading")
             out.append(entry)
+        return self._split_proxy(out, hidden)
+
+    @staticmethod
+    def _split_proxy(out: list[dict[str, Any]], hidden: set[str] | None = None) -> list[dict[str, Any]]:
+        """Claude Code proxy'sinin modelleri tek bir "cliproxy" yığını yerine sağlayıcı sağlayıcı (Claude, ChatGPT,
+        Kimi, Gemini...). ChatGPT girişinde zaten görünen GPT modelleri proxy grubunda tekrar listelenmez."""
+        idx = next((i for i, e in enumerate(out) if e["name"] == "cliproxy"), None)
+        if idx is None or not out[idx]["models"]:
+            return out
+        from alice.app.cliproxy import model_group
+
+        proxy = out.pop(idx)
+        direct = {m["model"] for e in out if e["name"] == "chatgpt" and e.get("enabled") for m in e["models"]}
+        groups: dict[str, dict[str, Any]] = {}
+        for row in proxy["models"]:
+            gid, label, pattern = model_group(row["model"])
+            if gid == "codex" and row["model"] in direct:
+                continue  # aynı model ChatGPT girişinden de var: iki kez görünmesin
+            g = groups.setdefault(gid, {**{k: v for k, v in proxy.items() if k not in ("models", "error")},
+                                         "name": pattern or "cliproxy", "label": label, "via": "cliproxy",
+                                         "models": []})
+            g["models"].append(row)
+        for g in groups.values():
+            g["hidden"] = bool(proxy["hidden"] or g["name"] in (hidden or set()))
+        out[idx:idx] = list(groups.values())
         return out
 
     def reload_auto(self, cache: dict[str, Any] | None = None) -> None:

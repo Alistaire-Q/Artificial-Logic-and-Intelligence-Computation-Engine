@@ -41,10 +41,14 @@ class MakeTool(Tool):
             "test: neye erişeceği. network: internet adresleri (ör. ['api.steampowered.com']), folders: "
             "okuyacağı/yazacağı klasörler, apps: çalıştıracağı programlar, asks_each_time: kod değiştiriyor, para "
             "harcıyor, mesaj gönderiyor ya da bir şey siliyorsa true (her kullanımda onay ister)."),
-            "properties": {"network": {"type": "array", "items": {"type": "string"}},
-                           "folders": {"type": "array", "items": {"type": "string"}},
-                           "apps": {"type": "array", "items": {"type": "string"}},
-                           "asks_each_time": {"type": "boolean"}}},
+            "properties": {"network": {"type": "array", "items": {"type": "string"},
+                                       "description": "Erişeceği alan adları, ör. ['api.steampowered.com']."},
+                           "folders": {"type": "array", "items": {"type": "string"},
+                                       "description": "Okuyacağı/yazacağı klasörler (mutlak yol)."},
+                           "apps": {"type": "array", "items": {"type": "string"},
+                                    "description": "Çalıştıracağı programlar, ör. ['git']."},
+                           "asks_each_time": {"type": "boolean", "description": "true: her kullanımda onay ister "
+                                              "(kod değiştiren, para harcayan, mesaj gönderen, silen araçlar)."}}},
         "code": {"type": "string", "description": "test: eklentinin Python kodu. İskelet:\n" + PLUGIN_SKELETON},
         "test": {"type": "string",
                  "description": "test: pytest testi. Eklenti modülü adıyla içe aktarılır: `import <name>`."},

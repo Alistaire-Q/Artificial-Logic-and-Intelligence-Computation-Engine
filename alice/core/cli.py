@@ -39,6 +39,8 @@ def core_cmd(argv: list[str]) -> int:
         if not service.acquire_lock():
             console.print("[yellow]çekirdek zaten çalışıyor[/]")
             return 1
+        if "--once" not in argv:
+            service.enable_crash_log()
         from alice.decider import Decider
         from alice.providers.router import Router
 

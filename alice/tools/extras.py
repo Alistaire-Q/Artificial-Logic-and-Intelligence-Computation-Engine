@@ -13,8 +13,11 @@ from alice.tools.base import COMPUTER, DANGER, READ, WRITE, Tool, ToolContext, T
 
 class Notes(Tool):
     name = "notes"
-    description = ("Kullanıcının kısa notları: 'not al', 'şunu not et', 'notlarımda ne vardı'. Kullanıcı hakkında "
-                   "kalıcı bilgi ve tercihler için memory, uçuş sırasındaki notlar için flight kneeboard_note kullan.")
+    description = ("Kullanıcının kısa notlarını kaydeder, arar ve listeler ('not al', 'şunu not et', 'notlarımda ne vardı').\n"
+                   "- Kullanıcının söylediğini olduğu gibi kaydet; özetleme ya da yorum ekleme.\n"
+                   "- Kullanıcı hakkında kalıcı bilgi ve tercihler için memory, uçuş sırasındaki notlar için flight "
+                   "kneeboard_note kullan.\n"
+                   "- undo sadece son eklenen notu siler.")
     parameters = obj({
         "action": {"type": "string", "enum": ["add", "search", "list", "undo"],
                    "description": "add: text'i kaydet | search: query ve/veya tarih aralığıyla ara | list: son 20 not "
@@ -54,9 +57,11 @@ class Notes(Tool):
 
 class Report(Tool):
     name = "report"
-    description = ("Hazır özet raporlar. morning: sabah özeti için veri (hava, bugün okul/staj, gece çalışan görevler "
-                   "ve uyarılar, dünden kalanlar); kullanıcıya kısa ve sıcak anlat. pc: son günlerin bilgisayar "
-                   "raporu (sıcaklık, kullanım, olaylar) ve HTML dosyası.")
+    description = ("Hazır özet raporların verisini döndürür.\n"
+                   "- morning: sabah özeti (hava, bugün okul/staj, gece çalışan görevler ve uyarılar, dünden kalanlar). "
+                   "Kullanıcıya kısa ve sıcak bir dille anlat; listeyi aynen okuma.\n"
+                   "- pc: son günlerin bilgisayar raporu (sıcaklık, kullanım, olaylar) ve bir HTML dosyası; dosyayı send_file ile "
+                   "gösterebilirsin.")
     parameters = obj({
         "kind": {"type": "string", "enum": ["morning", "pc"], "description": "morning: sabah özeti | pc: PC raporu."},
         "days": {"type": "integer", "description": "pc için kaç günlük. Varsayılan 7."},
@@ -76,8 +81,10 @@ class Report(Tool):
 
 class Weather(Tool):
     name = "weather"
-    description = ("Hava durumu: şu an ve bugün (sıcaklık, en düşük/yüksek, yağmur ihtimali). Hava sorulunca web_search "
-                   "yerine bunu kullan.")
+    description = ("Bir şehrin şu anki ve bugünkü hava durumunu döndürür: sıcaklık, en düşük/yüksek ve yağmur ihtimali.\n"
+                   "- Hava sorulunca web_search ya da web_fetch yerine bunu kullan; daha hızlı ve kesin.\n"
+                   "- Şehir verilmezse ayarlardaki şehir ya da konum kullanılır.\n"
+                   "- Sadece bugünü kapsar; ileriki günler sorulursa bunu söyle, tahmin uydurma.")
     parameters = obj({"city": {"type": "string", "description": "Şehir, ör. 'İzmir'. Boş: ayarlı şehir ya da konum."}})
     risk = READ
 

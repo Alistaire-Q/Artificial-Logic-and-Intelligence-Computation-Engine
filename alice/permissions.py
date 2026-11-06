@@ -167,9 +167,20 @@ class Permissions:
     def __init__(self, mode: str = "auto", rules: dict[str, list[str]] | None = None):
         if mode not in MODES:
             raise ValueError(f"geçersiz izin modu: {mode}")
-        self.mode = mode
+        self.before_plan: str | None = None  # plan modundan önceki mod: exit_plan_mode onaydan sonra ona döner
+        self._mode = mode
         self.always_allow: set[str] = set()
         self.rules = rules  # None: config.toml [permissions] + projedeki .alice/permissions.toml
+
+    @property
+    def mode(self) -> str:
+        return self._mode
+
+    @mode.setter
+    def mode(self, value: str) -> None:
+        if value == "plan" and self._mode != "plan":
+            self.before_plan = self._mode
+        self._mode = value
 
     def rules_for(self, ctx: ToolContext) -> dict[str, list[str]]:
         if self.rules is not None:

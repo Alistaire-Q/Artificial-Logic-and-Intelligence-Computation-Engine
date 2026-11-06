@@ -92,8 +92,14 @@ async function modelMenu(anchor) {
           () => showSettings("setup"));
         continue;
       }
+      if (!rows.length && p.enabled && !p.hidden && p.error) {
+        // Eklendi ama hiçbir modeli cevap vermiyor (kota, bakiye, yetki): sessizce kaybolmasın, nedenini söyle.
+        m.appendChild(el("div", "menu-title", provLabel(p)));
+        menuItem(m, null, "Modeller çalışmıyor", p.error.slice(0, 160), () => showSettings("models"));
+        continue;
+      }
       if (!rows.length) continue;
-      m.appendChild(el("div", "menu-title", p.name + (p.note ? " · limit " + p.note : "")));
+      m.appendChild(el("div", "menu-title", provLabel(p) + (p.note ? " · limit " + p.note : "")));
       for (const x of rows) {
         menuItem(m, null, x.model, x.status === "hazır" ? "" : x.status, () => pinModel(x.ref), pinned === x.ref);
       }
@@ -102,17 +108,19 @@ async function modelMenu(anchor) {
     menuItem(m, IC.list, "Modelleri yönet", "Sağlayıcı ya da model gizle/göster, durumları gör", () => showSettings("models"));
   }, "right", anchor instanceof Element);
 }
-async function hideModel(name, hidden) {
+async function hideModel(name, hidden, label) {
   const r = await api("/api/models/hide", { name, hidden });
   if (!r.ok) return toast(r.error || "Kaydedilemedi");
   applyStatus(r);
-  toast((hidden ? "Gizlendi: " : "Gösteriliyor: ") + name);
+  toast((hidden ? "Gizlendi: " : "Gösteriliyor: ") + (label || name));
 }
 /* Modeller: üstte şu an kullanılan model ve düşünme, ortada sağlayıcı kartları (hazır / anahtar bekliyor / gizli),
    en altta katlanmış "Gelişmiş": puanlama ağırlıkları ve rol sıraları. */
 const PROV_LABEL = { gemini: "Google Gemini", openrouter: "OpenRouter", groq: "Groq", nvidia: "NVIDIA NIM", cerebras: "Cerebras",
   mistral: "Mistral", sambanova: "SambaNova", cloudflare: "Cloudflare", cohere: "Cohere", vercel: "Vercel AI Gateway",
-  zai: "Z.ai", ollama: "Ollama (yerel)", chatgpt: "ChatGPT hesabı" };
+  zai: "Z.ai", ollama: "Ollama (yerel)", chatgpt: "ChatGPT hesabı", cliproxy: "Claude Code proxy" };
+/* Sağlayıcının görünen adı. Proxy modelleri sağlayıcı sağlayıcı gruplanır (Claude, Kimi...): onlar kendi etiketini getirir. */
+function provLabel(p) { return p.label || PROV_LABEL[p.name] || p.name; }
 function modelsPage(pane, data) {
   const all = data.all || { providers: [] };
   pane.append(el("h2", "", "Modeller"),
@@ -157,15 +165,18 @@ function modelsPage(pane, data) {
     for (const p of provs) {
       const rows = p.models.filter((x) => !q || x.ref.toLowerCase().includes(q));
       if (q && !rows.length) continue;
-      const st = p.hidden ? "hidden" : p.enabled ? "ok" : "off";
+      const failing = p.enabled && !p.hidden && !p.models.length && !!p.error;
+      const st = p.hidden ? "hidden" : failing ? "off" : p.enabled ? "ok" : "off";
       const card = el("div", "prov-card " + st + (openSet.has(p.name) || q ? " open" : ""));
       const head = el("div", "pc-head");
       const name = el("div", "pc-name");
       const shown = p.models.filter((x) => !x.hidden).length;
-      name.append(el("b", "", PROV_LABEL[p.name] || p.name),
-        el("small", "", st === "ok" ? `${shown}/${p.models.length} model açık` : st === "hidden" ? "gizli" :
+      name.append(el("b", "", provLabel(p)),
+        el("small", "", failing ? "modeller cevap vermiyor: " + p.error.slice(0, 200) :
+          st === "ok" ? `${shown}/${p.models.length} model açık` : st === "hidden" ? "gizli" :
           p.name === "chatgpt" ? "giriş yapılmamış" : `${p.key || "anahtar"} yok`));
-      const pill = el("span", "pill " + (st === "ok" ? "done" : ""), st === "ok" ? "hazır" : st === "hidden" ? "gizli" : "bekliyor");
+      const pill = el("span", "pill " + (st === "ok" ? "done" : ""),
+        failing ? "hata" : st === "ok" ? "hazır" : st === "hidden" ? "gizli" : "bekliyor");
       head.append(name, pill);
       card.appendChild(head);
       const acts = el("div", "pc-acts");
@@ -181,7 +192,7 @@ function modelsPage(pane, data) {
       }
       const hb = el("button", "btn ghost", p.hidden ? "Göster" : "Gizle");
       hb.title = p.hidden ? "Otomatik zincire geri al" : "Otomatik zincirde ve model menüsünde kullanılmasın";
-      hb.addEventListener("click", async () => { await hideModel(p.name, !p.hidden); showSettings("models"); });
+      hb.addEventListener("click", async () => { await hideModel(p.name, !p.hidden, provLabel(p)); showSettings("models"); });
       acts.appendChild(hb);
       card.appendChild(acts);
       if (card.classList.contains("open") && rows.length) {

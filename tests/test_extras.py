@@ -27,7 +27,8 @@ def make_agent(script, workdir, mode="auto"):
 
 def test_rewind_restores_files_and_conversation(workdir):
     (workdir / "a.txt").write_text("orijinal\n", encoding="utf-8")
-    script = [tool_call("edit_file", {"path": "a.txt", "old_string": "orijinal", "new_string": "bir"}), "ok1",
+    script = [tool_call("read_file", {"path": "a.txt"}, "r1"),
+              tool_call("edit_file", {"path": "a.txt", "old_string": "orijinal", "new_string": "bir"}), "ok1",
               tool_call("write_file", {"path": "yeni.txt", "content": "x"}, "c2"),
               tool_call("edit_file", {"path": "a.txt", "old_string": "bir", "new_string": "iki"}, "c3"), "ok2"]
     agent, _, _ = make_agent(script, workdir)
@@ -108,6 +109,9 @@ def test_multi_edit_atomic(workdir):
     ctx = ToolContext(cwd=workdir, config=make_config({"brain": ["a:m"]}))
     f = workdir / "m.py"
     f.write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")
+    from alice.tools.files import mark_read
+
+    mark_read(ctx, f)  # okumadan düzenleme reddedilir
     r = MultiEdit().run(ctx, path="m.py", edits=[{"old_string": "a = 1", "new_string": "a = 10"},
                                                  {"old_string": "a = 10\nb = 2", "new_string": "a = 10\nb = 20"}])
     assert f.read_text(encoding="utf-8") == "a = 10\nb = 20\nc = 3\n" and "+b = 20" in r.diff

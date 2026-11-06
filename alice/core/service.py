@@ -732,14 +732,56 @@ def start_detached() -> bool:
     from alice import runtime
 
     exe = runtime.python()  # hep aynı ortam (bkz. alice.runtime)
-    kwargs: dict[str, Any] = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL,
-                              "cwd": str(Path.home())}
+    # Hata çıktısı core.log'a: eskiden DEVNULL'a gidiyordu, çekirdek çöktüğünde hiçbir iz kalmıyordu.
+    err = _open_core_log()
+    kwargs: dict[str, Any] = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
+                              "stderr": err if err is not None else subprocess.DEVNULL, "cwd": str(Path.home())}
     if sys.platform == "win32":
         kwargs["creationflags"] = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
     else:
         kwargs["start_new_session"] = True
-    subprocess.Popen([str(exe), "-m", "alice", "core", "run", "--tray"], **kwargs)
+    try:
+        subprocess.Popen([str(exe), "-m", "alice", "core", "run", "--tray"], **kwargs)
+    finally:
+        if err is not None:
+            err.close()
     return True
+
+
+def _open_core_log():
+    """~/.alice/core.log (2 MB'ı geçince core.log.1'e devredilir), ekleme kipinde; açılamazsa None."""
+    try:
+        log = alice_home() / "core.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        if log.exists() and log.stat().st_size > 2_000_000:
+            log.replace(log.with_suffix(".log.1"))
+        return open(log, "ab")
+    except OSError:
+        return None
+
+
+_crash_file = None
+
+
+def enable_crash_log() -> None:
+    """Yerel çökmeler (ses sürücüsü, CUDA, COM) Python izi bırakmadan süreci öldürüyordu: faulthandler tüm iş
+    parçacıklarının yığınını ~/.alice/core-crash.log'a yazsın. Her açılış bir satırla işaretlenir."""
+    global _crash_file
+    import faulthandler
+
+    try:
+        f = open(alice_home() / "core-crash.log", "a", encoding="utf-8")
+        f.write(f"\n--- {time.strftime('%Y-%m-%d %H:%M:%S')} çekirdek başladı (pid {os.getpid()})\n")
+        f.flush()
+        faulthandler.enable(f, all_threads=True)
+        _crash_file = f  # açık kalmalı: faulthandler dosya tanıtıcısını tutar
+    except (OSError, ValueError, RuntimeError):
+        pass
+    try:
+        print(f"=== {time.strftime('%Y-%m-%d %H:%M:%S')} çekirdek başladı (pid {os.getpid()})", file=sys.stderr,
+              flush=True)
+    except Exception:  # noqa: BLE001 - stderr yoksa önemli değil
+        pass
 
 
 def autostart_path() -> Path:

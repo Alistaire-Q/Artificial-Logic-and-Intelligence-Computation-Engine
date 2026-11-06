@@ -310,6 +310,9 @@ def test_notebook_edit_replace_insert_delete(workdir):
     p.write_text(json.dumps(nb), encoding="utf-8")
     ctx = ToolContext(cwd=workdir, config=make_config({"brain": ["a:m"]}))
     tool = NotebookEdit()
+    from alice.tools.files import ReadFile
+
+    ReadFile().run(ctx, "a.ipynb")  # okumadan düzenleme reddedilir (Claude Code'daki gibi)
     tool.run(ctx, "a.ipynb", 0, source="print(2)\nprint(3)")
     data = json.loads(p.read_text(encoding="utf-8"))
     assert data["cells"][0]["source"] == ["print(2)\n", "print(3)"] and data["cells"][0]["outputs"] == []

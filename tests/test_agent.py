@@ -38,7 +38,8 @@ def test_tool_loop_writes_file_and_finishes(workdir):
 
 def test_edit_file_roundtrip(workdir):
     (workdir / "a.txt").write_text("alpha\nbeta\n", encoding="utf-8")
-    script = [tool_call("edit_file", {"path": "a.txt", "old_string": "beta", "new_string": "gamma"}), "ok"]
+    script = [tool_call("read_file", {"path": "a.txt"}, "r1"),
+              tool_call("edit_file", {"path": "a.txt", "old_string": "beta", "new_string": "gamma"}), "ok"]
     agent, _, _ = make_agent(script, workdir)
     agent.run_turn("düzenle")
     assert (workdir / "a.txt").read_text(encoding="utf-8") == "alpha\ngamma\n"

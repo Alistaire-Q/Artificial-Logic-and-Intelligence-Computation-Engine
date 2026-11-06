@@ -72,6 +72,42 @@ def restarting() -> bool:
         return False
 
 
+REVIVE_WINDOW = 600.0  # sn
+REVIVE_MAX = 3         # bu pencerede en fazla bu kadar otomatik yeniden başlatma (çökme döngüsüne girmesin)
+_revived: list[float] = []
+
+
+def revive_crashed(start: Callable[[], bool] | None = None) -> bool:
+    """Çekirdek temiz kapanmadan öldüyse yeniden başlat. Başlattıysa True.
+
+    Temiz kapanışta (tepsiden Çık, uygulamadan Durdur) çekirdek core-state.json'ı siler. Dosya duruyor ama süreç
+    yoksa çekirdek çöktü ya da dışarıdan öldürüldü: eskiden pencere de kapanıyordu ("ALICE sürekli çöküp
+    kapanıyor"), şimdi çekirdek yeniden başlar ve pencere yeni adrese geçer.
+    """
+    from alice.core import service
+
+    try:
+        data = json.loads(service.state_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(data, dict) or _alive(data.get("pid")):
+        return False
+    now = time.time()
+    _revived[:] = [t for t in _revived if now - t < REVIVE_WINDOW]
+    if len(_revived) >= REVIVE_MAX:
+        return False
+    _revived.append(now)
+    try:
+        service.state_path().unlink()
+    except OSError:
+        pass
+    mark_restarting()
+    try:
+        return bool((start or service.start_detached)())
+    except Exception:  # noqa: BLE001 - başlatılamazsa pencere eskisi gibi kapanır
+        return False
+
+
 def follow(url: str) -> Callable[[], str | None]:
     """Pencere için izleyici: "" = aynen devam, yeni adres = ona geç, None = çekirdek kapandı, pencereyi kapat."""
     cur = [url]
@@ -83,7 +119,7 @@ def follow(url: str) -> Callable[[], str | None]:
         if u:
             cur[0] = u
             return u
-        return "" if restarting() else None
+        return "" if restarting() or revive_crashed() else None
 
     return check
 

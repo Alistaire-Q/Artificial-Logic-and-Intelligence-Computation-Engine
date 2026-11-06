@@ -128,7 +128,8 @@ def test_worktree_conflict_is_handed_back_to_the_agent(workdir):
             return tool_call("run_command", {"command": f"git merge -X theirs --no-edit {state['base']}"}, "m1")
         if state["resolved"]:
             return "çakışmayı çözdüm"
-        return [tool_call("write_file", {"path": "a.txt", "content": "ajan\n"}), "rapor"][min(steps(messages), 1)]
+        return [tool_call("read_file", {"path": "a.txt"}, "r0"),  # okumadan üzerine yazma reddedilir
+                tool_call("write_file", {"path": "a.txt", "content": "ajan\n"}), "rapor"][min(steps(messages), 2)]
 
     agent, _, ctx = make(script, workdir)
     team = Team(ctx, "iş", council=False)

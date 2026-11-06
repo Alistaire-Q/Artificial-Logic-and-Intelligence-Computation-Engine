@@ -36,6 +36,7 @@ def test_run_plan_plans_executes_confirms_and_verifies(workdir):
               "risk": "eski b.txt gider"}),
         tool_call("write_file", {"path": "a.txt", "content": "selam"}, cid="s1"),
         "SONUÇ: TAMAM - a.txt yazıldı",
+        tool_call("read_file", {"path": "b.txt"}, cid="r2"),  # var olan dosya: okumadan üzerine yazılmaz
         tool_call("write_file", {"path": "b.txt", "content": "yeni"}, cid="s2"),
         "SONUÇ: TAMAM - b.txt yenilendi",
         tool_call("read_file", {"path": "b.txt"}, cid="v1"),

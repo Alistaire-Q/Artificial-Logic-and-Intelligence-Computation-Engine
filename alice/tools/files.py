@@ -175,6 +175,32 @@ def render_notebook(p: Path) -> str:
     return "\n".join(out)
 
 
+def _mtime(p: Path) -> int:
+    try:
+        return p.stat().st_mtime_ns
+    except OSError:
+        return 0
+
+
+def mark_read(ctx: ToolContext, p: Path) -> None:
+    """Bu oturumda okundu: düzenleme araçları dosyanın hangi hâline göre yazıldığını bilsin."""
+    ctx.state.setdefault("read_files", {})[str(p)] = _mtime(p)
+
+
+def require_read(ctx: ToolContext, p: Path) -> None:
+    """Okumadan düzenleme yok (Claude Code'daki Edit/Write kuralı). Model dosyanın içeriğini tahmin edip ya da eski
+    hâlini hatırlayıp üzerine yazmasın; okunduktan sonra dosya diskte değiştiyse (kullanıcı, başka araç) yeniden
+    okunsun. [agent] require_read_before_edit = false ile kapatılır."""
+    if not ctx.config.agent.get("require_read_before_edit", True):
+        return
+    seen = ctx.state.get("read_files", {})
+    key = str(p)
+    if key not in seen:
+        raise ToolError(f"{p} bu oturumda okunmadı. Önce read_file ile oku, sonra düzenle (içerik tahmin edilmesin).")
+    if seen[key] != _mtime(p):
+        raise ToolError(f"{p} okunduktan sonra diskte değişti. read_file ile yeniden oku, sonra düzenle.")
+
+
 class ReadFile(Tool):
     name = "read_file"
     parallel_safe = True
@@ -201,6 +227,7 @@ class ReadFile(Tool):
             raise ToolError(f"dosya yok: {p}")
         if p.is_dir():
             raise ToolError(f"{p} bir klasör, list_dir kullan")
+        mark_read(ctx, p)
         if p.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"):
             from alice.tools.imaging import file_to_png_b64
             return ToolResult(f"görüntü: {p}", images=[file_to_png_b64(p, ctx.config.agent.get("screenshot_max_width", 1366))])
@@ -222,10 +249,12 @@ class ReadFile(Tool):
 class WriteFile(Tool):
     name = "write_file"
     description = ("Yeni dosya oluşturur ya da var olan dosyanın TAMAMINI verilen içerikle değiştirir; eksik klasörler "
-                   "açılır.\n"
+                   "açılır. Sonuçta oluşturuldu/güncellendi ve satır sayısı döner.\n"
                    "- Var olan dosyada küçük değişiklik için bunu değil edit_file/multi_edit kullan; tüm dosyayı yeniden "
                    "yazmak hem yavaş hem riskli.\n"
-                   "- Var olan bir dosyanın üzerine yazmadan önce read_file ile oku.")
+                   "- Var olan bir dosyanın üzerine yazmadan önce read_file ile oku; bu oturumda okunmamış ya da "
+                   "okunduktan sonra değişmiş dosyanın üzerine yazma reddedilir.\n"
+                   "- Kullanıcı istemedikçe belge/README gibi yeni dosyalar üretme; var olanı düzenlemeyi tercih et.")
     parameters = obj({
         "path": {"type": "string", "description": "Yazılacak dosyanın yolu; mutlak ya da çalışma klasörüne göre."},
         "content": {"type": "string", "description": "Dosyanın yeni içeriğinin tamamı."},
@@ -237,11 +266,14 @@ class WriteFile(Tool):
 
     def run(self, ctx: ToolContext, path: str, content: str) -> ToolResult:
         p = ctx.resolve(path)
+        if p.is_file():
+            require_read(ctx, p)
         snapshot(ctx, p)
         p.parent.mkdir(parents=True, exist_ok=True)
         existed = p.exists()
         before = _read_text(p) if existed and not _is_binary(p) else ""
         p.write_text(content, encoding="utf-8", newline="")
+        mark_read(ctx, p)  # kendi yazdığı hâli biliyor: ardından düzenleyebilsin
         return ToolResult(f"{'güncellendi' if existed else 'oluşturuldu'}: {p} ({len(content.splitlines())} satır)",
                           diff=make_diff(path, before, content))
 
@@ -270,9 +302,13 @@ def _apply_edit(text: str, old: str, new: str, replace_all: bool, where: str = "
 
 class EditFile(Tool):
     name = "edit_file"
-    description = ("Var olan bir dosyada birebir metin değiştirir. old_string dosyada tam olarak (girinti ve boşluklar dahil) ve "
-                   "tek bir kez geçmeli; birden fazla geçiyorsa daha fazla bağlam ekle ya da replace_all=true ver. "
-                   "Aynı dosyada birden fazla değişiklik için multi_edit kullan.")
+    description = ("Var olan bir dosyada birebir metin değiştirir ve değişikliğin farkını (diff) gösterir.\n"
+                   "- Önce read_file ile oku: bu oturumda okunmamış ya da okunduktan sonra diskte değişmiş dosyada "
+                   "düzenleme reddedilir.\n"
+                   "- old_string dosyada tam olarak (girinti ve boşluklar dahil) ve tek bir kez geçmeli; read_file "
+                   "çıktısından satır numarası ve sekme olmadan kopyala. Birden fazla geçiyorsa daha fazla bağlam "
+                   "ekle ya da replace_all=true ver.\n"
+                   "- Aynı dosyada birden fazla değişiklik için multi_edit, yeni dosya için write_file kullan.")
     parameters = obj({
         "path": {"type": "string", "description": "Düzenlenecek dosyanın yolu."},
         "old_string": {"type": "string", "description": "Değiştirilecek metin; read_file çıktısından birebir, satır "
@@ -290,19 +326,25 @@ class EditFile(Tool):
         p = ctx.resolve(path)
         if not p.is_file():
             raise ToolError(f"dosya yok: {p}")
+        require_read(ctx, p)
         before = _read_text(p)
         text, n = _apply_edit(before, old_string, new_string, replace_all)
         snapshot(ctx, p)
         p.write_text(text, encoding="utf-8", newline="")
+        mark_read(ctx, p)
         return ToolResult(f"düzenlendi: {p} ({n} değişiklik)",
                           diff=make_diff(path, before.replace("\r\n", "\n"), text.replace("\r\n", "\n")))
 
 
 class MultiEdit(Tool):
     name = "multi_edit"
-    description = ("Tek dosyada birden fazla değişikliği tek seferde yap. edits sırayla uygulanır (her biri bir öncekinin "
-                   "sonucuna); biri bile başarısız olursa dosyaya HİÇBİR şey yazılmaz. Her edit edit_file kurallarına "
-                   "uyar: old_string birebir ve tek olmalı ya da replace_all=true. Yeni dosya için write_file kullan.")
+    description = ("Tek dosyada birden fazla değişikliği tek seferde yapar ve toplam farkı gösterir.\n"
+                   "- edits sırayla uygulanır (her biri bir öncekinin sonucuna); biri bile başarısız olursa dosyaya "
+                   "HİÇBİR şey yazılmaz.\n"
+                   "- Her edit edit_file kurallarına uyar: old_string birebir ve tek olmalı ya da replace_all=true. "
+                   "Önceki bir edit'in değiştirdiği metni sonraki edit'te arama.\n"
+                   "- Önce read_file ile oku (okunmamış ya da sonradan değişmiş dosya reddedilir). Yeni dosya için "
+                   "write_file kullan.")
     parameters = obj({
         "path": {"type": "string", "description": "Düzenlenecek dosyanın yolu."},
         "edits": {"type": "array", "minItems": 1, "description": "Sırayla uygulanacak değişiklikler.", "items": obj({
@@ -322,6 +364,7 @@ class MultiEdit(Tool):
             raise ToolError(f"dosya yok: {p}")
         if not edits:
             raise ToolError("edits boş")
+        require_read(ctx, p)
         before = _read_text(p)
         text = before
         total = 0
@@ -333,6 +376,7 @@ class MultiEdit(Tool):
             total += n
         snapshot(ctx, p)
         p.write_text(text, encoding="utf-8", newline="")
+        mark_read(ctx, p)
         return ToolResult(f"düzenlendi: {p} ({len(edits)} edit, {total} değişiklik)",
                           diff=make_diff(path, before.replace("\r\n", "\n"), text.replace("\r\n", "\n")))
 
@@ -727,9 +771,11 @@ class FileOps(Tool):
 
 class NotebookEdit(Tool):
     name = "notebook_edit"
-    description = ("Jupyter defterinde (.ipynb) tek hücreyi değiştirir, araya yeni hücre ekler ya da siler; dosyanın geri "
-                   "kalanına ve diğer hücrelerin çıktılarına dokunmaz. Önce read_file ile oku (hücre numaraları orada). "
-                   "Değiştirilen kod hücresinin eski çıktısı silinir.")
+    description = ("Jupyter defterinde (.ipynb) tek bir hücreyi değiştirir, araya yeni hücre ekler ya da siler; diğer hücrelere "
+                   "ve çıktılarına dokunmaz.\n"
+                   "- Önce read_file ile oku: hücre numaraları (0'dan başlar) oradadır.\n"
+                   "- Değiştirilen kod hücresinin eski çıktısı silinir; hücre çalıştırılmaz.\n"
+                   "- .ipynb dosyasını edit_file ya da write_file ile düzenleme: defterin JSON yapısı bozulur.")
     parameters = obj({
         "path": {"type": "string", "description": ".ipynb dosyasının yolu."},
         "cell": {"type": "integer", "description": "Hücre numarası (0'dan başlar). insert'te yeni hücre bu numaraya girer "
@@ -752,6 +798,7 @@ class NotebookEdit(Tool):
         p = ctx.resolve(path)
         if p.suffix.lower() != ".ipynb" or not p.is_file():
             raise ToolError(f"Jupyter defteri bulunamadı: {p}")
+        require_read(ctx, p)
         before = _read_text(p)
         try:
             nb = _json.loads(before)
@@ -792,6 +839,7 @@ class NotebookEdit(Tool):
         snapshot(ctx, p)
         after = _json.dumps(nb, ensure_ascii=False, indent=1) + "\n"
         p.write_text(after, encoding="utf-8", newline="")
+        mark_read(ctx, p)
         return ToolResult(f"{done}: {p} (toplam {len(cells)} hücre)", diff=make_diff(path, before, after))
 
 
