@@ -921,6 +921,35 @@ class AppState:
             return {"ok": True, "removed": mem.purge_old_role()}
         return {"ok": False, "error": f"bilinmeyen işlem: {action}"}
 
+    @property
+    def calls(self) -> Any:
+        """Telefonla sesli görüşme (alice/app/call.py); ilk kullanımda kurulur."""
+        if getattr(self, "_calls", None) is None:
+            from alice.app.call import CallManager
+
+            self._calls = CallManager(self)
+        return self._calls
+
+    def call_action(self, action: str, d: dict[str, Any]) -> dict[str, Any]:
+        mgr = self.calls
+        cid = str(d.get("id", ""))
+        try:
+            if action == "start":
+                return mgr.start()
+            if action == "ring":  # ALICE kullanıcıyı arasın (masaüstünden deneme, otomasyon)
+                return mgr.ring(str(d.get("reason", "")), str(d.get("message", "")) or "Selam, ben ALICE.")
+            if action == "answer":
+                return mgr.answer(cid)
+            if action == "decline":
+                return mgr.decline(cid)
+            if action == "say":
+                return mgr.say(cid, str(d.get("text", "")))
+            if action == "hangup":
+                return mgr.hangup(cid)
+        except KeyError as e:
+            return {"ok": False, "error": str(e.args[0]) if e.args else "görüşme yok"}
+        return {"ok": False, "error": f"bilinmeyen işlem: {action}"}
+
     # ------------------------------------------------------------------ Anahtarlar sekmesi
     def keys(self) -> dict[str, Any]:
         """API anahtarları: hangisi dolu, nereden alınır. Değerlerin tamamı tarayıcıya hiç gönderilmez.
@@ -1639,6 +1668,17 @@ def make_handler(state: AppState):
                 from alice.app import remote
 
                 return self._json({"apps": remote.apps()})
+            if u.path == "/api/call":  # süren görüşme (yoksa boş)
+                return self._json(state.calls.view())
+            if u.path == "/api/call/audio":
+                try:
+                    n = int((q.get("n") or ["0"])[0])
+                except ValueError:
+                    n = 0
+                wav = state.calls.audio((q.get("id") or [""])[0], n)
+                if wav is None:
+                    return self._send(404, b"not found", "text/plain")
+                return self._send(200, wav, "audio/wav")
             if u.path == "/api/remote/windows":
                 from alice.app import remote
 
@@ -1863,6 +1903,8 @@ def make_handler(state: AppState):
                     new = record_feedback(str(d.get("say", ""))[:4000], str(d.get("reply", ""))[:4000],
                                           str(d.get("note", ""))[:1000], source="uygulama")
                     return self._json({"ok": True, "added": new})
+                if p.startswith("/api/call/"):
+                    return self._json(state.call_action(p.rsplit("/", 1)[1], d))
                 if p == "/api/keys/set":
                     r = state.set_key(str(d.get("key", "")), str(d.get("value", "")))
                     return self._json(r, 200 if r.get("ok") else 400)

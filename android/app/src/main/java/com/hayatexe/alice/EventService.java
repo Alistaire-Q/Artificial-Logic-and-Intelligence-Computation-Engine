@@ -151,6 +151,29 @@ public class EventService extends Service {
         if (nm != null && tag != null) nm.cancel((tag.hashCode() & 0x7fffffff) | 0x100);
     }
 
+    /** ALICE arıyor: uygulama kapalıyken de çalan, "Aç / Reddet" düğmeli bildirim. */
+    static void notifyCall(Context c, String callId, String reason, String text) {
+        channels(c);
+        NotificationManager nm = c.getSystemService(NotificationManager.class);
+        if (nm == null || callId == null || callId.isEmpty()) return;
+        String tag = "call-" + callId;
+        int id = (tag.hashCode() & 0x7fffffff) | 0x100;
+        String body = reason.isEmpty() ? text : reason;
+        Notification.Builder b = new Notification.Builder(c, CH_ASK)
+                .setSmallIcon(R.drawable.ic_notify)
+                .setContentTitle("ALICE arıyor")
+                .setContentText(body)
+                .setStyle(new Notification.BigTextStyle().bigText(body))
+                .setCategory(Notification.CATEGORY_CALL)
+                .setAutoCancel(true)
+                .setOngoing(true)
+                .setContentIntent(openApp(c, "chat", id));
+        b.addAction(new Notification.Action.Builder(null, "Aç", openApp(c, "chat", id + 1)).build());
+        b.addAction(new Notification.Action.Builder(null, "Reddet", ActionReceiver.declineCall(c, callId, id)).build());
+        nm.notify(id, b.build());
+        setStatus("ALICE arıyor…");
+    }
+
     /* ---------------------------------------------------------------- olay akışı */
     private void sseLoop() {
         long wait = 2000;
@@ -192,6 +215,13 @@ public class EventService extends Service {
                 notifyAlert(this, "ALICE soruyor", ev.optString("question"), "perm-" + ev.optString("id"), "bell", null);
             } else if ("permission_done".equals(type) || "ask_choice_done".equals(type)) {
                 cancel(this, "perm-" + ev.optString("id"));
+            } else if ("call".equals(type)) {
+                notifyCall(this, ev.optString("id"), ev.optString("reason"), ev.optString("text"));
+            } else if ("call_state".equals(type)) {
+                if (!"ringing".equals(ev.optString("state"))) cancel(this, "call-" + ev.optString("id"));
+            } else if ("call_end".equals(type)) {
+                cancel(this, "call-" + ev.optString("id"));
+                setStatus("Bağlı · onay ve uyarılar burada görünür");
             }
         } catch (Exception ignored) {
         }

@@ -62,6 +62,11 @@ class PhoneServer:
         from alice.app import phone_apk
 
         phone_apk.refresh_async()  # telefon uygulamasının son sürümü bilgisayarda hazır olsun
+        from alice.app import call
+
+        calls = getattr(self.state, "calls", None)  # testlerde sahte durum olabilir
+        if calls is not None:
+            call.register(calls)  # ALICE telefonla arayabilsin (phone_call aracı)
 
     @property
     def url(self) -> str:
@@ -80,6 +85,10 @@ class PhoneServer:
         return f"http://{self.ip}:{self.server.httpd.server_address[1]}/api/watch"
 
     def stop(self) -> None:
+        from alice.app import call
+
+        if call.current() is getattr(self.state, "_calls", None):
+            call.register(None)
         self.server.stop()
         if self._own_store and self.state.watch_store is not None:
             self.state.watch_store.close()
