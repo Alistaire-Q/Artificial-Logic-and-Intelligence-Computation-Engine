@@ -368,6 +368,9 @@ class Router:
         dead = self._cached_dead()
         refs: set[str] = {r for r, v in res.items() if v.get("ok") or v.get("ever_ok")}
         refs.update(r for chain in self.role_overrides.values() for r in chain)  # seçilen model menüde işaretli görünsün
+        for name, pc in self.providers_cfg.items():
+            if not pc.auto and pc.enabled and pc.models:  # ücretli, elle seçilen (Claude API): menüde görünsün
+                refs.update(f"{name}:{m}" for m in pc.models)
         cg = self.providers_cfg.get("chatgpt")
         if cg is not None and cg.auth == "chatgpt" and cg.enabled:
             from alice.providers.chatgpt import cached_models, ensure_models
@@ -415,15 +418,50 @@ class Router:
                 self.log_path.replace(self.log_path.with_suffix(".log.1"))
             with open(self.log_path, "a", encoding="utf-8") as f:
                 # Sağlayıcıların anahtarları log dosyasına asla düşmesin (hata metni yankılamış olabilir).
-                keys = [pc.api_key for pc in self.providers_cfg.values() if getattr(pc, "api_key", None)]
+                keys = [k for pc in self.providers_cfg.values() for k in getattr(pc, "api_keys", None) or []]
                 f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {' '.join(redact(line, *keys).split())}\n")
         except OSError:
             pass
 
     def client(self, provider: str) -> Any:
         if provider not in self._clients:
-            self._clients[provider] = self._factory(self.providers_cfg[provider])
+            from alice.providers.keypool import client_for
+
+            self._clients[provider] = client_for(self.providers_cfg[provider], self._factory,
+                                                 str(self.config.agent.get("key_strategy") or "round-robin"))
         return self._clients[provider]
+
+    def key_status(self) -> dict[str, list[dict[str, Any]]]:
+        """Birden çok anahtarı olan sağlayıcıların anahtar durumu (arayüzdeki Anahtarlar sayfası için)."""
+        from alice.config import mask_secret
+        from alice.providers.keypool import is_pool
+
+        out: dict[str, list[dict[str, Any]]] = {}
+        for name, pc in self.providers_cfg.items():
+            keys = pc.api_keys
+            if len(keys) < 2:
+                continue
+            c = self._clients.get(name)
+            if is_pool(c) and len(c.keys) == len(keys):
+                out[name] = c.status()
+            else:
+                out[name] = [{"index": i + 1, "preview": mask_secret(k), "state": "hazır", "uses": 0, "errors": 0,
+                              "waiting": {}, "error": ""} for i, k in enumerate(keys)]
+        return out
+
+    def reload_providers(self, name: str | None = None) -> None:
+        """Anahtar ya da sağlayıcı eklenip silinince: ayarları yeniden oku, ilgili istemciyi baştan kur."""
+        self.providers_cfg = self.config.providers()
+        for n in [name] if name else list(self._clients):
+            c = self._clients.pop(n, None) if n else None
+            close = getattr(c, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:  # noqa: BLE001
+                    pass
+            if n:
+                self.dead_providers.discard(n)
 
     def close(self) -> None:
         """Açılan sağlayıcı istemcilerini (HTTP bağlantı havuzlarını) kapat. Sonra kullanılırsa yeniden açılır."""

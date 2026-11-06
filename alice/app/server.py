@@ -923,40 +923,169 @@ class AppState:
 
     # ------------------------------------------------------------------ Anahtarlar sekmesi
     def keys(self) -> dict[str, Any]:
-        """API anahtarları: hangisi dolu, nereden alınır. Değerlerin tamamı tarayıcıya hiç gönderilmez."""
+        """API anahtarları: hangisi dolu, nereden alınır. Değerlerin tamamı tarayıcıya hiç gönderilmez.
+        Model sağlayıcılarında ek anahtarlar (GEMINI_API_KEY_2...) ve havuzun durumu da gelir."""
         from alice.config import env_catalog, env_path, mask_secret, read_env
 
         in_file = read_env()
-        providers = {pc.api_key_env: name for name, pc in self.router.providers_cfg.items() if pc.api_key_env}
+        cfgs = self.router.providers_cfg
+        providers = {pc.api_key_env: name for name, pc in cfgs.items() if pc.api_key_env}
+        catalog = env_catalog()
+        known = {e["key"] for e in catalog}
+        for name, pc in cfgs.items():  # arayüzden eklenen sunucular
+            if pc.custom and pc.api_key_env and pc.api_key_env not in known:
+                catalog.append({"key": pc.api_key_env, "label": name, "url": "", "help": pc.base_url, "group": "model",
+                                "part_of": pc.api_key_env, "field": "Anahtar"})
+        pools = self.router.key_status()
         rows = []
-        for e in env_catalog():
+        for e in catalog:
             key = e["key"]
             val = in_file.get(key) or ""
             env_val = os.environ.get(key, "").strip()
             source = "file" if val else ("env" if env_val else "")
-            rows.append({**e, "set": bool(source), "source": source, "preview": mask_secret(val or env_val),
-                         "provider": providers.get(key, "")})
-        return {"path": str(env_path()), "keys": rows}
+            row = {**e, "set": bool(source), "source": source, "preview": mask_secret(val or env_val),
+                   "provider": providers.get(key, "")}
+            if row["provider"]:
+                pc = cfgs[row["provider"]]
+                row["custom"] = pc.custom
+                row["extra"] = [{"key": k, "preview": mask_secret(os.environ.get(k, "")),
+                                 "source": "file" if k in in_file else "env"} for k in self._extra_keys(key)]
+                row["pool"] = pools.get(row["provider"], [])
+            rows.append(row)
+        return {"path": str(env_path()), "keys": rows,
+                "strategy": str(self.cfg.agent.get("key_strategy") or "round-robin")}
+
+    @staticmethod
+    def _extra_keys(base: str) -> list[str]:
+        """BASE_2, BASE_3...: ortamda dolu olan ek anahtarların adları (sırayla)."""
+        rx = re.compile(rf"{re.escape(base)}_(\d+)")
+        found = [(int(m.group(1)), k) for k, v in os.environ.items() if (m := rx.fullmatch(k)) and v.strip()]
+        return [k for _, k in sorted(found)]
+
+    def _key_owner(self, key: str) -> tuple[str, str] | None:
+        """Yazılabilir bir anahtar adı mı: (temel ad, sağlayıcı). Katalogdaki ya da arayüzden eklenen sunucunun
+        anahtarı ve onların ek anahtarları (GEMINI_API_KEY_2 ... _50)."""
+        from alice.config import env_catalog
+
+        known = {e["key"] for e in env_catalog()}
+        bases = {pc.api_key_env: name for name, pc in self.router.providers_cfg.items() if pc.api_key_env}
+        known |= {k for k, n in bases.items() if self.router.providers_cfg[n].custom}
+        if key in known:
+            return key, bases.get(key, "")
+        m = re.fullmatch(r"(.+)_(\d+)", key)
+        if m and m.group(1) in bases and 2 <= int(m.group(2)) <= 50:
+            return m.group(1), bases[m.group(1)]
+        return None
 
     def set_key(self, key: str, value: str) -> dict[str, Any]:
         """.env'e yaz ve hemen kullan: yeni anahtarla sağlayıcı bu oturumda açılır, model sırası yeniden ölçülür."""
-        from alice.config import env_catalog, set_env_value
+        from alice.config import set_env_value
 
-        if key not in {e["key"] for e in env_catalog()}:
+        owner = self._key_owner(key)
+        if owner is None:
             return {"ok": False, "error": f"bilinmeyen anahtar: {key}"}
         try:
             set_env_value(key, value)
         except (ValueError, OSError) as e:
             return {"ok": False, "error": str(e)}
         for name, pc in self.router.providers_cfg.items():
-            if pc.api_key_env == key or (key in pc.base_url):
-                # Önceki yanlış anahtar sağlayıcıyı "auth" ile kapatmış olabilir: yeni anahtarla tekrar denensin.
-                self.router.dead_providers.discard(name)
+            if pc.api_key_env == owner[0] or (key in pc.base_url):
+                # Önceki yanlış anahtar sağlayıcıyı "auth" ile kapatmış olabilir; havuz da yeni anahtarla kurulsun.
+                self.router.reload_providers(name)
         if value.strip():
             from alice.providers import ranking
 
             # Yeni sağlayıcı "auto" zincirine girsin: ölçüm arka planda, bitince sıra güncellenir.
             ranking.refresh_in_background(self.router, emit=self.router.on_event, max_age=0)
+        return {"ok": True}
+
+    def add_key(self, base: str, value: str) -> dict[str, Any]:
+        """Sağlayıcıya bir anahtar daha ekle (havuz): boş olan ilk sıraya. Aynı anahtar ikinci kez eklenmez."""
+        owner = self._key_owner(base)
+        if owner is None or owner[0] != base or not owner[1]:
+            return {"ok": False, "error": f"bu anahtara ek anahtar eklenemez: {base}"}
+        value = value.strip()
+        if not value:
+            return {"ok": False, "error": "anahtar boş"}
+        pc = self.router.providers_cfg[owner[1]]
+        if value in pc.api_keys:
+            return {"ok": False, "error": "bu anahtar zaten ekli"}
+        if not os.environ.get(base, "").strip():
+            return self.set_key(base, value)
+        n = 2
+        while os.environ.get(f"{base}_{n}", "").strip():
+            n += 1
+        return {**self.set_key(f"{base}_{n}", value), "key": f"{base}_{n}"}
+
+    def set_key_strategy(self, strategy: str) -> dict[str, Any]:
+        from alice.config import set_config_value
+
+        if strategy not in ("round-robin", "fill-first"):
+            return {"ok": False, "error": "round-robin ya da fill-first"}
+        self.cfg.data.setdefault("agent", {})["key_strategy"] = strategy
+        set_config_value("agent", "key_strategy", strategy)
+        for pool in [c for c in self.router._clients.values() if hasattr(c, "strategy")]:
+            pool.strategy = strategy
+        return {"ok": True}
+
+    def add_provider(self, d: dict[str, Any]) -> dict[str, Any]:
+        """Arayüzden OpenAI uyumlu bir sunucu ekle (LM Studio, vLLM, LiteLLM, kendi proxy'n, başka bir bulut).
+        Önce /models denenir; cevap vermezse kaydedilmez (force ile yine de kaydedilir)."""
+        from alice.config import ProviderConfig, set_config_value, set_env_value
+        from alice.providers.openai_compat import OpenAICompatProvider, ProviderError
+
+        name = str(d.get("name", "")).strip().lower()
+        base_url = str(d.get("base_url", "")).strip().rstrip("/")
+        key = str(d.get("key", "")).strip()
+        models = [m.strip() for m in str(d.get("models", "")).replace("\n", ",").split(",") if m.strip()]
+        if not re.fullmatch(r"[a-z][a-z0-9_-]{1,23}", name):
+            return {"ok": False, "error": "ad küçük harf, rakam, - ya da _ olmalı (ör. lmstudio)"}
+        if name in self.router.providers_cfg and not self.router.providers_cfg[name].custom:
+            return {"ok": False, "error": f"{name} zaten hazır bir sağlayıcı"}
+        if not re.fullmatch(r"https?://[^\s\"']+", base_url):
+            return {"ok": False, "error": "adres http:// ya da https:// ile başlamalı (ör. http://localhost:1234/v1)"}
+        env = re.sub(r"[^A-Z0-9]", "_", name.upper()) + "_API_KEY"
+        found: list[str] = []
+        try:
+            client = OpenAICompatProvider(ProviderConfig(name=name, base_url=base_url, key_override=key), timeout=15)
+            try:
+                found = [str(m.get("id")) for m in client.list_models() if m.get("id")]
+            finally:
+                client.close()
+        except ProviderError as e:
+            if not d.get("force"):
+                return {"ok": False, "error": f"sunucu cevap vermedi: {e}", "can_force": True}
+        sec = f"providers.{name}"
+        set_config_value(sec, "base_url", base_url)
+        set_config_value(sec, "api_key_env", env if key else "")
+        set_config_value(sec, "custom", True)
+        set_config_value(sec, "max_input_tokens", int(d.get("max_input_tokens") or 32000))
+        set_config_value(sec, "auto", bool(d.get("auto", True)))
+        if models:
+            set_config_value(sec, "models", models)
+        if key:
+            set_env_value(env, key)
+        self.cfg.data.setdefault("providers", {})[name] = {
+            "base_url": base_url, "api_key_env": env if key else "", "custom": True,
+            "max_input_tokens": int(d.get("max_input_tokens") or 32000), "auto": bool(d.get("auto", True)),
+            **({"models": models} if models else {})}
+        self.router.reload_providers(name)
+        from alice.providers import ranking
+
+        ranking.refresh_in_background(self.router, emit=self.router.on_event, max_age=0)
+        return {"ok": True, "name": name, "models": models or found[:50]}
+
+    def remove_provider(self, name: str) -> dict[str, Any]:
+        from alice.config import remove_config_section, set_env_value
+
+        pc = self.router.providers_cfg.get(name)
+        if pc is None or not pc.custom:
+            return {"ok": False, "error": "sadece arayüzden eklenen sunucular silinebilir"}
+        remove_config_section(f"providers.{name}")
+        for k in [pc.api_key_env, *self._extra_keys(pc.api_key_env)] if pc.api_key_env else []:
+            set_env_value(k, "")
+        self.cfg.data.get("providers", {}).pop(name, None)
+        self.router.reload_providers(name)
         return {"ok": True}
 
     def set_update_mode(self, mode: str) -> bool:
@@ -1737,6 +1866,15 @@ def make_handler(state: AppState):
                 if p == "/api/keys/set":
                     r = state.set_key(str(d.get("key", "")), str(d.get("value", "")))
                     return self._json(r, 200 if r.get("ok") else 400)
+                if p == "/api/keys/add":  # anahtar havuzu: sağlayıcıya bir anahtar daha
+                    r = state.add_key(str(d.get("base", "")), str(d.get("value", "")))
+                    return self._json(r, 200 if r.get("ok") else 400)
+                if p == "/api/keys/strategy":
+                    return self._json(state.set_key_strategy(str(d.get("strategy", ""))))
+                if p == "/api/providers/add":
+                    return self._json(state.add_provider(d))
+                if p == "/api/providers/remove":
+                    return self._json(state.remove_provider(str(d.get("name", ""))))
                 if p == "/api/assistant/action":
                     return self._json(state.assistant_action(str(d.get("action", "")), d))
                 if p == "/api/update/mode":

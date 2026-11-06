@@ -39,6 +39,8 @@ def params(provider: str, model: str, level: str) -> dict[str, Any]:
         # ChatGPT girişi (Responses API, reasoning.effort). gpt-6-luna: none/low/medium/high/xhigh/max; "minimal"i
         # 400 ile reddediyor ve hata "not_found" sayılıp model oturum boyunca ölü işaretleniyor, o yüzden off -> none.
         return {"reasoning_effort": "none" if level == "off" else level}
+    if provider == "anthropic":  # Claude API: output_config.effort (low..max); kapatılamaz, "off" en az düşünme
+        return {"reasoning_effort": "low" if level == "off" else level}
     if level in ("xhigh", "max"):
         level = "high"  # diğer sağlayıcılarda en yüksek seviye
     m = model.lower()

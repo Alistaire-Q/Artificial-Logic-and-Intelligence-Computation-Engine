@@ -2050,10 +2050,102 @@ function keysPane(pane, data) {
     const list = [...cards.values()].sort((a, b) => (b.every((p) => p.set) - a.every((p) => p.set)));
     const done = list.filter((parts) => parts.every((p) => p.set)).length;
     pane.appendChild(el("div", "sec", `${title} · ${done}/${list.length} bağlı`));
+    if (g === "model") {
+      // Anahtar havuzu: bir sağlayıcıya birden çok anahtar eklenince istekler nasıl paylaştırılsın.
+      const row = el("div", "kc-strategy");
+      row.append(el("small", "", "Bir sağlayıcıda birden çok anahtar varsa:"),
+        segmented([["round-robin", "Sırayla kullan"], ["fill-first", "Biri bitince diğerine geç"]], d.strategy || "round-robin",
+          (v) => api("/api/keys/strategy", { strategy: v }).then((r) => toast(r && r.ok ? "kaydedildi" : (r && r.error) || "olmadı"))));
+      pane.appendChild(row);
+    }
     const grid = el("div", "key-grid");
     for (const parts of list) grid.appendChild(keyRow(parts));
+    if (g === "model") grid.appendChild(serverCard());
     pane.appendChild(grid);
   }
+}
+/* Anahtar havuzu: sağlayıcının ek anahtarları ve her birinin durumu (hazır, beklemede, kapalı). */
+function keyPool(k) {
+  const box = el("div", "kc-pool");
+  const pool = k.pool || [];
+  const extra = k.extra || [];
+  if (pool.length > 1) {
+    for (const x of pool) {
+      const waits = Object.entries(x.waiting || {});
+      const st = x.state === "beklemede" && waits.length
+        ? "beklemede · " + waits.slice(0, 2).map(([m, sec]) => `${m.split("/").pop()} ${sec > 3600 ? Math.round(sec / 3600) + " sa" : sec > 60 ? Math.round(sec / 60) + " dk" : sec + " sn"}`).join(", ")
+        : x.state;
+      const r = el("div", "kc-key " + (x.state === "hazır" ? "ok" : x.state === "kapalı" ? "bad" : "wait"));
+      r.append(el("span", "kc-dot"), el("code", "", x.preview), el("small", "", st + (x.uses ? ` · ${x.uses} istek` : "")));
+      if (x.error && x.state === "kapalı") r.title = x.error;
+      const ex = x.index > 1 ? extra[x.index - 2] : null;
+      if (ex && ex.source === "file") r.appendChild(iconAct(IC.trash, "Bu anahtarı sil", () => api("/api/keys/set", { key: ex.key, value: "" })
+        .then((res) => { toast(res && res.ok ? "anahtar silindi" : (res && res.error) || "silinemedi"); showSettings("apikeys"); }), "danger"));
+      box.appendChild(r);
+    }
+  }
+  const add = el("div", "kc-add");
+  const inp = el("input");
+  inp.type = "password"; inp.autocomplete = "off"; inp.spellcheck = false;
+  inp.placeholder = "bir anahtar daha yapıştır (başka hesap)";
+  const go = el("button", "btn", "Ekle");
+  go.addEventListener("click", () => {
+    if (!inp.value.trim()) return inp.focus();
+    api("/api/keys/add", { base: k.key, value: inp.value.trim() }).then((r) => {
+      if (!r || !r.ok) return toast((r && r.error) || "eklenemedi");
+      toast("Anahtar eklendi: istekler artık aralarında paylaşılıyor");
+      showSettings("apikeys");
+    });
+  });
+  inp.addEventListener("keydown", (e) => { if (e.key === "Enter") go.click(); });
+  add.append(inp, go);
+  box.appendChild(add);
+  box.appendChild(el("small", "kc-hint", "Aynı sağlayıcıdan başka hesapların anahtarları: biri sınıra ya da günlük kotaya takılınca ALICE beklemeden diğeriyle devam eder."));
+  return box;
+}
+/* Kendi sunucun ya da OpenAI uyumlu başka bir servis (LM Studio, vLLM, LiteLLM, bir proxy): adresle ekle. */
+function serverCard() {
+  const card = el("div", "key-card");
+  const head = el("div", "kc-head");
+  const l = el("span", "l");
+  l.append(el("b", "", "OpenAI uyumlu sunucu ekle"), el("small", "", "LM Studio, vLLM, LiteLLM, kendi proxy'n ya da başka bir bulut"));
+  const open = el("button", "btn", "Ekle");
+  head.append(el("span", "kc-dot"), l, open);
+  card.appendChild(head);
+  const form = el("div", "kc-form");
+  form.hidden = true;
+  const field = (label, ph, type) => {
+    const row = el("div", "kc-row");
+    const i = el("input");
+    i.type = type || "text"; i.placeholder = ph; i.spellcheck = false; i.autocomplete = "off";
+    row.append(el("span", "kc-field", label), i);
+    form.appendChild(row);
+    return i;
+  };
+  const name = field("Ad", "ör. lmstudio");
+  const url = field("Adres", "http://localhost:1234/v1");
+  const key = field("Anahtar", "yoksa boş bırak", "password");
+  const models = field("Modeller", "boşsa sunucudan okunur (virgülle)");
+  const fr = el("div", "kc-btns");
+  const cancel = el("button", "btn ghost", "Vazgeç");
+  cancel.addEventListener("click", () => { form.hidden = true; });
+  const save = el("button", "btn primary", "Dene ve ekle");
+  const send = (force) => {
+    save.disabled = true;
+    api("/api/providers/add", { name: name.value.trim(), base_url: url.value.trim(), key: key.value.trim(), models: models.value.trim(), force })
+      .then((r) => {
+        save.disabled = false;
+        if (r && r.ok) { toast(`${r.name} eklendi` + (r.models && r.models.length ? ` · ${r.models.length} model` : "")); return showSettings("apikeys"); }
+        if (r && r.can_force) { save.textContent = "Yine de ekle"; save.onclick = () => send(true); }
+        toast((r && r.error) || "eklenemedi");
+      });
+  };
+  save.addEventListener("click", () => send(false));
+  fr.append(cancel, save);
+  form.appendChild(fr);
+  card.appendChild(form);
+  open.addEventListener("click", () => { form.hidden = !form.hidden; if (!form.hidden) setTimeout(() => name.focus(), 0); });
+  return card;
 }
 function keyRow(parts) {
   const k = parts[0];
@@ -2079,9 +2171,15 @@ function keyRow(parts) {
     a.addEventListener("click", () => api("/api/open", { url: k.url }));
     head.appendChild(a);
   }
+  if (k.custom) head.appendChild(iconAct(IC.trash, "Sunucuyu kaldır", () => api("/api/providers/remove", { name: k.provider })
+    .then((r) => { toast(r && r.ok ? k.label + " kaldırıldı" : (r && r.error) || "kaldırılamadı"); showSettings("apikeys"); }), "danger"));
   const edit = el("button", "btn", all ? "Değiştir" : "Ekle");
   head.appendChild(edit);
   card.appendChild(head);
+  const pooled = !many && k.provider && k.set;
+  if (pooled && (k.pool || []).length > 1) {
+    l.querySelector("small").textContent = `${k.pool.length} anahtar · ` + k.pool.filter((x) => x.state === "hazır").length + " hazır";
+  }
   const form = el("div", "kc-form");
   form.hidden = true;
   const label = (p) => many ? `${k.label} ${p.field}` : k.label;
@@ -2121,6 +2219,10 @@ function keyRow(parts) {
   fr.append(cancel, save);
   form.appendChild(fr);
   card.appendChild(form);
+  if (pooled) {
+    form.prepend(keyPool(k));
+    if ((k.pool || []).length > 1) inputs[0][1].placeholder = "1. anahtarı değiştir";
+  }
   edit.addEventListener("click", () => {
     form.hidden = !form.hidden;
     if (!form.hidden) setTimeout(() => inputs[0][1].focus(), 0);

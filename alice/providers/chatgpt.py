@@ -664,4 +664,8 @@ def make_client(pc: ProviderConfig, timeout: float = 180.0) -> OpenAICompatProvi
 
     if pc.auth == "chatgpt":
         return ChatGPTProvider(pc, timeout)
+    if pc.kind == "anthropic":
+        from alice.providers.anthropic_api import AnthropicProvider
+
+        return AnthropicProvider(pc, timeout)  # type: ignore[return-value]
     return openai_compat.OpenAICompatProvider(pc, timeout)

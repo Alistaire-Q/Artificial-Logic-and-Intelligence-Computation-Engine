@@ -66,6 +66,7 @@ Ekim 2026 itibarıyla ücretsiz katmanları taradım. Rakamlar sık değişiyor,
 | **Cohere** | Trial anahtarı ücretsiz (ayda sınırlı istek, ticari kullanım yok). Command A ailesi, araç çağırma destekli | brain yedeği |
 | **Cloudflare Workers AI** | Günde 10.000 "neuron" ücretsiz: Kimi K2.5, GLM 4.7 Flash, Llama 3.3 70B, Gemma 4. Büyük modelde günde ~150-300 bin token. Adreste hesap kimliği var, `CLOUDFLARE_ACCOUNT_ID` de gerekiyor | brain yedeği |
 | **Vercel AI Gateway** | Hesap başına 30 günde 5$ kredi; Claude, GPT, Gemini aynı anahtarla. Kredi harcadığı için otomatik sıraya **girmiyor**, sadece elle: `/model brain vercel:anthropic/claude-sonnet-5.5` | elle seçilen güçlü model |
+| **Anthropic (Claude API)** | Resmi API, kullandıkça ücretli (console.anthropic.com). Claude Opus 5.5, Sonnet 5.5, Haiku 5.5, Fable 5.1. Resmi `anthropic` paketiyle konuşuyor (`pip install anthropic`). Ücretli olduğu için otomatik sıraya **girmiyor**: model menüsünden ya da `/model brain anthropic:claude-opus-5-5` | elle seçilen güçlü model |
 | **Ollama (yerel)** | Limitsiz, offline, GPU'na bağlı | her zincirin sonunda son çare |
 
 Bu tablodakilere ek olarak `.env`'e anahtar yazarsan **Mistral** ve **SambaNova** da otomatik ölçülüp zincire girer. Varsayılan `config.toml`'da brain zincirinin başında NVIDIA'daki GLM 5.3 (1M bağlam) duruyor, ardından `auto` (ölçülen en iyi ücretsiz modeller), en sonda yerel Ollama.
@@ -138,6 +139,7 @@ Eksik bir paket gereken bir komutu çalıştırırsan ALICE traceback yerine han
 * `COHERE_API_KEY`: https://dashboard.cohere.com/api-keys
 * `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`: https://dash.cloudflare.com/profile/api-tokens ("Workers AI" izinli token; hesap kimliği panelin sağında)
 * `AI_GATEWAY_API_KEY`: https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai%2Fapi-keys (Vercel, 5$ kredi, sadece elle seçilir)
+* `ANTHROPIC_API_KEY`: https://console.anthropic.com/settings/keys (resmi Claude API, ücretli, sadece elle seçilir)
 * `TYPESAFE_API_KEY`: Jev erişimi alırsan
 * `GITHUB_TOKEN`: git ve GitHub araçları için (opsiyonel, ayrıntı aşağıda)
 * `BRAVE_SEARCH_API_KEY`: web aramada Brave kullanmak için (opsiyonel)
@@ -145,6 +147,10 @@ Eksik bir paket gereken bir komutu çalıştırırsan ALICE traceback yerine han
 Hiç anahtar yoksa ALICE sadece yerel Ollama'yı dener ve bunu açılışta söyler.
 
 **Dosyayla uğraşmak istemezsen:** uygulamada **Bağlantılar → Anahtarlar**. Her sağlayıcının yanında "anahtarı al" bağlantısı var; anahtarı yapıştırıp Kaydet'e basınca `.env`'e yazılıyor ve hemen kullanılıyor (yeniden başlatmak gerekmiyor, yeni sağlayıcı arka planda ölçülüp model sırasına giriyor). Anahtarın tamamı arayüze hiç geri gelmiyor, sadece son 4 hanesi görünüyor. Arka plan çekirdeği (sesli asistan) yeni anahtarı bir sonraki açılışında görür.
+
+**Anahtar havuzu (birden çok hesap):** Aynı sağlayıcıya birden fazla anahtar ekleyebilirsin: Anahtarlar'da sağlayıcının kartını açıp "bir anahtar daha yapıştır", ya da `.env`'de `GEMINI_API_KEY_2=`, `GEMINI_API_KEY_3=`... İstekler anahtarlar arasında sırayla paylaşılır (ya da "Biri bitince diğerine geç" seçilirse ilki bitene kadar o kullanılır; `[agent] key_strategy = "fill-first"`). Bir anahtar 429'a takılınca o anahtar o modelde sunucunun söylediği kadar bekler, istek hemen sıradaki anahtarla tekrarlanır; günlük kotası dolan anahtar o modelde ertesi sıfırlanmaya kadar kapanır (ALICE yeniden başlasa da hatırlanır, `~/.alice/key-cooldowns.json`); geçersiz anahtar oturum boyunca atlanır. Bütün anahtarlar tükenince router her zamanki gibi sıradaki modele geçer. Kartta her anahtarın son 4 hanesi, kaç istek yaptığı ve hangi modelde ne kadar beklediği görünür.
+
+**Kendi sunucun ya da başka bir OpenAI uyumlu servis:** Anahtarlar → **OpenAI uyumlu sunucu ekle**: ad, adres (ör. `http://localhost:1234/v1`), varsa anahtar ve istersen model listesi. ALICE önce `/models`'u dener; cevap gelirse `config.toml`'a `[providers.<ad>]` olarak yazar, modeller ölçülüp otomatik sıraya girer. LM Studio, vLLM, LiteLLM ya da kendi proxy'n için. Kartındaki çöp kutusuyla kaldırılır.
 
 `.env`'in yeri: Windows'ta `C:\Users\<kullanıcı>\.alice\.env`, Linux/macOS'ta `~/.alice/.env`. Güncellemeyle yeni bir sağlayıcı gelince ALICE açılışta onun boş satırını (açıklaması ve bağlantısıyla) bu dosyaya kendisi ekler ve haber verir; dolu anahtarlarına dokunmaz. Dosya `.gitignore`'da, GitHub'a gitmez.
 
