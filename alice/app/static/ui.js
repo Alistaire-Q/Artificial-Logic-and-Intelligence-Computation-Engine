@@ -2212,7 +2212,8 @@ function cliproxyCard() {
           link.href = r.url; link.target = "_blank"; link.rel = "noopener noreferrer";
           const hint = el("small", "kc-hint", "Tarayıcıda kendi hesabınla giriş yap; bitince hesap burada görünür.");
           add.replaceChildren(link, hint);
-          try { link.click(); } catch (e) { /* tarayıcı engellediyse elle tıklanır */ }
+          // Masaüstü uygulamasında bağlantıyı sistem tarayıcısında aç (iç pencere giriş sayfasını açamayabilir).
+          api("/api/open", { url: r.url }).then((o) => { if (!o || !o.ok) toast("Tarayıcı açılamadı; bağlantıya bas"); });
           let n = 0;
           const timer = setInterval(async () => {
             n += 1;
