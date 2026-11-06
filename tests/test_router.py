@@ -259,6 +259,21 @@ def test_catalog_view_groups_tested_models_by_provider():
     assert view["b"]["models"][0]["tested"] and not view["a"]["models"][1]["tested"]
 
 
+def test_catalog_view_explains_provider_with_no_working_model():
+    """Arayüzden eklenen sunucunun hiçbir modeli cevap vermiyorsa kart boş kalmasın, sağlayıcının hatası görünsün."""
+    cfg = make_config({"brain": ["a:m1"]}, auto_models=False)
+    err = ('[quota] {"error":{"code":"free_rate_limited","message":"Free models are not available to this '
+           'account yet."}}')
+    cache = {"results": {"b:free": {"ok": False, "error_kind": "quota", "error": err}}}
+    r = router_with(cfg, {"a": FakeProvider("a", []), "b": FakeProvider("b", [])}, auto_cache=cache)
+    view = {p["name"]: p for p in r.catalog_view()}
+    assert view["b"]["models"] == [] and view["b"]["error"] == "Free models are not available to this account yet."
+    assert "error" not in view["a"]
+    from alice.providers.router import _short_error
+
+    assert _short_error('{"error":{"message":"allowance is used up — top up (req') == "allowance is used up — top up (req"
+
+
 GARBLED = ("Projeye tıklamayı denedim ama 项目视图没有找到请再试一次 Η προβολή έργου δεν βρέθηκε ProjectView "
            "tekrar deneyeceğim")
 
@@ -334,3 +349,25 @@ def test_repeated_timeouts_back_off_and_reset_on_success():
     r.strikes.pop("a:m")  # başarı sayacı sıfırlar
     r._penalize("a:m", "a", e, False, False)
     assert r.strikes["a:m"] == 1
+
+
+def test_proxy_models_are_split_by_provider_without_chatgpt_duplicates():
+    from alice.providers.router import Router
+
+    row = lambda ref: {"ref": ref, "model": ref.partition(":")[2], "hidden": False}  # noqa: E731
+    out = [{"name": "chatgpt", "enabled": True, "hidden": False, "key": "", "models": [row("chatgpt:gpt-6-luna")]},
+           {"name": "cliproxy", "enabled": True, "hidden": False, "key": "K",
+            "models": [row("cliproxy:claude-opus-5-5"), row("cliproxy:gpt-6-luna"), row("cliproxy:gpt-6.1-terra"),
+                       row("cliproxy:kimi-k3")]}]
+    view = {e["name"]: e for e in Router._split_proxy(out, {"cliproxy:kimi-*"})}
+    assert "cliproxy" not in view
+    assert [m["model"] for m in view["cliproxy:claude-*"]["models"]] == ["claude-opus-5-5"]
+    assert [m["model"] for m in view["cliproxy:gpt-*"]["models"]] == ["gpt-6.1-terra"]  # luna ChatGPT girişinde var
+    assert view["cliproxy:kimi-*"]["hidden"] and view["cliproxy:kimi-*"]["label"] == "Kimi"
+
+
+def test_pattern_hides_whole_proxy_group():
+    from alice.providers.router import _hidden_match
+
+    assert _hidden_match("cliproxy:kimi-k3", {"cliproxy:kimi-*"})
+    assert not _hidden_match("cliproxy:claude-opus-5-5", {"cliproxy:kimi-*"})

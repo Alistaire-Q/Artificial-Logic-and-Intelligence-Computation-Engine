@@ -15,6 +15,8 @@ import os
 import re
 import queue
 import secrets
+import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -128,7 +130,8 @@ class AppUI:
 
     def tool_end(self, call_id: str, name: str, result: ToolResult) -> None:
         self.publish({"type": "tool_end", "id": call_id, "name": name, "text": result.text[:20000],
-                          "is_error": result.is_error, "diff": result.diff, "images": result.images[:4]})
+                          "is_error": result.is_error, "diff": result.diff, "images": result.images[:4],
+                      "files": getattr(result, "files", [])[:10]})
 
     def ask_permission(self, name: str, summary: str, risk: str) -> str:
         pid = secrets.token_hex(6)
@@ -1986,6 +1989,28 @@ def make_handler(state: AppState):
                 if p == "/api/choice":
                     pid, ans = str(d.get("id")), str(d.get("answer") or "")
                     return self._json({"ok": any(ui.answer_choice(pid, ans) for ui in state.all_uis())})
+                if p == "/api/reveal":
+                    # send_file ile gösterilen dosyayı aç ya da klasöründe göster. Sadece o liste: arayüzden rastgele
+                    # bir yol açılamasın.
+                    from alice.tools.meta import SENT_FILES
+
+                    path = str(d.get("path", ""))
+                    if path not in SENT_FILES or not Path(path).exists():
+                        return self._json({"ok": False, "error": "dosya bulunamadı"}, 404)
+                    try:
+                        if d.get("folder"):
+                            if sys.platform == "win32":
+                                subprocess.Popen(["explorer", "/select,", path])
+                            else:
+                                subprocess.Popen(["xdg-open" if sys.platform != "darwin" else "open",
+                                                  str(Path(path).parent)])
+                        elif sys.platform == "win32":
+                            os.startfile(path)  # type: ignore[attr-defined]
+                        else:
+                            subprocess.Popen(["xdg-open" if sys.platform != "darwin" else "open", path])
+                    except OSError as e:
+                        return self._json({"ok": False, "error": str(e)}, 500)
+                    return self._json({"ok": True})
                 if p == "/api/open":
                     url = str(d.get("url", ""))
                     if url.startswith(("http://", "https://")):

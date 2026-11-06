@@ -12,6 +12,7 @@ import threading
 import time
 from typing import Any, Callable
 
+from alice.config import alice_home
 from alice.core import service
 
 MODES = ("auto", "normal", "dev", "flight", "quiet")
@@ -33,6 +34,24 @@ def _events(limit: int = 12) -> list[dict[str, Any]]:
     return [{"ts": e.ts, "kind": e.kind, "title": e.title, "body": e.body[:300], "severity": e.severity} for e in evs]
 
 
+def _wait_lock_released(pid: Any, sleep: Callable[[float], None], timeout: float = 15.0) -> None:
+    """Durum dosyası döngü bitince silinir, ama süreç (ses, HUD, uygulama sunucusu kapanırken) birkaç saniye daha
+    yaşayıp core.pid kilidini tutar. O arada başlatılan yeni çekirdek "zaten çalışıyor" deyip sessizce çıkıyordu:
+    "Yeniden başlat"tan sonra ALICE tamamen kapalı kalıyordu."""
+    import psutil
+
+    lock = alice_home() / "core.pid"
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        try:
+            held = lock.read_text().strip() == str(pid)
+        except OSError:
+            return
+        if not held or not pid or not psutil.pid_exists(int(pid)):
+            return
+        sleep(0.3)
+
+
 def stop_core(wait: float = STOP_WAIT, sleep: Callable[[float], None] = time.sleep) -> bool:
     """Çalışan çekirdeği kapat. Kapandıysa True."""
     import psutil
@@ -44,6 +63,7 @@ def stop_core(wait: float = STOP_WAIT, sleep: Callable[[float], None] = time.sle
     end = time.monotonic() + wait
     while time.monotonic() < end:
         if not service.read_state().get("running"):
+            _wait_lock_released(st.get("pid"), sleep)
             return True
         sleep(0.3)
     try:  # eski sürüm core-stop'u tanımıyor: süreci kapat

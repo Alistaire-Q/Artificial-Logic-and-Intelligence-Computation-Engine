@@ -55,9 +55,12 @@ class RunPlan(Tool):
 
 class TaskControl(Tool):
     name = "task_control"
-    description = (
-        "Süren run_plan görevini yönetir. Onayı kullanıcı açıkça söylemeden ASLA verme."
-    )
+    description = ("Süren bir run_plan görevini yönetir: kullanıcının onayını ya da reddini iletir, görevi durdurur ya da "
+                   "durumunu döndürür.\n"
+                   "- approve/reject sadece kullanıcı bu konuşmada açıkça 'evet'/'hayır' dediğinde. Onayı ASLA kendin verme ya "
+                   "da tahmin etme.\n"
+                   "- 'Dur', 'vazgeç' denince stop; 'ne durumda' sorusunda status.\n"
+                   "- Süren bir run_plan görevi yoksa hata döner.")
     parameters = obj({"action": {"type": "string", "enum": ["approve", "reject", "stop", "status"],
                                  "description": "approve: görev onay sorunca kullanıcı 'evet' dedi | reject: 'hayır' "
                                  "dedi | stop: 'dur', 'vazgeç' | status: 'ne durumda'."}}, ["action"])

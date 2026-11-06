@@ -18,17 +18,23 @@ import threading
 import time
 from typing import Any, Callable
 
-import httpx
-
 from alice.tools.base import ToolResult
 from alice.voice.live import AudioOut, LiveError, LiveUI, sanitize_schema
 
 REALTIME_PROMPT = """# Canlı sesli konuşma
 Kullanıcıyla sesli, canlı konuşuyorsun. Doğal, sıcak ve kısa konuş (genelde 1-2 cümle), Türkçe.
+Telaffuz: anadili Türkçe olan, İstanbul'da yaşayan genç bir kadın gibi konuş; yabancı aksan yok. Türkçe ünlüleri
+(ı, ö, ü) ve r'yi Türk gibi söyle, vurguyu Türkçedeki gibi kelimenin sonuna yakın koy, cümleyi düz ve rahat bir
+tonla, doğal hızda bitir.
 Liste, kod, uzun yol ya da sayı okuma; gerekirse ekrana koyduğunu söyle.
-Sen hızlı bir ses modelisin; bilgi, açıklama, plan, kod, hesap, güncel bir şey ya da ALICE'in araçlarıyla
-yapılacak bir iş istenince `think` aracını çağır. Önce tek kısa cümleyle ("Bir bakayım.") haber ver, sonra
-`think`in döndürdüğü sonucu kendi cümlelerinle, kısa ve doğal biçimde anlat. Sonucu olduğu gibi okuma.
+Tek adımlık işleri (müzik/video çal, YouTube'da bir şey aç, uygulama ya da site aç, ses seviyesi, hatırlatma,
+zamanlayıcı) doğrudan ilgili araçla hemen yap; bunlar için `think` çağırma, çok yavaştır.
+Bilgi, açıklama, plan, kod, hesap, güncel bir şey ya da çok adımlı bir iş istenince `think` aracını çağır. Önce
+tek kısa cümleyle ("Bir bakayım.") haber ver, sonra `think`in döndürdüğü sonucu kendi cümlelerinle, kısa ve
+doğal biçimde anlat. Sonucu olduğu gibi okuma. Araç sonucunu görmeden "yaptım" deme.
+Duyduğun metin konuşma tanımadan gelir ve kelimeler bozuk olabilir (ör. "Alice" adın "Aisla", "Alis" gibi
+yazılabilir). İsteğin özünü anladıysan anlamsız kelimeyi yok say ve soru sormadan yap; yalnızca gerçekten
+anlamadıysan tek kısa soru sor.
 `think` bir soru sorduysa (güçlü modelin sana ihtiyacı olan bilgi) o soruyu kullanıcıya aynen ilet ve cevabını
 bekle; cevabı yine `think` aracına istek olarak ver. Bir iş sürüyorsa aynı konuşmayı sürdür.
 Sen hiçbir şey demeden araç çağırırsan kullanıcı kısa bir "Bir saniye." duyar; araç sonucundan sonra bunu
@@ -47,7 +53,37 @@ THINK_TOOL = {
         "required": ["request"]},
 }
 
+# Codex Realtime'ın kabul ettiği sesler (2026-11-06, sunucunun "Supported values" hatasından).
+REALTIME_VOICES = ("alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar")
+
 HUSH_WORDS = ("sus", "sussana", "kes", "yeter", "boşver", "kapat")
+
+_OPENAI_TYPES = {"OBJECT": "object", "STRING": "string", "INTEGER": "integer", "NUMBER": "number",
+                 "BOOLEAN": "boolean", "ARRAY": "array", "NULL": "null"}
+
+
+def openai_schema(schema: Any) -> Any:
+    """ALICE araç şemasını OpenAI Realtime'ın istediği küçük harfli JSON Schema'ya çevir.
+
+    ALICE'in iç şemaları Gemini için büyük harf (`STRING`, `INTEGER`, `OBJECT`) kullanıyor; Realtime API
+    bunları reddedip `invalid_function_parameters` veriyor ve oturum güncellemesi tümden düşüyordu.
+    """
+    if isinstance(schema, dict):
+        out: dict[str, Any] = {}
+        for key, value in schema.items():
+            if key == "type" and isinstance(value, str):
+                out["type"] = _OPENAI_TYPES.get(value.upper(), value.lower())
+            elif key == "type" and isinstance(value, list):
+                types = [_OPENAI_TYPES.get(str(t).upper(), str(t).lower()) for t in value if t != "null"]
+                out["type"] = types[0] if len(types) == 1 else types
+            elif key == "nullable":
+                continue  # OpenAI şeması "nullable" bilmiyor; alan zaten zorunlu değil
+            else:
+                out[key] = openai_schema(value)
+        return out
+    if isinstance(schema, list):
+        return [openai_schema(item) for item in schema]
+    return schema
 
 
 def resample_16_to_24(pcm: bytes) -> bytes:
@@ -82,12 +118,24 @@ class RealtimeSession:
         self.agent = agent
         self.log = log
         self.model = str(v.get("live_realtime_model") or "gpt-realtime-2.1")
-        self.voice = str(v.get("live_realtime_voice") or "marin")
+        self.voice = str(v.get("live_realtime_voice") or "marin").strip().lower()
+        if self.voice not in REALTIME_VOICES:
+            # Geçersiz ses adı (ör. ChatGPT uygulamasındaki "quip") session.update'in tamamını düşürüyor:
+            # talimatlar ve araçlar da uygulanmıyordu.
+            log(f"realtime: '{self.voice}' sesi desteklenmiyor, marin kullanılıyor")
+            self.voice = "marin"
         self.idle = min(float(v.get("live_idle", 5)), 5)
         self.silence_ms = int(v.get("live_silence_ms", 600))
+        # Hoparlör kullanılırken ALICE'in kendi sesi mikrofona geri dönebiliyor. Realtime VAD bunu yeni
+        # kullanıcı turu sanıp devam eden cevabı iptal eder; bu yüzden varsayılan olarak cevap sırasında
+        # mikrofonu sunucuya göndermiyoruz. Kulaklık kullananlar eski "araya girerek kes" davranışını açabilir.
+        self.echo_guard = bool(v.get("live_realtime_echo_guard", True))
         self.tools_on = bool(v.get("live_tools", True))
         # Hızlı ses modeli zayıf: bilgi/plan/kod/araç işlerini güçlü modele devreden think aracı.
         self.think = bool(v.get("live_think", True))
+        # think'in model sırası (Gemini yoluyla aynı ayar). Eskiden ses ajanının kendi zinciri kullanılıyordu:
+        # başındaki model takılınca (6 Kasım: gemini-flash-latest ReadTimeout) tek bir "video aç" ~95 sn sürdü.
+        self.think_models = [str(r) for r in v.get("live_think_models") or []]
         self._think_lock = threading.Lock()
         self.gated = False
         self.hushed = False
@@ -97,6 +145,7 @@ class RealtimeSession:
         self.on_correction: Callable[[str], None] | None = None
         self._out_factory = out_factory
         self._connect = connect
+        self._send_update = False
         self._out = None
         self._ws = None
         self._stop = None
@@ -104,6 +153,10 @@ class RealtimeSession:
         self._pre: dict[str, Any] = {}
         self._pre_lock = threading.Lock()
         self._proxy = self._read_proxy()
+        # Her "Alice"te (Discord/oyunda her cümlede) yeni oturum açılıyor; önceki konuşma talimata eklenmezse model
+        # her cümleyi bağlamsız duyuyordu ("herhangi bir şey açarsan olur" -> neyi?).
+        self.history_minutes = float(v.get("live_history_minutes", 30))
+        self._history: list[tuple[float, str, str]] = []
 
     # ------------------------------------------------------------------ hazırlık
     @staticmethod
@@ -154,7 +207,35 @@ class RealtimeSession:
                 refresh(force=True)
             except Exception:  # noqa: BLE001
                 pass
-        return (base + "\n\n" + REALTIME_PROMPT)[:12000]
+        history = self.history_text()
+        tail = ("\n\n# Az önceki konuşma (aynı sohbetin devamı; kısa cevaplar buna göre anlaşılır)\n" + history
+                if history else "")
+        # Geçmiş ve canlı konuşma kuralları kesilmesin: kırpma sistem talimatından yapılır.
+        room = 12000 - len(REALTIME_PROMPT) - len(tail) - 2
+        return base[:max(0, room)] + "\n\n" + REALTIME_PROMPT + tail
+
+    def history_text(self, limit: int = 8) -> str:
+        from datetime import datetime
+
+        cutoff = time.time() - self.history_minutes * 60
+        lines = []
+        for ts, user, reply in [h for h in self._history if h[0] >= cutoff][-limit:]:
+            line = f"- {datetime.fromtimestamp(ts):%H:%M} Kullanıcı: {user[:300]}"
+            if reply:
+                line += f" / Sen: {reply[:300]}"
+            lines.append(line)
+        return "\n".join(lines)
+
+    def _remember(self, heard: str, said: str, tools: list[str]) -> None:
+        heard, said = heard.strip(), said.strip()
+        if heard or said or tools:
+            extra = f" araçlar: {', '.join(tools)}" if tools else ""
+            self.log(f"realtime duyulan: {heard[:300]} | cevap: {said[:400]}{extra}")
+        if heard:
+            self._history = (self._history + [(time.time(), heard, said)])[-20:]
+        elif said and self._history:
+            ts, user, before = self._history[-1]
+            self._history[-1] = (ts, user, (before + " " + said).strip())
 
     def _tool_specs(self) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = [THINK_TOOL] if self.think else []
@@ -174,7 +255,7 @@ class RealtimeSession:
                 continue
             item: dict[str, Any] = {"type": "function", "name": f["name"],
                                     "description": str(f.get("description") or "")[:1000]}
-            params = sanitize_schema(f.get("parameters") or {})
+            params = openai_schema(sanitize_schema(f.get("parameters") or {}))
             if params.get("properties"):
                 item["parameters"] = params
             out.append(item)
@@ -189,7 +270,8 @@ class RealtimeSession:
             "audio": {
                 "input": {"format": {"type": "audio/pcm", "rate": 24000},
                           "turn_detection": {"type": "server_vad", "threshold": 0.5,
-                                             "prefix_padding_ms": 300, "silence_duration_ms": self.silence_ms}},
+                                             "prefix_padding_ms": 300, "silence_duration_ms": self.silence_ms,
+                                             "interrupt_response": not self.echo_guard}},
                 "output": {"format": {"type": "audio/pcm", "rate": 24000}, "voice": self.voice},
             },
         }
@@ -202,17 +284,12 @@ class RealtimeSession:
     def _secret(self) -> str:
         if not self._proxy:
             raise LiveError("yerel Claude Code proxy'si (CLIProxyAPI) ayarlı değil")
-        try:
-            r = httpx.post(f"{self._proxy['base']}/v1/realtime/client_secrets",
-                           headers={"Authorization": f"Bearer {self._proxy['key']}"},
-                           json=self._session_config(), timeout=20)
-            r.raise_for_status()
-            value = str(r.json().get("value") or "")
-        except Exception as e:  # noqa: BLE001 - Live bağlanamadı: çağıran eski yola döner
-            raise LiveError(f"realtime oturumu açılamadı: {e}") from e
-        if not value:
-            raise LiveError("realtime istemci anahtarı boş döndü")
-        return value
+        # CLIProxyAPI'nin /v1/realtime/client_secrets ucu 64 KiB gövde kabul ediyor; ALICE'in talimatı ve
+        # araç şemaları bunu aşınca 413 dönüyor ve canlı oturum hiç açılmıyordu (uzun/robotik yedek yol).
+        # Bunun yerine proxy API anahtarıyla bağlanıp oturumu WebSocket üzerinden güncelle: aynı oturum,
+        # boyut sınırı yok.
+        self._send_update = True
+        return str(self._proxy["key"])
 
     def _ws_url(self) -> str:
         base = (self._proxy or {}).get("base", "http://127.0.0.1:8317")
@@ -283,7 +360,8 @@ class RealtimeSession:
         old_ui, self.agent.ui = self.agent.ui, ui
         self.hushed = False
         state = {"active": time.monotonic(), "heard": "", "said": "", "calls": {}, "done": False,
-                 "answered": False, "want_response": False}
+                 "answered": False, "want_response": False, "output_until": 0.0,
+                 "echo_notice": False, "finish": False, "said_parts": [], "tools": []}
         self.log(f"realtime oturumu açıldı [{self.model}]")
         self._hud("listen", "")
 
@@ -311,6 +389,9 @@ class RealtimeSession:
         tool_thread: threading.Thread | None = None
         try:
             ws.recv()  # session.created (ya da hata); ayrıntısına gerek yok
+            if self._send_update:
+                # Talimatlar, araçlar ve ses: HTTP gövdesi yerine oturum açıldıktan sonra gönderilir.
+                send({"type": "session.update", "session": self._session_config()["session"]})
             if first_text:
                 say_text(first_text)
                 pending_audio = b""
@@ -323,6 +404,12 @@ class RealtimeSession:
                     except queue.Empty:
                         break
                     if frame:
+                        # Ses çalarken yalnızca mikrofondaki hoparlör yankısını Realtime'a geri verirdik.
+                        # VAD'in yeni tur açıp response'u yarıda bırakmasına yol açan asıl döngü buydu.
+                        # Kareleri burada atmak, eski sesin konuşma bitince yeni bir istek gibi işlenmesini de
+                        # engeller. ``output_until`` ağ paketleri arasındaki kısa boşlukları kapsar.
+                        if self.echo_guard and (self.playing or time.monotonic() < state["output_until"]):
+                            continue
                         send_pcm(resample_16_to_24(frame))
                         # Sessizlik kareleri oturumu açık tutmasın: 5 sn kimse konuşmazsa kapanır.
                         if any(frame):
@@ -337,7 +424,20 @@ class RealtimeSession:
                 except Exception as e:  # noqa: BLE001 - bağlantı koptu
                     raise LiveError(f"realtime bağlantısı koptu: {e}") from e
                 if raw is None:
-                    if time.monotonic() - state["active"] > self.idle and not self.playing:
+                    if self.playing:
+                        # Sessizlik penceresi ALICE sustuktan sonra başlasın. Model sesi gerçek zamandan hızlı
+                        # gönderdiği için son parça çok önce gelmiş olur; eskiden ses biter bitmez oturum kapanıyor,
+                        # kullanıcının cevabı yeni (bağlamsız, yavaş) bir oturuma gidiyordu.
+                        touch()
+                        continue
+                    if tool_thread is not None and tool_thread.is_alive():
+                        # Araç/think sürüyor: sessizlik sayma. Eskiden 12 sn'de oturum kapanıyor, think'in sonucu
+                        # kapalı bağlantıya gidip kayboluyordu ("eee açacaktın").
+                        touch()
+                        continue
+                    if state["finish"]:
+                        break  # tek cevaplık tur (Discord/oyun): cevap sonuna kadar çalındı
+                    if time.monotonic() - state["active"] > self.idle:
                         self.log("realtime: sessizlik, oturum kapanıyor")
                         break
                     continue
@@ -348,13 +448,18 @@ class RealtimeSession:
                         out.put(base64.b64decode(ev.get("delta", "")))
                     except Exception:  # noqa: BLE001
                         pass
+                    state["output_until"] = time.monotonic() + 0.35
                     state["answered"] = True
                     touch()
                 elif kind in ("response.output_audio_transcript.delta", "response.audio_transcript.delta"):
                     state["said"] += ev.get("delta", "")
                     touch()
                 elif kind == "response.output_audio_transcript.done" or kind == "response.audio_transcript.done":
-                    state["said"] = ev.get("transcript") or state["said"]
+                    # Araçtan önceki "Bir bakayım." ile sonraki cevap ayrı cevaplar: ikisi de kayda girsin.
+                    part = str(ev.get("transcript") or state["said"]).strip()
+                    if part:
+                        state["said_parts"].append(part)
+                    state["said"] = ""
                 elif kind == "conversation.item.input_audio_transcription.completed":
                     text = str(ev.get("transcript") or "").strip()
                     if text:
@@ -367,13 +472,24 @@ class RealtimeSession:
                             state["done"] = True
                         touch()
                 elif kind == "input_audio_buffer.speech_started":
-                    out.clear()  # kullanıcı araya girdi: ALICE sussun
+                    # Yankı koruması açıkken bu olay çoğunlukla önceki birkaç mikrofon karesinden gelir.
+                    # Cevabı temizleme ya da konuşma zamanını uzatma: ikisi de cümleyi yarıda kesiyordu.
+                    if self.echo_guard and (self.playing or time.monotonic() < state["output_until"]):
+                        if not state["echo_notice"]:
+                            self.log("realtime: çalarken algılanan ses yankı korumasıyla yok sayıldı")
+                            state["echo_notice"] = True
+                        continue
                     touch()
                 elif kind in ("response.function_call_arguments.done",):
+                    args = str(ev.get("arguments") or "{}")
+                    state["tools"].append(f"{ev.get('name') or '?'}({args[:120]})")
                     state["calls"][str(ev.get("call_id") or "")] = {
                         "id": str(ev.get("call_id") or ""), "type": "function",
                         "function": {"name": str(ev.get("name") or ""), "arguments": str(ev.get("arguments") or "{}")}}
                 elif kind == "response.done":
+                    status = str((ev.get("response") or {}).get("status") or "")
+                    if status and status not in ("completed", "in_progress"):
+                        self.log(f"realtime cevap erken bitti: {status}")
                     calls = [c for c in state["calls"].values() if c["function"]["name"]]
                     state["calls"] = {}
                     if calls:
@@ -383,7 +499,9 @@ class RealtimeSession:
                         tool_thread.start()
                     else:
                         if self.single_turn and state["answered"]:
-                            state["done"] = True
+                            # response.done üretimin bittiğini söyler, çalmanın değil: burada çıkınca close()
+                            # kuyruktaki sesi atıyor, ALICE cümlenin ortasında susuyordu. Ses bitince çıkılır.
+                            state["finish"] = True
                         if not self.playing:
                             touch()
                 elif kind == "session.created" or kind == "session.updated":
@@ -404,9 +522,23 @@ class RealtimeSession:
         finally:
             self.agent.ui = old_ui
             try:
+                self._remember(f"{first_text} {state['heard']}", " ".join(state["said_parts"] + [state["said"]]),
+                               state["tools"])
+            except Exception:  # noqa: BLE001 - kayıt konuşmayı bozmasın
+                pass
+            try:
                 ws.close()
             except Exception:  # noqa: BLE001
                 pass
+            if not self.hushed and not stop.is_set():
+                # Bağlantı koptuysa ya da oturum başka sebeple bittiyse de gelmiş ses sonuna kadar çalınsın;
+                # close() kuyruğu boşaltır. "Alice sus" ve durdurma beklemeden keser.
+                drain = getattr(out, "drain", None)
+                if callable(drain):
+                    try:
+                        drain(60.0, stop.is_set)
+                    except Exception:  # noqa: BLE001
+                        pass
             try:
                 out.close()
             except Exception:  # noqa: BLE001
@@ -441,9 +573,12 @@ class RealtimeSession:
     def _handle_calls(self, calls: list[dict[str, Any]], send: Callable[[dict[str, Any]], None]) -> None:
         """Araçları çalıştır, sonuçları modele geri yaz, cevabı yeniden üret."""
         outputs = []
+        thought = ""
         for call in calls:
             res = self._run_tool(call)
             text = res.text if isinstance(res, ToolResult) else str(res)
+            if call.get("function", {}).get("name") == "think" and not getattr(res, "is_error", False):
+                thought = text
             outputs.append({"type": "function_call_output", "call_id": call["id"],
                             "output": json.dumps({"ok": not getattr(res, "is_error", False),
                                                   "result": text[:4000]}, ensure_ascii=False)})
@@ -453,6 +588,12 @@ class RealtimeSession:
             send({"type": "response.create", "response": {"output_modalities": ["audio"]}})
         except Exception as e:  # noqa: BLE001
             self.log(f"realtime: araç sonucu gönderilemedi: {e}")
+            # Oturum bu arada kapandı (bağlantı koptu, kullanıcı sustu): think'in cevabı kaybolmasın.
+            if thought and callable(self.announce):
+                try:
+                    self.announce(thought[:600])
+                except Exception:  # noqa: BLE001
+                    pass
 
     def _run_tool(self, call: dict[str, Any]) -> ToolResult:
         if call.get("function", {}).get("name") == "think":
@@ -490,13 +631,48 @@ class RealtimeSession:
                 text = with_clock(request)
             except Exception:  # noqa: BLE001 - saat eklenemezse istek olduğu gibi gider
                 pass
+            old_role = getattr(self.agent, "role", None)
+            role = self._think_role(request)
+            t0 = time.monotonic()
             try:
+                if role:
+                    self.agent.role = role
                 reply = str(self.agent.run_turn(text) or "").strip()
             except Exception as e:  # noqa: BLE001 - canlı konuşma düşmesin
                 return ToolResult(f"think hatası: {type(e).__name__}: {e}", is_error=True)
+            finally:
+                if role:
+                    self.agent.role = old_role
+                self.log(f"realtime think {time.monotonic() - t0:.1f} sn [{role or old_role}]")
             return ToolResult(reply or "Güçlü model boş cevap döndürdü.", is_error=not reply)
         finally:
             self._think_lock.release()
+
+    THINK_ROLE = "live-think"
+
+    def _think_role(self, request: str = "") -> str | None:
+        """think için geçici rol: live_think_models, boşsa ses için ölçülmüş hızlı modeller + beyin zinciri.
+        Jev yönlendirmesi açıksa ağır işler ([routing] voice_strong, ör. Sonnet 5.5) öne alınır."""
+        router = getattr(self.agent, "router", None)
+        if router is None or not hasattr(router, "role_overrides"):
+            return None
+        try:
+            refs = list(self.think_models) or (router.auto_chain("voice")[:3] + router.chain("brain"))
+        except Exception:  # noqa: BLE001 - ölçüm/rol bilgisi yok: ajanın kendi zinciri
+            return None
+        chain = [r for i, r in enumerate(refs) if r not in refs[:i]]
+        if not chain:
+            return None
+        if request:
+            try:
+                from alice.providers import jev_route
+
+                chain, r = jev_route.voice_chain(router, self.cfg, request, chain, log=self.log)
+                self.log(f"realtime think yönlendirme: {r.tier} ({r.reason}) -> {chain[0]}")
+            except Exception as e:  # noqa: BLE001 - yönlendirme düşerse hızlı sıra
+                self.log(f"realtime think yönlendirme hatası: {e}")
+        router.role_overrides[self.THINK_ROLE] = chain
+        return self.THINK_ROLE
 
     def _tool_worker(self, q: "queue.Queue[dict[str, Any]]") -> None:
         try:

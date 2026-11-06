@@ -9,9 +9,12 @@ from alice.tools.base import COMPUTER, READ, WRITE, Tool, ToolContext, ToolError
 
 class TodoWrite(Tool):
     name = "todo_write"
-    description = ("Çok adımlı (3+ adım) bir işte planı ve ilerlemeyi listede tutar; kullanıcı da listeyi görür. "
-                   "Her çağrıda listenin TAMAMINI gönder; aynı anda tek bir in_progress olsun, bir adım biter bitmez "
-                   "done yap. Tek adımlık ya da sohbet işlerinde kullanma.")
+    description = ("Çok adımlı bir işte planı ve ilerlemeyi yapılacaklar listesinde tutar; kullanıcı listeyi canlı görür.\n"
+                   "- 3 ya da daha fazla adımlı işlerde, kullanıcı birden çok şey istediğinde ya da iş uzun sürecekse kullan. "
+                   "Tek adımlık işlerde ve sohbette kullanma.\n"
+                   "- Her çağrıda listenin TAMAMINI gönder. Aynı anda tek bir in_progress olsun; bir adım biter bitmez done yap, "
+                   "birkaçını sona biriktirme.\n"
+                   "- Bir adım gerçekten bitmediyse (test geçmedi, hata kaldı) done yapma; engeli yeni bir adım olarak ekle.")
     parameters = obj({"todos": {"type": "array", "description": "Güncel listenin tamamı.", "items": obj({
         "content": {"type": "string", "description": "Adım, emir kipinde kısa cümle, ör. 'Testleri çalıştır'."},
         "status": {"type": "string", "enum": ["pending", "in_progress", "done"],
@@ -307,8 +310,11 @@ class AskUser(Tool):
 
 class SkillTool(Tool):
     name = "skill"
-    description = ("Kullanıcının ALICE'e öğrettiği bir skill'i (talimat + dosyalar) yükler. Sistem istemindeki "
-                   "'Skills' listesindeki bir iş geldiğinde önce bunu çağır, sonra yazdığına göre çalış.")
+    description = ("Kullanıcının ALICE'e öğrettiği bir skill'in (adım adım talimat + yardımcı dosyalar) içeriğini yükler ve "
+                   "döndürür.\n"
+                   "- Sistem istemindeki 'Skills' listesinde açıklaması işe uyan bir skill varsa, işe başlamadan ÖNCE bunu çağır "
+                   "ve dönen talimatlara göre çalış.\n"
+                   "- Sadece listede yazan adları kullan; ad uydurma. Aynı turda zaten yüklediysen tekrar çağırma.")
     parameters = obj({"name": {"type": "string", "description": "Skill adı (listede yazan)."}}, ["name"])
     risk = READ
     parallel_safe = True
@@ -381,4 +387,99 @@ class Feedback(Tool):
         return ToolResult("kaydedildi" + (", test setine eklendi" if new else ""))
 
 
-TOOLS = [TodoWrite(), Memory(), Task(), Reflex(), Projects(), SkillTool(), AskUser(), Feedback()]
+# send_file ile gösterilen dosyalar: arayüzdeki "Aç / Klasörde göster" düğmeleri sadece bunları açabilir.
+SENT_FILES: set[str] = set()
+IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
+
+
+class SendFile(Tool):
+    """Claude Code'daki SendUserFile karşılığı."""
+
+    name = "send_file"
+    parallel_safe = True
+    description = ("Ürettiğin ya da bulduğun dosyaları kullanıcıya sohbette kart olarak gösterir (ad, boyut, Aç ve "
+                   "Klasörde göster düğmeleri); görseller sohbette önizlenir.\n"
+                   "- Kullanıcının görmek isteyeceği bir sonuç ürettiğinde kullan: rapor, grafik, dışa aktarılan "
+                   "belge, ekran görüntüsü, derlenmiş program.\n"
+                   "- Ara dosyaları, geçici çıktıları ya da hâlâ üzerinde çalıştığın dosyanın her sürümünü gönderme; "
+                   "anlamlı ölçüde değişmedikçe aynı dosyayı tekrar gönderme.\n"
+                   "- Dosya önceden diskte olmalı; bu araç dosya oluşturmaz (önce write_file vb.).")
+    parameters = obj({
+        "paths": {"type": "array", "items": {"type": "string"}, "description": "Gösterilecek dosyaların yolları; "
+                  "mutlak ya da çalışma klasörüne göre. En fazla 10."},
+        "caption": {"type": "string", "description": "Kartın üstünde tek satırlık not, ör. 'Hata 42. satırda'. "
+                    "Dosya kendini anlatıyorsa boş bırak."},
+    }, ["paths"])
+    risk = READ
+
+    def summary(self, args: dict[str, Any]) -> str:
+        return ", ".join(str(p) for p in (args.get("paths") or [])[:3])
+
+    def run(self, ctx: ToolContext, paths: list[str], caption: str = "") -> ToolResult:
+        files, images, missing = [], [], []
+        for raw in (paths or [])[:10]:
+            p = ctx.resolve(str(raw))
+            if not p.is_file():
+                missing.append(str(p))
+                continue
+            SENT_FILES.add(str(p))
+            files.append({"path": str(p), "name": p.name, "size": p.stat().st_size})
+            if p.suffix.lower() in IMAGE_EXT and len(images) < 4:
+                try:
+                    from alice.tools.imaging import file_to_png_b64
+
+                    images.append(file_to_png_b64(p, int(ctx.config.agent.get("screenshot_max_width", 1366))))
+                except Exception:  # noqa: BLE001 - önizleme olmasa da kart gösterilir
+                    pass
+        if not files:
+            raise ToolError("gösterilecek dosya yok: " + ", ".join(missing))
+        text = (f"{caption}\n" if caption else "") + "Kullanıcıya gösterildi: " + ", ".join(f["name"] for f in files)
+        if missing:
+            text += "\nBulunamadı: " + ", ".join(missing)
+        return ToolResult(text, images=images, files=files)
+
+
+class ExitPlanMode(Tool):
+    """Claude Code'daki ExitPlanMode karşılığı: plan modunda hazırlanan planı onaya sunar."""
+
+    name = "exit_plan_mode"
+    description = ("Plan modunda hazırladığın uygulama planını kullanıcıya onay için sunar. Onaylanırsa plan modu "
+                   "kapanır ve dosya yazma, komut çalıştırma serbest kalır; reddedilirse kullanıcının notuyla planı "
+                   "düzelt.\n"
+                   "- Sadece plan modundayken ve kod/dosya değişikliği gerektiren bir işin planı hazır olduğunda "
+                   "kullan. Araştırma, soru cevaplama ya da sadece okuma işleri için kullanma.\n"
+                   "- Planda neyin, hangi dosyalarda, hangi sırayla değişeceğini ve nasıl doğrulanacağını yaz. "
+                   "\"Plan uygun mu?\" diye ayrıca ask_user ile sorma; bu araç zaten onay ister.\n"
+                   "- Belirsiz bir tercih varsa önce ask_user ile netleştir, sonra planı sun.")
+    parameters = obj({
+        "plan": {"type": "string", "description": "Uygulama planı (Markdown): adımlar, değişecek dosyalar, doğrulama."},
+    }, ["plan"])
+    risk = READ
+
+    def summary(self, args: dict[str, Any]) -> str:
+        return str(args.get("plan", "")).strip().splitlines()[0][:80] if args.get("plan") else ""
+
+    def run(self, ctx: ToolContext, plan: str) -> ToolResult:
+        agent = ctx.state.get("agent")
+        perms = getattr(agent, "permissions", None)
+        if perms is None or getattr(perms, "mode", "") != "plan":
+            raise ToolError("plan modunda değilsin; işe doğrudan devam et")
+        ui = getattr(agent, "ui", None)
+        ask = getattr(ui, "ask_choice", None) if callable(getattr(type(ui), "ask_choice", None)) else None
+        if not callable(ask):
+            return ToolResult("Bu arayüzde onay kartı gösterilemiyor. Planı cevabında yaz ve kullanıcının onayını "
+                              "bekle; onay gelmeden dosya değiştirme.")
+        approve, change = "Onayla, uygula", "Değiştir"
+        answer = (ask("Plan onaylansın mı?\n\n" + plan.strip()[:6000], [approve, change], False) or "").strip()
+        if answer == approve:
+            back = getattr(perms, "before_plan", None) or str(ctx.config.agent.get("permission_mode", "auto"))
+            perms.mode = back if back != "plan" else "auto"
+            return ToolResult(f"Kullanıcı planı onayladı; plan modu kapandı ({perms.mode}). Plana göre uygula.")
+        if not answer:
+            return ToolResult("Kullanıcı cevap vermedi. Plan modunda kal; dosya değiştirme.")
+        return ToolResult(f"Kullanıcı planı onaylamadı: {answer}. Plan modunda kal, notuna göre planı düzelt ve "
+                          "tekrar sun.")
+
+
+TOOLS = [TodoWrite(), Memory(), Task(), Reflex(), Projects(), SkillTool(), AskUser(), Feedback(), SendFile(),
+         ExitPlanMode()]

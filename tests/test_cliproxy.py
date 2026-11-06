@@ -85,7 +85,7 @@ def test_login_url_starts_oauth_and_reports_state(proxy_home, monkeypatch):
     r = cliproxy.login_url("claude")
     assert r == {"ok": True, "url": "https://claude.ai/oauth/authorize?x=1", "state": "abc123",
                  "provider": "claude"}
-    assert seen["path"].endswith("provider=claude")
+    assert seen["path"].endswith("provider=claude&is_webui=1")
     assert cliproxy.login_url("bilinmeyen")["ok"] is False
 
 
@@ -184,3 +184,31 @@ def test_status_starts_proxy_when_closed(proxy_home, monkeypatch):
     monkeypatch.setattr(cliproxy, "start", fake_start)
     d = cliproxy.status()
     assert d["running"] and d["accounts"][0]["email"] == "a@b.c"
+
+
+def test_live_models_reads_proxy_list_and_skips_non_chat(monkeypatch):
+    """Kimi/Antigravity gibi sonradan bağlanan hesapların modelleri sabit listede yoktu: proxy'den okunmalı."""
+    monkeypatch.setitem(cliproxy._models_cache, "at", 0.0)
+    data = [{"id": "claude-opus-5-5"}, {"id": "kimi-k3"}, {"id": "gpt-image-2"}, {"id": "codex-auto-review"}]
+    assert cliproxy.live_models(fetch=lambda: data) == ["claude-opus-5-5", "kimi-k3"]
+
+    def down():
+        raise OSError("proxy kapalı")
+
+    monkeypatch.setitem(cliproxy._models_cache, "at", 0.0)
+    assert cliproxy.live_models(fetch=down) == ["claude-opus-5-5", "kimi-k3"]  # son bilinen liste
+
+
+def test_tidy_models_keeps_two_newest_per_family_and_drops_old_generations():
+    ids = ["claude-opus-5-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-20250514", "claude-3-7-sonnet-20250219",
+           "claude-3-5-haiku", "claude-sonnet-5-5", "kimi-k3", "kimi-k2.8", "kimi-k2.6", "kimi-k2.7-code",
+           "gpt-6.1-terra", "gpt-5.6-terra", "gpt-oss-120b-medium"]
+    assert cliproxy.tidy_models(ids) == ["claude-opus-5", "claude-opus-5-5", "claude-sonnet-5-5", "gpt-5.6-terra",
+                                         "gpt-6.1-terra", "gpt-oss-120b-medium", "kimi-k2.7-code", "kimi-k2.8",
+                                         "kimi-k3"]
+
+
+def test_model_group():
+    assert cliproxy.model_group("kimi-k3") == ("kimi", "Kimi", "cliproxy:kimi-*")
+    assert cliproxy.model_group("gpt-6-luna")[0] == "codex"
+    assert cliproxy.model_group("mystery-1")[0] == "other"

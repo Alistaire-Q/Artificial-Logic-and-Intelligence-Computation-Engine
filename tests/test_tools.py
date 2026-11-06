@@ -29,6 +29,7 @@ def test_read_with_offset_and_cp1254(ctx, workdir):
 
 def test_edit_requires_unique(ctx, workdir):
     (workdir / "d.txt").write_text("x\nx\n", encoding="utf-8")
+    ReadFile().run(ctx, path="d.txt")
     with pytest.raises(ToolError):
         EditFile().run(ctx, path="d.txt", old_string="x", new_string="y")
     EditFile().run(ctx, path="d.txt", old_string="x", new_string="y", replace_all=True)
@@ -37,6 +38,7 @@ def test_edit_requires_unique(ctx, workdir):
 
 def test_edit_handles_crlf(ctx, workdir):
     (workdir / "w.cs").write_bytes(b"class A {\r\n  int x;\r\n}\r\n")
+    ReadFile().run(ctx, path="w.cs")
     EditFile().run(ctx, path="w.cs", old_string="{\n  int x;", new_string="{\n  int y;")
     assert (workdir / "w.cs").read_bytes() == b"class A {\r\n  int y;\r\n}\r\n"
 

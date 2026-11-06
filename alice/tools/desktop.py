@@ -897,8 +897,12 @@ class UIElements(Tool):
 
 class UIAct(Tool):
     name = "ui_act"
-    description = ("Son ui_elements listesindeki bir öğede işlem yapar (tıkla, yaz, aç/kapa). ID'ler sadece son "
-                   "listede geçerli; pencere değiştiyse önce ui_elements'i yeniden çağır.")
+    description = ("Son ui_elements listesindeki bir masaüstü öğesinde işlem yapar: tıklama, metin yazma, onay kutusu, menü/ağaç "
+                   "açma-kapama, liste seçimi.\n"
+                   "- element_id sadece SON ui_elements çıktısında geçerlidir; pencere ya da sayfa değiştiyse önce ui_elements'i "
+                   "yeniden çağır.\n"
+                   "- Öğe listede varsa koordinatla tıklamak (computer) yerine bunu kullan; daha güvenilir.\n"
+                   "- Gönder, sil, satın al gibi geri alınamaz düğmelere basmadan önce kullanıcıya sor.")
     parameters = obj({
         "element_id": {"type": "integer", "description": "ui_elements çıktısındaki [ID]."},
         "action": {"type": "string", "enum": ["click", "double_click", "right_click", "focus", "set_text", "type",

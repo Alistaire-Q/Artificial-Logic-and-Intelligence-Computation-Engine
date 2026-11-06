@@ -187,8 +187,12 @@ class RunCommand(Tool):
 class ProcessOutput(Tool):
     name = "process_output"
     parallel_safe = True
-    description = ("run_command(background=true) ile başlatılan süreçlerin durumunu ve son çıktısını gösterir. pid "
-                   "verilmezse hepsini listeler.")
+    description = ("Arka planda çalışan süreçlerin (run_command background=true) durumunu (çalışıyor / bitti + çıkış kodu) ve "
+                   "çıktısının sonunu gösterir; hemen döner, beklemez.\n"
+                   "- pid verilmezse ALICE'in başlattığı bütün arka plan süreçlerini listeler.\n"
+                   "- Bir sürecin bitmesini ya da çıktısında bir satır (\"ready\", \"error\") görünmesini beklemek için bunu "
+                   "tekrar tekrar çağırma; process_wait kullan.\n"
+                   "- ALICE'in başlatmadığı programlar için process_list.")
     parameters = obj({
         "pid": {"type": "integer", "description": "run_command'ın döndürdüğü pid. Boş: tüm arka plan süreçleri."},
         "tail_chars": {"type": "integer", "description": "Çıktının sonundan kaç karakter. Varsayılan 4000."},
@@ -212,8 +216,10 @@ class ProcessOutput(Tool):
 
 class ProcessStop(Tool):
     name = "process_stop"
-    description = ("ALICE'in run_command(background=true) ile başlattığı bir süreci durdurur. Başka programlar için "
-                   "process_kill kullan.")
+    description = ("ALICE'in run_command(background=true) ile başlattığı bir süreci, alt süreçleriyle birlikte "
+                   "durdurur ve son çıktısını döndürür.\n"
+                   "- İşi biten sunucu/izleme süreçlerini açık bırakma; bitince bununla kapat.\n"
+                   "- ALICE'in başlatmadığı programlar (kullanıcının açtığı uygulamalar) için process_kill kullan.")
     parameters = obj({"pid": {"type": "integer", "description": "run_command'ın döndürdüğü pid."}}, ["pid"])
 
     risk = EXEC
@@ -281,4 +287,62 @@ def cleanup(ctx: ToolContext) -> None:
             _reap(p.popen)
 
 
-TOOLS = [RunCommand(), ProcessOutput(), ProcessStop()]
+class ProcessWait(Tool):
+    """Claude Code'daki Monitor/until-döngüsünün karşılığı: tek çağrıda bekle, araç çağrısı israf etme."""
+
+    name = "process_wait"
+    parallel_safe = True
+    description = ("Arka plandaki bir süreç bitene ya da çıktısında aranan desen görünene kadar bekler, sonra "
+                   "eşleşen satırları (ya da bitiş kodunu) ve çıktının sonunu döndürür.\n"
+                   "- \"Sunucu hazır olunca\", \"derleme bitince\", \"testler bitince\" gibi beklemeler için. "
+                   "process_output'u döngüde çağırmak ya da run_command ile sleep yazmak yerine bunu kullan.\n"
+                   "- pattern hem başarıyı hem hatayı yakalasın: ör. 'ready|listening|error|Traceback'. Sadece "
+                   "başarıyı ararsan süreç çöktüğünde zaman aşımına kadar boşuna beklersin.\n"
+                   "- Desen verilmezse süreç bitene kadar bekler. Sadece bu çağrıdan SONRA gelen çıktıya bakılır.\n"
+                   "- Zaman aşımında süreç durdurulmaz; durum ve çıktı döner, istersen tekrar bekle.")
+    parameters = obj({
+        "pid": {"type": "integer", "description": "run_command(background=true)'ın döndürdüğü pid."},
+        "pattern": {"type": "string", "description": "Çıktıda beklenen düzenli ifade (büyük/küçük harf duyarsız), "
+                    "ör. 'Local:.*http|error'. Boş: süreç bitene kadar bekle."},
+        "timeout": {"type": "integer", "description": "En fazla kaç saniye beklensin. Varsayılan 60, en fazla 600."},
+    }, ["pid"])
+
+    def summary(self, args: dict[str, Any]) -> str:
+        return f"pid {args.get('pid')} {args.get('pattern') or 'bitene kadar'}"
+
+    def run(self, ctx: ToolContext, pid: int, pattern: str = "", timeout: int = 60) -> ToolResult:
+        procs: dict[int, BgProc] = ctx.state.get("bg_procs", {})
+        p = procs.get(pid)
+        if not p:
+            raise ToolError(f"pid {pid} ALICE tarafından başlatılmamış; listelemek için process_output")
+        try:
+            rx = re.compile(pattern, re.I) if pattern else None
+        except re.error as e:
+            raise ToolError(f"geçersiz desen: {e}") from e
+
+        def read() -> str:
+            return p.log.read_bytes().decode("utf-8", errors="replace") if p.log.exists() else ""
+
+        start = len(read())
+        end = time.monotonic() + max(1, min(int(timeout or 60), 600))
+        while True:
+            data = read()
+            new = data[start:]
+            if rx is not None:
+                hits = [ln for ln in new.splitlines() if rx.search(ln)]
+                if hits:
+                    return ToolResult(f"pid={pid} desen göründü:\n" + "\n".join(hits[-20:]) +
+                                      f"\n--- çıktının sonu ---\n{data[-2000:]}")
+            code = p.popen.poll()
+            if code is not None:
+                return ToolResult(f"pid={pid} bitti (kod {code})" + (" — desen görünmedi" if rx else "") +
+                                  f"\n{data[-4000:]}", is_error=bool(rx) or code != 0)
+            if ctx.cancelled():
+                return ToolResult(f"pid={pid} bekleme durduruldu (süreç çalışmaya devam ediyor)")
+            if time.monotonic() >= end:
+                return ToolResult(f"pid={pid} zaman aşımı: hâlâ çalışıyor" + (", desen görünmedi" if rx else "") +
+                                  f"\n{data[-2000:]}")
+            time.sleep(0.5)
+
+
+TOOLS = [RunCommand(), ProcessOutput(), ProcessStop(), ProcessWait()]

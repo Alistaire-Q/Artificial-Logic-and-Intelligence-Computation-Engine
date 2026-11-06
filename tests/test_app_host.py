@@ -36,6 +36,26 @@ def test_follow_closes_when_core_gone_and_switches_on_restart():
     assert check() is None  # çekirdek kapandı: pencere de kapanır
 
 
+def test_revive_restarts_core_only_after_unclean_death():
+    from alice.core import service
+
+    host._revived.clear()  # noqa: SLF001
+    started = []
+    start = lambda: started.append(1) or True  # noqa: E731
+    assert host.revive_crashed(start) is False  # durum dosyası yok: temiz kapanış, dokunma
+    service.state_path().parent.mkdir(parents=True, exist_ok=True)
+    service.state_path().write_text(json.dumps({"pid": os.getpid(), "ts": 0}), encoding="utf-8")
+    assert host.revive_crashed(start) is False  # süreç yaşıyor
+    for _ in range(host.REVIVE_MAX):
+        service.state_path().write_text(json.dumps({"pid": 2**22 + 12345, "ts": 0}), encoding="utf-8")
+        assert host.revive_crashed(start) is True  # çöktü: yeniden başlat
+        assert not service.state_path().exists() and host.restarting()
+    service.state_path().write_text(json.dumps({"pid": 2**22 + 12345, "ts": 0}), encoding="utf-8")
+    assert host.revive_crashed(start) is False  # çökme döngüsü: sınır
+    assert len(started) == host.REVIVE_MAX
+    host._revived.clear()  # noqa: SLF001
+
+
 def test_attach_starts_core_and_waits(monkeypatch):
     started = []
 

@@ -37,8 +37,11 @@ def _gpu() -> str:
 class SystemInfo(Tool):
     name = "system_info"
     parallel_safe = True
-    description = ("Bilgisayarın şu anki durumu: işletim sistemi, CPU ve RAM kullanımı, diskler, GPU (sıcaklık, "
-                   "kullanım), ağ ve pil. Geçmiş değerler ('dün GPU kaç dereceydi') için metrics kullan.")
+    description = ("Bilgisayarın şu anki durumunu tek seferde döndürür: işletim sistemi, CPU ve RAM kullanımı, diskler (doluluk), "
+                   "GPU (sıcaklık, kullanım), ağ ve pil.\n"
+                   "- 'Bilgisayar neden kasıyor', 'disk ne kadar dolu', 'GPU kaç derece' gibi anlık sorular için.\n"
+                   "- Geçmiş değerler ('dün GPU kaç dereceydi') için metrics, hangi programın yorduğu için process_list kullan.\n"
+                   "- Aynı bilgiyi run_command ile (wmic, Get-CimInstance) toplamaya çalışma.")
     parameters = obj({})
 
     def run(self, ctx: ToolContext) -> ToolResult:
@@ -67,8 +70,10 @@ class SystemInfo(Tool):
 class ProcessList(Tool):
     name = "process_list"
     parallel_safe = True
-    description = ("Çalışan süreçleri PID, RAM ve CPU ile listeler. 'Ne çok RAM yiyor', 'X açık mı' gibi sorular ve "
-                   "process_kill'den önce doğru adı/PID'i bulmak için. Pencereler için windows action=list.")
+    description = ("Çalışan süreçleri PID, RAM ve CPU kullanımıyla tablo olarak listeler.\n"
+                   "- 'Ne çok RAM yiyor', 'X açık mı' gibi sorular ve process_kill'den önce doğru adı/PID'i bulmak için.\n"
+                   "- Açık pencereler için windows action=list, ALICE'in başlattığı arka plan komutları için process_output.\n"
+                   "- tasklist ya da Get-Process komutu yazma; bunu kullan.")
     parameters = obj({
         "name": {"type": "string", "description": "Adında bu geçen süreçler, ör. 'chrome'. Boş: hepsi."},
         "sort": {"type": "string", "enum": ["cpu", "memory"], "description": "Sıralama. Varsayılan memory."},
@@ -91,9 +96,10 @@ class ProcessList(Tool):
 
 class ProcessKill(Tool):
     name = "process_kill"
-    description = ("Bir süreci PID ya da tam adıyla sonlandırır; adla verilirse o adlı TÜM süreçler kapanır. Kaydedilmemiş "
-                   "işler kaybolabilir: bir uygulamayı nazikçe kapatmak için önce windows action=close dene. Adı "
-                   "bilmiyorsan önce process_list.")
+    description = ("Bir süreci PID ya da tam adıyla zorla sonlandırır; adla verilirse o adı taşıyan TÜM süreçler kapanır.\n"
+                   "- Kaydedilmemiş işler kaybolabilir: bir uygulamayı nazikçe kapatmak için önce windows action=close dene.\n"
+                   "- Adı ya da PID'i bilmiyorsan önce process_list. Sistem süreçlerini (explorer, svchost, csrss) kapatma.\n"
+                   "- ALICE'in kendi başlattığı arka plan komutları için process_stop.")
     parameters = obj({
         "pid": {"type": "integer", "description": "Sonlandırılacak sürecin PID'i (process_list'ten)."},
         "name": {"type": "string", "description": "Tam süreç adı, büyük/küçük harf fark etmez, ör. 'notepad.exe'. "

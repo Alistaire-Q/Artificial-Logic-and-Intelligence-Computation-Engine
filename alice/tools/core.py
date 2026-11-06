@@ -425,9 +425,10 @@ def _add(ctx: ToolContext, name: str, connector: str, action: str, args: dict[st
 class ActionLog(Tool):
     name = "action_log"
     parallel_safe = True
-    description = ("ALICE'in kullanıcı adına başkasına gönderdiği şeylerin kaydı (Discord/WhatsApp mesajı, DM, "
-                   "e-posta): gönderilen, kullanıcının reddettiği, plan modunda engellenen ve başarısız olan. "
-                   "'Bugün kime ne yazdın?', 'benim adıma ne gönderdin?' sorularında kullan.")
+    description = ("ALICE'in kullanıcı adına başkalarına gönderdiği şeylerin kaydını döndürür (Discord/WhatsApp mesajı, DM, "
+                   "e-posta): gönderilen, kullanıcının reddettiği, plan modunda engellenen ve başarısız olan.\n"
+                   "- 'Bugün kime ne yazdın?', 'benim adıma ne gönderdin?', 'mesaj gitti mi?' sorularında kullan.\n"
+                   "- Sadece kaydı okur; bir şey göndermez ya da geri almaz.")
     parameters = obj({
         "limit": {"type": "integer", "description": "En fazla kaç kayıt. Varsayılan 20."},
         "hours": {"type": "number", "description": "Sadece son bu kadar saat. Boş: hepsi."},

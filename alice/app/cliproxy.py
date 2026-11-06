@@ -68,6 +68,87 @@ def settings() -> dict[str, Any]:
             "installed": (h / binary_name()).exists()}
 
 
+MODELS_TTL = 120.0  # sn
+_SKIP_MODELS = ("image", "embedding", "codex-auto-review", "tts")
+_models_cache: dict[str, Any] = {"at": 0.0, "ids": []}
+
+
+def live_models(fetch: Any = None) -> list[str]:
+    """Proxy'nin şu an sunduğu sohbet modelleri (/v1/models; bağlı hesaplara göre değişir). config'teki sabit
+    liste sadece Claude/GPT içeriyordu: Kimi ya da sonradan bağlanan hesapların modelleri menüde hiç görünmüyordu.
+    Proxy kapalıysa ya da cevap vermezse son bilinen liste (ilk seferde boş) döner."""
+    now = time.monotonic()
+    if _models_cache["at"] and now - _models_cache["at"] < MODELS_TTL:
+        return list(_models_cache["ids"])
+    _models_cache["at"] = now  # hata da olsa her menü açılışında yeniden denenmesin
+    try:
+        if fetch is None:
+            s = settings()
+            key = ""
+            for line in (s["dir"] / "keys.txt").read_text(encoding="utf-8", errors="replace").splitlines():
+                if line.startswith("api_key="):
+                    key = line.split("=", 1)[1].strip()
+            with httpx.Client(timeout=2.5) as c:
+                r = c.get(f"http://127.0.0.1:{s['port']}/v1/models", headers={"Authorization": f"Bearer {key}"})
+            r.raise_for_status()
+            data = r.json().get("data") or []
+        else:
+            data = fetch()
+        ids = sorted({str(m.get("id") or "") for m in data if isinstance(m, dict)} - {""})
+        _models_cache["ids"] = [i for i in ids if not any(k in i.lower() for k in _SKIP_MODELS)]
+    except Exception:  # noqa: BLE001 - proxy kapalı: menü yine açılsın
+        pass
+    return list(_models_cache["ids"])
+
+
+# Proxy modellerinin arayüzdeki grupları: (önek, grup kimliği, etiket). Kimlik gizleme deseni olarak da kullanılır:
+# "cliproxy:kimi-*" gizlenince bütün Kimi modelleri gizlenir.
+GROUPS: tuple[tuple[tuple[str, ...], str, str], ...] = (
+    (("claude-",), "claude", "Claude (abonelik)"),
+    (("gpt-", "codex", "o3", "o4"), "codex", "ChatGPT (abonelik)"),
+    (("kimi-",), "kimi", "Kimi"),
+    (("gemini-",), "antigravity", "Gemini (Antigravity)"),
+    (("grok-",), "xai", "xAI Grok"),
+)
+
+
+def model_group(model: str) -> tuple[str, str, str]:
+    """(grup kimliği, etiket, gizleme deseni) - ör. kimi-k3 -> ("kimi", "Kimi", "cliproxy:kimi-*")."""
+    low = model.lower()
+    for prefixes, gid, label in GROUPS:
+        if low.startswith(prefixes):
+            return gid, label, f"cliproxy:{prefixes[0]}*"
+    return "other", "Diğer (proxy)", ""
+
+
+def tidy_models(ids: list[str], keep: int = 2) -> list[str]:
+    """Menü boğulmasın: tarihli sabit sürümler (…-20250514) ve eski kuşaklar atılır, her aileden en yeni `keep`
+    sürüm kalır. Aile = sürüm numaraları çıkarılmış ad (claude-opus-#, kimi-k#-code, gpt-#-terra)."""
+    import re as _re
+
+    def nums(m: str) -> tuple[int, ...]:
+        return tuple(int(x) for x in _re.findall(r"\d+", m) if len(x) < 4)
+
+    fresh = [m for m in ids if not _re.search(r"-\d{8}$", m)]
+    top: dict[str, int] = {}
+    for m in fresh:  # satıcı başına en yeni ana sürüm (claude 5, kimi 3); gpt-oss-120b gibi adlar hesaba girmez
+        n = nums(m)
+        if n and n[0] < 50:
+            v = m.split("-", 1)[0]
+            top[v] = max(top.get(v, 0), n[0])
+    fams: dict[str, list[str]] = {}
+    for m in fresh:
+        n = nums(m)
+        v = m.split("-", 1)[0]
+        if n and n[0] < 50 and n[0] < top.get(v, 0) - 1:
+            continue  # iki kuşak eski (claude-3-7-sonnet)
+        fams.setdefault(_re.sub(r"\d+(?:[.-]\d+)*", "#", m), []).append(m)
+    out: list[str] = []
+    for members in fams.values():
+        out += sorted(members, key=nums, reverse=True)[:keep]
+    return sorted(out)
+
+
 def _req(method: str, path: str) -> dict[str, Any]:
     s = settings()
     if not s["key"]:
@@ -286,7 +367,10 @@ def login_url(provider: str) -> dict[str, Any]:
     if provider not in PROVIDER_NAMES and provider not in ("meta", "devin"):
         return {"ok": False, "error": "bilinmeyen servis"}
     try:
-        d = _req("GET", f"/v8/management/oauth/auth-url?provider={quote(provider)}")
+        # is_webui=1: proxy tarayıcının döndüğü localhost:54545/1455 adresini dinleyip
+        # yönetim callback'ine yönlendirsin. Bu bayrak olmadan tarayıcı "bağlantı reddedildi"de kalıyor
+        # ve hesap hiç eklenmiyordu.
+        d = _req("GET", f"/v8/management/oauth/auth-url?provider={quote(provider)}&is_webui=1")
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)[:200]}
     url = str(d.get("url") or "")

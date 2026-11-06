@@ -385,12 +385,21 @@ class AudioOut:
 
     dead: Exception | None = None
     played = 0
+    _holding = False  # çalma iş parçacığı kuyruktan bir parça almış, ön tampon için bekliyor/çalıyor
 
     @property
     def playing(self) -> bool:
         if self.dead is not None:
             return False
-        return not self.q.empty() or time.monotonic() < self.busy_until
+        # _holding olmadan, ilk parça kuyruktan alınıp ön tampon beklenirken "çalmıyor" görünüyordu: oturum o arada
+        # kapanınca ALICE cümlenin başında ya da ortasında susuyordu.
+        return self._holding or not self.q.empty() or time.monotonic() < self.busy_until
+
+    def drain(self, timeout: float = 60.0, stop: Callable[[], bool] | None = None) -> None:
+        """Kuyruktaki sesin sonuna kadar çalınmasını bekle (close() kalanı atar)."""
+        end = time.monotonic() + timeout
+        while self.playing and time.monotonic() < end and not (stop is not None and stop()):
+            time.sleep(0.05)
 
     def close(self) -> None:
         self.clear()
@@ -436,16 +445,20 @@ class AudioOut:
                 gen, pcm = item
                 if gen != self._gen:
                     continue  # araya girilmeden önceki cevaptan kalan parça
-                pcm = self._gather(pcm, gen)
-                step = self.rate // 20 * 2  # 50 ms
-                for i in range(0, len(pcm), step):
-                    if gen != self._gen:
-                        break
-                    piece = pcm[i:i + step]
-                    self.busy_until = time.monotonic() + len(piece) / 2 / self.rate + 0.2
-                    if out.write(piece):  # True: çalarken ses bitti (takılma duyuldu)
-                        self.underruns += 1
-                    self.played += len(piece)
+                self._holding = True
+                try:
+                    pcm = self._gather(pcm, gen)
+                    step = self.rate // 20 * 2  # 50 ms
+                    for i in range(0, len(pcm), step):
+                        if gen != self._gen:
+                            break
+                        piece = pcm[i:i + step]
+                        self.busy_until = time.monotonic() + len(piece) / 2 / self.rate + 0.2
+                        if out.write(piece):  # True: çalarken ses bitti (takılma duyuldu)
+                            self.underruns += 1
+                        self.played += len(piece)
+                finally:
+                    self._holding = False
 
 
 def _close(ws) -> None:
@@ -1400,7 +1413,7 @@ class LiveSession:
         child = Agent(parent.config, parent.router, tools, parent.ctx, parent.permissions, parent.ui,
                       getattr(parent, "decider", None), system_prompt=parent.messages[0]["content"], is_child=True)
         child.tool_specs = lambda: [t.spec() for t in tools]  # grup filtresi yok: hepsi okuyan araç
-        child.role = self._think_role(parent.router)
+        child.role = self._think_role(parent.router, question)
         history = self.history_text()
         prompt = THINK_PROMPT.format(history=("\nAz önceki konuşma:\n" + history + "\n") if history else "",
                                      question=question, context=f"\nEk bağlam: {context}" if context else "")
@@ -1409,7 +1422,7 @@ class LiveSession:
 
     THINK_ROLE = "live-think"
 
-    def _think_role(self, router) -> str:
+    def _think_role(self, router, question: str = "") -> str:
         """think'in model sırası: önce ses için ölçülmüş hızlı modeller, sonra beyin zinciri. Beyin zincirinin
         başındaki model takılınca (providers.log 25 Ekim: nvidia:z-ai/glm-5.3 ReadTimeout) her think 180 sn zaman
         aşımını bekliyordu: 13 think'in medyanı 189 sn, hiçbiri 25 sn'de yetişmedi."""
@@ -1422,6 +1435,14 @@ class LiveSession:
         chain = [r for i, r in enumerate(refs) if r not in refs[:i]]
         if not chain:
             return "brain"
+        if question:  # Jev yönlendirmesi: ağır işler [routing] voice_strong'a (ör. Sonnet 5.5), gerisi hızlı sıra
+            try:
+                from alice.providers import jev_route
+
+                chain, r = jev_route.voice_chain(router, self.cfg, question, chain, log=self.log)
+                self.log(f"live think yönlendirme: {r.tier} ({r.reason}) -> {chain[0]}")
+            except Exception as e:  # noqa: BLE001
+                self.log(f"live think yönlendirme hatası: {e}")
         router.role_overrides[self.THINK_ROLE] = chain  # council.py'deki gibi: geçici rol, kendi zinciriyle
         return self.THINK_ROLE
 

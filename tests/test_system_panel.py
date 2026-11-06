@@ -75,6 +75,36 @@ def test_stop_core_terminates_old_core_that_ignores_request(monkeypatch):
     assert system.stop_core() and killed == []
 
 
+def test_stop_core_waits_until_old_core_releases_lock(monkeypatch):
+    """Durum dosyası silindi ama süreç kilidi hâlâ tutuyor: yeni çekirdek başlatılmadan önce beklenmeli."""
+    import os
+
+    import psutil
+
+    from alice.config import alice_home
+
+    calls = {"n": 0}
+
+    def read_state():
+        calls["n"] += 1
+        return {"running": calls["n"] == 1, "pid": os.getpid()}
+
+    monkeypatch.setattr(service, "read_state", read_state)
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)
+    lock = alice_home() / "core.pid"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text(str(os.getpid()), encoding="utf-8")
+    slept = []
+
+    def sleep(s):
+        slept.append(s)
+        if len(slept) == 3:
+            lock.unlink()  # eski çekirdek kapandı, kilidi bıraktı
+
+    assert system.stop_core(wait=5, sleep=sleep)
+    assert len(slept) == 3 and not lock.exists()
+
+
 def test_panel_actions(monkeypatch):
     from alice.config import load_config
 

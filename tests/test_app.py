@@ -207,6 +207,7 @@ def test_changes_panel_lists_and_reverts_session_edits(app, workdir):
     state, srv, client, prov = app
     (workdir / "eski.txt").write_text("bir\niki\n", encoding="utf-8")
     prov.script.extend([tool_call("write_file", {"path": "yeni.txt", "content": "selam\n"}, "c1"),
+                        tool_call("read_file", {"path": "eski.txt"}, "r2"),
                         tool_call("edit_file", {"path": "eski.txt", "old_string": "iki", "new_string": "üç"}, "c2"),
                         "tamam"])
     events, t = collect(state, lambda e: e["type"] == "status")

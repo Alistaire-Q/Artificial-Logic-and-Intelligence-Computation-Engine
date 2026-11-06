@@ -716,6 +716,28 @@ function finishTool(t, ev, live) {
     body.appendChild(imgs);
     t.classList.add("open");
   }
+  if (ev.files && ev.files.length) body.appendChild(fileCards(ev.files)), t.classList.add("open");
+}
+
+/* send_file: kullanıcıya gösterilen dosyalar. Aç / Klasörde göster sadece bu dosyalar için çalışır (/api/reveal). */
+function fmtSize(n) {
+  return n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`;
+}
+function fileCards(files) {
+  const box = el("div", "file-cards");
+  for (const f of files) {
+    const card = el("div", "file-card");
+    const meta = el("span", "fc-meta");
+    meta.append(el("b", "", f.name), el("small", "", fmtSize(f.size || 0)));
+    const open = el("button", "btn", "Aç");
+    open.addEventListener("click", () => api("/api/reveal", { path: f.path }).then((r) => r && !r.ok && toast(r.error || "açılamadı")));
+    const dir = el("button", "btn ghost", "Klasörde göster");
+    dir.addEventListener("click", () => api("/api/reveal", { path: f.path, folder: true }));
+    card.title = f.path;
+    card.append(meta, open, dir);
+    box.appendChild(card);
+  }
+  return box;
 }
 
 /* ===================================================================== izin */
