@@ -582,7 +582,7 @@ COHERE_API_KEY=
 AI_GATEWAY_API_KEY=
 # Anthropic (resmi Claude API, kullandıkça ücretli; elle seçilir) -> https://console.anthropic.com/settings/keys
 ANTHROPIC_API_KEY=
-# Claude Code proxy (yerel CLIProxyAPI; Claude Pro/Max aboneliği, elle seçilir) -> ~/.alice/cliproxy/keys.txt
+# Claude Code proxy (yerel CLIProxyAPI; Claude, ChatGPT vb. abonelikler, elle seçilir) -> ~/.alice/cliproxy/keys.txt
 CLIPROXY_API_KEY=
 # Cloudflare Workers AI (günde 10.000 neuron ücretsiz) -> https://dash.cloudflare.com/profile/api-tokens
 # ("Workers AI" izinli token). Hesap kimliği: dash.cloudflare.com, sağ paneldeki "Account ID".
