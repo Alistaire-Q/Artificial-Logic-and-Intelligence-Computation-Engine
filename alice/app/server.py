@@ -1476,6 +1476,20 @@ def make_handler(state: AppState):
                 return self._deny()
             if u.path == "/api/events":
                 return self._events()
+            if u.path == "/api/phone/app":  # telefon uygulamasının bilgisayardaki son sürümü
+                from alice.app import phone_apk
+
+                phone_apk.refresh_async()
+                return self._json(phone_apk.view())
+            if u.path == "/api/phone/app.apk":
+                from alice.app import phone_apk
+
+                try:
+                    body = phone_apk.apk_path().read_bytes()
+                except OSError:
+                    return self._send(404, b"telefon uygulamasi henuz indirilmedi", "text/plain")
+                return self._send(200, body, "application/vnd.android.package-archive",
+                                  {"Content-Disposition": 'attachment; filename="ALICE.apk"'})
             if u.path == "/api/quick/pending":
                 pending, state.quick_pending = state.quick_pending, None
                 return self._json(pending or {})

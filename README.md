@@ -885,8 +885,8 @@ Saat verisi geldiğinde:
 **Telefondan ALICE (Android uygulaması):**
 
 1. Bilgisayarda **Sistem → Kurulum → Telefondan ALICE**'yi aç (ya da terminalde `alice phone`). Bir QR kod ve adres çıkar.
-2. Telefona uygulamayı kur: [ALICE.apk](https://github.com/hayatexe/Artificial-Logic-and-Intelligence-Computation-Engine/releases/download/android/ALICE.apk). Android "bilinmeyen kaynak" izni ister; bir kez ver.
-3. QR'yi telefonun kamerasıyla okut ve "ALICE ile aç"ı seç (ya da uygulamanın içinden "QR kodu okut"). Telefon ve bilgisayar aynı Wi-Fi'de olmalı.
+2. QR'yi telefonun kamerasıyla okut. Telefon ve bilgisayar aynı Wi-Fi'de olmalı. Uygulama henüz yoksa sayfa tarayıcıda açılır: **Daha fazla → Android uygulamasını kur** APK'yı bilgisayardan indirir. Android "bilinmeyen kaynak" izni ister; bir kez ver.
+3. Uygulamayı açıp QR'yi yeniden okut (ya da kameradan okutunca "ALICE ile aç"ı seç).
 
 Uygulamada beş sekme var:
 * **Sohbet:** geçmiş sohbetler (uzun bas: adlandır, sabitle, sil), adımlar kartı, görsel ekleme, mod/model/düşünme seçimi. Mikrofon düğmesine dokununca telefonun konuşma tanıması açılır, söylediğin canlı yazıya dökülür, susunca gönderilir.
@@ -899,7 +899,9 @@ Uygulama kapalıyken de ALICE izin istediğinde bildirim gelir; bildirimdeki **�
 
 Adresteki uzun anahtar olmadan erişilemez; anahtar `~/.alice/phone-token` dosyasında durur (`alice phone --new-token` ile değişir, sonra uygulamada **Daha fazla → Bağlantı**'dan yeniden okut). Bağlantı yerel ağda düz HTTP olduğu için sadece güvendiğin ağda aç. Uygulama olmadan telefonun tarayıcısında da aynı sayfa açılır; orada sesle yazma telefonun ses kaydedicisiyle yapılır.
 
-APK'yi GitHub her `android/` değişikliğinde kendisi derler. Telefondaki uygulamanın silinmeden güncellenmesi için depoya bir imza anahtarı ekle: `keytool -genkeypair -keystore alice.jks -alias alice -keyalg RSA -validity 10000`, sonra GitHub'da Settings → Secrets → Actions'a `ALICE_KEYSTORE_B64` (`base64 -w0 alice.jks` çıktısı) ve `ALICE_KEYSTORE_PASSWORD`. Anahtar yoksa her derleme farklı imzalanır ve güncellemek için eski uygulamayı silmek gerekir.
+**Güncelleme:** Arayüzün kendisi bilgisayardan geldiği için çoğu yenilik telefona hiçbir şey kurmadan gelir. Uygulamanın kendisi değişince GitHub `android/` değişikliğinde APK'yı derleyip `android-apk` dalına koyar; bilgisayardaki ALICE bu dalı yarım saatte bir çeker, telefondaki uygulama da birkaç saatte bir (ya da açılınca) sorar ve yeni sürümü kendisi kurar. Android 12 ve sonrasında sormadan kurulur; ilk seferde "bu kaynaktan uygulama yükle" izni bir kez istenir. Elle bakmak için **Daha fazla → Uygulama**.
+
+Android bir uygulamayı ancak aynı anahtarla imzalanmış sürümle günceller. Anahtar GitHub'da Settings → Secrets and variables → Actions altında durur: `ALICE_KEYSTORE_B64` (base64 .jks) ve `ALICE_KEYSTORE_PASSWORD`; anahtar adı `alice` değilse `ALICE_KEY_ALIAS`. Bu değişkenler yoksa APK derlenir ama telefonlara yayınlanmaz.
 
 ## Ev: bilgisayar, Wi-Fi, TV ve telefon
 

@@ -1,10 +1,11 @@
 name: Android
 
-# Telefon uygulamasını (android/) derler. main'e gelince APK "android" sürümüne (release) yüklenir:
-#   https://github.com/<sahip>/<depo>/releases/download/android/ALICE.apk
-# İmza: depo gizli değişkenlerinde ALICE_KEYSTORE_B64 (base64 .jks) ve ALICE_KEYSTORE_PASSWORD varsa her sürüm aynı
-# anahtarla imzalanır ve telefondaki uygulama silinmeden güncellenir. Yoksa her derlemede yeni bir hata ayıklama
-# anahtarı kullanılır; o zaman güncellemek için eski uygulamayı silip yenisini kurmak gerekir.
+# Telefon uygulamasını (android/) derler. main'e gelince APK ve sürüm bilgisi "android-apk" dalına konur (tek commit,
+# her seferinde üstüne yazılır). Depo özel olduğu için telefon GitHub'dan indiremez: bilgisayardaki ALICE bu dalı çeker
+# ve telefona yerel ağdan verir (alice/app/phone_apk.py); uygulama yeni sürümü görünce kendini günceller.
+# İmza: Android bir uygulamayı ancak aynı anahtarla imzalanmış sürümle günceller. Anahtar depo gizli değişkenlerinde
+# durur: ALICE_KEYSTORE_B64 (base64 .jks), ALICE_KEYSTORE_PASSWORD ve ALICE_KEY_ALIAS. Yoksa APK derlenir ama
+# yayınlanmaz (her derlemede farklı bir anahtar olurdu, telefondaki uygulama güncellenemezdi).
 
 on:
   push:
@@ -40,7 +41,9 @@ jobs:
           if [ -n "$KS_B64" ]; then
             echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/alice.jks"
             echo "ALICE_KEYSTORE=$RUNNER_TEMP/alice.jks" >> "$GITHUB_ENV"
+            echo "SIGNED=1" >> "$GITHUB_ENV"
           else
+            echo "::warning::ALICE_KEYSTORE_B64 gizli değişkeni yok: APK geçici anahtarla imzalanıyor ve yayınlanmayacak."
             mkdir -p ~/.android
             keytool -genkeypair -keystore ~/.android/debug.keystore -storepass android -keypass android \
               -alias androiddebugkey -dname "CN=Android Debug,O=Android,C=US" -keyalg RSA -keysize 2048 -validity 10000
@@ -48,17 +51,25 @@ jobs:
       - name: Derle
         env:
           ALICE_KEYSTORE_PASSWORD: ${{ secrets.ALICE_KEYSTORE_PASSWORD }}
+          ALICE_KEY_ALIAS: ${{ secrets.ALICE_KEY_ALIAS }}
         run: ./gradlew --no-daemon assembleRelease
       - run: cp app/build/outputs/apk/release/app-release.apk ALICE.apk
       - uses: actions/upload-artifact@v4
         with:
           name: ALICE-apk
           path: android/ALICE.apk
-      - name: Sürüme yükle
-        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+      - name: Telefonlara yayınla (android-apk dalı)
+        if: env.SIGNED == '1' && github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view android >/dev/null 2>&1 || gh release create android --title "ALICE telefon uygulaması" \
-            --notes "Android uygulaması. Telefonda indirip kur; bilgisayarda alice phone'un QR kodunu okut." --latest=false
-          gh release upload android ALICE.apk --clobber
+          mkdir -p "$RUNNER_TEMP/dist" && cp ALICE.apk "$RUNNER_TEMP/dist/"
+          cd "$RUNNER_TEMP/dist"
+          SHA=$(sha256sum ALICE.apk | cut -d' ' -f1)
+          printf '{"version_code": %s, "version_name": "0.2.%s", "sha256": "%s", "commit": "%s"}\n' \
+            "$GITHUB_RUN_NUMBER" "$GITHUB_RUN_NUMBER" "$SHA" "$GITHUB_SHA" > version.json
+          git init -q -b android-apk
+          git add ALICE.apk version.json
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "ALICE.apk 0.2.$GITHUB_RUN_NUMBER"
+          git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" android-apk

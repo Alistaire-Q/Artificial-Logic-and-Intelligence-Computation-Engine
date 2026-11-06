@@ -408,6 +408,7 @@ def test_phone_cmd(monkeypatch, capsys):
             self.new_token = new_token
             self.url, self.watch_url = "http://ip:1/m?t=T", "http://ip:1/api/watch"
             self.projects_url = "http://ip:1/?t=T#projects"
+            self.app_url = "http://ip:1/api/phone/app.apk?t=T"
             self.state = SimpleNamespace(token="T")
             self.stopped = False
             made.append(self)

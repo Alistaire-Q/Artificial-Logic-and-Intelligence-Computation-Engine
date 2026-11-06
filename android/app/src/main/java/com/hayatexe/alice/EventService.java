@@ -229,6 +229,7 @@ public class EventService extends Service {
                     }
                 }
                 first = false;
+                Updater.check(this, false);  // yeni sürüm bilgisayara indiyse kendini güncelle (3 saatte bir bakar)
             } catch (Exception ignored) {
                 // bilgisayar uyuyor ya da ağ yok: sonraki turda yeniden
             }

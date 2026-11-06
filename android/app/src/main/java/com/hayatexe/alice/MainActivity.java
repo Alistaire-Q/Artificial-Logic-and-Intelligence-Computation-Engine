@@ -168,9 +168,20 @@ public class MainActivity extends Activity {
         });
     }
 
+    /** Uygulama önde mi: güncelleme onayı doğrudan açılabilir mi, bildirimle mi sorulmalı. */
+    static volatile boolean visible;
+
+    @Override
+    protected void onPause() {
+        visible = false;
+        super.onPause();
+    }
+
     @Override
     protected void onResume() {
         super.onResume();
+        visible = true;
+        Updater.check(this, false);
         NotificationManager nm = getSystemService(NotificationManager.class);
         if (nm != null) nm.cancel(EventService.ID_ALERT_GROUP);
         if (web != null) web.evaluateJavascript("document.dispatchEvent(new Event('visibilitychange'))", null);
@@ -296,6 +307,8 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface public String version() { return BuildConfigVersion.name(MainActivity.this); }
+        @JavascriptInterface public long versionCode() { return Updater.versionCode(MainActivity.this); }
+        @JavascriptInterface public void checkUpdate() { Updater.check(MainActivity.this, true); }
 
         @JavascriptInterface public String network() {
             ConnectivityManager cm = getSystemService(ConnectivityManager.class);

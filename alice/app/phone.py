@@ -6,8 +6,8 @@ Yerel ağa açılan ayrı bir sunucu (varsayılan port 8765). Telefonda adres:
 Anahtar ~/.alice/phone-token dosyasında kalıcıdır; böylece telefondaki yer imi ve otomasyon
 her açılışta çalışır. `alice phone --new-token` ile değiştirilir.
 
-Android uygulaması (android/, APP_URL'den indirilir) aynı sayfayı açar; konuşma tanıma, bildirim ve QR ile bağlanma
-ekler. Tarayıcıda düz HTTP'de mikrofon açılmaz; orada sesli yazma telefonun ses kaydedicisiyle yapılır.
+Android uygulaması (android/) aynı sayfayı açar; konuşma tanıma, bildirim, arama ve QR ile bağlanma ekler. APK'yı
+bilgisayar verir (/api/phone/app.apk, bkz. phone_apk.py); uygulama yeni sürüm çıkınca kendini oradan günceller. Tarayıcıda düz HTTP'de mikrofon açılmaz; orada sesli yazma telefonun ses kaydedicisiyle yapılır.
 """
 
 from __future__ import annotations
@@ -18,10 +18,6 @@ import time
 from pathlib import Path
 
 from alice.config import Config, alice_home
-from alice.updater import REPO
-
-# GitHub'daki "android" sürümüne CI'ın yüklediği APK (.github/workflows/android.yml).
-APP_URL = f"https://github.com/{REPO}/releases/download/android/ALICE.apk"
 
 
 def lan_ip() -> str:
@@ -63,10 +59,17 @@ class PhoneServer:
         self.state.watch_store = store or Store()
         self.port = int(port if port is not None else cfg.data.get("phone", {}).get("port", 8765))
         self.server = AppServer(self.state, self.port, host="0.0.0.0", owns_state=state is None).start()
+        from alice.app import phone_apk
+
+        phone_apk.refresh_async()  # telefon uygulamasının son sürümü bilgisayarda hazır olsun
 
     @property
     def url(self) -> str:
         return f"http://{self.ip}:{self.server.httpd.server_address[1]}/m?t={self.state.token}"
+
+    @property
+    def app_url(self) -> str:
+        return f"http://{self.ip}:{self.server.httpd.server_address[1]}/api/phone/app.apk?t={self.state.token}"
 
     @property
     def projects_url(self) -> str:
@@ -105,8 +108,9 @@ def phone_cmd(argv: list[str]) -> int:
     cfg = load_config()
     ps = PhoneServer(cfg, new_token="--new-token" in argv)
     console.print(f"[bold magenta]ALICE telefon köprüsü[/] açık.\n"
-                  f"Telefon uygulaması (Android): {APP_URL}\n"
-                  f"QR'yi telefonun kamerasıyla okut, \"ALICE ile aç\"ı seç (aynı Wi-Fi): [bold]{ps.url}[/]\n"
+                  f"QR'yi telefonun kamerasıyla okut (aynı Wi-Fi): [bold]{ps.url}[/]\n"
+                  f"Uygulama kuruluysa \"ALICE ile aç\"ı seç; değilse sayfa tarayıcıda açılır, oradan kur.\n"
+                  f"Android uygulaması (doğrudan): {ps.app_url}\n"
                   f"Projeler (izle, cevapla, onayla): {ps.projects_url}\n"
                   f"Canlı saat verisi: POST {ps.watch_url}  başlık X-Alice-Token: {ps.state.token}  "
                   'gövde {"hr": 88}')

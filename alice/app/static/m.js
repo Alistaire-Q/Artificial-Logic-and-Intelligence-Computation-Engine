@@ -50,6 +50,7 @@ const P = {
   skipb: '<path d="M19 6L9 12l10 6zM6 6v12"/>', skipf: '<path d="M5 6l10 6-10 6zM18 6v12"/>',
   moon: '<path d="M20 14A8 8 0 1 1 10 4a6 6 0 0 0 10 10z"/>', note: '<path d="M6 4h9l4 4v12H6z"/><path d="M14 4v5h5M9 13h7M9 17h5"/>',
   heart: '<path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/>',
+  dl: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
   key: '<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3"/>', wifi: '<path d="M2 9a15 15 0 0 1 20 0M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19" r="1"/>',
   gear: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
   img: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/>',
@@ -1308,11 +1309,11 @@ function renderMore() {
   v.append(hd, body);
   drawMoreTop();
   const t0 = performance.now();
-  Promise.all([api("/api/remote/status"), api("/api/state"), api("/api/system"), api("/api/automations"), api("/api/assistant")]).then(([r, st, sys, au, as]) => {
+  Promise.all([api("/api/remote/status"), api("/api/state"), api("/api/system"), api("/api/automations"), api("/api/assistant"), api("/api/phone/app")]).then(([r, st, sys, au, as, app]) => {
     rtt = Math.round(performance.now() - t0);
     if (r.ok !== false) S.remote = r;
     if (st && st.session) applyStatus(st);
-    S.sys = sys; S.auto = au; S.assist = as;
+    S.sys = sys; S.auto = au; S.assist = as; S.app = app;
     drawMoreTop();
   });
 }
@@ -1366,7 +1367,26 @@ function drawMoreTop() {
   body.appendChild(navRow("gear", "Görünüm", { system: "sistem", light: "açık", dark: "koyu" }[theme()] || "sistem", themeSheet));
   if (NATIVE && NATIVE.reconfigure) body.appendChild(navRow("wifi", "Bağlantı", location.host, () => NATIVE.reconfigure()));
   else body.appendChild(navRow("wifi", "Bağlantı", location.host, () => toast("Adres: " + location.host)));
+  appRow(body);
   body.appendChild(el("div", "foot2", "ALICE " + (S.status.version || "") + (NATIVE && NATIVE.version ? " · uygulama " + NATIVE.version() : "")));
+}
+/* Android uygulaması: uygulamanın içindeyken sürüm ve güncelleme, telefonun tarayıcısındayken kurulum. */
+function appRow(body) {
+  const app = S.app || {};
+  if (NATIVE && NATIVE.versionCode) {
+    const mine = NATIVE.versionCode();
+    const newer = app.available && app.version_code > mine;
+    body.appendChild(navRow("dl", "Uygulama", newer ? "güncelleme var: " + app.version_name : NATIVE.version() + " · güncel", () => {
+      if (!newer) return toast("Uygulama güncel. Yeni sürüm çıkınca kendini günceller.");
+      NATIVE.checkUpdate();
+      toast("Güncelleme indiriliyor…");
+    }, newer ? "w" : ""));
+  } else if (/Android/i.test(navigator.userAgent) && app.available) {
+    body.appendChild(navRow("dl", "Android uygulamasını kur", app.version_name, () => {
+      location.href = "/api/phone/app.apk?t=" + encodeURIComponent(TOKEN);
+      toast("İnince aç ve kur. Sonra uygulamada QR'yi yeniden okut.");
+    }));
+  }
 }
 function toggleRow(icon, label, on, change, disabled) {
   const r = el("div", "pl");
