@@ -1496,6 +1496,10 @@ def make_handler(state: AppState):
                 from alice.app import remote
 
                 return self._json({"apps": remote.apps()})
+            if u.path == "/api/remote/windows":
+                from alice.app import remote
+
+                return self._json({"windows": remote.windows()})
             if u.path == "/api/history":
                 return self._json(display_history(state.agent.messages, state.agent.tools))
             if u.path == "/api/sessions":

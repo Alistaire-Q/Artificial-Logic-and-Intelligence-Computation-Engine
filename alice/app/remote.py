@@ -4,6 +4,7 @@ Telefon köprüsünün (alice phone) aynı sunucusunda, aynı anahtarla çalış
   GET  /api/remote/status   -> mod, şu an durumu, sıcaklık/kullanım, öndeki program, son olaylar, önsezi
   GET  /api/remote/screen   -> ekranın küçültülmüş JPEG'i (telefonda canlı görmek için)
   GET  /api/remote/apps     -> Başlat menüsündeki uygulamalar (açmak için)
+  GET  /api/remote/windows  -> açık pencereler, öndeki işaretli (öne getirmek için: action "focus")
   POST /api/remote/action   -> {"action": ...}: ses, medya, kilitle, uyku, kapatma zamanlayıcısı, uygulama/site aç,
                                panoya yaz, metin yaz, HUD gizle/göster
 
@@ -38,8 +39,10 @@ def status() -> dict[str, Any]:
     from alice.core.store import Store
 
     st = service.read_state()
+    import socket
+
     out: dict[str, Any] = {"core": bool(st.get("running")), "mode": st.get("mode") or "", "voice": st.get("voice") or "",
-                           "forced": st.get("forced") or "",
+                           "forced": st.get("forced") or "", "host": socket.gethostname(),
                            "time": time.time()}
     try:
         with Store() as store:
@@ -54,6 +57,11 @@ def status() -> dict[str, Any]:
             out["events"] = [{"ts": e.ts, "kind": e.kind, "title": e.title, "body": (e.body or "")[:240],
                               "severity": e.severity} for e in store.events(limit=40)
                              if e.kind not in ("mode",) and e.delivered][:15]
+            out["series"] = series(store)
+            midnight = time.mktime(time.localtime()[:3] + (0, 0, 0, 0, 0, -1))
+            today = [e for e in store.events(since=midnight, limit=500) if e.kind not in ("mode",)]
+            out["today"] = {"events": len(today),
+                            "warnings": sum(1 for e in today if e.severity in ("warn", "critical"))}
             if time.monotonic() - _now_cache["at"] > NOW_CACHE:
                 from alice.now import snapshot
 
@@ -79,6 +87,78 @@ def status() -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         out["ready"] = ""
     return out
+
+
+SERIES_KEYS = {"cpu": "pc.cpu.percent", "ram": "pc.mem.percent", "gpu": "pc.gpu.util", "gpu_temp": "pc.gpu.temp"}
+SERIES_MINUTES = 10
+SERIES_POINTS = 20
+
+
+def series(store, minutes: float = SERIES_MINUTES, points: int = SERIES_POINTS) -> dict[str, list[float]]:
+    """Telefondaki küçük grafikler: her ölçümün son birkaç dakikası, eşit aralıklı en fazla `points` değer.
+    Aralıkta örnek yoksa bir önceki değer tekrarlanır; hiç örnek yoksa liste boştur."""
+    now = time.time()
+    since = now - minutes * 60
+    step = (now - since) / points
+    out: dict[str, list[float]] = {}
+    for name, key in SERIES_KEYS.items():
+        rows = store.series(key, since=since)
+        if not rows:
+            out[name] = []
+            continue
+        vals: list[float] = []
+        i, last = 0, rows[0][1]
+        for b in range(points):
+            end = since + (b + 1) * step
+            bucket = []
+            while i < len(rows) and rows[i][0] <= end:
+                bucket.append(rows[i][1])
+                i += 1
+            if bucket:
+                last = sum(bucket) / len(bucket)
+            vals.append(round(last, 1))
+        out[name] = vals
+    return out
+
+
+def windows() -> list[dict[str, Any]]:
+    """Açık pencereler (başlığı olan, simge durumunda olmayanlar dahil), öndeki işaretli. Telefondan öne getirmek için."""
+    rows: list[dict[str, Any]] = []
+    if IS_WIN:
+        try:
+            import pygetwindow as gw
+        except ImportError:
+            return []
+        try:
+            active = gw.getActiveWindow()
+        except Exception:  # noqa: BLE001
+            active = None
+        seen = set()
+        for w in gw.getAllWindows():
+            title = (w.title or "").strip()
+            if not title or title in seen or title in ("Program Manager", "Windows Input Experience", "Settings"):
+                continue
+            try:
+                if w.width < 120 or w.height < 80:
+                    continue
+            except Exception:  # noqa: BLE001
+                pass
+            seen.add(title)
+            app = title.rsplit(" - ", 1)[-1].strip() if " - " in title else title
+            rows.append({"title": title, "app": app[:40],
+                         "active": bool(active is not None and getattr(active, "_hWnd", None) == getattr(w, "_hWnd", 0)),
+                         "minimized": bool(getattr(w, "isMinimized", False))})
+    else:
+        try:
+            from alice.tools.desktop import list_windows
+
+            for title in list_windows():
+                app = title.rsplit(" - ", 1)[-1].strip() if " - " in title else title
+                rows.append({"title": title, "app": app[:40], "active": False, "minimized": False})
+        except Exception:  # noqa: BLE001 - wmctrl yok
+            return []
+    rows.sort(key=lambda r: (not r["active"], r["minimized"]))
+    return rows[:20]
 
 
 def screen_jpeg(monitor: int = 1) -> bytes:
@@ -194,4 +274,11 @@ def action(d: dict[str, Any]) -> str:
         return _clipboard(str(d.get("text") or "")[:20000])
     if a == "hud":
         return _hud_toggle()
+    if a == "focus":
+        from alice.tools.desktop import focus_window
+
+        title = str(d.get("title") or "").strip()
+        if not title:
+            raise ValueError("pencere seçilmedi")
+        return focus_window(title) + " öne getirildi"
     raise ValueError(f"bilinmeyen işlem: {a}")
