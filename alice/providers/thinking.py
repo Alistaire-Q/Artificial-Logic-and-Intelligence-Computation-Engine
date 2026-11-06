@@ -41,6 +41,10 @@ def params(provider: str, model: str, level: str) -> dict[str, Any]:
         return {"reasoning_effort": "none" if level == "off" else level}
     if provider == "anthropic":  # Claude API: output_config.effort (low..max); kapatılamaz, "off" en az düşünme
         return {"reasoning_effort": "low" if level == "off" else level}
+    if provider == "cliproxy":
+        # Yerel CLIProxyAPI (OpenAI uyumlu uç): reasoning_effort'u Claude'un uyarlamalı düşünmesine ve Codex'in
+        # reasoning.effort'una kendisi çevirir. "none" ikisinde de kapanış/az düşünme; xhigh/max olduğu gibi gider.
+        return {"reasoning_effort": "none" if level == "off" else level}
     if level in ("xhigh", "max"):
         level = "high"  # diğer sağlayıcılarda en yüksek seviye
     m = model.lower()

@@ -422,6 +422,18 @@ class AppState:
         # MCP sunucuları (npx ile açılanlar yavaş olabilir) arayüzü bekletmesin. Sunucular uygulamanın, sohbetin değil:
         # kapanan sohbet onları kapatmasın; araçları sonradan açılan sohbetlere de geçsin.
         self.run_in_worker(self._attach_mcp)
+        self._start_cliproxy()
+
+    def _start_cliproxy(self) -> None:
+        """Yerel Claude Code proxy'si (CLIProxyAPI) kuruluysa açılışta kendiliğinden başlat."""
+        try:
+            if not bool(self.cfg.data.get("cliproxy", {}).get("auto_start", True)):
+                return
+            from alice.app import cliproxy
+
+            cliproxy.start_in_background()
+        except Exception:  # noqa: BLE001 - proxy yoksa ALICE açılışı etkilenmesin
+            pass
 
     def _attach_mcp(self) -> None:
         chat = self.chat

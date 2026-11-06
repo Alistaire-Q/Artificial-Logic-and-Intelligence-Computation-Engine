@@ -156,10 +156,12 @@ Hiç anahtar yoksa ALICE sadece yerel Ollama'yı dener ve bunu açılışta söy
 
 **Hesapları uygulamadan bağla:** Bağlantılar → Anahtarlar → **Claude Code proxy (hesaplar)** kartı. Servisi seç, **Hesap ekle (giriş)** düğmesine bas; tarayıcıda o servisin giriş sayfası açılır, kendi hesabınla giriş yaparsın. Giriş bitince hesap kartta görünür (e-posta, sağlayıcı, kota yüzdesi). Hesabı karttan kaldırabilirsin. Aynı servise birden çok hesap ekleyebilirsin: istekler hesaplar arasında sırayla paylaştırılır (`routing.strategy: round-robin`), bir hesap limite ya da kotaya takılınca proxy beklemeden sıradakine geçer. Kimlik bilgileri `~/.alice/cliproxy/auths/` altında, bu bilgisayarda durur.
 
+**Model ve düşünme:** Model menüsünde proxy'nin bütün modelleri görünür (Claude ve GPT ailesi; `cliproxy:claude-opus-5-5`, `cliproxy:gpt-5.6-terra`…). **Düşünme** çubuğuyla `off / low / medium / high / xhigh / max` seçilir; proxy bunu Claude'un uyarlamalı düşünmesine ve Codex'in reasoning effort'una çevirir (en yüksek seviye, Codex'teki "ultracode" ayarının karşılığı). Modeli elle sabitlemek yerine `[roles]` zincirine yazarsan Claude limiti dolunca otomatik olarak sıradaki modele (ör. GPT) geçer.
+
 Kurulum bir kez:
 1. [CLIProxyAPI sürümlerinden](https://github.com/router-for-me/CLIProxyAPI/releases) Windows zip'ini indir, `~/.alice/cliproxy/` klasörüne çıkar (`cli-proxy-api.exe`).
 2. `config.yaml`, `keys.txt` ve `auths/` oradadır; istemci anahtarı `keys.txt`'te. Hesapları yukarıdaki karttan bağla (istersen terminalden `cli-proxy-api -claude-login` / `-codex-login` de çalışır).
-3. `~/.alice/cliproxy/start.ps1` ile arka planda başlat (ya da `cli-proxy-api.exe -config config.yaml`). Proxy açıkken ALICE Model menüsünde bu modeller görünür.
+3. ALICE açılınca proxy'yi **kendisi başlatır** (`[cliproxy] auto_start = true`). Elle başlatmak istersen `~/.alice/cliproxy/start.ps1` (ya da `cli-proxy-api.exe -config config.yaml`).
 4. `CLIPROXY_API_KEY` `.env`'de yoksa Anahtarlar sayfasındaki satıra `keys.txt`'teki değeri yaz.
 
 Not: Abonelikleri CLIProxy üzerinden kullanmak sağlayıcıların kullanım koşullarına aykırı olabilir ve hesabın kısıtlanma riski taşır. Resmî API anahtarları (yukarıdaki Anthropic satırı), z.ai ya da başka sağlayıcılar risksiz alternatiflerdir.

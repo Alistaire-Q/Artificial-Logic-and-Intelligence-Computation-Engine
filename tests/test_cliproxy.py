@@ -64,7 +64,7 @@ def test_status_does_not_crash_when_proxy_closed(proxy_home, monkeypatch):
 
     monkeypatch.setattr(cliproxy, "_req", boom)
     d = cliproxy.status()
-    assert d["installed"] and not d["running"] and "bağlantı yok" in d["error"]
+    assert d["installed"] and not d["running"] and d["error"]  # çökmez, başlatmayı dener, olmazsa haber verir
 
 
 def test_status_marks_not_installed(tmp_path, monkeypatch):
@@ -131,3 +131,55 @@ def test_http_endpoints(app_state, monkeypatch):
         assert httpx.get(srv.url.split("/?")[0] + "/api/cliproxy").status_code == 403
     finally:
         srv.stop()
+
+def test_start_noop_when_running(proxy_home, monkeypatch):
+    monkeypatch.setattr(cliproxy, "running", lambda: True)
+    assert cliproxy.start() == {"ok": True, "already": True}
+
+
+def test_start_skips_when_not_installed(tmp_path, monkeypatch):
+    monkeypatch.setattr(cliproxy, "home", lambda: tmp_path / "yok")
+    r = cliproxy.ensure_started()
+    assert r["ok"] and r["skipped"] == "kurulu değil"
+
+
+def test_start_launches_detached_process(proxy_home, monkeypatch):
+    (proxy_home / "cli-proxy-api.exe").write_bytes(b"")
+    checks = {"n": 0}
+
+    def fake_running():
+        checks["n"] += 1
+        return checks["n"] > 2  # kapalı, kapalı -> başlat -> açık
+
+    monkeypatch.setattr(cliproxy, "running", fake_running)
+    monkeypatch.setattr(cliproxy, "_last_start", 0.0)
+    spawned = {}
+
+    class Popen:
+        def __init__(self, args, **kw):
+            spawned["args"], spawned["kw"] = args, kw
+
+    monkeypatch.setattr(cliproxy.subprocess, "Popen", Popen)
+    r = cliproxy.start(wait_seconds=5)
+    assert r == {"ok": True, "started": True}
+    assert spawned["args"][0].endswith("cli-proxy-api.exe")
+    assert spawned["args"][-1].endswith("config.yaml")
+    assert spawned["kw"]["cwd"].endswith("cliproxy")
+
+
+def test_status_starts_proxy_when_closed(proxy_home, monkeypatch):
+    state = {"up": False}
+
+    def fake_req(method, path):
+        if not state["up"]:
+            raise RuntimeError("kapalı")
+        return {"files": [{"id": "claude-a.json", "provider": "claude", "email": "a@b.c"}]}
+
+    def fake_start(wait_seconds=8.0):
+        state["up"] = True
+        return {"ok": True, "started": True}
+
+    monkeypatch.setattr(cliproxy, "_req", fake_req)
+    monkeypatch.setattr(cliproxy, "start", fake_start)
+    d = cliproxy.status()
+    assert d["running"] and d["accounts"][0]["email"] == "a@b.c"

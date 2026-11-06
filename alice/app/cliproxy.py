@@ -8,7 +8,10 @@ takılınca otomatik sıradakine geçer (CLIProxyAPI'nin varsayılan round-robin
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+import threading
 import time
 from typing import Any
 from urllib.parse import quote
@@ -73,6 +76,78 @@ def _req(method: str, path: str) -> dict[str, Any]:
         return r.json()
     except ValueError:
         return {}
+
+
+# ------------------------------------------------------------------ başlatma
+_start_lock = threading.Lock()
+_last_start = 0.0
+START_RETRY_SECONDS = 60.0
+
+
+def running() -> bool:
+    """Yönetim API'si cevap veriyorsa proxy çalışıyor demektir."""
+    try:
+        _req("GET", "/v8/management/credentials")
+        return True
+    except Exception:  # noqa: BLE001 - kapalı/erişilemez
+        return False
+
+
+def start(wait_seconds: float = 8.0) -> dict[str, Any]:
+    """Proxy kapalıysa arka planda (ALICE'den bağımsız) başlat ve uç cevap verene kadar bekle."""
+    global _last_start
+    s = settings()
+    if not s["installed"]:
+        return {"ok": False, "error": "CLIProxyAPI kurulu değil"}
+    if running():
+        return {"ok": True, "already": True}
+    with _start_lock:
+        if running():
+            return {"ok": True, "already": True}
+        now = time.monotonic()
+        if now - _last_start < START_RETRY_SECONDS and _last_start:
+            return {"ok": False, "error": "az önce denendi; biraz sonra yeniden denenecek"}
+        _last_start = now
+        exe = s["dir"] / "cli-proxy-api.exe"
+        if not exe.exists():
+            return {"ok": False, "error": "cli-proxy-api.exe bulunamadı"}
+        try:
+            log = open(s["dir"] / "server.out.log", "ab")  # noqa: SIM115 - çocuk süreç yazacak
+        except OSError:
+            log = subprocess.DEVNULL
+        kwargs: dict[str, Any] = {"cwd": str(s["dir"]), "stdout": log, "stderr": subprocess.STDOUT,
+                                  "stdin": subprocess.DEVNULL, "close_fds": True}
+        if os.name == "nt":
+            # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW: ALICE kapansa da çalışsın,
+            # konsol penceresi açılmasın.
+            kwargs["creationflags"] = 0x00000008 | 0x00000200 | 0x08000000
+        try:
+            subprocess.Popen([str(exe), "-config", str(s["dir"] / "config.yaml")], **kwargs)
+        except OSError as e:
+            return {"ok": False, "error": f"başlatılamadı: {e}"}
+        finally:
+            if log is not subprocess.DEVNULL:
+                log.close()
+        end = time.time() + wait_seconds
+        while time.time() < end:
+            if running():
+                return {"ok": True, "started": True}
+            time.sleep(0.3)
+    return {"ok": False, "error": "proxy başladı ama cevap vermedi (server.out.log)"}
+
+
+def ensure_started() -> dict[str, Any]:
+    """Kuruluysa ve kapalıysa başlat; kurulu değilse sessizce atla."""
+    if not settings()["installed"]:
+        return {"ok": True, "skipped": "kurulu değil"}
+    if running():
+        return {"ok": True, "already": True}
+    return start()
+
+
+def start_in_background() -> None:
+    """ALICE açılışını bekletmeden proxy'yi başlatmayı dene."""
+    threading.Thread(target=ensure_started, daemon=True, name="alice-cliproxy").start()
 
 
 def _pct(value: Any) -> int | None:
@@ -172,9 +247,16 @@ def status() -> dict[str, Any]:
         return out
     try:
         data = _req("GET", "/v8/management/credentials")
-    except Exception as e:  # noqa: BLE001 - proxy kapalıysa kart "çalışmıyor" der, çökmez
-        out["error"] = str(e)[:200]
-        return out
+    except Exception as e:  # noqa: BLE001 - kapalıysa başlatmayı dene, yine olmazsa "çalışmıyor" de
+        started = start()
+        if not started.get("ok"):
+            out["error"] = str(started.get("error") or e)[:200]
+            return out
+        try:
+            data = _req("GET", "/v8/management/credentials")
+        except Exception as e2:  # noqa: BLE001
+            out["error"] = str(e2)[:200]
+            return out
     out["running"] = True
     files = data.get("files") if isinstance(data, dict) else None
     out["accounts"] = [_account(f) for f in (files or []) if isinstance(f, dict)]

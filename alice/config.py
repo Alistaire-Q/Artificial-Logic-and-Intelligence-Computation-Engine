@@ -522,6 +522,10 @@ api_key_env = ""
 vision_models = ["*vl*", "llava*", "gemma3*"]
 max_input_tokens = 32000
 
+# Yerel Claude Code proxy'si (CLIProxyAPI, ~/.alice/cliproxy). ALICE açılınca kendisi başlatır.
+[cliproxy]
+auto_start = true
+
 # git / GitHub araçlarının kuralları. Anahtar: .env'deki GITHUB_TOKEN, yoksa GitHub MCP sunucusunun anahtarı,
 # yoksa GITHUB_MODELS_TOKEN, yoksa `gh auth token`.
 [connect]
