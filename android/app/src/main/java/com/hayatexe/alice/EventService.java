@@ -171,7 +171,6 @@ public class EventService extends Service {
         b.addAction(new Notification.Action.Builder(null, "Aç", openApp(c, "chat", id + 1)).build());
         b.addAction(new Notification.Action.Builder(null, "Reddet", ActionReceiver.declineCall(c, callId, id)).build());
         nm.notify(id, b.build());
-        setStatus("ALICE arıyor…");
     }
 
     /* ---------------------------------------------------------------- olay akışı */
