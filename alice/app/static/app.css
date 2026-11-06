@@ -1811,6 +1811,42 @@ details > summary::marker { color: var(--faint); }
 .kc-add { display: flex; gap: var(--s2); }
 .kc-add input, .kc-add select { flex: 1; min-width: 0; }
 .kc-hint { color: var(--faint); font-size: 11.5px; line-height: 1.4; }
+/* abonelik hesapları (Claude Code proxy) */
+.cp-card { grid-column: 1 / -1; }
+.cp-card .kc-head .l small { font-family: var(--sans); }
+.cp-card.partial .kc-dot { background: var(--warn); }
+.cp-body { display: flex; flex-direction: column; gap: 2px; padding: 0 var(--s4) var(--s3); }
+.cp-body:empty { display: none; }
+.cp-body > .btn { align-self: flex-start; margin-top: var(--s2); }
+.cp-note { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+.cp-err { color: var(--err); }
+.cp-acc { display: grid; grid-template-columns: minmax(0, 1fr) 170px 150px auto; align-items: center; gap: var(--s3);
+  padding: 9px 0; border-top: 1px solid var(--line); }
+.cp-acc:first-child { border-top: 0; }
+.cp-who { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
+.cp-who b { font-weight: 500; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cp-svc { flex: none; font-size: 11px; font-weight: 500; padding: 2px 7px; border-radius: 999px; background: var(--hover); color: var(--muted); }
+.cp-acc.off .cp-who b { color: var(--muted); }
+.cp-quota { display: flex; flex-direction: column; gap: 4px; }
+.cp-quota small { color: var(--faint); font-size: 11px; font-variant-numeric: tabular-nums; }
+.cp-bar { display: block; height: 4px; border-radius: 2px; background: var(--hover); overflow: hidden; }
+.cp-bar i { display: block; height: 100%; background: var(--accent); border-radius: 2px; }
+.cp-bar i.high { background: var(--warn); }
+.cp-bar i.full { background: var(--err); }
+.cp-state { font-size: 12px; display: flex; align-items: center; gap: 6px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cp-state::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--line-strong); flex: none; }
+.cp-state.ok::before { background: var(--ok); }
+.cp-state.wait::before { background: var(--warn); }
+.cp-state.bad { color: var(--err); }
+.cp-state.bad::before { background: var(--err); }
+.cp-acts { display: flex; align-items: center; gap: 4px; justify-content: flex-end; }
+.cp-acts .btn { padding: 3px 10px; font-size: 12px; }
+.cp-acts .icon-btn { width: 28px; height: 28px; }
+.cp-add { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); padding: var(--s2) 0 var(--s3); border-bottom: 1px solid var(--line); margin-bottom: 2px; }
+.cp-add select { flex: 1; min-width: 200px; }
+.cp-add .kc-hint { flex-basis: 100%; }
+.cp-body > .kc-hint { padding-top: var(--s2); }
+@media (max-width: 720px) { .cp-acc { grid-template-columns: minmax(0, 1fr) auto; } .cp-quota { grid-column: 1 / -1; grid-row: 2; } }
 
 /* ------------------------------------------------------------------ araçlar */
 .tl-bar { display: flex; gap: var(--s3); margin-bottom: var(--s3); }
