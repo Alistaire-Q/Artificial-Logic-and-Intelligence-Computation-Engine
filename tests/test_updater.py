@@ -329,3 +329,23 @@ def test_healthy_boot_clears_pending(repos, monkeypatch, offline):
     assert not updater.read_state().get("pending_health")
     for _ in range(4):
         assert updater.boot_check() == ""  # sağlam sürüm bir daha sorgulanmaz
+
+
+def test_unauthorized_alice_token_falls_back_to_git_login(monkeypatch, tmp_path):
+    """ALICE'in anahtarı bu özel depoya yetkili değilse (403) git'in kendi kayıtlı girişiyle tekrar denenir;
+    önceden güncelleme "The requested URL returned error: 403" ile düşüyordu."""
+    runs = []
+
+    def fake_run(args, cwd, timeout, env):
+        authed = any(k.startswith("GIT_CONFIG_KEY") for k in env)
+        runs.append(authed)
+        if authed:
+            return 128, "remote: Write access to repository not granted.\nfatal: ... returned error: 403"
+        return 0, "abc\trefs/heads/main"
+
+    monkeypatch.setattr(updater, "_auth_env", lambda: {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.x",
+                                                        "GIT_CONFIG_VALUE_0": "y"})
+    monkeypatch.setattr(updater, "_git_run", fake_run)
+    assert updater._git(["fetch", "origin"], tmp_path) == (0, "abc\trefs/heads/main") and runs == [True, False]
+    runs.clear()
+    assert updater._git(["status"], tmp_path)[0] == 0 and runs == [False]  # yerel komuta anahtar verilmez

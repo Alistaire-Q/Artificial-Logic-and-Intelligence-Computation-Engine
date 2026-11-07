@@ -92,7 +92,16 @@ def _auth_env() -> dict[str, str]:
         from alice.tools.github import git_env, github_token
 
         if not _token_cache or time.monotonic() - _token_cache[1] > 3600:
-            _token_cache[:] = [github_token(), time.monotonic()]
+            # Ayar dosyası da verilmeli: depoya erişen anahtar oradaki GitHub bağlantısında olabiliyor. Ayarsız
+            # çağrılınca .env'deki (bu özel depoya yetkisiz) anahtar seçiliyor, git onu her kayıtlı girişin önüne
+            # koyduğu için güncelleme 403 ile düşüyordu (7 Kasım).
+            from alice.config import load_config
+
+            try:
+                cfg = load_config()
+            except Exception:  # noqa: BLE001 - ayar okunamazsa yine dene
+                cfg = None
+            _token_cache[:] = [github_token(cfg), time.monotonic()]
         token = _token_cache[0]
         return {k: v for k, v in git_env(token).items() if k.startswith("GIT_CONFIG_")} if token else {}
     except Exception:  # noqa: BLE001 - anahtar yoksa git'in kendi girişiyle dener
@@ -102,7 +111,16 @@ def _auth_env() -> dict[str, str]:
 def _git(args: list[str], cwd: Path, timeout: float = 30.0) -> tuple[int, str]:
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "", "GCM_INTERACTIVE": "never"}
     if args and args[0] in _NET:
-        env.update(_auth_env())
+        auth = _auth_env()
+        if auth:
+            code, out = _git_run(args, cwd, timeout, {**env, **auth})
+            if code == 0 or not any(s in out for s in ("403", "not granted", "Authentication failed")):
+                return code, out
+            # ALICE'in anahtarı bu depoya yetkili değil: git'in kendi kayıtlı girişiyle bir kez daha dene.
+    return _git_run(args, cwd, timeout, env)
+
+
+def _git_run(args: list[str], cwd: Path, timeout: float, env: dict[str, str]) -> tuple[int, str]:
     try:
         r = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, encoding="utf-8",
                            errors="replace", timeout=timeout, env=env, creationflags=NO_WINDOW)
