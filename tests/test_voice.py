@@ -1614,6 +1614,7 @@ def test_short_prompt_echo_with_caps_alice_is_noise():
 def test_flight_callouts_go_stale_and_urgent_jumps_queue(monkeypatch):
     slow = FakePlayer(dur=0.3)
     sp = Speaker(FakeTTS("t"), slow)
+    sp.alert_volume = 1.0  # sahte TTS'in "sesi" metin taşıyor: kısılırsa okunamaz
     monkeypatch.setattr(Speaker, "STALE", {"critical": 5.0, "warn": 5.0, "info": 0.2})
     sp.say("ilk cümle")  # konu yok: bayatlamaz
     for _ in range(100):
@@ -1752,3 +1753,68 @@ def test_strip_wake_repeated_hey_in_strict_mode():
     assert strip_wake("Hey Hey Alice.", strict=True) == ""
     assert strip_wake("Hey hey Alice, saat kaç?", strict=True) == "saat kaç?"
     assert strip_wake("Hey hey.", strict=True) is None
+
+
+def test_follow_up_goes_to_realtime_as_audio_without_stt():
+    """Takip cümlesi ("Alice" demeden devam) canlı modele sesle gider: STT yanlış yazıp metni göndermesin."""
+    class CloudSTT:
+        def __init__(self):
+            self.calls = 0
+
+        def transcribe(self, audio):
+            self.calls += 1
+            return "İyi eğitim geçti gönöm"
+
+    class AudioLive(FakeLive):
+        prefers_audio = True
+
+        def converse(self, text, frames, stop, first_audio=b"", **kw):
+            self.texts.append((text, len(first_audio), kw.get("hint")))
+
+    stt, live = CloudSTT(), AudioLive()
+    va = VoiceAssistant(FakeAgent(), FakeSpeaker(), stt=stt, live=live)
+    va.handle_audio(Audio(b"\1\0" * 16000, 16000), direct=True)
+    assert wait_for(lambda: live.texts == [("", 32000, None)])
+    assert stt.calls == 0
+
+
+def test_realtime_first_sentence_does_not_wait_for_local_text():
+    class Gate:
+        model_name, last_seconds = "small", 0.1
+
+        def heard(self, audio):
+            return "Hey Alice"
+
+        calls = 0
+
+        def transcribe(self, audio, prompt=""):  # "Alice" dendi mi kontrolü (uyandırma) ve döküm ipucu
+            Gate.calls += 1
+            return "Hey Alice", 0.0
+
+    class STT:
+        wake_gate = Gate()
+
+        def transcribe(self, audio):
+            raise AssertionError("bulut STT çağrılmamalı")
+
+    class AudioLive(FakeLive):
+        prefers_audio = True
+
+        def converse(self, text, frames, stop, first_audio=b"", **kw):
+            self.texts.append(("hint" in kw, len(first_audio)))
+
+    live = AudioLive()
+    va = VoiceAssistant(FakeAgent(), FakeSpeaker(), stt=STT(), live=live)
+    va.handle_audio(Audio(b"\1\0" * 16000, 16000), direct=False)
+    assert wait_for(lambda: live.texts == [(False, 32000)])  # ses gitti, metin ipucu (hint) yok
+    assert Gate.calls <= 1  # sadece uyandırma kontrolü; ipucu için ikinci döküm yapılmadı
+
+
+def test_alert_volume_scales_only_alerts():
+    from alice.voice.speaker import scaled
+
+    loud = Audio(array.array("h", [10000, -10000, 20000]).tobytes(), 16000)
+    half = array.array("h")
+    half.frombytes(scaled(loud, 0.5).pcm)
+    assert list(half) == [5000, -5000, 10000]
+    assert scaled(loud, 1.0) is loud

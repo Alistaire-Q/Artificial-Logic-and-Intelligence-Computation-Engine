@@ -48,10 +48,11 @@ def settings(cfg: Any) -> dict[str, Any]:
     return {**DEFAULTS, **(data.get("github") or {})}
 
 
-def github_token(cfg: Any = None) -> str | None:
+def _token_candidates(cfg: Any = None):
+    """Anahtarlar, öncelik sırasıyla (tembel: gh yalnızca gerekirse çalışır)."""
     for k in TOKEN_ENVS:
         if os.environ.get(k):
-            return os.environ[k]
+            yield os.environ[k]
     # GitHub MCP sunucusu zaten bir anahtarla tanımlıysa onu kullan.
     data = getattr(cfg, "data", None) or {}
     for name, spec in ((data.get("mcp") or {}).get("servers") or {}).items():
@@ -60,23 +61,57 @@ def github_token(cfg: Any = None) -> str | None:
         for k, v in (spec.get("env") or {}).items():
             val = os.path.expandvars(str(v))
             if "TOKEN" in k.upper() and val and "$" not in val:
-                return val
+                yield val
         for h in (spec.get("headers") or {}).values():
             m = re.match(r"(?i)bearer\s+(\S+)", os.path.expandvars(str(h)))
             if m and "$" not in m.group(1):
-                return m.group(1)
+                yield m.group(1)
     if os.environ.get("GITHUB_MODELS_TOKEN"):
-        return os.environ["GITHUB_MODELS_TOKEN"]
+        yield os.environ["GITHUB_MODELS_TOKEN"]
     gh = shutil.which("gh")
     if gh:
         try:
             r = subprocess.run([gh, "auth", "token"], capture_output=True, text=True, timeout=10,
                                creationflags=NO_WINDOW)
             if r.returncode == 0 and r.stdout.strip():
-                return r.stdout.strip()
+                yield r.stdout.strip()
         except (OSError, subprocess.SubprocessError):
             pass
-    return None
+
+
+_private_cache: dict[str, bool | None] = {}
+
+
+def _private_access(token: str) -> bool | None:
+    """Bu anahtar özel depoları görüyor mu? (None: sorulamadı). Süreç boyunca bir kez sorulur."""
+    import hashlib
+
+    import httpx
+
+    key = hashlib.sha256(token.encode()).hexdigest()
+    if key not in _private_cache:
+        try:
+            r = httpx.get("https://api.github.com/user/repos", timeout=8,
+                          params={"visibility": "private", "per_page": 1},
+                          headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+            _private_cache[key] = bool(r.json()) if r.status_code == 200 else None
+        except (httpx.HTTPError, ValueError):
+            _private_cache[key] = None
+    return _private_cache[key]
+
+
+def github_token(cfg: Any = None) -> str | None:
+    """Kullanılacak GitHub anahtarı. İlk anahtar ince ayarlı (github_pat_) ve özel depoları göremiyorsa, özel
+    depolara erişen sıradaki anahtar (ör. `gh auth token`) seçilir: .env'deki yalnızca açık depolara yetkili
+    anahtar yüzünden ALICE kullanıcının özel depolarını hiç göremiyordu (7 Kasım: 7 depo, 0 özel; gh ile 16 özel)."""
+    tokens = _token_candidates(cfg)
+    first = next(tokens, None)
+    if first is None or not first.startswith("github_pat_") or _private_access(first) is not False:
+        return first
+    for other in tokens:
+        if other != first and _private_access(other):
+            return other
+    return first
 
 
 # ---------------------------------------------------------------------------------------------- git

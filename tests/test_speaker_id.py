@@ -500,3 +500,28 @@ def test_social_mode_takes_sentence_right_after_bare_wake():
     va.handle_audio(one, direct=va._armed())
     time.sleep(0.2)
     assert agent.turns == ["Naber?"]
+
+
+def test_discord_follow_up_continues_only_for_users_voice():
+    """Discord'da cevaptan sonra "Alice" demeden devam: sadece ses izi kullanıcıya uyan cümle canlı modele gider."""
+    from tests.test_voice import FakeLive
+
+    class AudioLive(FakeLive):
+        prefers_audio = True
+
+        def converse(self, text, frames, stop, first_audio=b"", **kw):
+            self.texts.append(first_audio[:1])
+
+    class NoSTT:
+        def transcribe(self, audio):
+            raise AssertionError("takip cümlesi yazıya çevrilmemeli")
+
+    live = AudioLive()
+    va = VoiceAssistant(FakeAgent(), FakeSpeaker(), stt=NoSTT(), live=live, speaker_gate=gate(),
+                        social=lambda: "Discord")
+    va.armed_until = time.monotonic() + 5  # ALICE az önce cevap verdi
+    va.handle_audio(Audio(b"\2\0" * 16000, 16000), direct=va._armed())  # noqa: SLF001 - arkadaşın sesi
+    va.handle_audio(Audio(b"\1\0" * 16000, 16000), direct=va._armed())  # noqa: SLF001 - kullanıcının sesi
+    assert wait_for(lambda: live.texts == [b"\1"])
+    va.social_follow = False
+    assert not va._armed()  # noqa: SLF001 - kapatılınca Discord'da yine "Alice" gerekir

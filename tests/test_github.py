@@ -80,6 +80,20 @@ def test_token_order(monkeypatch):
     assert github_token(cfg) == "env"
 
 
+def test_public_only_fine_grained_token_yields_to_one_with_private_access(monkeypatch):
+    """.env'deki ince ayarlı anahtar sadece açık depoları görüyordu: özel depoları gören anahtar (gh) seçilmeli."""
+    from alice.tools import github as gh_mod
+
+    access = {"github_pat_public": False, "gho_full": True}
+    monkeypatch.setattr(gh_mod, "_private_access", lambda t: access.get(t))
+    monkeypatch.setattr(gh_mod, "_token_candidates", lambda cfg=None: iter(["github_pat_public", "gho_full"]))
+    assert github_token(cfg_with()) == "gho_full"
+    access["github_pat_public"] = True  # özel depoları görüyorsa sıra değişmez
+    assert github_token(cfg_with()) == "github_pat_public"
+    access["github_pat_public"] = None  # sorulamadı (ağ yok): ilk anahtar
+    assert github_token(cfg_with()) == "github_pat_public"
+
+
 def test_git_env_passes_token_without_args():
     env = git_env("ghp_secret")
     n = int(env["GIT_CONFIG_COUNT"]) - 1

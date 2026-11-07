@@ -282,6 +282,22 @@ def _start_quick(cfg, state=None):
     return qb
 
 
+def _raise_priority(v: dict, log) -> None:
+    """Oyun işlemciyi doldururken "Alice" kontrolü sıra beklemesin: çekirdek "normalin üstü" önceliğe alınır.
+    Boştaki bilgisayarda kontrol 0,4 sn, War Thunder açıkken medyan 1,3 sn, en kötü 16,7 sn sürüyordu (7 Kasım).
+    Kontroller cümle başına kısa (~0,4 sn) olduğundan oyuna etkisi küçük. [voice] priority = "normal" ile kapatılır."""
+    want = str(v.get("priority", "above_normal")).lower()
+    if sys.platform != "win32" or want != "above_normal":
+        return
+    try:
+        import psutil
+
+        psutil.Process().nice(psutil.ABOVE_NORMAL_PRIORITY_CLASS)
+        log("işlem önceliği: normalin üstü (uyandırma kontrolü oyunda beklemesin)")
+    except Exception as e:  # noqa: BLE001 - yetki yoksa normal öncelikle devam
+        log(f"işlem önceliği değiştirilemedi: {e}")
+
+
 def _start_voice(cfg, core):
     """Sesli asistanı çekirdekle aynı süreçte başlat; bildirimler de seslendirilsin."""
     import threading
@@ -301,6 +317,7 @@ def _start_voice(cfg, core):
     stt = make_stt(cfg)
     if stt.wake_gate is not None and mic_available():
         stt.wake_gate.warm_up(log=voice_log)
+        _raise_priority(v, voice_log)
     threading.Thread(target=known_names, args=(cfg,), daemon=True, name="alice-vocab").start()
     agent, speaker, _ = build_voice_agent(cfg)
 

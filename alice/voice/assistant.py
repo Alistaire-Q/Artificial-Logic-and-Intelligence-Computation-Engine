@@ -259,8 +259,10 @@ class VoiceAssistant:
                  keep_turns: int = 4, idle_reset: float = 300.0, live=None, end_silence: float = 0.5,
                  live_text_min: float | None = -0.7, live_text_wait: float = 1.5, live_follow: float = FOLLOW_MAX,
                  full_text_max: float = 8.0, live_gate: bool = True, smart_route: bool = True, speaker_gate=None,
-                 social: Callable[[], str] | None = None, social_ptt: bool = False):
+                 social: Callable[[], str] | None = None, social_ptt: bool = False, social_follow: bool = True):
         self.agent = agent
+        # Discord/oyunda cevaptan sonra "Alice" demeden devam (ses izi kayıtlıysa, sadece kullanıcının sesi).
+        self.social_follow = social_follow
         # Kullanıcının ses izi (alice voice enroll): varsa sadece onun sesi uyandırır (bkz. speaker_id.py).
         self.speaker_gate = speaker_gate
         # Seçici uyanma (Discord'da konuşuyor, oyun açık): nedeni döner, boşsa normal mod (bkz. social.py).
@@ -285,6 +287,9 @@ class VoiceAssistant:
         self.live = live  # Gemini Live: "Hey Alice"ten sonra sesten sese canlı konuşma
         if live is not None:
             live.gated = live_gate  # Live'a giden kareler süzülüyor: ses varsa gerçekten konuşma var
+            if hasattr(live, "barge_ok"):
+                # Canlı model konuşurken gelen kare ancak ses izi doğrulamasından geçtiyse sözü kesebilir.
+                live.barge_ok = lambda: self.live_gate is not None and self.live_gate.verify is not None
         self._live_q: queue.Queue | None = None  # doluyken mikrofon kareleri Live'a gider
         self._live_down = 0.0
         self.keep_turns = keep_turns
@@ -341,8 +346,11 @@ class VoiceAssistant:
 
     def _on_speech_start(self) -> None:
         self._speech_at = time.monotonic()
-        if self.speaker.speaking and not self.muted:
-            self.armed_until = max(self.armed_until, self._speech_at)  # Alice konuşurken söze girmek de ona söylenmiştir
+        if self.speaker.speaking and not self.muted and not getattr(self.speaker, "alerting", False) is True:
+            # Alice konuşurken söze girmek de ona söylenmiştir. Oyun/uçuş uyarısı ("Kilitlendin!") konuşurken
+            # değil: uyarının üstüne arkadaşına söylenen cümle canlı modele gidiyor, ALICE durup dururken
+            # konuşmaya başlıyordu (7 Kasım).
+            self.armed_until = max(self.armed_until, self._speech_at)
         self._barge = self.barge_in and self.speaker.speaking and not self.social()
         if self._barge and not self._gate_ready():
             # Ses izi yoksa eski davranış: konuşma başlar başlamaz sus. Varsa handle_audio sesin kullanıcıya ait
@@ -355,10 +363,18 @@ class VoiceAssistant:
         if self.muted:
             return False
         if self.social():
-            # Discord'da/oyunda arkadaşına söylenen cümle ALICE'e gitmesin: hep "Alice" denmeli. Tek istisna: az önce
-            # sadece "Alice" denip ALICE "Evet, söyle" dediyse arkasından gelen cümle ona söylenmiştir ("Alice" ...
-            # "naber" cevapsız kalıyordu, 30 Ekim).
-            return (at or time.monotonic()) <= getattr(self, "_called_until", 0.0)
+            # Discord'da/oyunda arkadaşına söylenen cümle ALICE'e gitmesin. İstisnalar: az önce sadece "Alice" denip
+            # ALICE "Evet, söyle" dediyse arkasından gelen cümle ona söylenmiştir ("Alice" ... "naber" cevapsız
+            # kalıyordu, 30 Ekim); ses izi kayıtlıysa cevaptan sonraki takip penceresi de açıktır, cümlenin
+            # kullanıcıya ait olduğu ayrıca doğrulanır (eskiden her cevaptan sonra konuşma kapanıyor, "Alice"
+            # demeden verilen cevap duyulmuyordu, 6 Kasım).
+            if (at or time.monotonic()) <= getattr(self, "_called_until", 0.0):
+                return True
+            # Sadece ChatGPT Realtime yolunda: kullanıcı kendi sesiyle arkadaşına da konuşur ("Ahmet gel buraya"),
+            # ses izi bunu ayıramaz. Canlı model cümleyi duyar ve kendisine söylenmediyse susar (talimatında); eski
+            # yolda (yazıya çevir, cevapla) böyle bir süzgeç yok, orada Discord'da yine "Alice" gerekir.
+            return bool(getattr(self, "social_follow", True)) and self._gate_ready() and self._live_ready() \
+                and getattr(self.live, "prefers_audio", False) is True and (at or time.monotonic()) <= self.armed_until
         return (at or time.monotonic()) <= self.armed_until
 
     def _strict(self) -> bool:
@@ -565,6 +581,24 @@ class VoiceAssistant:
             self._barge = False
             if self._is_user(audio):  # gri bölgedeki ses (büyük ihtimalle yankı ya da başkası) sözü kesmesin
                 self._interrupt()  # kullanıcının sesi doğrulandı: şimdi sus
+        if direct and not ptt and self.social() and not self._awaiting_answer \
+                and (started or 0.0) > getattr(self, "_called_until", 0.0) and not self._is_user(audio):
+            # Discord'daki takip penceresi: arkadaşın sesi ALICE'e gitmesin (ses izi doğrulamadı).
+            voice_log("takip penceresinde başkası konuştu (ses izi), cevap yok")
+            return self._decide("gri")
+        if (direct or ptt) and self._live_ready() and not self._busy.is_set() \
+                and getattr(self.live, "prefers_audio", False) is True and audio.seconds >= 0.3:
+            # Takip penceresindeki ("Alice" demeden devam) ya da bas-konuş cümlesi: canlı model sesi kendisi
+            # duyar. Eskiden önce Groq Whisper'la yazıya çevriliyor, canlı modele sesin değil yanlış yazılmış metin
+            # gidiyordu ("İyi geçti günüm" -> "İyi eğitim geçti gönöm") ve STT ~1 sn gecikme ekliyordu.
+            voice_log(f"takip: ses doğrudan canlı modele ({audio.seconds:.1f} sn ses, yazıya çevrilmedi)")
+            self._live_q_at = time.monotonic()
+            self._live_q = queue.Queue()
+            self._pre_text = (None, True)
+            self._final_audio = audio
+            self.decision.update(path="live_audio")
+            self._jobs.put(audio)
+            return self._decide("takip", woke=True)
         gate = getattr(self.stt, "wake_gate", None)
         if not direct and not self._awaiting_answer and gate is not None and self.wake_phrase:
             armed = self._armed(started)  # az önce cevap verdi: "Alice" demeden devam
@@ -619,12 +653,12 @@ class VoiceAssistant:
                     if audio.seconds <= self.JOIN_MAX:
                         self._unwoken = (audio, time.monotonic())
                     if audio.seconds >= 0.6:
-                        voice_log(f"uyandırma yok [{getattr(gate, 'model_name', '?')} {getattr(gate, 'last_seconds', 0):.2f}sn]: {head}")
+                        voice_log(f"uyandırma yok [{_gate_time(gate)}]: {head}")
                     return self._decide("uyandirma_yok")  # uyandırma yok: sesi buluta hiç gönderme
                 direct = True  # yerel model "Hey Alice" duydu; bulut yazımı farklı olsa da kabul et
                 if self._live_ready() and not self._busy.is_set():
                     # Canlı konuşma: yazıya çevirmeyi atla, cümlenin sesini doğrudan Live'a ver (~0,5 sn kazanç).
-                    voice_log(f"uyandı [{getattr(gate, 'model_name', '?')} {getattr(gate, 'last_seconds', 0):.2f}sn]: {head}")
+                    voice_log(f"uyandı [{_gate_time(gate)}]: {head}")
                     self._live_q_at = time.monotonic()
                     self._live_q = queue.Queue()  # bağlanırken söylenenler kaybolmasın: kareler şimdiden biriksin
                     self._pre_text = (full, armed and strip_wake(head) is None)
@@ -780,11 +814,14 @@ class VoiceAssistant:
                 follow = self._pre_text[1]  # "Alice" dedi, ALICE tepki verdi: bu cümlede "Alice" geçmesi beklenmez
                 # Seçici modda ilk cümle hep sesle gider: oyun altında yerel döküm saniyelerce bekletiyor (ölçülen
                 # 7,1 sn), metin gidince de Gemini kendi kulağıyla "Alice"i doğrulayamıyordu.
-                hint = None if social else self._local_text(audio)
+                # ChatGPT Realtime sesi kendisi duyar: yerel dökümü (≤1,5 sn) bekleyip ses yerine metin gönderme.
+                hint = None if social or getattr(self.live, "prefers_audio", False) is True else self._local_text(audio)
                 self._pre_text = (None, False)
                 extra: dict[str, Any] = {"hint": hint} if hint else {}
                 if getattr(audio, "ended", None):
                     extra["ended"] = audio.ended  # uçtan uca gecikme: kullanıcının sustuğu an
+                if social and follow and getattr(self.live, "prefers_audio", False) is True:
+                    extra["check_addressed"] = True  # Discord devamı: Jev "ALICE'e mi söylendi" desin
                 if social and not follow:
                     extra["need_wake"] = True  # seçici mod: Gemini de "Alice" duymalı (bkz. LiveSession)
                 self.live.converse("", q, self.stop_event, first_audio=audio.resample(16000).pcm, **extra)
@@ -810,7 +847,8 @@ class VoiceAssistant:
                 # sonra kapandıysa ek süre kalmaz, yeniden "Alice" gerekir.
                 last = getattr(self.live, "last_active", None)
                 base = last if isinstance(last, (int, float)) and last > 0 else time.monotonic()
-                self.armed_until = base + self.live_follow
+                # Arkadaşa söylenmiş cümle (Jev) yeni bir takip penceresi açmasın.
+                self.armed_until = 0.0 if getattr(self.live, "declined", False) is True else base + self.live_follow
 
     UTTER_MAX_AGE = 8.0  # sn: bundan eski cümle, arkasında yenisi varsa atlanır; "Alice"siz devam da sayılmaz
     UTTER_HARD_AGE = 20.0  # sn: bundan eskisi her durumda atlanır (artık cevaplamanın anlamı yok)
@@ -884,8 +922,11 @@ class VoiceAssistant:
         gate = self.live_gate
         playing = bool(getattr(self.live, "playing", False))
         gate.vad.boost = 2.5 if playing else 1.0
-        social = playing and bool(self.social()) and self._gate_ready()
-        gate.verify = (lambda pcm: self.speaker_gate.check(pcm, 16000)) if social else None
+        # ALICE konuşurken araya giren ses kullanıcının mı (ses izi)? Doğrulanırsa canlı model susar (barge_ok).
+        # Eskiden sadece Discord/oyunda doğrulanıyor, ChatGPT oturumu da konuşurken gelen her kareyi atıyordu:
+        # kullanıcı ALICE'in sözünü hiç kesemiyordu (7 Kasım). Yankı (ALICE'in sesi) ses izinden geçemez.
+        verify = playing and self._gate_ready() and (self.barge_in or bool(self.social()))
+        gate.verify = (lambda pcm: self.speaker_gate.check(pcm, 16000)) if verify else None
 
     def _handle_job(self, job) -> None:
         started = time.monotonic()  # konuşma bitti, iş sıraya girdi: buradan ilk sese kadar gecikme sayılır
@@ -1152,6 +1193,13 @@ class VoiceAssistant:
         self.speaker.stop()
 
 
+def _gate_time(gate) -> str:
+    """Uyandırma kontrolünün süresi; modeli beklediyse ayrıca ("base 1.20sn, 0.80 bekleme")."""
+    total, wait = float(getattr(gate, "last_seconds", 0) or 0), float(getattr(gate, "last_wait", 0) or 0)
+    extra = f", {wait:.2f} bekleme" if isinstance(getattr(gate, "last_wait", None), (int, float)) and wait >= 0.1 else ""
+    return f"{getattr(gate, 'model_name', '?')} {total:.2f}sn{extra}"
+
+
 def live_text_options(v: dict[str, Any]) -> dict[str, Any]:
     """[voice] live_text_min: ilk cümlenin yerel dökümüne güven eşiği (boş/false = hep ses gönder)."""
     m = v.get("live_text_min", -0.7)
@@ -1159,7 +1207,8 @@ def live_text_options(v: dict[str, Any]) -> dict[str, Any]:
             "live_text_wait": float(v.get("live_text_wait", 1.5)),
             "live_follow": float(v.get("live_follow", FOLLOW_MAX)),
             "live_gate": bool(v.get("live_gate", True)),
-            "smart_route": bool(v.get("smart_route", True))}
+            "smart_route": bool(v.get("smart_route", True)),
+            "social_follow": bool(v.get("social_follow", True))}
 
 
 def make_live(cfg, agent):
@@ -1207,6 +1256,10 @@ def build_voice_agent(cfg, inner_ui=None, speaker: Speaker | None = None, cwd=No
         tts = make_tts(cfg)
         tts.warm_up()
         speaker = Speaker(tts)
+    vcfg = cfg.data.get("voice", {}) or {}
+    if hasattr(speaker, "alert_volume"):
+        speaker.volume = float(vcfg.get("volume", 1.0))
+        speaker.alert_volume = float(vcfg.get("alert_volume", 0.5))
     ui = VoiceUI(speaker, inner_ui)
     agent = Agent(cfg, router, all_tools(cfg, ctx.emit), ctx, Permissions(cfg.agent.get("permission_mode", "auto")), ui, decider)
     agent.messages[0]["content"] += "\n\n" + VOICE_PROMPT

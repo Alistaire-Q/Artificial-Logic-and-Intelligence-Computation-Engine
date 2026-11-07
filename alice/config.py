@@ -191,6 +191,15 @@ live_realtime_model = "gpt-realtime-2.1"
 live_realtime_voice = "marin"
 # Hoparlör yankısının ALICE'in cevabını yarıda kesmesini önler. Kulaklıkla gerçek barge-in istersen false yap.
 live_realtime_echo_guard = true
+# Canlı modelin doğrudan çağırdığı hızlı araçlar; gerisi think ile güçlü modele gider ("*" = hepsi, yavaş:
+# 69 aracın şeması her oturumda ~2 sn ekliyordu).
+live_realtime_tools = ["youtube", "media", "windows", "weather", "notes", "now", "spotify", "memory"]
+# ChatGPT'nin kendi döküm modeli: duyduklarını loga yazar, "Alice sus"u sesli yolda da yakalar ("" = kapalı).
+live_realtime_transcribe = "gpt-4o-mini-transcribe"
+# Cevap bitince ve "Alice" duyulunca bir sonraki oturum arka planda hazırlanır (bağlantı + ayar ≈ 2 sn).
+live_realtime_prewarm = true
+# true: ilk cümlede ses yerine yerel Whisper dökümü gönderilir (eski davranış; ChatGPT sesi kendisi duyar).
+live_realtime_text_hint = false
 # Alice sustuktan sonra bu kadar saniye kimse konuşmazsa canlı konuşma kapanır, yeniden "Hey Alice" beklenir
 # (en fazla 5: yanındakilerle konuşurken söylenenler komut sanılmasın).
 live_idle = 5
@@ -247,6 +256,9 @@ stt_cpu_model = "small"
 # ELEVENLABS_API_KEY varsa konuşma önce ElevenLabs Scribe ile yazıya dökülür (Türkçede çok daha iyi), sonra "stt".
 stt_eleven = "scribe_v2"
 language = "tr"
+# Ses seviyesi (0-1): ALICE'in konuşması ve uçuş/oyun uyarıları (War Thunder, DCS) ayrı.
+volume = 1.0
+alert_volume = 0.5
 # Bas-konuş tuşu (pynput adı: <scroll_lock>, <f13>, <pause>...). Boş = kapalı.
 ptt_key = "<scroll_lock>"
 # openWakeWord modeli (.onnx). Boşsa "Hey Alice" Whisper ile, konuşma algılanınca anlaşılır.
