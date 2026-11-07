@@ -5,6 +5,15 @@
 
 const TOKEN = document.querySelector('meta[name="alice-token"]').content;
 const NATIVE = window.AliceNative || null;
+/* Sayfa hataları bilgisayara yazılır (~/.alice/phone-errors.log): telefonda görünmeyen hataları bulmak için. */
+function reportError(text) {
+  try {
+    fetch("/api/client_error", { method: "POST", headers: { "X-Alice-Token": TOKEN, "Content-Type": "application/json" },
+      body: JSON.stringify({ text: String(text).slice(0, 1500) + " | " + navigator.userAgent.slice(0, 120) }) }).catch(() => {});
+  } catch (e) { /* yok */ }
+}
+window.addEventListener("error", (e) => reportError("hata: " + e.message + " @" + e.filename + ":" + e.lineno + ":" + e.colno));
+window.addEventListener("unhandledrejection", (e) => reportError("söz: " + ((e.reason && (e.reason.stack || e.reason.message)) || e.reason)));
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 
@@ -421,7 +430,10 @@ async function modelSheet() {
 }
 async function newChat() {
   const r = await api("/api/new", { detached: true });
-  if (r.ok === false) return toast(r.error || "Yeni sohbet açılamadı");
+  if (!r || r.ok === false || !r.sid) {
+    reportError("yeni sohbet: " + JSON.stringify(r).slice(0, 300));
+    return toast((r && r.error) || "Yeni sohbet açılamadı");
+  }
   setSid(r.sid);
   applyStatus(r);
   $("#msgs").replaceChildren();

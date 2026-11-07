@@ -1930,6 +1930,18 @@ def make_handler(state: AppState):
                         return self._json({"ok": True, "text": remote.action(d)})
                     except Exception as e:  # noqa: BLE001 - kullanıcıya kısa sebep
                         return self._json({"ok": False, "error": str(e)[:200]}, 400)
+                if p == "/api/client_error":  # telefondaki sayfanın hataları: ~/.alice/phone-errors.log
+                    from datetime import datetime
+
+                    try:
+                        f = alice_home() / "phone-errors.log"
+                        if f.exists() and f.stat().st_size > 500_000:
+                            f.replace(f.with_suffix(".log.1"))
+                        with f.open("a", encoding="utf-8") as fh:
+                            fh.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} {str(d.get('text', ''))[:1500]}\n")
+                    except OSError:
+                        pass
+                    return self._json({"ok": True})
                 if p == "/api/watch":
                     if state.watch_store is None:
                         return self._json({"ok": False, "error": "saat verisi bu sunucuda kapalı"}, 404)
