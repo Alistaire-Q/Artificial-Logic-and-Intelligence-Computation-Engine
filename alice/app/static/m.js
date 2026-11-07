@@ -254,6 +254,7 @@ const handlers = {
   call_end: (ev) => callEnded(ev),
   call_pcm: (ev) => callPcm(ev),
   call_pcm_clear: (ev) => { if (CALL && ev.id === CALL.id) liveClear(CALL); },
+  call_mic_missing: (ev) => { if (CALL && ev.id === CALL.id) liveNativeMic(CALL, "Mikrofon sesi bilgisayara gitmiyor; telefonun konuşma tanımasıyla devam"); },
   call_text: (ev) => callText(ev),
 };
 const CHAT_EVENTS = new Set(["user", "busy", "stream_start", "delta", "stream_reset", "stream_end", "tool_start", "tool_end"]);
@@ -2030,7 +2031,18 @@ function liveClear(c) {
 }
 function liveMode(c) {
   const m = (c.srcs && c.srcs.length) ? "speaking" : "listening";
+  if (c.nativeMic && m === "listening") { if (!c.listening) startCallListening(); return; }
   if (c.mode !== m) { c.mode = m; drawCall(); }
+}
+/* Canlı mikrofon çalışmıyorsa (WebView ses vermiyor): telefonun konuşma tanıması dinler, yazı canlı oturuma gider,
+   ALICE yine canlı sesle cevap verir. */
+function liveNativeMic(c, msg) {
+  if (!c || c.nativeMic || CALL !== c) return;
+  stopLiveMic(c);
+  if (!NATIVE || !NATIVE.listen) { toast("Mikrofon sesi alınamıyor"); return; }
+  c.nativeMic = true;
+  toast(msg);
+  if (!(c.srcs && c.srcs.length)) startCallListening();
 }
 function callText(ev) {
   if (earlyEvent(ev)) return;
@@ -2055,7 +2067,9 @@ async function startLiveMic(c) {
   if (CALL !== c) { stream.getTracks().forEach((t) => t.stop()); return; }
   const AC = window.AudioContext || window.webkitAudioContext;
   let ctx;
-  try { ctx = new AC({ sampleRate: 16000 }); } catch (e) { ctx = new AC(); }
+  // Cihazın kendi örnekleme hızı: bazı WebView'larda 16 kHz bağlam mikrofondan sessizlik veriyor. 16 kHz'e burada inilir.
+  ctx = new AC();
+  if (ctx.state === "suspended") ctx.resume().catch(() => {});
   const src = ctx.createMediaStreamSource(stream);
   const proc = ctx.createScriptProcessor(1024, 1, 1);
   const step = ctx.sampleRate / 16000;
@@ -2075,6 +2089,7 @@ async function startLiveMic(c) {
   };
   proc.onaudioprocess = (e) => {
     if (CALL !== c || !c.live) return;
+    c.micFrames = (c.micFrames || 0) + 1;
     const inp = e.inputBuffer.getChannelData(0);
     let peak = 0;
     for (; pos < inp.length; pos += step) {
@@ -2090,6 +2105,7 @@ async function startLiveMic(c) {
   src.connect(proc);
   proc.connect(ctx.destination);  // ScriptProcessor bağlı değilse çalışmıyor; çıkışı sessiz
   c.mic = { stream, ctx, proc };
+  setTimeout(() => { if (CALL === c && c.mic && !c.micFrames) liveNativeMic(c, "Mikrofon sesi alınamadı; telefonun konuşma tanımasıyla devam"); }, 4000);
   if (c.mode === "thinking" && !c.played) drawCall();
 }
 function stopLiveMic(c) {

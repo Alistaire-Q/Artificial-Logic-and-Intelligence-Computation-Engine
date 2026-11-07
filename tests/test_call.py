@@ -237,3 +237,19 @@ def test_live_call_streams_mic_and_voice_like_the_pc(setup):
     state.call_action("hangup", {"id": r["id"]})
     wait_for(events, lambda e: e["type"] == "call_end")
     assert state.calls.call.stop.is_set()
+
+
+def test_live_call_warns_phone_when_no_mic_audio_arrives(setup):
+    """Telefonun mikrofon sesi hiç gelmezse ALICE kullanıcıyı duyamaz: telefona söylenir, o da kendi tanımasına geçer."""
+    import base64
+
+    state, prov, tts, events = setup
+    state._calls = call.CallManager(state, tts_factory=lambda: tts,
+                                    live_factory=lambda agent, out: FakeRealtime(agent, out))
+    r = state.call_action("start", {})
+    c = state.calls.call
+    state.calls._mic_check(c, wait=0)
+    wait_for(events, lambda e: e["type"] == "call_mic_missing" and e["id"] == r["id"])
+    state.call_action("mic", {"id": r["id"], "pcm": base64.b64encode(b"\x00\x40" * 960).decode()})
+    assert c.mic_bytes == 1920 and c.mic_peak == 0x4000
+    state.call_action("hangup", {"id": r["id"]})
