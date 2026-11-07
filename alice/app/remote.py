@@ -23,6 +23,7 @@ SCREEN_W = 1280          # telefona giden ekran genişliği
 SCREEN_QUALITY = 62
 SCREEN_MIN_GAP = 0.35    # sn: ekran en sık bu kadar yakalanır (birkaç telefon aynı anda isterse)
 _screen_cache: dict[str, Any] = {"at": 0.0, "jpg": b""}
+PHONE_SKIP_KINDS = ("mode", "flight", "sam")  # telefona bildirilmeyen olaylar (mod değişimi, oyun içi uyarılar)
 NOW_CACHE = 30.0         # sn: uçuş geçmişinden hesaplanan "şu an" (~1 sn sürüyor) en çok bu kadar eski
 _now_cache: dict[str, Any] = {"at": -1e9, "now": {}}
 
@@ -54,9 +55,12 @@ def status() -> dict[str, Any]:
                 from alice.now import APP_NAMES
 
                 out["app"] = APP_NAMES.get(fg[2].lower(), fg[2].rsplit(".", 1)[0])
+            # Oyun içi uçuş uyarıları (SAM, füze, kilit) telefona gitmez: oyunda zaten sesli söyleniyor, telefon
+            # uygulaması her birini bildirim yapıyordu (7 Kasım: bir çatışmada onlarca "Füze atıldı!"). Çatışmada
+            # bu uyarılar son olayları doldurmasın diye daha geniş bakılıp sonra süzülür.
             out["events"] = [{"ts": e.ts, "kind": e.kind, "title": e.title, "body": (e.body or "")[:240],
-                              "severity": e.severity} for e in store.events(limit=40)
-                             if e.kind not in ("mode",) and e.delivered][:15]
+                              "severity": e.severity} for e in store.events(limit=300)
+                             if e.kind not in PHONE_SKIP_KINDS and e.delivered][:15]
             out["series"] = series(store)
             midnight = time.mktime(time.localtime()[:3] + (0, 0, 0, 0, 0, -1))
             today = [e for e in store.events(since=midnight, limit=500) if e.kind not in ("mode",)]

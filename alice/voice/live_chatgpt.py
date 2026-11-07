@@ -650,6 +650,8 @@ class RealtimeSession:
                 elif kind == "session.created" or kind == "session.updated":
                     continue
                 elif kind == "error":
+                    if (ev.get("error") or {}).get("code") == "response_cancel_not_active":
+                        continue  # susturulacak cevap yoktu (dokunuş/araya girme): önemsiz
                     self.log(f"realtime hata: {json.dumps(ev.get('error') or ev, ensure_ascii=False)[:300]}")
                     info = ev.get("error") or {}
                     err = str(info.get("code") or info.get("type") or "")

@@ -46,11 +46,12 @@ import java.util.Locale;
  * window.AliceNative köprüsünü verir (konuşma tanıma, titreşim, bildirim, tema, bağlantı ayarı).
  */
 public class MainActivity extends Activity {
-    private static final int REQ_FILE = 11, REQ_MIC = 12, REQ_NOTIFY = 13;
+    private static final int REQ_FILE = 11, REQ_MIC = 12, REQ_NOTIFY = 13, REQ_LIVE_MIC = 14;
 
     private WebView web;
     private ValueCallback<Uri[]> fileCb;
     private SpeechRecognizer speech;
+    private NativeMic mic;
     private final Handler ui = new Handler(Looper.getMainLooper());
     private boolean pageFailed;
     private TextToSpeech tts;
@@ -253,6 +254,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         if (speech != null) speech.destroy();
+        if (mic != null) mic.stop();
         if (tts != null) tts.shutdown();
         Calls.ring(this, false);
         if (web != null) web.destroy();
@@ -288,6 +290,7 @@ public class MainActivity extends Activity {
         super.onRequestPermissionsResult(req, perms, res);
         if (req == REQ_MIC && res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) startListening(lastLang);
         else if (req == REQ_MIC) js("aliceVoice", "{\"type\":\"error\",\"text\":\"Mikrofon izni verilmedi\"}");
+        if (req == REQ_LIVE_MIC) js("aliceMicPermission", res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED ? "true" : "false");
         if (req == REQ_NOTIFY) EventService.start(this);
     }
 
@@ -351,6 +354,16 @@ public class MainActivity extends Activity {
         @JavascriptInterface public void listen(String lang) { ui.post(() -> startListening(lang)); }
         @JavascriptInterface public void stopListening() { ui.post(() -> { if (speech != null) speech.stopListening(); }); }
         @JavascriptInterface public void cancelListening() { ui.post(() -> { if (speech != null) speech.cancel(); }); }
+        /** Canlı arama mikrofonu: parçalar window.aliceMic({pcm, lv}) ile gelir. İzin yoksa false (izin istenir). */
+        @JavascriptInterface public boolean micStart() {
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                ui.post(() -> requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_LIVE_MIC));
+                return false;
+            }
+            if (mic == null) mic = new NativeMic(MainActivity.this);
+            return mic.start((b64, peak) -> js("aliceMic", "{\"pcm\":\"" + b64 + "\",\"lv\":" + peak + "}"));
+        }
+        @JavascriptInterface public void micStop() { if (mic != null) mic.stop(); }
 
         @JavascriptInterface public void vibrate(int ms) {
             Vibrator v = getSystemService(Vibrator.class);
