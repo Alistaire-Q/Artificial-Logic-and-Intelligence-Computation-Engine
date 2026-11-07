@@ -157,12 +157,14 @@ public class EventService extends Service {
         while (running) {
             HttpURLConnection h = null;
             try {
+                Prefs.pick(this);  // ağ değiştiyse (ev Wi-Fi'ı / mobil veri) doğru adres
                 h = (HttpURLConnection) new URL(Prefs.base(this) + "/api/events?t=" + Prefs.token(this)).openConnection();
                 h.setConnectTimeout(6000);
                 h.setReadTimeout(60000);  // sunucu boşta 15 sn'de bir canlılık satırı yollar
                 h.setRequestProperty("Accept", "text/event-stream");
                 BufferedReader r = new BufferedReader(new InputStreamReader(h.getInputStream(), StandardCharsets.UTF_8));
-                setStatus("Bağlı · onay ve uyarılar burada görünür");
+                setStatus(Prefs.viaRelay(this) ? "Bağlı (internet üzerinden) · onay ve uyarılar burada görünür"
+                        : "Bağlı · onay ve uyarılar burada görünür");
                 wait = 2000;
                 String line;
                 while (running && (line = r.readLine()) != null) {
