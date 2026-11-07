@@ -1,9 +1,11 @@
 package com.hayatexe.alice;
 
+import android.Manifest;
 import android.app.Activity;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
@@ -29,6 +31,7 @@ import org.json.JSONObject;
  */
 public class SetupActivity extends Activity {
     private static final int REQ_SCAN = 21;
+    private static final int REQ_CAMERA = 22;
     private EditText field;
     private TextView status;
     private Button connect;
@@ -36,6 +39,7 @@ public class SetupActivity extends Activity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        CrashLog.install(this);
         int pad = dp(24);
         ScrollView sv = new ScrollView(this);
         sv.setBackgroundColor(getColor(R.color.bg));
@@ -98,15 +102,40 @@ public class SetupActivity extends Activity {
         status.setPadding(0, dp(14), 0, 0);
         col.addView(status);
         setContentView(sv);
+        CrashLog.showIfAny(this);
     }
 
+    /** Kamera izni okuyucu açılmadan önce burada istenir: izinsiz açılan okuyucu bazı telefonlarda çöküyordu. */
     private void scan() {
-        ScanOptions o = new ScanOptions();
-        o.setDesiredBarcodeFormats(ScanOptions.QR_CODE);
-        o.setPrompt("Bilgisayardaki ALICE QR kodunu çerçeveye al");
-        o.setBeepEnabled(false);
-        o.setOrientationLocked(false);
-        startActivityForResult(o.createScanIntent(this), REQ_SCAN);
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.CAMERA}, REQ_CAMERA);
+            return;
+        }
+        startScanner();
+    }
+
+    private void startScanner() {
+        try {
+            ScanOptions o = new ScanOptions();
+            o.setDesiredBarcodeFormats(ScanOptions.QR_CODE);
+            o.setPrompt("Bilgisayardaki ALICE QR kodunu çerçeveye al");
+            o.setBeepEnabled(false);
+            o.setOrientationLocked(false);
+            startActivityForResult(o.createScanIntent(this), REQ_SCAN);
+        } catch (Exception e) {
+            status.setText("QR okuyucu açılamadı (" + e.getClass().getSimpleName() + "). Adresi yapıştırarak bağlanabilirsin.");
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int req, String[] perms, int[] results) {
+        super.onRequestPermissionsResult(req, perms, results);
+        if (req != REQ_CAMERA) return;
+        if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) {
+            startScanner();
+        } else {
+            status.setText("Kamera izni verilmedi. QR yerine bilgisayardaki adresi yapıştırarak bağlanabilirsin.");
+        }
     }
 
     @Override

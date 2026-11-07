@@ -494,6 +494,20 @@ class FlightCompanion:
                 return " " + HINTS[k]
         return ""
 
+    MISSILE_REPEAT = 8.0    # sn: füze uyarısı en sık (aynı füze kesilip görününce tekrar bağırıyordu)
+    LOCK_REPEAT = 30.0      # sn: kilit uyarısı en sık
+
+    def _alert_ok(self, t: float, kind: str) -> bool:
+        """Füze/kilit sesi için ayrı sınır (THREAT_GAP'e girmez: füze her zaman öncelikli). İzin verirse zamanı yazar."""
+        mem = self.__dict__.setdefault("alert_mem", {})
+        if any(v > t + 5 for v in mem.values()):  # yeni görev: sim zamanı başa döndü
+            mem.clear()
+        every = self.MISSILE_REPEAT if kind == "missile" else self.LOCK_REPEAT
+        if t - mem.get(kind, -1e9) < every:
+            return False
+        mem[kind] = t
+        return True
+
     def _may_say(self, t: float, key: str, every: float) -> bool:
         """Tehdit sesine izin: bu anahtar en sık 'every' sn'de bir, bütün tehdit sesleri arasında en az THREAT_GAP.
         İzin verirse zamanı yazar. Füze ve kilit bundan geçmez, her zaman söylenir."""
@@ -530,7 +544,14 @@ class FlightCompanion:
                     elif key[0] == "l":
                         self._follow(t, clock, f"KİLİT · {name}", "warn", "lock")
                     continue
-                if key[0] == "m" and c.get("vision"):  # ekrandan görüldü: türü (ve bazen yönü) bilinmiyor
+                if key[0] in "ml" and not self._alert_ok(t, "missile" if key[0] == "m" else "lock"):
+                    # War Thunder'da tehdit ekrandan okunuyor, kesilip geri gelince "yeni" sayılıyordu: 30 dakikada
+                    # 16 "Füze atıldı", 13 "Kilitlendin" (7 Kasım). Ses sınırlı, ok ve kenar parlaması sürer.
+                    if key[0] == "m":
+                        self._point(t, clock, f"FÜZE · {name}", "critical", "missile", edge=True)
+                    else:
+                        self._point(t, clock, f"KİLİT · {name}", "warn", "lock")
+                elif key[0] == "m" and c.get("vision"):  # ekrandan görüldü: türü (ve bazen yönü) bilinmiyor
                     self.say(f"Füze! Saat {clock}. Chaff at, dön!" if clock else "Füze atıldı! Chaff at, dön!",
                              "critical", "urgent")
                     self._point(t, clock, "FÜZE", "critical", "missile", edge=True)

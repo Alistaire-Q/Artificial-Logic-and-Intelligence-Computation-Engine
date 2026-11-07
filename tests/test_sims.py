@@ -888,3 +888,31 @@ def test_clock_suffix_follows_turkish_vowel_harmony():
     from alice.sims.flight import clock_loc
 
     assert [clock_loc(c) for c in (3, 6, 9, 10, 12)] == ["3'teki", "6'daki", "9'daki", "10'daki", "12'deki"]
+
+
+def test_flapping_lock_and_missile_are_not_repeated_aloud():
+    """War Thunder'da ekrandan okunan tehdit kesilip geri geliyor: her dönüşte bağırmasın (30 dk'da 16 füze,
+    13 kilit uyarısı, 7 Kasım). Sesi sınırlı, HUD oku sürer."""
+    from alice.sims.flight import FlightCompanion, FlightState
+
+    said = []
+    c = FlightCompanion(lambda text, sev="info", emo=None: said.append(text))
+    c.phase = "air"
+
+    def contact(t, **kw):
+        c._contacts(FlightState(t=t, ias=200, agl=3000, gear=0, x=0, z=0,
+                                extra={"contacts": [{"kind": "radar", "id": 1, "name": "radar", **kw}]}))
+
+    for t in (0, 11, 22):  # kilit her 11 sn'de "yeni" (LOST_AFTER 10 sn aşıldı)
+        contact(t, lock=True)
+    assert said.count("Kilitlendin!") == 1
+    contact(40, lock=True)
+    assert said.count("Kilitlendin!") == 2  # 30 sn sonra yine söylenir
+    for t in (100, 111, 122):
+        contact(t, missile=True, vision=True)
+    assert said.count("Füze atıldı! Chaff at, dön!") == 3  # 11 sn arayla: 8 sn sınırının dışında, hepsi söylenir
+    said.clear()
+    for t in (200, 211):
+        contact(t, missile=True, vision=True)
+    contact(215, missile=True, vision=True, id=2)  # başka bir füze 4 sn sonra: söylenmez
+    assert said.count("Füze atıldı! Chaff at, dön!") == 2

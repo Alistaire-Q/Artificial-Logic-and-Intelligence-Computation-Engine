@@ -136,10 +136,20 @@ def test_invalid_model_ref(monkeypatch, capsys):
     assert "--model geçersiz" in capsys.readouterr().out
 
 
-def test_check_ready_warns_when_no_api_keys(isolated_home, capsys):
+def test_check_ready_warns_when_no_api_keys(isolated_home, capsys, monkeypatch):
+    import os
+    import re
+
     from alice.providers.router import Router
 
-    router = Router(load_config())
+    cfg = load_config()
+    # Ortamı bu testte gerçekten anahtarsız yap: CI'da aynı süreçte koşan başka bir testin bıraktığı (ör. .env'den
+    # yüklenen GEMINI_API_KEY_2) numaralı anahtarlar isolated_home'un listesinde yoktu ve uyarı çıkmıyordu.
+    envs = {pc.get("api_key_env") for pc in (cfg.data.get("providers") or {}).values() if pc.get("api_key_env")}
+    for k in list(os.environ):
+        if any(k == e or re.fullmatch(rf"{re.escape(e)}_\d+", k) for e in envs):
+            monkeypatch.delenv(k, raising=False)
+    router = Router(cfg)
     if router.first_available("brain") is None:  # anahtarsız zincirde Ollama yoksa uyarı zaten "model yok"
         assert not cli._check_ready(router)
         return

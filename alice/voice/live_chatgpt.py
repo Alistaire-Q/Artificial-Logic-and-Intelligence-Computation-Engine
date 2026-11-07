@@ -41,7 +41,10 @@ Sen hiçbir şey demeden araç çağırırsan kullanıcı kısa bir "Bir saniye.
 tekrarlama, doğrudan sonucu söyle.
 Araçların vermediği sayıları ve durumları asla uydurma; bilmiyorsan söyle.
 Mikrofon oyun/video/başkalarının konuşmasını da duyar; sana söylenmemiş, anlamsız ya da Türkçe olmayan
-cümlelere cevap verme, sessiz kal. Her zaman Türkçe konuş."""
+cümlelere cevap verme, sessiz kal. Kullanıcı Discord'da ya da oyunda arkadaşlarıyla da konuşur: cümle başka
+birine hitap ediyorsa (bir isim, "gel buraya", "bak şimdi") ya da oyuna dair kendi kendine söylenmiş bir lafsa
+hiç ses çıkarma. Sohbetin devamıysa (az önceki sorunun cevabı, "evet", "aç onu") cevap ver. Her zaman Türkçe
+konuş."""
 
 THINK_TOOL = {
     "type": "function",
@@ -52,6 +55,9 @@ THINK_TOOL = {
         "request": {"type": "string", "description": "Kullanıcının isteği; eksiksiz, olduğu gibi"}},
         "required": ["request"]},
 }
+
+# Canlı modelin doğrudan çağırdığı hızlı araçlar (config: [voice] live_realtime_tools, "*" = hepsi).
+REALTIME_TOOLS = ("youtube", "media", "windows", "weather", "notes", "now", "spotify", "memory")
 
 # Codex Realtime'ın kabul ettiği sesler (2026-11-06, sunucunun "Supported values" hatasından).
 REALTIME_VOICES = ("alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar")
@@ -84,6 +90,27 @@ def openai_schema(schema: Any) -> Any:
     if isinstance(schema, list):
         return [openai_schema(item) for item in schema]
     return schema
+
+
+def _close(pre: dict[str, Any]) -> None:
+    """Önceden hazırlanmış (kullanılmayan) bağlantıyı kapat; hazırlık hâlâ sürüyorsa bitmesini bekle."""
+    t = pre.get("thread")
+    if t is not None and t.is_alive():
+        t.join(RealtimeSession.PREFETCH_WAIT)
+    ws = pre.get("ws")
+    if ws is not None:
+        try:
+            ws.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _is_open(ws: Any) -> bool:
+    """Isıtılmış bağlantı sunucu tarafından kapatılmış olabilir (zaman aşımı, proxy yeniden başladı)."""
+    try:
+        return getattr(ws.protocol.state, "name", "OPEN") == "OPEN"
+    except Exception:  # noqa: BLE001 - durum okunamıyorsa dene; olmazsa converse hata verir
+        return True
 
 
 def resample_16_to_24(pcm: bytes) -> bytes:
@@ -136,11 +163,27 @@ class RealtimeSession:
         # think'in model sırası (Gemini yoluyla aynı ayar). Eskiden ses ajanının kendi zinciri kullanılıyordu:
         # başındaki model takılınca (6 Kasım: gemini-flash-latest ReadTimeout) tek bir "video aç" ~95 sn sürdü.
         self.think_models = [str(r) for r in v.get("live_think_models") or []]
+        # Canlı modele sadece hızlı tek adımlık işlerin araçları gider; gerisi think ile güçlü modele. 69 aracın
+        # şeması (~112 KB) her oturumda session.update'i ~1 sn, ilk sesi ~1 sn geciktiriyordu (6 Kasım ölçümü).
+        tools = v.get("live_realtime_tools", REALTIME_TOOLS)
+        self.allowed_tools: set[str] | None = None if tools == "*" or tools == ["*"] else {str(t) for t in tools}
+        # ChatGPT sesi kendisi duyar: yerel Whisper'ın dökümünü beklemek (≤1,5 sn) ve ses yerine yanlış yazılmış
+        # metni göndermek yerine ses gider. Eski davranış: live_realtime_text_hint = true.
+        self.prefers_audio = not bool(v.get("live_realtime_text_hint", False))
+        # ChatGPT'nin kendi döküm modeli: duyduğu loglara ve geçmişe yazılır, "Alice sus" sesli yolda da çalışır.
+        self.transcribe = str(v.get("live_realtime_transcribe", "gpt-4o-mini-transcribe") or "")
+        self.language = str(v.get("language", "tr") or "tr")
+        # Cevap bitince bir sonraki oturum arka planda hazırlanır (bağlantı + ayar ≈ 2 sn konuşmaya binmesin).
+        self.prewarm = bool(v.get("live_realtime_prewarm", True))
         self._think_lock = threading.Lock()
         self.gated = False
         self.hushed = False
         self.last_active = 0.0
         self.single_turn = False
+        self.declined = False  # son devam cümlesi ALICE'e söylenmemişti (Jev): takip penceresi açılmaz
+        # Araya girme: ALICE konuşurken gelen kare kullanıcının sesi olarak doğrulandıysa (ses izi, VoiceAssistant
+        # ayarlar) cevap kesilir. Doğrulama yoksa yankı yüzünden kapalı (echo_guard).
+        self.barge_ok: Callable[[], bool] = lambda: False
         self.announce: Callable[[str], None] | None = None
         self.on_correction: Callable[[str], None] | None = None
         self._out_factory = out_factory
@@ -243,7 +286,8 @@ class RealtimeSession:
             return out
         tools = getattr(self.agent, "tools", None)
         if isinstance(tools, dict):
-            raw = [t.spec() for name, t in tools.items() if not name.startswith("mcp__") and name != "load_tools"]
+            raw = [t.spec() for name, t in tools.items() if not name.startswith("mcp__") and name != "load_tools"
+                   and (self.allowed_tools is None or name in self.allowed_tools)]
         else:
             try:
                 raw = self.agent.tool_specs()
@@ -275,6 +319,8 @@ class RealtimeSession:
                 "output": {"format": {"type": "audio/pcm", "rate": 24000}, "voice": self.voice},
             },
         }
+        if self.transcribe:
+            session["audio"]["input"]["transcription"] = {"model": self.transcribe, "language": self.language}
         tools = self._tool_specs()
         if tools:
             session["tools"] = tools
@@ -297,63 +343,90 @@ class RealtimeSession:
         return f"{ws}/v1/realtime?model={self.model}"
 
     # ------------------------------------------------------------------ ön hazırlık
+    WARM_MAX = 60.0  # sn: ısıtılmış oturum bundan eskiyse kapatılır (kullanılmayan bağlantı açık kalmasın)
+
+    def _open(self) -> Any:
+        secret = self._secret()
+        if self._connect is not None:
+            return self._connect(self._ws_url(), secret)
+        from websockets.sync.client import connect
+
+        try:
+            return connect(self._ws_url(), additional_headers={"Authorization": f"Bearer {secret}"},
+                           open_timeout=10, max_size=None)
+        except Exception as e:  # noqa: BLE001
+            raise LiveError(f"realtime bağlanamadı: {e}") from e
+
     def prefetch(self, owner: Any = None) -> None:
-        """Uyanma anında oturum anahtarını önceden al (bağlantı maliyeti konuşmaya binmesin)."""
+        """Oturumu önceden ısıt: bağlan, session.created'ı al, ayarları (talimat, araçlar, ses) gönder.
+        Uyanma kontrolüyle aynı anda ve her cevaptan sonra çalışır; konuşma başlayınca bu ~2 sn beklenmez
+        (ölçüm: bağlantı ~0,9 sn + ayar ~1 sn)."""
         if not self.available:
             return
         with self._pre_lock:
             if self._pre:
                 return
-            pre: dict[str, Any] = {"owner": owner}
+            pre: dict[str, Any] = {"owner": owner, "t": time.monotonic()}
 
             def run() -> None:
                 try:
-                    pre["secret"] = self._secret()
+                    ws = self._open()
+                    ws.recv(timeout=10)  # session.created
+                    ws.send(json.dumps({"type": "session.update", "session": self._session_config()["session"]},
+                                       ensure_ascii=False))
+                    pre["ws"] = ws
                 except Exception as e:  # noqa: BLE001
                     pre["error"] = e
+
+            def expire() -> None:
+                with self._pre_lock:
+                    if self._pre is not pre:
+                        return
+                    self._pre = {}
+                _close(pre)
 
             pre["thread"] = threading.Thread(target=run, daemon=True, name="alice-live-rt-pre")
             self._pre = pre
             pre["thread"].start()
+            timer = threading.Timer(self.WARM_MAX, expire)
+            timer.daemon = True
+            timer.start()
 
     def discard(self, owner: Any = None) -> None:
+        """Uyandırma çıkmadı: o cümle için açılan bağlantıyı kapat. Başkasının (ör. cevap sonrası ısıtılan)
+        oturumuna dokunma."""
         with self._pre_lock:
-            if owner is not None and self._pre and self._pre.get("owner") not in (None, owner):
+            if not self._pre or (owner is not None and self._pre.get("owner") is not owner):
                 return
-            self._pre = {}
+            pre, self._pre = self._pre, {}
+        threading.Thread(target=_close, args=(pre,), daemon=True).start()
 
-    def _take_secret(self) -> str:
+    def _take(self) -> tuple[Any, bool]:
+        """(bağlantı, ısıtılmış mı). Isıtılmışsa ayarlar zaten gönderildi."""
         with self._pre_lock:
             pre, self._pre = self._pre, {}
         if pre:
             pre["thread"].join(self.PREFETCH_WAIT)
-            if pre.get("secret"):
-                return str(pre["secret"])
+            ws = pre.get("ws")
+            if ws is not None and time.monotonic() - pre["t"] < self.WARM_MAX and _is_open(ws):
+                return ws, True
+            _close(pre)
             if pre.get("error"):
                 self.log(f"realtime ön hazırlık başarısız: {pre['error']}")
-        return self._secret()
+        return self._open(), False
 
     # ------------------------------------------------------------------ ana akış
     def converse(self, first_text: str, frames: "queue.Queue[bytes]", stop: threading.Event,
                  first_audio: bytes = b"", hint: Callable[[], str | None] | None = None,
-                 ended: float | None = None, need_wake: bool = False) -> None:
+                 ended: float | None = None, need_wake: bool = False, check_addressed: bool = False) -> None:
         """Mikrofon karelerini (16 kHz, 30 ms) modele akıt, cevabı çal, araçları çalıştır. Sessizlikte döner."""
-        if hint is not None and not first_text:
+        if hint is not None and not first_text and not self.prefers_audio:
             try:
                 first_text = hint() or ""
             except Exception:  # noqa: BLE001
                 first_text = ""
-        secret = self._take_secret()
-        if self._connect is not None:
-            ws = self._connect(self._ws_url(), secret)
-        else:
-            from websockets.sync.client import connect
-
-            try:
-                ws = connect(self._ws_url(), additional_headers={"Authorization": f"Bearer {secret}"},
-                             open_timeout=10, max_size=None)
-            except Exception as e:  # noqa: BLE001
-                raise LiveError(f"realtime bağlanamadı: {e}") from e
+        t0 = time.monotonic()
+        ws, warm = self._take()
         out = self._out_factory()
         self._ws, self._out, self._stop = ws, out, stop
         ui = LiveUI(self.agent.ui)
@@ -361,8 +434,13 @@ class RealtimeSession:
         self.hushed = False
         state = {"active": time.monotonic(), "heard": "", "said": "", "calls": {}, "done": False,
                  "answered": False, "want_response": False, "output_until": 0.0,
-                 "echo_notice": False, "finish": False, "said_parts": [], "tools": []}
-        self.log(f"realtime oturumu açıldı [{self.model}]")
+                 "echo_notice": False, "finish": False, "said_parts": [], "tools": [],
+                 # Discord'daki devam cümlesi: cevap ancak Jev "ALICE'e söylendi" derse üretilir (addressed.py).
+                 "gate": "pending" if check_addressed else "open", "gate_until": time.monotonic() + 8.0,
+                 "check": check_addressed, "muted": False, "responding": False, "barged": False}
+        self.declined = False
+        self.log(f"realtime oturumu açıldı [{self.model}] {'ısıtılmış' if warm else 'yeni bağlantı'} "
+                 f"{time.monotonic() - t0:.2f} sn")
         self._hud("listen", "")
 
         def touch() -> None:
@@ -388,10 +466,15 @@ class RealtimeSession:
 
         tool_thread: threading.Thread | None = None
         try:
-            ws.recv()  # session.created (ya da hata); ayrıntısına gerek yok
-            if self._send_update:
-                # Talimatlar, araçlar ve ses: HTTP gövdesi yerine oturum açıldıktan sonra gönderilir.
-                send({"type": "session.update", "session": self._session_config()["session"]})
+            if not warm:
+                ws.recv()  # session.created (ya da hata); ayrıntısına gerek yok
+                if self._send_update:
+                    # Talimatlar, araçlar ve ses: HTTP gövdesi yerine oturum açıldıktan sonra gönderilir.
+                    send({"type": "session.update", "session": self._session_config()["session"]})
+            if state["gate"] == "pending":
+                td = self._session_config()["session"]["audio"]["input"]["turn_detection"]
+                send({"type": "session.update", "session": {"type": "realtime", "audio": {"input": {
+                    "turn_detection": {**td, "create_response": False}}}}})
             if first_text:
                 say_text(first_text)
                 pending_audio = b""
@@ -409,7 +492,21 @@ class RealtimeSession:
                         # Kareleri burada atmak, eski sesin konuşma bitince yeni bir istek gibi işlenmesini de
                         # engeller. ``output_until`` ağ paketleri arasındaki kısa boşlukları kapsar.
                         if self.echo_guard and (self.playing or time.monotonic() < state["output_until"]):
-                            continue
+                            if not (any(frame) and self.barge_ok()):
+                                continue
+                            if not state["barged"]:
+                                # Ses izi doğruladı: kullanıcı ALICE'in sözünü kesiyor (eskiden konuşurken gelen her
+                                # kare atılıyordu; araya girmek de "Alice sus" da işlemiyordu, 7 Kasım). Bir cevap
+                                # için bir kez: ses kesildikten sonra çalıcı kısa süre "çalıyor" görünüyor, her
+                                # karede yeniden iptal gönderiliyordu (onlarca response_cancel_not_active).
+                                self.log("realtime: kullanıcı araya girdi, ALICE susuyor")
+                                out.clear()
+                                if state["responding"]:
+                                    send({"type": "response.cancel"})
+                                state.update(output_until=0.0, finish=False, muted=state["responding"],
+                                             barged=True)
+                                if state["check"]:  # Discord: yeni cümle de ALICE'e mi söylendi, Jev baksın
+                                    state.update(gate="pending", gate_until=time.monotonic() + 8.0)
                         send_pcm(resample_16_to_24(frame))
                         # Sessizlik kareleri oturumu açık tutmasın: 5 sn kimse konuşmazsa kapanır.
                         if any(frame):
@@ -435,6 +532,10 @@ class RealtimeSession:
                         # kapalı bağlantıya gidip kayboluyordu ("eee açacaktın").
                         touch()
                         continue
+                    if state["gate"] == "pending" and time.monotonic() > state["gate_until"]:
+                        self.log("realtime: devam cümlesinin dökümü gelmedi, cevap yok")
+                        self.declined = True
+                        break
                     if state["finish"]:
                         break  # tek cevaplık tur (Discord/oyun): cevap sonuna kadar çalındı
                     if time.monotonic() - state["active"] > self.idle:
@@ -443,12 +544,20 @@ class RealtimeSession:
                     continue
                 ev = self._decode(raw)
                 kind = ev.get("type", "")
-                if kind in ("response.output_audio.delta", "response.audio.delta"):
+                if kind == "response.created":
+                    state.update(muted=False, responding=True, barged=False)  # yeni cevap (araya girildiyse de)
+                elif kind in ("response.output_audio.delta", "response.audio.delta") and state["muted"]:
+                    continue  # kesilen cevabın yoldaki parçaları
+                elif kind in ("response.output_audio.delta", "response.audio.delta"):
                     try:
                         out.put(base64.b64decode(ev.get("delta", "")))
                     except Exception:  # noqa: BLE001
                         pass
                     state["output_until"] = time.monotonic() + 0.35
+                    if not state["answered"]:
+                        # Gecikme ölçümü: kullanıcı sustuktan (yoksa oturum isteğinden) ilk sese kadar.
+                        start = ended if isinstance(ended, (int, float)) and ended > 0 else t0
+                        self.log(f"realtime ilk ses: {time.monotonic() - start:.2f} sn")
                     state["answered"] = True
                     touch()
                 elif kind in ("response.output_audio_transcript.delta", "response.audio_transcript.delta"):
@@ -470,6 +579,13 @@ class RealtimeSession:
                             self.hushed = True
                             out.clear()
                             state["done"] = True
+                        elif state["gate"] == "pending":
+                            if self._addressed(text):
+                                state["gate"] = "open"
+                                send({"type": "response.create", "response": {"output_modalities": ["audio"]}})
+                            else:
+                                self.declined = True
+                                state["done"] = True
                         touch()
                 elif kind == "input_audio_buffer.speech_started":
                     # Yankı koruması açıkken bu olay çoğunlukla önceki birkaç mikrofon karesinden gelir.
@@ -487,6 +603,7 @@ class RealtimeSession:
                         "id": str(ev.get("call_id") or ""), "type": "function",
                         "function": {"name": str(ev.get("name") or ""), "arguments": str(ev.get("arguments") or "{}")}}
                 elif kind == "response.done":
+                    state["responding"] = False
                     status = str((ev.get("response") or {}).get("status") or "")
                     if status and status not in ("completed", "in_progress"):
                         self.log(f"realtime cevap erken bitti: {status}")
@@ -498,7 +615,7 @@ class RealtimeSession:
                         tool_thread = threading.Thread(target=self._handle_calls, args=(calls, send), daemon=True)
                         tool_thread.start()
                     else:
-                        if self.single_turn and state["answered"]:
+                        if self.single_turn and state["answered"] and status != "cancelled":
                             # response.done üretimin bittiğini söyler, çalmanın değil: burada çıkınca close()
                             # kuyruktaki sesi atıyor, ALICE cümlenin ortasında susuyordu. Ses bitince çıkılır.
                             state["finish"] = True
@@ -522,8 +639,9 @@ class RealtimeSession:
         finally:
             self.agent.ui = old_ui
             try:
-                self._remember(f"{first_text} {state['heard']}", " ".join(state["said_parts"] + [state["said"]]),
-                               state["tools"])
+                if not self.declined:  # arkadaşa söylenen cümle sohbet geçmişine girmesin
+                    self._remember(f"{first_text} {state['heard']}", " ".join(state["said_parts"] + [state["said"]]),
+                                   state["tools"])
             except Exception:  # noqa: BLE001 - kayıt konuşmayı bozmasın
                 pass
             try:
@@ -545,8 +663,25 @@ class RealtimeSession:
                 pass
             self._ws, self._out = None, None
             self._hud("idle", "")
+            if self.prewarm and self._connect is None and not self.hushed and not stop.is_set():
+                # Takip cümlesi ("Alice" demeden devam) bağlantı + ayar beklemesin: bir sonraki oturum hazır dursun.
+                try:
+                    self.prefetch()
+                except Exception:  # noqa: BLE001
+                    pass
 
     # ------------------------------------------------------------------ yardımcılar
+    def _addressed(self, text: str) -> bool:
+        """Devam cümlesi ALICE'e mi söylendi (Jev). Ulaşılamazsa evet: konuşma kilitlenmesin."""
+        from alice.voice.addressed import is_addressed
+
+        last = self._history[-1][2] if self._history else ""
+        ok, p = is_addressed(self.cfg, text, last, log=self.log)
+        if p is not None:
+            who = "ALICE'e" if ok else "arkadaşlara/kendine, cevap yok"
+            self.log(f"hitap kontrolü: {who} (p={p:.2f})")
+        return ok
+
     @staticmethod
     def _decode(raw: Any) -> dict[str, Any]:
         if isinstance(raw, (bytes, bytearray)):

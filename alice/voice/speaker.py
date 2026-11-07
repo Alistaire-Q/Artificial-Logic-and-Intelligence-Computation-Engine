@@ -15,6 +15,20 @@ from alice.voice.audio import Audio, Player
 from alice.voice.tone import drop_emoji, for_speech, pick
 
 
+def scaled(audio: Audio, volume: float) -> Audio:
+    """Sesi kıs (0-1). 1 ya da üstü: olduğu gibi."""
+    if volume >= 0.999 or not audio.pcm:
+        return audio
+    import array
+
+    a = array.array("h")
+    a.frombytes(audio.pcm[: len(audio.pcm) - len(audio.pcm) % 2])
+    v = max(0.0, volume)
+    for i in range(len(a)):
+        a[i] = int(a[i] * v)
+    return Audio(a.tobytes(), audio.rate)
+
+
 class Speaker:
     def __init__(self, tts, player: Player | None = None, on_error: Callable[[str], None] = lambda s: None,
                  enabled: Callable[[], bool] = lambda: True):
@@ -22,6 +36,10 @@ class Speaker:
         self.player = player or Player()
         self.on_error = on_error
         self.enabled = enabled
+        # Ses seviyesi (0-1): konuşma ve uçuş/oyun uyarıları ayrı. War Thunder'da uyarılar oyun sesinin üstüne
+        # bağırıyordu; [voice] volume / alert_volume.
+        self.volume = 1.0
+        self.alert_volume = 0.5
         self._gen = 0
         self._synth_q: queue.Queue = queue.Queue()
         self._play_q: queue.Queue = queue.Queue()
@@ -29,6 +47,8 @@ class Speaker:
         self._cv = threading.Condition()
         self._playing = False
         self._now = ""  # çalınan cümle
+        self._now_alert = False  # çalınan ses bir uçuş/oyun uyarısı mı
+        self._last_alert = False  # sıraya en son eklenen uyarı mıydı
         self._making: tuple[int, str] | None = None  # sentezlenen cümle (henüz hiçbir kuyrukta değil)
         # Son stop()'ta söylenemeyenler: {"playing": yarıda kesilen cümle, "pending": hiç söylenmeyenler}
         self.last_cut: dict[str, object] | None = None
@@ -62,6 +82,7 @@ class Speaker:
         with self._cv:
             self._pending += 1
             gen = self._gen
+        self._last_alert = topic == "flight"
         self._synth_q.put((gen, text, emotion, deadline, severity if topic == "flight" else ""))
         return True
 
@@ -150,6 +171,14 @@ class Speaker:
         with self._cv:
             return self._playing or self._pending > 0
 
+    @property
+    def alerting(self) -> bool:
+        """Şu an konuşan bir oyun/uçuş uyarısı mı (ALICE'in sohbet cevabı değil)."""
+        with self._cv:
+            if self._playing:
+                return self._now_alert
+            return self._pending > 0 and self._last_alert
+
     def wait(self, timeout: float | None = None) -> bool:
         """Söylenecek her şey bitene kadar bekle."""
         with self._cv:
@@ -213,11 +242,11 @@ class Speaker:
             if audio is None:
                 self._done_one(gen, n)
                 continue
-            self._play_q.put((gen, text, audio, deadline, n))
+            self._play_q.put((gen, text, audio, deadline, n, _sev))
 
     def _play_loop(self) -> None:
         while True:
-            gen, text, audio, deadline, n = self._play_q.get()
+            gen, text, audio, deadline, n, sev = self._play_q.get()
             if gen != self._gen:
                 continue
             if deadline is not None and time.monotonic() > deadline + 3:
@@ -226,6 +255,7 @@ class Speaker:
             with self._cv:
                 self._playing = True
                 self._now = text
+                self._now_alert = bool(sev)
                 first, self._expect = self._expect, None
             if first is not None:
                 try:
@@ -233,7 +263,7 @@ class Speaker:
                 except Exception:  # noqa: BLE001 - ölçüm sesi bozmasın
                     pass
             try:
-                self.player.play(audio)
+                self.player.play(scaled(audio, self.alert_volume if sev else self.volume))
             except Exception as e:
                 self.on_error(f"ses çalınamadı: {e}")
             finally:

@@ -89,7 +89,7 @@ def test_session_config_has_audio_vad_and_tools():
 
 
 def test_tool_schema_types_are_lowercase_for_realtime():
-    s = make_session()
+    s = make_session(live_realtime_tools="*")
     s.agent.tools = {"read_file": NS(spec=lambda: {
         "name": "read_file", "description": "dosya oku",
         "parameters": {"type": "OBJECT", "properties": {
@@ -434,3 +434,87 @@ def test_make_live_prefers_realtime_and_falls_back(monkeypatch):
 
     cfg_only = NS(data={"voice": {"mode": "live", "live_backend": "chatgpt"}, "providers": {}})
     assert voice_assistant.make_live(cfg_only, agent) is None
+
+
+def test_only_quick_tools_go_to_realtime_and_transcription_is_on():
+    s = make_session()
+    spec = lambda n: NS(spec=lambda: {"name": n, "description": "d", "parameters": {  # noqa: E731
+        "type": "object", "properties": {"x": {"type": "string"}}}})
+    s.agent.tools = {"youtube": spec("youtube"), "github": spec("github"), "blender": spec("blender")}
+    session = s._session_config()["session"]
+    assert [t["name"] for t in session["tools"]] == ["think", "youtube"]
+    assert session["audio"]["input"]["transcription"] == {"model": "gpt-4o-mini-transcribe", "language": "tr"}
+    assert make_session(live_realtime_tools="*")._tool_specs is not None
+    s2 = make_session(live_realtime_tools="*")
+    s2.agent.tools = s.agent.tools
+    assert len(s2._session_config()["session"]["tools"]) == 4
+
+
+def test_prefetched_session_is_reused_without_second_update():
+    """Isıtılmış oturum: bağlantı ve ayar önceden; konuşmada session.update tekrar gönderilmez."""
+    ws = FakeWS([{"type": "session.created"},
+                 {"type": "response.output_audio.delta", "delta": base64.b64encode(b"\x01\x02" * 12).decode()},
+                 {"type": "response.done", "response": {"status": "completed"}}])
+    opened = []
+    s = make_session()
+    s._connect = lambda url, secret: opened.append(1) or ws
+    s._proxy = {"base": "http://127.0.0.1:8317", "key": "k"}  # noqa: SLF001
+    s.prefetch(owner="o")
+    s._pre["thread"].join(5)  # noqa: SLF001
+    s.discard(owner="baskası")  # başkasının uyandırması ısıtılmış oturumu kapatmaz
+    s.converse("selam", queue.Queue(), threading.Event())
+    assert opened == [1]
+    assert [m["type"] for m in ws.sent].count("session.update") == 1
+
+
+def test_discard_closes_own_prefetch():
+    ws = FakeWS([{"type": "session.created"}])
+    s = make_session()
+    s._connect = lambda url, secret: ws
+    s._proxy = {"base": "http://127.0.0.1:8317", "key": "k"}  # noqa: SLF001
+    s.prefetch(owner="o")
+    s._pre["thread"].join(5)  # noqa: SLF001
+    s.discard(owner="o")
+    time.sleep(0.2)
+    assert ws.closed and not s._pre  # noqa: SLF001
+
+
+def test_verified_user_can_interrupt_alice():
+    """Ses izi doğrulanmış kare ALICE konuşurken gelirse: ses kesilir, cevap iptal edilir, kullanıcının sesi gider."""
+    class SpeakingOut(RecordingOut):
+        def put(self, pcm):
+            super().put(pcm)
+            self.playing = True
+
+        def clear(self):
+            super().clear()
+            self.playing = False
+
+    ws = FakeWS([
+        {"type": "session.created"},
+        {"type": "response.created"},
+        {"type": "response.output_audio.delta", "delta": base64.b64encode(b"\x01\x02" * 12).decode()},
+    ])
+    out = SpeakingOut()
+    s = make_session(live_idle=0.5)
+    s.barge_ok = lambda: True
+    s._connect = lambda url, secret: ws
+    s._secret = lambda: "test-secret"  # noqa: SLF001
+    s._out_factory = lambda: out
+    frames: queue.Queue = queue.Queue()
+    stop = threading.Event()
+    t = threading.Thread(target=s.converse, args=("", frames, stop), daemon=True)
+    t.start()
+    end = time.monotonic() + 2
+    while not out.playing and time.monotonic() < end:
+        time.sleep(0.01)
+    for _ in range(5):  # kullanıcının doğrulanmış sesi; çalıcı kesildikten sonra kısa süre "çalıyor" görünür
+        out.playing = True
+        frames.put(b"\x10\x00" * 480)
+        time.sleep(0.03)
+    time.sleep(0.2)
+    stop.set()
+    t.join(3)
+    types = [m.get("type") for m in ws.sent]
+    assert types.count("response.cancel") == 1 and out.cleared == 1  # bir cevap için tek iptal
+    assert "input_audio_buffer.append" in types

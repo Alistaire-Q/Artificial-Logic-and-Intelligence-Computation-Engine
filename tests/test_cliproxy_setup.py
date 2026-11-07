@@ -42,9 +42,18 @@ def test_install_downloads_verifies_and_extracts(tmp_path, monkeypatch):
     monkeypatch.setattr(cliproxy, "home", lambda: home)
     name = cliproxy_setup.asset_name("v9.9.9")
     buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as z:
-        z.writestr(cliproxy.binary_name(), b"MZfake")
-        z.writestr("README.md", "readme")
+    if name.endswith(".zip"):  # Windows
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr(cliproxy.binary_name(), b"MZfake")
+            z.writestr("README.md", "readme")
+    else:  # Linux/Mac sürümü .tar.gz (CI'da zip üretildiği için "file could not be opened" ile düşüyordu)
+        import tarfile
+
+        with tarfile.open(fileobj=buf, mode="w:gz") as t:
+            for fname, data in ((cliproxy.binary_name(), b"MZfake"), ("README.md", b"readme")):
+                info = tarfile.TarInfo(fname)
+                info.size = len(data)
+                t.addfile(info, io.BytesIO(data))
     blob = buf.getvalue()
     digest = hashlib.sha256(blob).hexdigest()
 

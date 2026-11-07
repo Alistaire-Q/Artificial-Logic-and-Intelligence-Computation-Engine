@@ -284,6 +284,7 @@ class WakeGate:
         self.allow_gpu = allow_gpu
         self.device = ""
         self.last_seconds = 0.0
+        self.last_wait = 0.0  # modelin başka bir dökümle meşgul olduğu için beklenen süre
         self.last_conf = 0.0  # son baş dökümünün güveni (ortalama log olasılık)
         self.language = language
         self._model: Any = None
@@ -377,6 +378,8 @@ class WakeGate:
         t0 = time.monotonic()
         try:
             with self._lock:
+                # Bekleme ve hesaplama ayrı: oyunda 1,3 sn medyan, boşta 0,4 sn (7 Kasım ölçümü); hangisi uzuyor?
+                self.last_wait = time.monotonic() - t0
                 if self._model is None:
                     self._model = self._load()
                 segments, _ = self._model.transcribe(io.BytesIO(head.to_wav()), language=self.language,
