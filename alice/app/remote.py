@@ -212,11 +212,79 @@ def _sleep() -> str:
     return "bilgisayar uyku moduna geçiyor"
 
 
-def _type(text: str) -> str:
-    from alice.tools.computer import type_text
+def _foreground_title() -> str | None:
+    """Odaktaki pencerenin başlığı ("" = masaüstü/başlıksız). Windows dışında None (bilinmiyor)."""
+    if not IS_WIN:
+        return None
+    import ctypes
 
+    user32 = ctypes.windll.user32
+    hwnd = user32.GetForegroundWindow()
+    if not hwnd:
+        return ""
+    buf = ctypes.create_unicode_buffer(256)
+    user32.GetWindowTextW(hwnd, buf, 256)
+    return buf.value.strip()
+
+
+def _type(text: str, enter: bool = False) -> str:
+    """Odaktaki pencereye yaz. Telefondan bakan kullanıcı hangi pencerenin odakta olduğunu göremiyor: yazının nereye
+    gittiği söylenir, odakta pencere yoksa yazılmaz (eskiden masaüstüne yazılıp "hiçbir şey olmadı" sanılıyordu)."""
+    from alice.tools.computer import press_keys, type_text
+
+    title = _foreground_title()
+    if title == "":
+        raise ValueError("bilgisayarda odakta bir pencere yok: önce aşağıdaki listeden bir pencereyi öne getir")
     type_text(text)
-    return "yazıldı"
+    if enter:
+        press_keys("enter")
+    _screen_cache["at"] = 0.0  # sonucu hemen görsün
+    return f"yazıldı → {title[:60]}" if title else "yazıldı"
+
+
+def _screen_point(d: dict[str, Any]) -> tuple[int, int]:
+    """Telefondaki ekran görüntüsünde dokunulan yer (0-1 kesirleri) -> ana ekranın pikseli (screen_jpeg ile aynı ekran)."""
+    import mss
+
+    from alice.tools.computer import _pyautogui
+
+    _pyautogui()  # DPI farkındalığı: mss ile pyautogui aynı pikselleri görsün (%125/%150 ölçekte)
+    try:
+        fx, fy = float(d.get("x")), float(d.get("y"))
+    except (TypeError, ValueError):
+        raise ValueError("dokunulan yer okunamadı") from None
+    if not (0.0 <= fx <= 1.0 and 0.0 <= fy <= 1.0):
+        raise ValueError("dokunulan yer ekranın dışında")
+    with mss.mss() as sct:
+        m = sct.monitors[1]
+    return m["left"] + round(fx * (m["width"] - 1)), m["top"] + round(fy * (m["height"] - 1))
+
+
+def _click(d: dict[str, Any]) -> str:
+    from alice.tools.computer import _pyautogui
+
+    pg = _pyautogui()
+    x, y = _screen_point(d)
+    pg.click(x, y, clicks=2 if d.get("double") else 1, button="right" if d.get("button") == "right" else "left")
+    _screen_cache["at"] = 0.0
+    return "tamam"
+
+
+def _scroll(d: dict[str, Any]) -> str:
+    """Tekerlek: dy > 0 aşağı, < 0 yukarı (çentik)."""
+    from alice.tools.computer import _pyautogui
+
+    pg = _pyautogui()
+    x, y = _screen_point(d)
+    try:
+        dy = max(-15, min(15, int(d.get("dy") or 0)))
+    except (TypeError, ValueError):
+        dy = 0
+    if dy:
+        pg.moveTo(x, y)
+        pg.scroll(-dy * 120)  # Windows tekerleğinde bir çentik 120 birim
+        _screen_cache["at"] = 0.0
+    return "tamam"
 
 
 def _clipboard(text: str) -> str:
@@ -269,7 +337,11 @@ def action(d: dict[str, Any]) -> str:
         text = str(d.get("text") or "")
         if not text:
             raise ValueError("yazılacak metin boş")
-        return _type(text[:2000])
+        return _type(text[:2000], enter=bool(d.get("enter")))
+    if a == "click":  # telefondaki canlı ekranda dokunma
+        return _click(d)
+    if a == "scroll":
+        return _scroll(d)
     if a == "clipboard":
         return _clipboard(str(d.get("text") or "")[:20000])
     if a == "hud":

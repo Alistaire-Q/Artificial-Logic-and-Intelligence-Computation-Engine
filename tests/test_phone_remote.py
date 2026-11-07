@@ -53,3 +53,68 @@ def test_focus_action(monkeypatch):
     assert remote.action({"action": "focus", "title": "Discord"}) == "Discord öne getirildi"
     with pytest.raises(ValueError):
         remote.action({"action": "focus", "title": ""})
+
+
+class FakePG:
+    def __init__(self):
+        self.calls = []
+
+    def click(self, x, y, clicks=1, button="left"):
+        self.calls.append(("click", x, y, clicks, button))
+
+    def moveTo(self, x, y):  # noqa: N802 - pyautogui adı
+        self.calls.append(("move", x, y))
+
+    def scroll(self, amount):
+        self.calls.append(("scroll", amount))
+
+
+class FakeMSS:
+    monitors = [{}, {"left": -1920, "top": 0, "width": 1920, "height": 1080}]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+@pytest.fixture
+def pg(monkeypatch):
+    import sys
+    import types
+
+    import alice.tools.computer as computer
+
+    fake = FakePG()
+    monkeypatch.setattr(computer, "_pyautogui", lambda: fake)
+    monkeypatch.setitem(sys.modules, "mss", types.SimpleNamespace(mss=FakeMSS))
+    return fake
+
+
+def test_tap_on_phone_screen_clicks_same_spot_on_pc(pg):
+    """Telefondaki canlı ekranda dokunma: görüntünün kesri ana ekranın pikseline çevrilir (ekran eksi koordinatta da)."""
+    assert remote.action({"action": "click", "x": 0.5, "y": 0.25}) == "tamam"
+    assert remote.action({"action": "click", "x": 1.0, "y": 0.0, "button": "right"}) == "tamam"
+    assert pg.calls == [("click", -1920 + 960, 270, 1, "left"), ("click", -1, 0, 1, "right")]
+    with pytest.raises(ValueError):
+        remote.action({"action": "click", "x": 1.5, "y": 0.2})
+
+
+def test_two_finger_scroll(pg):
+    remote.action({"action": "scroll", "x": 0.5, "y": 0.5, "dy": 2})
+    assert pg.calls[-1] == ("scroll", -240)  # aşağı iki çentik
+
+
+def test_typing_says_where_it_went_and_refuses_without_window(monkeypatch):
+    import alice.tools.computer as computer
+
+    typed, keys = [], []
+    monkeypatch.setattr(computer, "type_text", typed.append)
+    monkeypatch.setattr(computer, "press_keys", keys.append)
+    monkeypatch.setattr(remote, "_foreground_title", lambda: "Discord")
+    assert remote.action({"action": "type", "text": "selam", "enter": True}) == "yazıldı → Discord"
+    assert typed == ["selam"] and keys == ["enter"]
+    monkeypatch.setattr(remote, "_foreground_title", lambda: "")
+    with pytest.raises(ValueError, match="odakta bir pencere yok"):
+        remote.action({"action": "type", "text": "selam"})

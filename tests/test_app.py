@@ -468,3 +468,24 @@ def test_stuck_chat_is_abandoned_not_the_app(app, monkeypatch):
     while not seen.empty():
         leaked.append(seen.get())
     assert not [e for e in leaked if e["type"] in ("delta", "stream_end", "tool_start")]  # eski thread arayüze yazmaz
+
+
+def test_phone_chat_does_not_move_the_desktop_chat(app):
+    """Telefon kendi sohbetinde çalışır: yeni sohbet açmak ve mesaj atmak bilgisayarın öndeki sohbetini değiştirmez,
+    bilgisayarda başka sohbete geçmek de telefonun mesajını oraya götürmez (7 Kasım)."""
+    state, srv, client, prov = app
+    desk = state.sid
+    r = client.post("/api/new", json={"detached": True}).json()
+    phone = r["sid"]
+    assert r["ok"] and phone != desk and state.sid == desk  # bilgisayar aynı sohbette
+    prov.script.append("telefona cevap")
+    events, t = collect(state, lambda e: e["type"] == "busy" and e.get("value") is False and e.get("sid") == phone)
+    assert client.post("/api/send", json={"text": "telefondan", "sid": phone}).json()["ok"]
+    t.join()
+    assert state.sid == desk
+    assert any(e.get("type") == "user" and e.get("sid") == phone for e in events)
+    hist = client.get("/api/history", params={"sid": phone}).json()
+    assert [h["text"] for h in hist if h["type"] == "user"] == ["telefondan"]
+    assert not [h for h in client.get("/api/history").json() if h["type"] == "user"]  # masaüstü sohbeti boş
+    r = client.post("/api/resume", json={"id": phone, "detached": True}).json()
+    assert r["ok"] and r["sid"] == phone and state.sid == desk

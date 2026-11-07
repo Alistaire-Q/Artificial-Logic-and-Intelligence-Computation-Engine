@@ -184,6 +184,10 @@ class RealtimeSession:
         # Araya girme: ALICE konuşurken gelen kare kullanıcının sesi olarak doğrulandıysa (ses izi, VoiceAssistant
         # ayarlar) cevap kesilir. Doğrulama yoksa yankı yüzünden kapalı (echo_guard).
         self.barge_ok: Callable[[], bool] = lambda: False
+        # Telefon araması (alice/app/call.py): duyulan ve söylenen metin ekranda gösterilsin.
+        self.on_heard: Callable[[str], None] | None = None
+        self.on_said: Callable[[str], None] | None = None
+        self.hud_on = True  # telefon araması bilgisayardaki HUD'u oynatmasın
         self.announce: Callable[[str], None] | None = None
         self.on_correction: Callable[[str], None] | None = None
         self._out_factory = out_factory
@@ -253,6 +257,14 @@ class RealtimeSession:
         history = self.history_text()
         tail = ("\n\n# Az önceki konuşma (aynı sohbetin devamı; kısa cevaplar buna göre anlaşılır)\n" + history
                 if history else "")
+        try:
+            # Sistem istemindeki tarih saatlerce açık kalan süreçte eskiyor: telefon araması "bugün 6 Kasım Cuma"
+            # dedi (7 Kasım Cumartesi'ydi). Yazılı yol bunu her cümleye ekliyor (with_clock), canlı yol da eklesin.
+            from alice.voice.assistant import with_clock
+
+            tail = "\n\n# Şu an\n" + with_clock("").strip() + tail
+        except Exception:  # noqa: BLE001
+            pass
         # Geçmiş ve canlı konuşma kuralları kesilmesin: kırpma sistem talimatından yapılır.
         room = 12000 - len(REALTIME_PROMPT) - len(tail) - 2
         return base[:max(0, room)] + "\n\n" + REALTIME_PROMPT + tail
@@ -568,6 +580,11 @@ class RealtimeSession:
                     part = str(ev.get("transcript") or state["said"]).strip()
                     if part:
                         state["said_parts"].append(part)
+                        if self.on_said is not None:
+                            try:
+                                self.on_said(part)
+                            except Exception:  # noqa: BLE001
+                                pass
                     state["said"] = ""
                 elif kind == "conversation.item.input_audio_transcription.completed":
                     text = str(ev.get("transcript") or "").strip()
@@ -575,6 +592,11 @@ class RealtimeSession:
                         state["heard"] += " " + text
                         ui.heard(text + " ")
                         self.log(f"realtime duydu: {text[:160]}")
+                        if self.on_heard is not None:
+                            try:
+                                self.on_heard(text)
+                            except Exception:  # noqa: BLE001 - ekran hatası konuşmayı bozmasın
+                                pass
                         if self._is_hush(text):
                             self.hushed = True
                             out.clear()
@@ -595,6 +617,10 @@ class RealtimeSession:
                             self.log("realtime: çalarken algılanan ses yankı korumasıyla yok sayıldı")
                             state["echo_notice"] = True
                         continue
+                    if not self.echo_guard and self.playing:
+                        # Yankı koruması kapalı (kulaklık, telefonun yankı engelleyicisi): sunucu cevabı iptal eder
+                        # ama önceden gelmiş ses çalmaya devam ediyordu; kullanıcı konuşunca hemen sus.
+                        out.clear()
                     touch()
                 elif kind in ("response.function_call_arguments.done",):
                     args = str(ev.get("arguments") or "{}")
@@ -670,6 +696,31 @@ class RealtimeSession:
                 except Exception:  # noqa: BLE001
                     pass
 
+    # ------------------------------------------------------------------ dışarıdan (telefon araması)
+    def inject(self, text: str) -> bool:
+        """Açık oturuma yazılı mesaj ver (aramada \"Yaz\"). Oturum yoksa False."""
+        ws = self._ws
+        if ws is None or not text.strip():
+            return False
+        try:
+            ws.send(json.dumps({"type": "conversation.item.create", "item": {"type": "message", "role": "user",
+                                "content": [{"type": "input_text", "text": text}]}}, ensure_ascii=False))
+            ws.send(json.dumps({"type": "response.create", "response": {"output_modalities": ["audio"]}}))
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
+    def interrupt(self) -> None:
+        """ALICE'i sustur (aramada küreye dokunma): çalan ses kesilir, süren cevap iptal edilir."""
+        out, ws = self._out, self._ws
+        if out is not None:
+            out.clear()
+        if ws is not None:
+            try:
+                ws.send(json.dumps({"type": "response.cancel"}))
+            except Exception:  # noqa: BLE001 - sürmekte olan cevap yoksa sunucu hata döner, önemsiz
+                pass
+
     # ------------------------------------------------------------------ yardımcılar
     def _addressed(self, text: str) -> bool:
         """Devam cümlesi ALICE'e mi söylendi (Jev). Ulaşılamazsa evet: konuşma kilitlenmesin."""
@@ -698,6 +749,8 @@ class RealtimeSession:
         return any(w in low.split() for w in HUSH_WORDS) if low else False
 
     def _hud(self, state: str, detail: str) -> None:
+        if not self.hud_on:
+            return
         try:
             from alice.hud import views
 
