@@ -110,7 +110,7 @@ class SetupPanel:
 
     def _phone(self) -> dict[str, Any]:
         from alice.app import phone_apk
-        from alice.app.phone import lan_ip, token
+        from alice.app.phone import lan_ip, pair_url, token
 
         p = self.cfg.data.get("phone", {})
         out: dict[str, Any] = {"enabled": bool(p.get("enabled")), "url": "", "qr": "", "app": phone_apk.view(),
@@ -119,7 +119,7 @@ class SetupPanel:
             phone_apk.refresh_async()
             # Telefon uygulamasının adresi: Android uygulaması bu QR'yi (…/m?t=…) tanır; uygulama yoksa sayfa
             # tarayıcıda açılır ve uygulamayı bilgisayardan indirip kurmayı önerir.
-            url = f"http://{lan_ip()}:{int(p.get('port', 8765))}/m?t={token()}"
+            url = pair_url(lan_ip(), int(p.get('port', 8765)), token())
             out.update(url=url, qr=qr_svg(url))
         return out
 

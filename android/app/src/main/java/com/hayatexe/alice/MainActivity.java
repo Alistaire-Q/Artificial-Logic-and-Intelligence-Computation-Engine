@@ -101,13 +101,17 @@ public class MainActivity extends Activity {
             if (web.getUrl() != null && web.getUrl().startsWith(Prefs.base(this)) && !pageFailed) { deliverCall(); return; }
         }
         String tab = i != null ? i.getStringExtra("tab") : null;
-        String url = Prefs.appUrl(this) + (tab != null ? "#" + tab : "");
         if (tab != null && web.getUrl() != null && web.getUrl().startsWith(Prefs.base(this))) {
             web.evaluateJavascript("window.show && show(" + JSONObject.quote(tab) + ")", null);
             return;
         }
         pageFailed = false;
-        web.loadUrl(url);
+        // Evdeysek bilgisayara doğrudan, değilsek aktarma sunucusu üzerinden (Prefs.pick ağ isteği yapar).
+        new Thread(() -> {
+            Prefs.pick(this);
+            String url = Prefs.appUrl(this) + (tab != null ? "#" + tab : "");
+            ui.post(() -> { if (web != null) web.loadUrl(url); });
+        }, "alice-pick").start();
     }
 
     @SuppressLint({"SetJavaScriptEnabled", "AddJavascriptInterface"})
@@ -409,7 +413,12 @@ public class MainActivity extends Activity {
         }
 
         // Çevrimdışı sayfasından: yeniden dene.
-        @JavascriptInterface public void retry() { ui.post(() -> { pageFailed = false; web.getSettings().setAllowFileAccess(false); web.loadUrl(Prefs.appUrl(MainActivity.this)); }); }
+        @JavascriptInterface public void retry() {
+            new Thread(() -> {
+                Prefs.pick(MainActivity.this);
+                ui.post(() -> { pageFailed = false; web.getSettings().setAllowFileAccess(false); web.loadUrl(Prefs.appUrl(MainActivity.this)); });
+            }, "alice-pick").start();
+        }
     }
 
     /** Sürüm adı (BuildConfig'e bağımlı olmadan). */

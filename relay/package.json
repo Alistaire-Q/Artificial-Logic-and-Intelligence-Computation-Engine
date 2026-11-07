@@ -1,0 +1,8 @@
+{
+  "name": "alice-relay",
+  "private": true,
+  "description": "ALICE aktarma sunucusu (Cloudflare Workers)",
+  "devDependencies": {
+    "wrangler": "^4.40.0"
+  }
+}

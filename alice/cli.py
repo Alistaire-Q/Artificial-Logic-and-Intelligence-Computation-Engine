@@ -976,7 +976,7 @@ def package_version() -> str:
 # ------------------------------------------------------------- alt komutlar
 SUBCOMMANDS = ("init", "doctor", "models", "reflex", "app", "shortcut", "core", "rules", "tasks", "voice", "quick",
                "dcs", "watch", "phone", "notes", "brief", "report", "plugins", "update", "connect", "feeds",
-               "log", "setup", "eval", "hud", "vision", "night", "timeline")
+               "log", "setup", "eval", "hud", "vision", "night", "timeline", "relay")
 
 # Kendi argparse'ı olmayan alt komutlar: `alice <komut> --help` çalıştırmak yerine bu metni gösterir
 # (ör. `alice phone --help` köprüyü açıp beklemesin, `alice notes --help` notları listelemesin).
@@ -985,7 +985,7 @@ _SUB_DOCS: dict[str, tuple[str, str | None]] = {
     "feeds": ("alice.core.cli", None), "log": ("", None), "voice": ("alice.voice.cli", None),
     "notes": ("alice.extras.cli", None), "brief": ("alice.extras.cli", None), "report": ("alice.extras.cli", None),
     "watch": ("alice.app.phone", "watch_cmd"), "phone": ("alice.app.phone", "phone_cmd"),
-    "dcs": ("alice.sims.dcs", "dcs_cmd"), "vision": ("alice.sims.vision", None),
+    "dcs": ("alice.sims.dcs", "dcs_cmd"), "relay": ("alice.app.relay", "relay_cmd"), "vision": ("alice.sims.vision", None),
     "night": ("alice.night", None), "timeline": ("alice.timeline", None), "plugins": ("alice.plugins", "plugins_cmd"), "quick": ("", None),
 }
 
@@ -1186,6 +1186,10 @@ def _dispatch(argv: list[str]) -> int:
         from alice.app import phone
 
         return (phone.watch_cmd if cmd == "watch" else phone.phone_cmd)(argv[1:])
+    if cmd == "relay":
+        from alice.app.relay import relay_cmd
+
+        return relay_cmd(argv[1:])
     if cmd == "dcs":
         from alice.sims.dcs import dcs_cmd
 

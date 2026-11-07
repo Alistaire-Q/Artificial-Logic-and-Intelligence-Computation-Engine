@@ -46,6 +46,28 @@ def token(new: bool = False) -> str:
     return t
 
 
+def pair_url(ip: str, port: int, tok: str) -> str:
+    """Telefonun okuttuğu adres. Uzaktan erişim kuruluysa aktarma adresi de içinde: telefon evdeyken yerel adresi,
+    dışarıdayken aktarma sunucusunu kullanır."""
+    from urllib.parse import quote
+
+    from alice.app import relay
+
+    url = f"http://{ip}:{port}/m?t={tok}"
+    s = relay.settings()
+    return url + (f"&r={quote(s['url'], safe='')}" if s else "")
+
+
+def _relay_log(line: str) -> None:
+    try:
+        from datetime import datetime
+
+        with (alice_home() / "relay.log").open("a", encoding="utf-8") as f:
+            f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} {line}\n")
+    except OSError:
+        pass
+
+
 class PhoneServer:
     def __init__(self, cfg: Config, store=None, port: int | None = None, new_token: bool = False, state=None):
         from alice.app.server import AppServer, AppState
@@ -55,6 +77,11 @@ class PhoneServer:
         self.state = state or AppState(cfg, Path.home(), cfg.agent.get("permission_mode", "auto"))
         self.state.token = token(new_token)
         self.state.allowed_hosts = {"127.0.0.1", "localhost", self.ip}
+        from alice.app import relay
+
+        relay_host = relay.host()
+        if relay_host:  # evin dışından aktarma sunucusu üzerinden gelen istekler (bkz. relay.py)
+            self.state.allowed_hosts.add(relay_host)
         self._own_store = store is None  # kendi açtığımız depoyu stop() kapatır
         self.state.watch_store = store or Store()
         self.port = int(port if port is not None else cfg.data.get("phone", {}).get("port", 8765))
@@ -62,6 +89,7 @@ class PhoneServer:
         from alice.app import phone_apk
 
         phone_apk.refresh_async()  # telefon uygulamasının son sürümü bilgisayarda hazır olsun
+        self.relay = relay.start_for(self.server.httpd.server_address[1], log=_relay_log)
         from alice.app import call
 
         calls = getattr(self.state, "calls", None)  # testlerde sahte durum olabilir
@@ -70,7 +98,7 @@ class PhoneServer:
 
     @property
     def url(self) -> str:
-        return f"http://{self.ip}:{self.server.httpd.server_address[1]}/m?t={self.state.token}"
+        return pair_url(self.ip, self.server.httpd.server_address[1], self.state.token)
 
     @property
     def app_url(self) -> str:
@@ -89,6 +117,8 @@ class PhoneServer:
 
         if call.current() is getattr(self.state, "_calls", None):
             call.register(None)
+        if self.relay is not None:
+            self.relay.stop()
         self.server.stop()
         if self._own_store and self.state.watch_store is not None:
             self.state.watch_store.close()
