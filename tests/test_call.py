@@ -178,3 +178,62 @@ def test_permission_asked_in_call_is_answered_from_phone(workdir):
         assert (workdir / "not.txt").read_text(encoding="utf-8") == "süt al"
     finally:
         srv.stop()
+
+
+class FakeRealtime:
+    """Canlı arama için RealtimeSession yerine: selam verir, mikrofon karelerini toplar, kapanınca döner."""
+
+    def __init__(self, agent, out_factory):
+        self.agent, self.out_factory = agent, out_factory
+        self.firsts, self.frames, self.injected, self.interrupts = [], [], [], 0
+        self.on_heard = self.on_said = None
+        self._out = None
+
+    def converse(self, first, frames, stop):
+        self.firsts.append(first)
+        self._out = self.out_factory()
+        self.on_said("Efendim?")
+        self._out.put(b"\x01\x00" * 480)
+        while not stop.is_set():
+            try:
+                self.frames.append(frames.get(timeout=0.05))
+            except queue.Empty:
+                pass
+
+    def inject(self, text):
+        self.injected.append(text)
+        return True
+
+    def interrupt(self):
+        self.interrupts += 1
+        self._out.clear()
+
+
+def test_live_call_streams_mic_and_voice_like_the_pc(setup):
+    """Telefon araması bilgisayardaki gibi Realtime üzerinden akar: cümle cümle TTS yok, ses parça parça gider."""
+    import base64
+
+    state, prov, tts, events = setup
+    made = []
+    state._calls = call.CallManager(state, tts_factory=lambda: tts,
+                                    live_factory=lambda agent, out: made.append(FakeRealtime(agent, out)) or made[-1])
+    r = state.call_action("start", {})
+    assert r["ok"] and r["live"]
+    pcm, seen = wait_for(events, lambda e: e["type"] == "call_pcm")
+    assert base64.b64decode(pcm["pcm"]) == b"\x01\x00" * 480
+    assert any(e["type"] == "call_text" and e["who"] == "alice" and e["text"] == "Efendim?" for e in seen)
+    rt = made[0]
+    assert "selam" in rt.firsts[0] and "canlı sesle" in rt.agent.messages[0]["content"]
+    assert state.call_action("mic", {"id": r["id"], "pcm": base64.b64encode(b"\x02\x00" * 960).decode()})["ok"]
+    end = time.time() + 5
+    while len(rt.frames) < 2 and time.time() < end:
+        time.sleep(0.02)
+    assert [len(f) for f in rt.frames] == [960, 960]  # 30 ms'lik kareler
+    assert state.call_action("say", {"id": r["id"], "text": "saat kaç"})["ok"] and rt.injected == ["saat kaç"]
+    state.call_action("interrupt", {"id": r["id"]})
+    wait_for(events, lambda e: e["type"] == "call_pcm_clear")
+    assert not tts.said and not prov.calls  # eski yol (ajan turu + TTS) hiç çalışmadı
+    assert state.call_action("mic", {"id": r["id"], "pcm": "%%%"})["ok"] is False
+    state.call_action("hangup", {"id": r["id"]})
+    wait_for(events, lambda e: e["type"] == "call_end")
+    assert state.calls.call.stop.is_set()

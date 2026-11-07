@@ -10,6 +10,7 @@ takılır; Host kontrolü de DNS rebinding'i keser.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -485,6 +486,47 @@ class AppState:
         with self._chats_lock:
             return [sid for sid, c in self.background.items() if c.busy]
 
+    # ------------------------------------------------------------------ cihaza göre sohbet
+    # Masaüstü, hızlı bar ve telefon aynı uygulama durumunu paylaşır ama her biri kendi sohbetini gösterebilir. Eskiden
+    # tek bir "öndeki sohbet" vardı: telefonda yeni sohbet açınca bilgisayarın ekranı da ona geçiyor, bilgisayarda başka
+    # sohbete geçince telefondan yazılan mesaj oraya gidiyordu (7 Kasım). İstek bir sid taşıyorsa o sohbette çalışılır;
+    # öndekinden farklıysa arka planda, bilgisayarın ekranı değişmez.
+    _SID_RX = re.compile(r"[\w-]{6,64}")
+
+    def find_chat(self, sid: str) -> "Chat | None":
+        with self._chats_lock:
+            if sid == self.chat.sid:
+                return self.chat
+            return self.background.get(sid)
+
+    def chat_for(self, sid: str) -> "Chat | None":
+        """sid'in canlı sohbeti; yoksa diskten (ya da yeni) arka plan sohbeti açar. Yer yoksa None."""
+        if not self._SID_RX.fullmatch(sid or ""):
+            return None
+        with self._chats_lock:
+            live = self.find_chat(sid)
+            if live is not None:
+                return live
+            if len(self.running()) >= self.MAX_BACKGROUND:
+                return None
+            loaded = sess.load(sid)
+            chat = Chat(self, self.ctx.cwd, self.agent.permissions.mode, sid=sid,
+                        messages=loaded[1] if loaded else [])
+            self.background[sid] = chat
+            return chat
+
+    def history_for(self, sid: str = "") -> list[dict[str, Any]]:
+        """Görüntülenecek geçmiş: sid'in canlı sohbeti ya da diskteki kaydı; sid yoksa öndeki sohbet."""
+        if not sid or sid == self.chat.sid:
+            return display_history(self.agent.messages, self.agent.tools)
+        live = self.find_chat(sid)
+        if live is not None:
+            return display_history(live.agent.messages, live.agent.tools)
+        loaded = sess.load(sid) if self._SID_RX.fullmatch(sid) else None
+        if not loaded:
+            return []
+        return display_history([{"role": "system", "content": ""}, *loaded[1]], self.agent.tools)
+
     # ------------------------------------------------------------------ sohbet değiştirme
     def _make_room(self) -> str | None:
         """Öndeki sohbet çalışıyorsa arkaya al. Yer yoksa hata metni."""
@@ -557,10 +599,11 @@ class AppState:
         chat.close()
 
     # ------------------------------------------------------------------ durdurma
-    def stop(self) -> None:
-        """Durdur düğmesi (öndeki sohbet). Araç her şeye rağmen bırakmıyorsa (cevap vermeyen bir pencere/COM çağrısı)
-        sohbetin thread'i sonsuza dek meşgul kalırdı: o zaman sohbet o thread'den ayrılır (bkz. _abandon)."""
-        chat = self.chat
+    def stop(self, sid: str = "") -> None:
+        """Durdur düğmesi (öndeki sohbet; sid verilirse o sohbet). Araç her şeye rağmen bırakmıyorsa (cevap vermeyen
+        bir pencere/COM çağrısı) sohbetin thread'i sonsuza dek meşgul kalırdı: o zaman sohbet o thread'den ayrılır
+        (bkz. _abandon)."""
+        chat = (self.find_chat(sid) if sid else None) or self.chat
         chat.agent.stop()
         if chat.busy:
             threading.Thread(target=self._unstick, args=(chat,), daemon=True, name="alice-unstick").start()
@@ -963,6 +1006,14 @@ class AppState:
                 return mgr.say(cid, str(d.get("text", "")))
             if action == "hangup":
                 return mgr.hangup(cid)
+            if action == "mic":
+                try:
+                    pcm = base64.b64decode(str(d.get("pcm", "")), validate=True)
+                except ValueError:
+                    return {"ok": False, "error": "bozuk ses"}
+                return mgr.mic(cid, pcm)
+            if action == "interrupt":
+                return mgr.interrupt(cid)
         except KeyError as e:
             return {"ok": False, "error": str(e.args[0]) if e.args else "görüşme yok"}
         return {"ok": False, "error": f"bilinmeyen işlem: {action}"}
@@ -1403,8 +1454,10 @@ class AppState:
             ref = None
         return self.router.context_limit(ref) if ref else 0
 
-    def send(self, text: str, images: list[str] | None = None) -> tuple[bool, str | None]:
-        chat = self.chat
+    def send(self, text: str, images: list[str] | None = None, sid: str = "") -> tuple[bool, str | None]:
+        chat = self.chat if not sid or sid == self.chat.sid else self.chat_for(sid)
+        if chat is None:
+            return False, f"arkada zaten {self.MAX_BACKGROUND} sohbet çalışıyor; biri bitince tekrar dene"
         if chat.busy:
             return False, "ALICE şu an çalışıyor"
         prompt = text
@@ -1715,8 +1768,8 @@ def make_handler(state: AppState):
                 from alice.app import remote
 
                 return self._json({"windows": remote.windows()})
-            if u.path == "/api/history":
-                return self._json(display_history(state.agent.messages, state.agent.tools))
+            if u.path == "/api/history":  # sid: o cihazın açık sohbeti (telefon), yoksa öndeki
+                return self._json(state.history_for((q.get("sid") or [""])[0]))
             if u.path == "/api/sessions":
                 rows = []
                 for i, c, t in sess.list_sessions(60):
@@ -1868,7 +1921,7 @@ def make_handler(state: AppState):
                     images = [str(i) for i in (d.get("images") or [])][:6]
                     if not text and not images:
                         return self._json({"ok": False, "error": "boş mesaj"}, 400)
-                    ok, err = state.send(text or "Bu görsele bak.", images)
+                    ok, err = state.send(text or "Bu görsele bak.", images, str(d.get("sid") or ""))
                     return self._json({"ok": ok, "error": err}, 200 if ok else 409)
                 if p == "/api/remote/action":
                     from alice.app import remote
@@ -1981,7 +2034,7 @@ def make_handler(state: AppState):
                     r = state.apply_update(force=bool(d.get("force")))
                     return self._json(r, 200 if r.get("ok") else 409)
                 if p == "/api/stop":
-                    state.stop()
+                    state.stop(str(d.get("sid") or ""))
                     return self._json({"ok": True})
                 if p == "/api/permission":
                     pid, ans = str(d.get("id")), str(d.get("answer"))
@@ -2053,9 +2106,17 @@ def make_handler(state: AppState):
                     return self._json({"ok": True, **state.status()})
                 # Sohbet değiştirmek çalışan işi durdurmaz: o sohbet arkada sürer (bkz. Chat).
                 if p == "/api/new":
+                    if d.get("detached"):  # telefon: yeni sohbet bilgisayarın ekranını değiştirmesin
+                        return self._json({"ok": True, "sid": sess.new_session_id(), **state.status()})
                     err = state.new_session()
                     return self._json({"ok": not err, "error": err, **state.status()}, 409 if err else 200)
                 if p == "/api/resume":
+                    if d.get("detached"):  # telefon: sohbeti aç ama bilgisayarın öndeki sohbetini değiştirme
+                        sid = str(d.get("id", ""))
+                        hist = state.history_for(sid)
+                        found = bool(hist) or state.find_chat(sid) is not None
+                        return self._json({"ok": found, "sid": sid, "history": hist,
+                                           "error": None if found else "sohbet bulunamadı", **state.status()})
                     ok = state.resume(str(d.get("id", "")))
                     return self._json({"ok": ok, "error": None if ok else "sohbet açılamadı (arkada çok fazla iş var "
                                        "ya da sohbet bulunamadı)",

@@ -83,7 +83,7 @@ def test_large_body_with_images_is_not_dropped(app, monkeypatch):
     state, srv, client = app
     seen = {}
 
-    def fake_send(text, images=None):
+    def fake_send(text, images=None, sid=""):
         seen["text"], seen["images"] = text, images
         return True, None
 

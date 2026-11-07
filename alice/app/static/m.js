@@ -9,6 +9,7 @@ const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 
 const S = {
+  sid: (() => { try { return localStorage.getItem("alice.sid") || ""; } catch (e) { return ""; } })(),
   tab: "chat", status: {}, sessions: [], busy: false, pending: new Map(), online: true,
   remote: null, projects: [], images: [], cur: null, steps: null, notifTab: "pending", lastSeenEvent: 0,
 };
@@ -251,6 +252,9 @@ const handlers = {
   call_audio: (ev) => callAudio(ev),
   call_turn_done: (ev) => callTurnDone(ev),
   call_end: (ev) => callEnded(ev),
+  call_pcm: (ev) => callPcm(ev),
+  call_pcm_clear: (ev) => { if (CALL && ev.id === CALL.id) liveClear(CALL); },
+  call_text: (ev) => callText(ev),
 };
 const CHAT_EVENTS = new Set(["user", "busy", "stream_start", "delta", "stream_reset", "stream_end", "tool_start", "tool_end"]);
 let es = null;
@@ -265,20 +269,28 @@ function connect() {
     let ev;
     try { ev = JSON.parse(m.data); } catch (e) { return; }
     // Başka bir sohbetin (arkadaki sohbet, telefon görüşmesi) akışı açık sohbete yazılmasın.
-    if (CHAT_EVENTS.has(ev.type) && ev.sid && S.status.session && ev.sid !== S.status.session) return;
+    if (CHAT_EVENTS.has(ev.type) && ev.sid && S.sid && ev.sid !== S.sid) return;
     const h = handlers[ev.type];
     if (h) h(ev);
   };
 }
+/* Telefon kendi açık sohbetini tutar (S.sid). Eskiden bilgisayarın öndeki sohbetini izliyordu: telefonda yeni sohbet
+   açınca bilgisayar da ona geçiyor, bilgisayarda başka sohbete geçince telefonun mesajı oraya gidiyordu. */
+function setSid(sid) {
+  S.sid = sid || "";
+  try { localStorage.setItem("alice.sid", S.sid); } catch (e) { /* gizli sekme */ }
+}
 function applyStatus(st) {
   if (!st) return;
-  const before = S.status.session;
   Object.assign(S.status, st);
-  if (st.busy !== undefined) { S.busy = !!st.busy; updateComposer(); }
+  if (!S.sid && st.session) setSid(st.session);  // ilk açılış: bilgisayarda açık olan sohbetle başla
+  if (st.busy !== undefined || st.running) {
+    S.busy = S.sid === st.session ? !!st.busy : (st.running || []).includes(S.sid);
+    updateComposer();
+  }
   for (const p of st.pending || []) addPending(p, p.type === "ask_choice" ? "choice" : "permission");
   if (S.tab === "chat" && !STACK.chat.length) drawChatHead();
   if (S.chatBuilt) drawChips();
-  if (before && st.session && before !== st.session) loadHistory();
 }
 
 /* ================================================================== SOHBET */
@@ -339,7 +351,7 @@ function buildChat() {
   });
   go.addEventListener("click", () => {
     haptic();
-    if (S.busy && !ta.value.trim()) { api("/api/stop", {}); return; }
+    if (S.busy && !ta.value.trim()) { api("/api/stop", { sid: S.sid }); return; }
     if (ta.value.trim() || S.images.length) send();
     else voiceSheet();
   });
@@ -364,7 +376,7 @@ function drawChatHead() {
   const hd = $("#chatHd");
   if (!hd) return;
   hd.replaceChildren();
-  const s = S.sessions.find((x) => x.id === S.status.session);
+  const s = S.sessions.find((x) => x.id === S.sid);
   const t = el("button", "t");
   t.append(el("b", "", s ? s.title || "(boş)" : "Yeni sohbet"));
   const conn = el("small", S.online ? "" : "off", (S.remote && S.remote.host ? S.remote.host : "Bilgisayar") + (S.online ? " · bağlı" : " · bağlantı yok"));
@@ -407,8 +419,9 @@ async function modelSheet() {
   toast(v === "reset" ? "Otomatik seçim" : "Model: " + shortModel(v));
 }
 async function newChat() {
-  const r = await api("/api/new", {});
+  const r = await api("/api/new", { detached: true });
   if (r.ok === false) return toast(r.error || "Yeni sohbet açılamadı");
+  setSid(r.sid);
   applyStatus(r);
   $("#msgs").replaceChildren();
   emptyChat();
@@ -498,7 +511,7 @@ function closeSteps() { if (S.steps) { updateSteps(S.steps); S.steps = null; } }
 function finishSteps() { showTyping(false); closeSteps(); }
 
 async function loadHistory() {
-  const h = await api("/api/history");
+  const h = await api("/api/history?sid=" + encodeURIComponent(S.sid || ""));
   const items = Array.isArray(h) ? h : (h.messages || []);
   const msgs = $("#msgs");
   if (!msgs) return;
@@ -522,7 +535,7 @@ async function send() {
   if (!text && !S.images.length) return;
   if (S.busy) return toast("ALICE hâlâ bir önceki işte; bitince gönder ya da durdur");
   const images = S.images.slice();
-  const r = await api("/api/send", { text, images });
+  const r = await api("/api/send", { text, images, sid: S.sid });
   if (!r.ok) { toast(r.error || "gönderilemedi"); return; }
   ta.value = "";
   autosize(ta);
@@ -583,11 +596,12 @@ function historySheet() {
       const l = el("span", "l");
       l.append(el("b", "", (s.pinned ? "• " : "") + (s.title || "(boş)")), el("small", "", rel(s.updated) + " · " + (s.cwd || "").split(/[\\/]/).pop()));
       o.appendChild(l);
-      if (s.id === S.status.session) o.appendChild(svg("check", "ck"));
+      if (s.id === S.sid) o.appendChild(svg("check", "ck"));
       o.addEventListener("click", async () => {
         closeSheet();
-        const r = await api("/api/resume", { id: s.id });
+        const r = await api("/api/resume", { id: s.id, detached: true });
         if (!r.ok) return toast(r.error || "açılamadı");
+        setSid(r.sid);
         applyStatus(r);
         loadHistory();
       });
@@ -608,7 +622,7 @@ async function sessionMenu(s) {
   if (v === "del" && await confirmSheet("Sohbet silinsin mi?", `"${s.title || "(boş)"}" geçmişten kalıcı olarak silinecek.`, "Sil", true)) {
     const r = await api("/api/session/delete", { id: s.id });
     if (r.ok === false) return toast(r.error || "silinemedi");
-    if (s.id === S.status.session) newChat(); else loadSessions();
+    if (s.id === S.sid) newChat(); else loadSessions();
   }
 }
 function renameSession(s) {
@@ -1017,7 +1031,9 @@ function renderPc() {
   inp.addEventListener("input", drawCmdActs);
   inp.addEventListener("focus", () => { document.body.classList.add("kb"); if (!apps) api("/api/remote/apps").then((r) => { apps = r.apps || []; drawCmdActs(); }); });
   inp.addEventListener("blur", () => setTimeout(() => document.body.classList.remove("kb"), 150));
-  inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { const f = $("#cmdActs button"); if (f) f.click(); } });
+  // Enter her zaman "Bilgisayarda yaz" (eskiden ilk düğmeye basıyordu: kelime bir uygulama adına benzeyince yazmak yerine
+  // "Aç: …" çalışıyordu).
+  inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); const f = $("#cmdType"); if (f) f.click(); } });
   const banner = el("div", "banner");
   banner.id = "shutBanner";
   banner.hidden = true;
@@ -1137,7 +1153,10 @@ function drawCmdActs() {
   const hit = looksUrl ? text : (apps || []).find((a) => a.toLocaleLowerCase("tr").startsWith(low)) || (apps || []).find((a) => a.toLocaleLowerCase("tr").includes(low));
   const clear = () => { $("#cmdIn").value = ""; drawCmdActs(); };
   if (hit) box.appendChild(btn("p", "Aç: " + hit, async () => { if (await remote("open", { target: hit })) clear(); }));
-  box.appendChild(btn(hit ? "" : "p", "Bilgisayarda yaz", async () => { if (await remote("type", { text })) clear(); }));
+  const typeBtn = btn(hit ? "" : "p", "Bilgisayarda yaz", async () => { if (await remote("type", { text })) clear(); });
+  typeBtn.id = "cmdType";
+  box.appendChild(typeBtn);
+  box.appendChild(btn("", "Yaz + Enter", async () => { if (await remote("type", { text, enter: true })) clear(); }));
   box.appendChild(btn("", "Panoya kopyala", async () => { if (await remote("clipboard", { text })) clear(); }));
 }
 async function grabShot(target) {
@@ -1169,12 +1188,65 @@ function openViewer() {
   v.hidden = false;
   history.pushState({ viewer: 1 }, "");
   const img = $("img", v);
-  const tick = async () => { if (!v.hidden && !document.hidden) { if (await grabShot(img)) $("#viewerInfo").textContent = "Canlı · " + new Date().toLocaleTimeString("tr-TR"); } };
+  const tick = async () => { if (!v.hidden && !document.hidden) { if (await grabShot(img)) $("#viewerInfo").textContent = "Canlı · " + new Date().toLocaleTimeString("tr-TR") + " · dokun: tıkla, basılı tut: sağ tık, iki parmak: kaydır"; } };
   tick();
   clearInterval(viewerTimer);
   viewerTimer = setInterval(tick, 1000);
 }
 function closeViewer() { $("#viewer").hidden = true; clearInterval(viewerTimer); }
+/* Canlı ekranda dokunarak kontrol: dokun = tıkla, basılı tut = sağ tık, iki parmakla kaydır = tekerlek. Eskiden ekran
+   sadece izlenebiliyordu, dokunmak hiçbir şey yapmıyordu. Görüntü kutuya sığdırıldığı (object-fit: contain) için
+   dokunulan nokta kenar boşlukları çıkarılıp görüntünün 0-1 kesrine çevrilir. */
+function viewerPoint(img, cx, cy) {
+  const r = img.getBoundingClientRect(), nw = img.naturalWidth, nh = img.naturalHeight;
+  if (!nw || !nh) return null;
+  const k = Math.min(r.width / nw, r.height / nh), w = nw * k, h = nh * k;
+  const x = (cx - r.left - (r.width - w) / 2) / w, y = (cy - r.top - (r.height - h) / 2) / h;
+  return x >= 0 && x <= 1 && y >= 0 && y <= 1 ? { x, y } : null;
+}
+(function viewerTouch() {
+  const img = $("#viewer img");
+  let t0 = 0, sx = 0, sy = 0, moved = false, two = false, lastY = 0, acc = 0, timer = null, longDone = false;
+  const refresh = () => setTimeout(() => grabShot(img), 350);
+  img.addEventListener("touchstart", (e) => {
+    two = e.touches.length >= 2;
+    const t = e.touches[0];
+    t0 = Date.now(); sx = t.clientX; sy = t.clientY; moved = false; longDone = false; acc = 0;
+    lastY = two ? (e.touches[0].clientY + e.touches[1].clientY) / 2 : t.clientY;
+    clearTimeout(timer);
+    if (!two) timer = setTimeout(async () => {  // basılı tut: sağ tık
+      if (moved) return;
+      const p = viewerPoint(img, sx, sy);
+      if (!p) return;
+      longDone = true; haptic(30);
+      if (await remote("click", { x: p.x, y: p.y, button: "right" })) refresh();
+    }, 550);
+  }, { passive: true });
+  img.addEventListener("touchmove", (e) => {
+    const t = e.touches[0];
+    if (Math.hypot(t.clientX - sx, t.clientY - sy) > 12) { moved = true; clearTimeout(timer); }
+    if (e.touches.length >= 2) {
+      two = true;
+      const y = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+      acc += lastY - y; lastY = y;
+      const steps = Math.trunc(acc / 40);
+      if (steps) {
+        acc -= steps * 40;
+        const p = viewerPoint(img, (e.touches[0].clientX + e.touches[1].clientX) / 2, y) || { x: 0.5, y: 0.5 };
+        remote("scroll", { x: p.x, y: p.y, dy: steps }).then(refresh);
+      }
+    }
+  }, { passive: true });
+  img.addEventListener("touchend", async (e) => {
+    clearTimeout(timer);
+    if (two || moved || longDone || e.touches.length) return;
+    if (Date.now() - t0 > 550) return;
+    const p = viewerPoint(img, sx, sy);
+    if (!p) return;
+    haptic(10);
+    if (await remote("click", { x: p.x, y: p.y })) refresh();
+  });
+})();
 $("#viewerClose").addEventListener("click", () => { closeViewer(); });
 
 /* ================================================================== BİLDİRİM */
@@ -1638,8 +1710,10 @@ function newCall(id, opts) {
 }
 async function startCall() {
   if (CALL) return drawCall();
-  if (!NATIVE || !NATIVE.listen) return toast("Sesli arama için Android uygulaması gerekli");
+  const canLive = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+  if (!canLive && (!NATIVE || !NATIVE.listen)) return toast("Sesli arama için mikrofon izni gerekli");
   newCall("", { state: "ringing", outbound: false });
+  liveAudio(CALL);  // ses çalıcı dokunuşla açılsın (tarayıcı sonradan açılan sesi engelliyor)
   const r = await api("/api/call/start", {});
   if (!r || !r.ok) { endCall(); return toast((r && r.error) || "Aranamadı"); }
   CALL.id = r.id;
@@ -1647,6 +1721,8 @@ async function startCall() {
   CALL.outbound = !!r.outbound;
   CALL.t0 = Date.now();
   CALL.sid = r.sid || "";
+  CALL.live = !!r.live;
+  if (CALL.live) { CALL.mode = "thinking"; startLiveMic(CALL); }
   drawCall();
   // Selam, "arama başladı" cevabından önce gelmiş olabilir: kimlik belli olunca bekleyen olayları işle.
   const early = CALL.early || [];
@@ -1666,11 +1742,13 @@ async function answerCall() {
   const c = CALL;
   if (!c) return;
   try { if (NATIVE && NATIVE.ring) NATIVE.ring(false); } catch (e) { /* yok */ }
-  if (!NATIVE || !NATIVE.listen) toast("Dinlemek için Android uygulaması gerekli; ALICE'i yine de duyarsın");
+  liveAudio(c);
   const r = await api("/api/call/answer", { id: c.id });
   if (!r || r.ok === false) { endCall(); return toast((r && r.error) || "Görüşme açılamadı"); }
   c.state = "active";
   c.t0 = Date.now();
+  if (r.live) { c.live = true; c.mode = "thinking"; startLiveMic(c); return drawCall(); }
+  if (!NATIVE || !NATIVE.listen) toast("Dinlemek için Android uygulaması gerekli; ALICE'i yine de duyarsın");
   // İlk cümle bu cevaptan önce gelip çalmaya başlamış (hatta bitmiş) olabilir.
   if (c.mode === "speaking") return drawCall();
   if (c.queue.length) return playNext();
@@ -1687,6 +1765,7 @@ function callState(ev) {
   if (ev.state === "ended") return endCall(ev.end_reason);
   if (ev.state === "active" && CALL.state !== "active") { CALL.state = "active"; CALL.t0 = Date.now(); }
   if (ev.sid) CALL.sid = ev.sid;
+  if (CALL.live && ev.live === false && CALL.state === "active") { stopLiveMic(CALL); CALL.live = false; }
   if (ev.lines && ev.lines.length && !CALL.caption) CALL.caption = ev.lines.filter((l) => l.who === "alice").map((l) => l.text).pop() || "";
   drawCall();
 }
@@ -1793,6 +1872,14 @@ function levelOrb(lv) {
 async function sayInCall(text) {
   const c = CALL;
   if (!c) return;
+  if (c.live) {
+    c.heard = text;
+    c.mode = "thinking";
+    drawCall();
+    const r = await api("/api/call/say", { id: c.id, text });
+    if (CALL === c && (!r || !r.ok)) { toast((r && r.error) || "Gönderilemedi"); liveMode(c); }
+    return;
+  }
   c.mode = "thinking";
   c.heard = text;
   c.queue = [];
@@ -1806,6 +1893,12 @@ async function sayInCall(text) {
 function bargeIn() {
   const c = CALL;
   if (!c) return;
+  if (c.live) {
+    liveClear(c);
+    if (c.id) api("/api/call/interrupt", { id: c.id });
+    c.muted = false;
+    return liveMode(c);
+  }
   c.queue = [];
   try { c.audio.pause(); } catch (e) { /* yok */ }
   try { if (NATIVE && NATIVE.stopSpeaking) NATIVE.stopSpeaking(); } catch (e) { /* yok */ }
@@ -1817,6 +1910,7 @@ function toggleMute() {
   const c = CALL;
   if (!c) return;
   c.muted = !c.muted;
+  if (c.live) return drawCall();  // mikrofon akışı sessizdeyken parça göndermez
   if (c.muted) stopCallListening();
   if (!c.muted && c.mode === "listening") startCallListening();
   else drawCall();
@@ -1850,6 +1944,9 @@ function endCall(reason) {
   if (!c) return;
   CALL = null;
   clearInterval(c.timer);
+  stopLiveMic(c);
+  liveClear(c);
+  try { if (c.out) c.out.close(); } catch (e) { /* yok */ }
   try { c.audio.pause(); } catch (e) { /* yok */ }
   try { if (NATIVE) { NATIVE.ring && NATIVE.ring(false); NATIVE.stopSpeaking && NATIVE.stopSpeaking(); NATIVE.keepScreen && NATIVE.keepScreen(false); } } catch (e) { /* yok */ }
   if (c.listening) { try { NATIVE.cancelListening(); } catch (e) { /* yok */ } }
@@ -1873,11 +1970,135 @@ async function resumeCall() {
   const cur = await api("/api/call");
   if (!cur || !cur.id || cur.state === "ended" || CALL) return;
   if (cur.state === "ringing" && cur.outbound) return incomingCall({ id: cur.id, reason: cur.reason, text: "" });
+  if (cur.state === "active" && cur.live) {
+    newCall(cur.id, { state: "active", outbound: cur.outbound, t0: (cur.answered || cur.started) * 1000, live: true, mode: "listening" });
+    CALL.caption = (cur.lines || []).filter((l) => l.who === "alice").map((l) => l.text).pop() || "";
+    startLiveMic(CALL);
+    return;
+  }
   if (cur.state === "active" && NATIVE && NATIVE.listen) {
     newCall(cur.id, { state: "active", outbound: cur.outbound, t0: (cur.answered || cur.started) * 1000 });
     CALL.caption = (cur.lines || []).filter((l) => l.who === "alice").map((l) => l.text).pop() || "";
     startCallListening();
   }
+}
+
+/* Canlı arama (bilgisayardaki sesli asistanla aynı yol): mikrofon 16 kHz PCM olarak ~120 ms'lik parçalarla bilgisayara
+   akar, ChatGPT Realtime dinler ve konuşur; ALICE'in sesi call_pcm parçalarıyla gelir, WebAudio ile kesintisiz çalınır.
+   Yankıyı telefonun yankı engelleyicisi siler, bu yüzden ALICE konuşurken araya girilebilir. */
+function liveAudio(c) {
+  if (c.out) return c.out;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return null;
+  try { c.out = new AC({ sampleRate: 24000 }); } catch (e) { c.out = new AC(); }
+  c.next = 0;
+  c.srcs = [];
+  return c.out;
+}
+function callPcm(ev) {
+  if (earlyEvent(ev)) return;
+  const c = CALL;
+  if (!c || ev.id !== c.id) return;
+  const ctx = liveAudio(c);
+  if (!ctx) return;
+  if (ctx.state === "suspended") ctx.resume();
+  const bin = atob(ev.pcm || "");
+  const n = bin.length >> 1;
+  if (!n) return;
+  const buf = ctx.createBuffer(1, n, 24000);
+  const ch = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) {
+    let v = bin.charCodeAt(2 * i) | (bin.charCodeAt(2 * i + 1) << 8);
+    if (v >= 32768) v -= 65536;
+    ch[i] = v / 32768;
+  }
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  src.connect(ctx.destination);
+  const t = Math.max(ctx.currentTime + 0.05, c.next || 0);
+  src.start(t);
+  c.next = t + buf.duration;
+  c.srcs.push(src);
+  src.onended = () => { c.srcs = c.srcs.filter((x) => x !== src); if (!c.srcs.length && CALL === c) liveMode(c); };
+  c.played = true;
+  if (c.mode !== "speaking") { c.mode = "speaking"; drawCall(); }
+}
+function liveClear(c) {
+  for (const s of c.srcs || []) { try { s.onended = null; s.stop(); } catch (e) { /* yok */ } }
+  c.srcs = [];
+  c.next = 0;
+}
+function liveMode(c) {
+  const m = (c.srcs && c.srcs.length) ? "speaking" : "listening";
+  if (c.mode !== m) { c.mode = m; drawCall(); }
+}
+function callText(ev) {
+  if (earlyEvent(ev)) return;
+  const c = CALL;
+  if (!c || ev.id !== c.id) return;
+  if (ev.who === "alice") { c.caption = ev.text || ""; c.heard = ""; drawCall(); return; }
+  c.heard = ev.text || "";
+  if (c.mode !== "speaking") c.mode = "thinking";
+  drawCall();
+}
+async function startLiveMic(c) {
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } });
+  } catch (e) {
+    if (CALL !== c) return;
+    toast("Mikrofon açılamadı; telefonun konuşma tanımasıyla devam");
+    c.mode = "listening";
+    drawCall();
+    return startCallListening();  // söylenen yazıya döner, yine canlı oturuma gider
+  }
+  if (CALL !== c) { stream.getTracks().forEach((t) => t.stop()); return; }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  let ctx;
+  try { ctx = new AC({ sampleRate: 16000 }); } catch (e) { ctx = new AC(); }
+  const src = ctx.createMediaStreamSource(stream);
+  const proc = ctx.createScriptProcessor(1024, 1, 1);
+  const step = ctx.sampleRate / 16000;
+  let pos = 0, pend = new Int16Array(4096), len = 0, inflight = 0, lvT = 0;
+  const flush = () => {
+    if (!len) return;
+    const bytes = new Uint8Array(pend.buffer, 0, len * 2);
+    let bin = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    len = 0;
+    if (inflight > 6) return;  // ağ tıkandı: eski sesi biriktirmek gecikmeyi büyütür
+    inflight++;
+    api("/api/call/mic", { id: c.id, pcm: btoa(bin) }).then((r) => {
+      inflight--;
+      if (r && r.ok === false && r.live === false && CALL === c) { stopLiveMic(c); c.live = false; }
+    });
+  };
+  proc.onaudioprocess = (e) => {
+    if (CALL !== c || !c.live) return;
+    const inp = e.inputBuffer.getChannelData(0);
+    let peak = 0;
+    for (; pos < inp.length; pos += step) {
+      const v = Math.max(-1, Math.min(1, inp[pos | 0]));
+      if (Math.abs(v) > peak) peak = Math.abs(v);
+      if (len < pend.length) pend[len++] = c.muted ? 0 : v * 32767;
+    }
+    pos -= inp.length;
+    const now = Date.now();
+    if (now - lvT > 80) { lvT = now; if (c.mode !== "speaking") levelOrb(c.muted ? 0 : peak * 2); }
+    if (len >= 1920) flush();  // 120 ms
+  };
+  src.connect(proc);
+  proc.connect(ctx.destination);  // ScriptProcessor bağlı değilse çalışmıyor; çıkışı sessiz
+  c.mic = { stream, ctx, proc };
+  if (c.mode === "thinking" && !c.played) drawCall();
+}
+function stopLiveMic(c) {
+  const m = c && c.mic;
+  if (!m) return;
+  c.mic = null;
+  try { m.proc.onaudioprocess = null; m.proc.disconnect(); } catch (e) { /* yok */ }
+  try { m.stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* yok */ }
+  try { m.ctx.close(); } catch (e) { /* yok */ }
 }
 
 /* ================================================================== açılış */
