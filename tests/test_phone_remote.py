@@ -118,3 +118,14 @@ def test_typing_says_where_it_went_and_refuses_without_window(monkeypatch):
     monkeypatch.setattr(remote, "_foreground_title", lambda: "")
     with pytest.raises(ValueError, match="odakta bir pencere yok"):
         remote.action({"action": "type", "text": "selam"})
+
+
+def test_flight_warnings_are_not_sent_to_phone():
+    """Oyun içi uyarılar (füze, kilit, SAM) telefona bildirim olarak gitmiyordu ama gidiyordu: telefon her birini
+    bildirim yapıyordu. Çatışmadaki onlarca uyarı da diğer olayları listeden atmamalı."""
+    with Store() as st:  # ALICE_HOME testte geçici klasör
+        st.add_event("core", "Çekirdek başladı", delivered=True)
+        for i in range(60):
+            st.add_event("flight", "Uçuş", f"Füze atıldı {i}", "critical", delivered=True)
+    evs = remote.status()["events"]
+    assert [e["title"] for e in evs] == ["Çekirdek başladı"]
