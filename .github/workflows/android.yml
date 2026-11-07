@@ -88,3 +88,8 @@ jobs:
           gh release create "$TAG" ALICE.apk --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest=false \
             --title "ALICE Android 0.2.$GITHUB_RUN_NUMBER" \
             --notes "Telefon uygulaması (imzalı APK). Kurulu uygulama kendini otomatik günceller; bu dosya elle kurmak için. Commit: $GITHUB_SHA"
+          # "Latest" (windows) sürümündeki APK da yenilensin: windows.yml aynı anda çalışınca eski APK'yı
+          # ekliyordu (7 Kasım: Latest'te 0.2.13 kaldı, kullanıcı düzeltmesiz sürümü indirdi).
+          if gh release view windows --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload windows ALICE.apk --repo "$GITHUB_REPOSITORY" --clobber
+          fi
