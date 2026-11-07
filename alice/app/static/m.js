@@ -2016,11 +2016,17 @@ function callPcm(ev) {
   const src = ctx.createBufferSource();
   src.buffer = buf;
   src.connect(ctx.destination);
-  const t = Math.max(ctx.currentTime + 0.05, c.next || 0);
+  const fresh = !c.next || c.next < ctx.currentTime;
+  const t = fresh ? ctx.currentTime + 0.25 : c.next;  // yeni konuşma: ağ titremesine karşı kısa tampon
   src.start(t);
   c.next = t + buf.duration;
   c.srcs.push(src);
-  src.onended = () => { c.srcs = c.srcs.filter((x) => x !== src); if (!c.srcs.length && CALL === c) liveMode(c); };
+  src.onended = () => {
+    c.srcs = c.srcs.filter((x) => x !== src);
+    if (c.srcs.length || CALL !== c) return;
+    clearTimeout(c.quietT);  // cümle arası kısa boşlukta sıra kullanıcıya geçmesin
+    c.quietT = setTimeout(() => { if (CALL === c && !(c.srcs && c.srcs.length)) liveMode(c); }, 700);
+  };
   c.played = true;
   if (c.mode !== "speaking") { c.mode = "speaking"; drawCall(); }
 }
@@ -2053,7 +2059,43 @@ function callText(ev) {
   if (c.mode !== "speaking") c.mode = "thinking";
   drawCall();
 }
+function micSender(c) {
+  let inflight = 0;
+  return (b64) => {
+    if (inflight > 6) return;  // ağ tıkandı: eski sesi biriktirmek gecikmeyi büyütür
+    inflight++;
+    api("/api/call/mic", { id: c.id, pcm: b64 }).then((r) => {
+      inflight--;
+      if (r && r.ok === false && r.live === false && CALL === c) { stopLiveMic(c); c.live = false; }
+    });
+  };
+}
+function startNativeMic(c) {
+  if (!NATIVE || !NATIVE.micStart) return false;
+  const send = micSender(c);
+  window.aliceMic = (ev) => {
+    if (CALL !== c || !c.live || !ev || !ev.pcm) return;
+    c.micFrames = (c.micFrames || 0) + 1;
+    send(c.muted ? ev.pcm.replace(/[^=]/g, "A") : ev.pcm);  // susturulduysa sessizlik
+    if (c.mode !== "speaking") levelOrb(c.muted ? 0 : (ev.lv || 0) * 2);
+  };
+  window.aliceMicPermission = (ok) => { if (CALL === c && ok && !c.mic) startLiveMic(c); };
+  let ok = false;
+  try { ok = !!NATIVE.micStart(); } catch (e) { ok = false; }
+  if (!ok) { window.aliceMic = null; return false; }
+  c.mic = { native: true };
+  return true;
+}
 async function startLiveMic(c) {
+  if (startNativeMic(c)) {
+    setTimeout(() => { if (CALL === c && c.mic && !c.micFrames) liveNativeMic(c, "Mikrofon sesi alınamadı; telefonun konuşma tanımasıyla devam"); }, 4000);
+    return;
+  }
+  if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
+    // Eski uygulama + ev ağı (http): canlı mikrofon yok. İzin bekleniyorsa (micStart false) bir şey yapma.
+    if (NATIVE && NATIVE.micStart) return;
+    return liveNativeMic(c, "Canlı mikrofon için telefon uygulamasını güncelle; şimdilik konuşma tanımasıyla");
+  }
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } });
@@ -2112,6 +2154,11 @@ function stopLiveMic(c) {
   const m = c && c.mic;
   if (!m) return;
   c.mic = null;
+  if (m.native) {
+    window.aliceMic = null;
+    try { NATIVE.micStop(); } catch (e) { /* yok */ }
+    return;
+  }
   try { m.proc.onaudioprocess = null; m.proc.disconnect(); } catch (e) { /* yok */ }
   try { m.stream.getTracks().forEach((t) => t.stop()); } catch (e) { /* yok */ }
   try { m.ctx.close(); } catch (e) { /* yok */ }
