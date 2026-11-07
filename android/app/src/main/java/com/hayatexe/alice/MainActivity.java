@@ -61,6 +61,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        CrashLog.install(this);  // çökerse bir sonraki açılışta ayrıntısı gösterilir (CrashLog)
         if (handleLink(getIntent())) { /* yeni adres kaydedildi */ }
         if (!Prefs.configured(this)) {
             startActivity(new Intent(this, SetupActivity.class));
