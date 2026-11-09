@@ -134,7 +134,7 @@ class ZTE:
         except (TypeError, ValueError):
             lock = 0
         msg = info.get("loginErrMsg") or ""
-        if lock:
+        if lock > 0:  # -1: kilit yok demek; "modem girişi -1 sn kilitli" diye yanlış hata veriliyordu
             raise ModemError(f"modem girişi {lock} sn kilitli (çok fazla yanlış deneme); sonra tekrar dene")
         if msg:
             raise ModemError(f"modem girişi reddedildi ({msg}): kullanıcı adı ya da şifre yanlış olabilir")

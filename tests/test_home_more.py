@@ -662,6 +662,7 @@ def test_zte_odd_locking_time_does_not_crash():
     zte.ZTE._login_error({"lockingTime": "yok", "loginErrMsg": ""})
     with pytest.raises(zte.ModemError, match="60 sn kilitli"):
         zte.ZTE._login_error({"lockingTime": "60"})
+    zte.ZTE._login_error({"lockingTime": -1, "loginErrMsg": ""})  # -1 kilit yok demek: "-1 sn kilitli" denmesin
 
 
 def test_zte_password_hash_never_contains_plain_password():

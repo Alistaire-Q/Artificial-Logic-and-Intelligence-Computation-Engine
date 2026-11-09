@@ -392,7 +392,12 @@ class DesktopObserver:
         if self.title:
             try:
                 focus_window(self.title)  # görüntü öndeki pencereden alınıyor
-            except Exception:  # noqa: BLE001 - başlıkla bulunamazsa öndeki pencereyle devam
+            except ToolError as e:
+                # İstenen pencere yok: öndeki pencereyle devam edilince tuşlar ve tıklamalar ilgisiz pencereye
+                # gidiyordu ('Setup - Sonora' istenmişken ekran 'War Thunder - In battle' idi, 2 Kasım).
+                if "pencere yok" in str(e):
+                    raise
+            except Exception:  # noqa: BLE001 - öne alınamadı (odak kilidi vb.): pencere var, öndekiyle devam
                 pass
         img = self.snapshot(self._target_hwnd())
         if not self._unparked and self._rect is not None:

@@ -371,3 +371,30 @@ def test_pattern_hides_whole_proxy_group():
 
     assert _hidden_match("cliproxy:kimi-k3", {"cliproxy:kimi-*"})
     assert not _hidden_match("cliproxy:claude-opus-5-5", {"cliproxy:kimi-*"})
+
+
+def test_repeated_rate_limit_backs_off_past_the_servers_hint():
+    """Canlı kayıt (9 Kasım): kotası biten Gemini her 429'da "23 sn sonra dene" diyor, süre dolunca yine 429 veriyordu;
+    aynı modele dakikada birkaç kez boşuna gidildi. Üst üste hatada bekleme sunucunun dediğinden uzar."""
+    import time
+
+    cfg = make_config({"brain": ["a:m", "b:m"]})
+    a = FakeProvider("a", [ProviderError("rate_limit", "429", 429, retry_after=23)] * 4)
+    b = FakeProvider("b", ["ok"] * 4)
+    r = router_with(cfg, {"a": a, "b": b})
+    waits = []
+    for _ in range(4):
+        r.cooldown_until.clear()  # süre dolmuş gibi: a yeniden denenir
+        r.chat("brain", [{"role": "user", "content": "x"}])
+        waits.append(round(r.cooldown_until["a:m"] - time.monotonic()))
+    assert waits[0] == 23 and waits[1] == 23 and waits[2] == 40 and waits[3] == 80
+
+
+def test_quota_with_known_reset_waits_that_long():
+    import time
+
+    cfg = make_config({"brain": ["a:m", "b:m"]})
+    a = FakeProvider("a", [ProviderError("quota", "limit doldu", 429, retry_after=1500)])
+    r = router_with(cfg, {"a": a, "b": FakeProvider("b", ["ok"])})
+    r.chat("brain", [{"role": "user", "content": "x"}])
+    assert 1400 < r.cooldown_until["a:m"] - time.monotonic() < 1501 and r.cooldown_kind["a:m"] == "quota"

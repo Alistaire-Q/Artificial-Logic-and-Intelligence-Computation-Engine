@@ -840,3 +840,141 @@ def test_clear_item_with_unsure_click_is_clicked():
         brain = KindSplitBrain([{"probs": probs}])
         brain.kind, brain.kind_conf = kind, conf
         assert ScreenAgent(obs, brain, settle=0).run("ayarları aç").status == "needs_help" and obs.acts == []
+
+
+def test_missing_target_window_stops_instead_of_using_the_foreground_one(monkeypatch):
+    """Canlı kayıt (2 Kasım): title='Setup - Sonora version 0.47.0' diye bir pencere yokken refleks öndeki pencereyle
+    (War Thunder - In battle) devam etti; tuşlar oyuna gidebilirdi."""
+    import pytest
+
+    from alice.reflex import observers
+    from alice.tools import desktop
+    from alice.tools.base import ToolError
+
+    def missing(title):
+        raise ToolError(f"'{title}' başlıklı pencere yok. Açık pencereler: War Thunder - In battle")
+
+    monkeypatch.setattr(desktop, "focus_window", missing)
+    obs = observers.DesktopObserver(ctx=None, window_title="Setup - Sonora")
+    with pytest.raises(ToolError, match="pencere yok"):
+        obs.screen("Next'e bas")
+
+
+def test_read_only_goal_never_touches_the_screen():
+    """Canlı kayıt (26 Ekim): "Gece ışığı durumunu oku, herhangi bir düğmeye basma" hedefinde Jev 'Off' yazısına
+    tıklamayı seçti. Dokunmayı yasaklayan hedefte hiçbir şeye basılmaz; danışma ekrandakini cevap olarak okur."""
+    from alice.reflex.agent import no_touch_goal
+
+    for g in ("Gece ışığı durumunu oku, herhangi bir düğmeye basma", "hiçbir şeye basıp ayarı değiştirme",
+              "Mevcut durumu oku; hiçbir kontrole dokunma", "Read the list. Do not click anything.",
+              "listeyi tıklamadan oku"):
+        assert no_touch_goal(g), g
+    for g in ("Kaydet düğmesine çift tıklama ile bas", "Ayarı değiştirme, sadece sayfayı aç", "Mesaj gönderme"):
+        assert not no_touch_goal(g), g
+
+    obs = FakeScreen()
+    brain = Brain([{"action": "click", "item": "Uydurma bir savunma"}])
+    res = ScreenAgent(obs, brain, translate=lambda g: g, settle=0).run("Listeyi oku, hiçbir şeye basma")
+    assert res.status == "needs_help" and obs.acts == [] and "yasaklıyor" in res.reason
+
+    obs = FakeScreen()
+    agent = ScreenAgent(obs, Brain([{"action": "click", "item": "Uydurma bir savunma"}]), translate=lambda g: g, settle=0)
+    agent.consult = lambda situation: {"answer": "Listede: Uydurma bir savunma"}
+    res = agent.run("Listeyi oku, hiçbir şeye basma")
+    assert res.status == "done" and obs.acts == [] and "Uydurma bir savunma" in res.reason
+
+
+def test_typing_into_a_button_is_refused():
+    """Canlı kayıt (9 Kasım): Chrome'da Google'ın kod kutusu listede yoktu; "361819 yaz" için 'Next' yazısı seçildi,
+    tıklanıp kod hiçbir yere yazılmadan form gönderildi."""
+    from alice.reflex.agent import not_a_field
+
+    class Page(FakeScreen):
+        def screen(self, goal=""):
+            return Screen("Account recovery", "desktop", [
+                Item("i1", "ocr", "text", "Next", (0.5, 0.6, 0.55, 0.63)),
+                Item("i2", "ocr", "text", "Enter code", (0.4, 0.4, 0.5, 0.43)),
+                Item("i3", "ax", "Button", "Try another way", (0.3, 0.6, 0.45, 0.63), ref=3)])
+
+    assert not_a_field(Item("i", "ocr", "text", "Next")) and not_a_field(Item("i", "ax", "Button", "Kod gir"))
+    assert not not_a_field(Item("i", "ocr", "text", "Enter code")) and not not_a_field(Item("i", "ocr", "text", "Ara"))
+    assert not not_a_field(Item("i", "ax", "Edit", "Next", editable=True))
+
+    obs = Page()
+    res = ScreenAgent(obs, Brain([{"action": "type_text", "item": "Next"}]), translate=lambda g: g, settle=0).run(
+        "Enter code kutusuna 361819 yaz", inputs={"code": "361819"})
+    assert res.status == "needs_help" and obs.acts == [] and "düğme" in res.reason
+
+    obs = Page()  # alanın içindeki yazı seçildiyse eskisi gibi tıklanıp yazılır
+    ScreenAgent(obs, Brain([{"action": "type_text", "item": "Enter code"}, {"done": 0.95}]), translate=lambda g: g,
+                settle=0).run("Enter code kutusuna 361819 yaz", inputs={"Enter code": "361819"})
+    assert obs.acts and obs.acts[0][:2] == ("type_text", "Enter code")
+
+
+def test_multi_part_goal_is_split_and_each_step_runs_on_its_own():
+    """Canlı kayıt (26 Ekim): "Not Defteri'nde 1'den 10'a yaz ve Farklı Kaydet ile ... kaydet" tek hedef olarak
+    verildi; iş ilerlediği halde "bitti?" %1-6'da kaldı ve adım sınırına kadar tıklandı. Çok parçalı hedef adımlara
+    bölünür, her adım kendi kısa hedefiyle yürür."""
+    from alice.reflex.agent import multi_part_goal
+
+    assert multi_part_goal("Not Defteri'nde yeni belge aç, 1'den 10'a kadar yaz ve sonra Farklı Kaydet ile kaydet")
+    assert multi_part_goal("Açık profil menüsünü Escape ile kapat, sonra Ctrl+K ile hızlı arama aç")
+    assert multi_part_goal("Open the File menu; click Save As; type the name and press Save")
+    assert not multi_part_goal("ekrandaki Install düğmesine tıkla")
+    assert not multi_part_goal("Hesap Makinesi'nde 1234 × 5678 işlemini hesapla")
+    assert not multi_part_goal("Ara ve Bul düğmesine tıkla")
+
+    goal = "Önce ilk projeyi aç, sonra proje sayfasının açıldığını gör ve ardından orada bekle"
+    obs = FakeScreen()
+    brain = Brain([{"action": "click", "item": "Uydurma bir savunma"},  # 1. adım: tıklandı, ekran değişti
+                   {"done": 0.95}])  # 2. adım: zaten olmuş
+    agent = ScreenAgent(obs, brain, translate=lambda g: g, settle=0)
+    asked = []
+    agent.plan = lambda g: asked.append(g) or ["İlk projeyi aç", "Proje sayfasının açıldığını gör"]
+    res = agent.run(goal)
+    assert asked == [goal] and res.status == "steps_done" and "2 adımı da yapıldı" in res.reason
+    assert [c[0]["goal"] for c in brain.calls] == ["İlk projeyi aç", "Proje sayfasının açıldığını gör"]
+    assert "(plan 1/2) İlk projeyi aç" in res.log and "(plan 2/2) Proje sayfasının açıldığını gör" in res.log
+    assert obs.acts == [("click", "Uydurma bir savunma", "", "", None)]
+
+    # bir adım yapılamazsa orada durur ve hangisi olduğunu söyler; sonraki adımlara geçilmez
+    obs = FakeScreen()
+    brain = Brain([{"action": "click", "item": "Uydurma bir savunma"}, {"action": "click", "conf": 0.1}])
+    agent = ScreenAgent(obs, brain, translate=lambda g: g, settle=0)
+    agent.plan = lambda g: ["İlk projeyi aç", "Olmayan düğmeye bas", "Kaydet"]
+    res = agent.run(goal)
+    assert res.status == "needs_help" and "planın 2. adımı (2/3) yapılamadı: Olmayan düğmeye bas" in res.reason
+    assert not any("(plan 3/3)" in line for line in res.log)
+
+
+def test_short_or_keyboard_goals_are_not_planned():
+    def boom(goal):
+        raise AssertionError("plan çağrılmamalıydı")
+
+    obs = FakeScreen()
+    agent = ScreenAgent(obs, Brain([{"action": "click", "item": "Uydurma bir savunma"}, {"done": 0.95}]),
+                        translate=lambda g: g, settle=0)
+    agent.plan = boom
+    assert agent.run("İlk projeyi aç").status == "clicked"  # tek iş: fazladan model çağrısı yok
+
+    # planlayıcı tek adım dönerse ya da hata verirse hedef eskisi gibi tek parça yürür
+    for plan in (lambda g: ["hepsi tek adım"], lambda g: 1 / 0):
+        obs = FakeScreen()
+        brain = Brain([{"action": "click", "item": "Uydurma bir savunma"}, {"done": 0.95}])
+        agent = ScreenAgent(obs, brain, translate=lambda g: g, settle=0)
+        agent.plan = plan
+        res = agent.run("Önce ilk projeyi aç, sonra proje sayfasının açıldığını gör ve ardından bekle")
+        assert res.status in ("done", "clicked") and brain.calls[0][0]["goal"].startswith("Önce ilk projeyi aç")
+
+
+def test_planner_reads_steps_from_the_model_and_verdict_asks_to_verify():
+    from types import SimpleNamespace
+
+    from alice.reflex.agent import make_planner
+    from alice.tools.meta import reflex_verdict
+
+    router = SimpleNamespace(chat=lambda role, msgs, **kw: SimpleNamespace(
+        text='Tabii: {"steps": ["Dosya menüsünü aç", "Farklı kaydet düğmesine tıkla"]}'))
+    assert make_planner(router)("x") == ["Dosya menüsünü aç", "Farklı kaydet düğmesine tıkla"]
+    assert make_planner(SimpleNamespace(chat=lambda *a, **k: SimpleNamespace(text="bilmiyorum")))("x") == []
+    assert "doğrulanmadı" in reflex_verdict("steps_done")

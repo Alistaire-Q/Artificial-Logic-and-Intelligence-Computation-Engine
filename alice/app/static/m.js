@@ -394,7 +394,7 @@ function drawChatHead() {
   if (s) t.addEventListener("click", () => renameSession(s));
   hd.append(iconBtn("hist", "Geçmiş sohbetler", historySheet), t,
     iconBtn("phone", "ALICE'i ara", () => startCall()),
-    iconBtn("edit", "Yeni sohbet", newChat));
+    iconBtn("plus", "Yeni sohbet", newChat));
 }
 function drawChips() {
   const c = $("#chips");
@@ -602,6 +602,10 @@ async function loadSessions() {
 function historySheet() {
   openSheet((c) => {
     c.append(el("h3", "", "Sohbetler"));
+    const nw = el("button", "opt new");
+    nw.append(svg("plus", "ic"), el("span", "l", "Yeni sohbet"));
+    nw.addEventListener("click", () => { closeSheet(); newChat(); });
+    c.appendChild(nw);
     const rows = [...S.sessions.filter((s) => s.pinned), ...S.sessions.filter((s) => !s.pinned)];
     if (!rows.length) c.appendChild(el("p", "sub", "Henüz sohbet yok."));
     for (const s of rows) {

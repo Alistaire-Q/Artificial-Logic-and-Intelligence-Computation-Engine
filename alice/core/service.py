@@ -561,6 +561,10 @@ class Core:
             with self._lock:
                 fresh = self.tasks.get(task.id) or task
                 self.tasks.mark_run(fresh, result, fresh.last_run)
+                if fresh.once:
+                    # Tek seferlik görev listede kalınca cron'u her yıl aynı gün yeniden tetikliyordu ("beni 1
+                    # dakika sonra ara" ertesi yıl da arardı) ve silmek kullanıcıya kalıyordu.
+                    self.tasks.remove(fresh.id)
             title = f"Görev{' (telafi)' if late else ''}: {task.description or task.prompt[:40]}"
             if task.notify:
                 self.notifier.send(Notification(title, result[:500], sev, "task", kind="task"))

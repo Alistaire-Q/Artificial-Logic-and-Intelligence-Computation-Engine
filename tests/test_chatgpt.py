@@ -324,3 +324,48 @@ def test_empty_list_is_an_error_and_manual_add_works(monkeypatch):
     assert not panel.action("chatgpt_model_add", {"name": "  "})["ok"]
     assert panel.action("chatgpt_model_add", {"name": "gpt-5.5"})["models"] == ["gpt-5.5"]
     assert chatgpt.models_state() == "ok" and chatgpt.cached_models() == ["gpt-5.5"]
+
+
+def _limit_429(secs=1348566):
+    return httpx.Response(429, json={"error": {"type": "usage_limit_reached", "message": "The usage limit has been "
+                                               "reached", "plan_type": "free", "resets_in_seconds": secs}})
+
+
+def test_limited_account_switches_to_a_free_one():
+    """Canlı kayıt (9 Kasım): seçili hesap limite takılınca kayıtlı boş hesap dururken hata verip Gemini'ye düşüyordu."""
+    chatgpt.save_auth(tokens())
+    chatgpt.save_auth(tokens(email="x@y.z", acc="acc2", refresh="r2"))  # seçili: acc2
+    seen = []
+
+    def handler(req):
+        seen.append(req.headers.get("chatgpt-account-id"))
+        if seen[-1] == "acc2":
+            return _limit_429()
+        return httpx.Response(200, content=sse({"type": "response.output_text.delta", "delta": "tamam"}))
+
+    p = ChatGPTProvider(pc(), client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert p.chat("gpt-5.5", [{"role": "user", "content": "x"}]).text == "tamam"
+    assert seen == ["acc2", "acc1"] and chatgpt.load_auth()["email"] == "a@b.c"
+    # dolu hesabın sıfırlanması sunucunun söylediği süreyle kaydedildi; bir sonraki istek ona hiç gitmez
+    accs = chatgpt._store()["accounts"]
+    assert accs["acc2"]["limits"]["primary"]["reset_at"] > time.time() + 1_000_000
+    assert chatgpt.use("acc2") and p.chat("gpt-5.5", [{"role": "user", "content": "x"}]).text == "tamam"
+    assert seen == ["acc2", "acc1", "acc1"]
+
+
+def test_all_accounts_limited_is_quota_with_reset_time():
+    """Hepsi doluyken hata 20 sn'lik hız sınırı sayılıyor, aynı hesaplara yarım dakikada bir yeniden gidiliyordu."""
+    chatgpt.save_auth(tokens())
+    chatgpt.save_auth(tokens(email="x@y.z", acc="acc2", refresh="r2"))
+    p = ChatGPTProvider(pc(), client=httpx.Client(transport=httpx.MockTransport(lambda req: _limit_429(600))))
+    with pytest.raises(ProviderError) as ei:
+        p.chat("gpt-5.5", [{"role": "user", "content": "x"}])
+    assert ei.value.kind == "quota" and 500 < ei.value.retry_after <= 600 and "2 hesabın" in str(ei.value)
+
+
+def test_single_account_limit_keeps_server_reset_time():
+    chatgpt.save_auth(tokens())
+    p = ChatGPTProvider(pc(), client=httpx.Client(transport=httpx.MockTransport(lambda req: _limit_429(7200))))
+    with pytest.raises(ProviderError) as ei:
+        p.chat("gpt-5.5", [{"role": "user", "content": "x"}])
+    assert ei.value.kind == "quota" and ei.value.retry_after == 7200

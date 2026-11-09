@@ -109,6 +109,50 @@ def already_has(value: str, text: str) -> bool:
     return bool(v and t) and (v == t or (len(v) >= 78 and t.startswith(v)))
 
 
+# Hedef ekrana dokunmayı açıkça yasaklıyor ("hiçbir düğmeye basma", "do not click anything"). Yalnız "değiştirme"
+# demek yetmez: sayfayı açmak için tıklamak gerekebilir.
+NO_TOUCH_RX = re.compile(
+    r"(hi[çc]bir|herhangi bir)\s+(şeye|seye|düğmeye|dugmeye|kontrole|yere|tuşa|tusa)\s*(de\s+)?(bas|tıkla|tikla|dokun)|"
+    r"\b(tıklamadan|tiklamadan|dokunmadan)\b|"
+    r"\b(do not|don't|dont|without|never)\s+(click|touch|press)(ing)?\b|\bread[- ]only\b", re.I)
+TOUCHING = ("click", "double_click", "right_click", "type_text", "type_keys", "drag", "draw_across", "hold_key",
+            VISUAL_ACTION, VISUAL_DRAG)
+# Yazı alanı olmayan, basılınca iş yapan denetimler: "buraya yaz" denince tıklanırlarsa form gönderilir.
+BUTTON_ROLES = ("button", "hyperlink", "menuitem", "tabitem", "checkbox", "radiobutton", "splitbutton", "a")
+BUTTON_WORDS = {"next", "ileri", "sonraki", "devam", "continue", "ok", "tamam", "kaydet", "save", "submit", "gönder",
+                "send", "cancel", "iptal", "back", "geri", "yes", "no", "evet", "hayır", "apply", "uygula", "done",
+                "bitti", "finish", "close", "kapat", "sign in", "log in", "giriş yap", "oturum aç", "install",
+                "yükle", "kur"}  # "ara/search" yok: arama kutusunun içindeki yazı da öyle görünür
+
+
+PLAN_MAX_PARTS = 8  # bir hedef en çok bu kadar adıma bölünür
+PLAN_PART_STEPS = 8  # planın tek bir adımı için en fazla eylem
+# Hedefte birden çok iş olduğunu gösteren bağlaçlar. "ve" tek başına yetmez ("Ara ve Bul" düğmesine tıkla).
+_MULTI_RX = re.compile(r"\b(sonra|ardından|ardindan|daha sonra|bunun ardından|son olarak|then|after that|afterwards|"
+                       r"and then|finally)\b|;|\b\w{3,}(ıp|ip|up|üp)\b[^.]{3,}(\bve\b|,)", re.I)
+
+
+def multi_part_goal(goal: str) -> bool:
+    """Hedef birkaç ayrı iş mi istiyor? (planlama yalnız bunlarda: kısa hedefe fazladan model çağrısı harcanmaz)"""
+    words = goal.split()
+    if len(words) < 7:
+        return False
+    return bool(_MULTI_RX.search(goal)) or (len(words) >= 12 and len(re.findall(r"\b(ve|and)\b|,", goal, re.I)) >= 2)
+
+
+def no_touch_goal(*goals: str) -> bool:
+    """Hedef ekrandaki hiçbir şeye basılmamasını istiyor mu? (okuma/gözlem hedefi)"""
+    return any(NO_TOUCH_RX.search(g or "") for g in goals)
+
+
+def not_a_field(item: Item) -> bool:
+    """Yazı yazılamayacak, düğme gibi bir öğe mi? Sayfa alanlarını listelemediğinde (Chrome'da Google'ın kod kutusu)
+    'yazılacak yer' diye 'Next' yazısı seçilmiş, tıklanıp boş form gönderilmişti."""
+    if item.editable:
+        return False
+    return item.role.lower() in BUTTON_ROLES or item.label.strip().casefold() in BUTTON_WORDS
+
+
 def login_item(item: Item, *goals: str) -> bool:
     """Öğe bir giriş/kayıt kontrolü mü ve hedef giriş yapmayı istemiyor mu? (bkz. loop.LOGIN_RX)"""
     return login_text(f"{item.label} {item.value}", *goals)
@@ -142,6 +186,8 @@ class ScreenAgent:
         self.allow_irreversible = False
         # Takılınca sıradaki somut adımı soran fonksiyon (durum sözlüğü -> {"next": "...", "give_up": bool}).
         self.consult: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+        # Çok parçalı hedefi sıralı kısa adımlara bölen fonksiyon (hedef -> adım listesi). Bkz. _run_plan.
+        self.plan: Callable[[str], list[str]] | None = None
         self.evidence: list[dict[str, Any]] = []
 
     # ------------------------------------------------------------------ yardımcılar
@@ -286,8 +332,12 @@ class ScreenAgent:
         text: klavyeyle pencereye yazılacak metin (type_keys). keys: seçeneklere eklenecek tuşlar/kombinasyonlar."""
         self._keyboard_text, self._extra_keys, self._first = text, list(keys or []), None
         self._press_first = list(press_first or [])  # yazmadan önce: ör. escape (önceki girdi kalmasın)
-        res = self._run(goal, max_steps, inputs or {}, notes)
-        res = self._consult_loop(goal, max_steps, inputs or {}, notes, res)
+        parts = self._plan_parts(goal) if not (text or press_first) else []
+        if len(parts) >= 2:
+            res = self._run_plan(goal, parts, max_steps, inputs or {}, notes)
+        else:
+            res = self._run(goal, max_steps, inputs or {}, notes)
+            res = self._consult_loop(goal, max_steps, inputs or {}, notes, res)
         if self._first is not None and self.last is not None:
             # Ekranın başa göre değişen kısmı rapora: ana model sonucu (hesap makinesindeki sayı) okumak için ayrı
             # refleks ve ekran görüntüsü turu harcıyordu.
@@ -296,6 +346,55 @@ class ScreenAgent:
         self._trace({"ts": time.time(), "goal": goal, "result": res.status, "steps": res.steps, "reason": res.reason,
                      "window": res.title})
         return res
+
+    def _plan_parts(self, goal: str) -> list[str]:
+        """Hedef birkaç iş içeriyorsa sıralı kısa adımları; değilse (ya da planlanamadıysa) boş liste. Oyun
+        oturumunda (hamle + yansıtma kendi düzeniyle çalışır) ve okuma hedefinde planlanmaz."""
+        if (self.plan is None or self.track_changes or self.stop_after_change or not multi_part_goal(goal)
+                or no_touch_goal(goal)):
+            return []
+        try:
+            parts = [" ".join(str(p).split()) for p in (self.plan(goal) or [])]
+        except Exception:  # noqa: BLE001 - plan çıkarılamadıysa eski yol: hedef tek parça denenir
+            return []
+        parts = [p for p in parts if p][:PLAN_MAX_PARTS]
+        return parts if len(parts) >= 2 else []
+
+    def _run_plan(self, goal: str, parts: list[str], max_steps: int, inputs: dict[str, str],
+                  notes: Any) -> ReflexResult:
+        """Çok parçalı hedefi adım adım yürüt. İzlerde uzun hedeflerin "bitti?" yargısı iş bittiği halde %1-6'da
+        kalıyor, refleks adım sınırına kadar tıklamaya devam ediyordu ("1'den 10'a yaz ve kaydet": 20 adım, 26 Ekim);
+        tek işlik hedeflerde ise yargı doğru çalışıyor. Her adım kendi kısa hedefiyle yürür ve ayrı doğrulanır; biri
+        yapılamazsa orada durulur ve hangisinde kalındığı söylenir."""
+        log: list[str] = []
+        used = 0
+        unsure: list[int] = []
+        res = ReflexResult("needs_help", 0, "plan boş", log)
+        self.emit("plan: " + " | ".join(f"{n}. {p}" for n, p in enumerate(parts, 1)))
+        for n, part in enumerate(parts, 1):
+            if used >= max_steps:
+                return ReflexResult("max_steps", used, f"adım limiti doldu: planın {n - 1}/{len(parts)} adımı yapıldı, "
+                                    f"sıradaki: {part}", log, res.title, res.location)
+            log.append(f"(plan {n}/{len(parts)}) {part}")
+            budget = min(PLAN_PART_STEPS, max_steps - used)
+            res = self._run(part, budget, inputs, notes)
+            res = self._consult_loop(part, budget, inputs, notes, res)
+            log += res.log
+            used += res.steps
+            if res.status in ("done", "clicked", "likely_done", "acted"):
+                continue
+            if res.status == "max_steps" and any("(ekran değişti)" in line for line in res.log):
+                # Adımın eylemleri ekranı değiştirdi ama "bitti" denmedi: emin olunamadan sıradakine geçilir, sonuçta
+                # bu da söylenir.
+                unsure.append(n)
+                continue
+            where = f"planın {n}. adımı ({n}/{len(parts)}) yapılamadı: {part} - {res.reason}"
+            status = res.status if res.status in ("error", "needs_confirmation", "needs_login") else "needs_help"
+            return ReflexResult(status, used, where, log, res.title, res.location)
+        if unsure:
+            return ReflexResult("steps_done", used, f"planın {len(parts)} adımı da denendi; şu adımların bittiğinden emin "
+                                f"olunamadı: {', '.join(map(str, unsure))}", log, res.title, res.location)
+        return ReflexResult("steps_done", used, f"planın {len(parts)} adımı da yapıldı", log, res.title, res.location)
 
     def _consult_loop(self, goal: str, max_steps: int, inputs: dict[str, str], notes: Any,
                       res: ReflexResult) -> ReflexResult:
@@ -496,6 +595,11 @@ class ScreenAgent:
             choice = act.value
             if missing >= MISSING_MIN and choice in ("click", "double_click", "right_click", "type_text", "drag"):
                 choice = (VISUAL_DRAG if choice == "drag" and "drag_source" in a else VISUAL_ACTION) if see else ""
+            if choice in TOUCHING and no_touch_goal(goal, en):
+                # Okuma hedefi ("durumu oku, hiçbir şeye basma"): Jev yine de 'Off' yazısına tıklamayı seçiyordu
+                # (26 Ekim, Gece ışığı). Dokunulmaz; danışma ekranda görüneni cevap olarak okur.
+                return ReflexResult("needs_help", step - 1, "hedef ekrana dokunmayı yasaklıyor; hiçbir şeye "
+                                    "basılmadı, ekrandakiler okunabilir", log, scr.title, scr.location)
             if choice == VISUAL_DRAG:
                 res = self._visual_drag(step, scr, en, a, log, history)
                 if isinstance(res, ReflexResult):
@@ -541,6 +645,11 @@ class ScreenAgent:
                 # Yazılacak yer ayrı sorulur: "item" sorusunda Jev Gezgin'in sol ağacındaki 'Desktop'u seçip oraya
                 # "yazdırıyordu" (tıklandı, Masaüstü açıldı).
                 item = _pick(a, "field", [i for i in scr.items if i.editable]) or item
+                if item is not None and not_a_field(item):
+                    # Listede yazı alanı yok ve seçilen şey bir düğme: tıklanıp yazılırsa form boş gönderilir.
+                    return ReflexResult("needs_help", step - 1, f"yazılacak alan listede yok ('{item.label[:40]}' bir "
+                                        "düğme, alan değil); alanı kendin tıklayıp metni text= ile klavyeden yazdır",
+                                        log, scr.title, scr.location)
             needs_item = choice in ("click", "double_click", "right_click", "type_text", "drag")
             if needs_item and item is None:
                 return ReflexResult("needs_help", step - 1, "ekranda seçilecek öğe yok", log, scr.title, scr.location)
@@ -744,6 +853,28 @@ def make_consultant(router) -> Callable[[dict[str, Any]], dict[str, Any]]:
         return _json.loads(m.group(0)) if m else {}
 
     return consult
+
+
+def make_planner(router) -> Callable[[str], list[str]]:
+    """Çok parçalı hedefi sıralı kısa adımlara böl (tek kısa çağrı, ekran verilmez: adımlar hedefin kendi sözlerinden)."""
+    import json as _json
+
+    def plan(goal: str) -> list[str]:
+        res = router.chat("brain", [
+            {"role": "system", "content": "Split the user's instruction for an on-screen computer-use agent into the "
+             "ordered steps it contains. Each step is one small thing to do in the app (open a menu item, type a given "
+             "text, press a shortcut, fill one dialog and confirm it), written as a short imperative sentence in the "
+             "instruction's own language. Keep names of buttons, menus, files, paths and any text to type exactly as "
+             "written, and repeat in every step the details it needs (the file path, the text). Do not add steps the "
+             "instruction does not ask for, do not add verification steps, and keep any restriction (do not send, do "
+             f"not overwrite) in the step it applies to. At most {PLAN_MAX_PARTS} steps. If the instruction is a "
+             'single action, return it as one step. Answer with JSON only: {"steps": ["...", "..."]}'},
+            {"role": "user", "content": goal}], temperature=0, max_tokens=500)
+        m = re.search(r"\{.*\}", res.text or "", re.S)
+        steps = _json.loads(m.group(0)).get("steps") if m else None
+        return [str(s) for s in steps] if isinstance(steps, list) else []
+
+    return plan
 
 
 def make_translator(router) -> Callable[[str], str]:

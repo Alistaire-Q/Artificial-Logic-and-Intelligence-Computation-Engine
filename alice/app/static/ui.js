@@ -10,13 +10,17 @@ function openMenu(anchor, build, align, below) {
   m.replaceChildren();
   build(m);
   m.hidden = false;
-  const r = anchor.getBoundingClientRect();
+  const scale = uiZoom();
+  const box = anchor.getBoundingClientRect();
+  // getBoundingClientRect ekran (ölçeklenmiş) pikseli verir; menü ise zoomLayer'ın mantıksal koordinatındadır.
+  const r = { top: box.top / scale, bottom: box.bottom / scale, left: box.left / scale, right: box.right / scale };
+  const vh = window.innerHeight / scale, vw = window.innerWidth / scale;
   const mh = m.offsetHeight, mw = m.offsetWidth;
   let top = below ? r.bottom + 4 : r.top - mh - 6;
-  if (below && top + mh > window.innerHeight - 8) top = r.top - mh - 4;
+  if (below && top + mh > vh - 8) top = r.top - mh - 4;
   if (top < 8) top = r.bottom + 6;
   let left = align === "right" ? r.right - mw : r.left;
-  left = Math.max(8, Math.min(left, window.innerWidth - mw - 8));
+  left = Math.max(8, Math.min(left, vw - mw - 8));
   m.style.top = top + "px";
   m.style.left = left + "px";
 }
@@ -2695,6 +2699,7 @@ async function showSettings(tab) {
 const SHORTCUTS = [
   ["Ctrl+K", "Komut paleti"], ["Ctrl+J", "Yan panel (plan, değişiklikler, bağlam)"], ["Ctrl+O", "Araç ayrıntılarını aç/kapat"],
   ["Ctrl+,", "Ayarlar"], ["Enter", "Gönder (çalışırken sıraya ekler)"], ["Shift+Enter", "Yeni satır"],
+  ["Ctrl + / Ctrl −", "Arayüzü büyüt / küçült (Ctrl+0 sıfırlar)"], ["Ctrl+Shift+E", "Sohbeti genişlet / daralt"],
   ["↑ / ↓", "Önceki mesajları geri getir (kutu boşken)"], ["Esc", "Durdur / menüyü kapat"],
   ["1 / 2 / 3", "İzin kartını cevapla: izin ver / hep izin ver / reddet"], ["Shift+Tab", "İzin modunu değiştir"],
   ["Ctrl+B", "Kenar çubuğu"], ["Ctrl+Shift+O", "Yeni sohbet"], ["Ctrl+V", "Görsel yapıştır"],
@@ -2964,8 +2969,76 @@ $("#collapseSide").addEventListener("click", toggleSide);
 $("#openSide").addEventListener("click", toggleSide);
 try { if (localStorage.getItem("alice.side") === "0") app.classList.add("side-hidden"); } catch { /* yok */ }
 
+// Geniş sohbet: mesajlar ve yazma kutusu pencere genişliğine yayılır; seçim tarayıcıda hatırlanır.
+function toggleWide() {
+  app.classList.toggle("wide");
+  try { localStorage.setItem("alice.wide", app.classList.contains("wide") ? "1" : "0"); } catch { /* yok */ }
+}
+$("#wideBtn").addEventListener("click", toggleWide);
+try { if (localStorage.getItem("alice.wide") === "1") app.classList.add("wide"); } catch { /* yok */ }
+
+// Yakınlaştırma: Ctrl +, Ctrl -, Ctrl 0 bütün arayüzü aynı oranda büyütür (#zoomLayer ölçeklenir, bkz. app.css).
+// Seçim tarayıcıda hatırlanır. Ekran koordinatı kullanan kod uiZoom() ile katmanın koordinatına çevirir.
+const ZOOM_MIN = 0.6, ZOOM_MAX = 2, ZOOM_MIN_WIDTH = 780;
+function cleanZoom(val) {
+  const z = Math.round(parseFloat(val) * 20) / 20;  // 0.05 adım: 1.1 + 0.1 = 1.2000000000000002 birikmesin
+  return Number.isFinite(z) ? Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z)) : 1;
+}
+// Pencerenin kaldırabildiği en büyük oran: dar ekran düzenine geçiren @media kuralları pencerenin gerçek genişliğine
+// bakar, ölçeklenmiş katmanınkine değil. Katman 780px'in altına inerse masaüstü düzeni sığmaz (yazma kutusunun
+// düğmeleri taşar); o yüzden oran pencereye göre sınırlanır, pencere büyüyünce seçilen orana geri döner.
+function zoomLimit() {
+  const w = window.innerWidth || 0;
+  return w ? Math.max(1, Math.min(ZOOM_MAX, Math.floor(w / ZOOM_MIN_WIDTH * 20) / 20)) : ZOOM_MAX;
+}
+let zoomPref = 1;  // kullanıcının seçtiği
+try { zoomPref = cleanZoom(localStorage.getItem("alice.zoom") || 1); } catch { /* yok */ }
+let zoom = 1;      // uygulanan (pencere dar ise seçilenden küçük)
+function applyZoom() {
+  const z = Math.min(zoomPref, zoomLimit());
+  if (z === zoom) return false;
+  zoom = z;
+  document.documentElement.style.setProperty("--zoom", zoom);
+  closeMenu();  // açık menü eski ölçeğe göre konumlanmıştı
+  return true;
+}
+applyZoom();
+window.addEventListener("resize", applyZoom);
+function uiZoom() { return zoom; }
+
+function setZoom(val) {
+  const want = cleanZoom(val), limit = zoomLimit();
+  zoomPref = Math.min(want, Math.max(limit, zoom));  // sınırın üstüne birikmesin: Ctrl - ilk basışta küçültsün
+  try { localStorage.setItem("alice.zoom", String(zoomPref)); } catch { /* yok */ }
+  if (applyZoom()) window.dispatchEvent(new Event("resize"));  // ölçüye bağlı yerleşimler (site önizlemesi) yenilensin
+  const pct = `Yakınlaştırma %${Math.round(zoom * 100)}`;
+  toast(want > zoom && zoom >= limit ? `${pct} · bu pencere genişliğinde en fazla bu kadar`
+    : pct + (zoom === 1 ? "" : " · sıfırlamak için Ctrl+0"));
+}
+// Ctrl+tekerlek: pencerenin kendi yakınlaştırması devreye girip bizimkiyle üst üste binmesin, aynı ayarı değiştirsin.
+let wheelZoomAt = 0;
+window.addEventListener("wheel", (e) => {
+  if (!e.ctrlKey) return;
+  e.preventDefault();
+  if (e.timeStamp - wheelZoomAt < 140) return;  // dokunmatik yüzeyde sıkıştırma saniyede onlarca olay yollar
+  wheelZoomAt = e.timeStamp;
+  setZoom(zoom + (e.deltaY < 0 ? 0.1 : -0.1));
+}, { passive: false });
+
 document.addEventListener("keydown", (e) => {
   const mod = e.ctrlKey || e.metaKey;
+  if (mod && e.shiftKey && e.key.toLowerCase() === "e") { e.preventDefault(); toggleWide(); return; }
+  // Tuşun yerine (e.code) değil ürettiği karaktere bakılır: Türkçe Q klavyede "-" tuşu ABD düzeninin "=" yerinde
+  // durduğu için Ctrl+- büyütüyordu. AltGr (Windows'ta Ctrl+Alt) hariç: yoksa AltGr+0, AltGr+* ve AltGr+- ile
+  // yazılan } \ | karakterleri yakınlaştırmaya gidip yazılamıyordu.
+  if (mod && !e.altKey) {
+    const isPlus = e.key === "+" || e.key === "=" || e.code === "NumpadAdd";
+    const isMinus = e.key === "-" || e.key === "_" || e.code === "NumpadSubtract";
+    const isZero = e.key === "0" || e.code === "Numpad0";
+    if (isPlus) { e.preventDefault(); setZoom(zoom + 0.1); return; }
+    if (isMinus) { e.preventDefault(); setZoom(zoom - 0.1); return; }
+    if (isZero) { e.preventDefault(); setZoom(1); return; }
+  }
   if (mod && !e.shiftKey && e.key.toLowerCase() === "k") { e.preventDefault(); $("#palette").hidden ? openPalette() : closePalette(); return; }
   if (mod && e.shiftKey && e.key.toLowerCase() === "p") { e.preventDefault(); openPalette(); return; }
   if (mod && e.key.toLowerCase() === "j") { e.preventDefault(); togglePanel(); return; }

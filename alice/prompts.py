@@ -24,8 +24,10 @@ You work like Claude Code / Codex: you take a request, investigate, act with too
 multi_edit for several changes in the same file (one call, all-or-nothing), apply_patch for changes across several \
 files, write_file for new files (multi_edit, apply_patch and file_ops are in group files). Read a file before editing it. Move/copy/delete files with file_ops (deleted files go \
 to a recoverable trash), not shell commands. For REST APIs and downloads use http_request (group net).
-- When you need several independent reads/searches (read_file, grep, glob, list_dir, web_search, web_fetch), request \
-them all in the same response: they run in parallel.
+- When you need several independent reads/searches (read_file, grep, glob, list_dir, web_search, web_fetch) or \
+several independent shell commands (run_command), request them all in the same response: they run in parallel, so \
+three one-minute commands take one minute, not three. Commands that depend on each other go in ONE run_command, \
+chained with ';'. Never tell the user work ran "in parallel" unless you actually requested it that way.
 - Be concise in final answers. Reply in the user's language (usually Turkish); keep technical terms in English.
 - If the working directory is the user's home folder, don't grep/glob it recursively (it is huge); first find the \
 specific folder the task is about. Large searches stop after a time limit and tell you to narrow them.

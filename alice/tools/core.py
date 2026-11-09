@@ -173,6 +173,9 @@ class Schedule(Tool):
                    "birinin anlayacağı gibi yaz."},
         "description": {"type": "string", "description": "Kısa ad, ör. 'sabah hava durumu'."},
         "catch_up": {"type": "boolean", "description": "Bilgisayar kapalıyken kaçırılırsa açılışta yap. Varsayılan true."},
+        "once": {"type": "boolean", "description": "Tek seferlik iş ('5 dakika sonra ara', 'yarın 17:00'de hatırlat'): "
+                 "true ver, cron'a tam dakika/saat/gün/ay yaz. Çalışınca kendiliğinden silinir; tekrarlanan işlerde "
+                 "false (varsayılan)."},
         "notify": {"type": "boolean", "description": "Bitince sonucu bildir. Varsayılan true."},
     }, ["action"])
     risk = DANGER
@@ -192,7 +195,8 @@ class Schedule(Tool):
         return super().summary(args)
 
     def run(self, ctx: ToolContext, action: str, id: str | None = None, cron: str | None = None,
-            prompt: str | None = None, description: str = "", catch_up: bool = True, notify: bool = True) -> ToolResult:
+            prompt: str | None = None, description: str = "", catch_up: bool = True, notify: bool = True,
+            once: bool = False) -> ToolResult:
         from alice.core.schedule import ScheduledTask, TaskStore
 
         ts = TaskStore()
@@ -203,7 +207,7 @@ class Schedule(Tool):
                 raise ToolError("add için cron ve prompt gerekli")
             try:
                 task = ScheduledTask(cron=cron, prompt=prompt, description=description, catch_up=catch_up,
-                                     notify=notify, created=time.time())
+                                     notify=notify, once=bool(once), created=time.time())
             except ValueError as e:
                 raise ToolError(str(e)) from e
             ts.add(task)

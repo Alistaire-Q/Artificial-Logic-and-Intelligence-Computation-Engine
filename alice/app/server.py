@@ -207,13 +207,19 @@ def _user_text(m: dict[str, Any]) -> str:
     return c or ""
 
 
-def display_history(messages: list[dict[str, Any]], tools: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+def display_history(messages: list[dict[str, Any]], tools: dict[str, Any] | None = None,
+                    archive: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
     """Mesaj geçmişini arayüzün çizebileceği öğelere çevir. Kullanıcı mesajları geri sarma için
-    ajan geçmişindeki indekslerini (mi) taşır."""
+    ajan geçmişindeki indekslerini (mi) taşır.
+
+    archive: özetlemeyle bağlamdan çıkmış eski mesajlar (bkz. session.archive). Başa eklenir; ajan geçmişinde
+    olmadıkları için indeksleri yoktur (geri sarılamazlar)."""
     from alice.agent import PLAN_NOTE
 
-    results = {m.get("tool_call_id"): m.get("content", "") for m in messages if m.get("role") == "tool"}
     items: list[dict[str, Any]] = []
+    if archive:
+        items = [{k: v for k, v in it.items() if k != "mi"} for it in display_history([{"role": "system"}, *archive], tools)]
+    results = {m.get("tool_call_id"): m.get("content", "") for m in messages if m.get("role") == "tool"}
     for i, m in enumerate(messages):
         role = m.get("role")
         content = m.get("content")
@@ -222,7 +228,8 @@ def display_history(messages: list[dict[str, Any]], tools: dict[str, Any] | None
                 continue
             text = _user_text(m)
             if text.startswith("[Önceki konuşmanın özeti]"):
-                items.append({"type": "info", "text": "önceki konuşma özetlendi"})
+                items.append({"type": "info", "text": "buradan öncesi özetlendi: ALICE yukarıdakileri özet olarak "
+                              "hatırlıyor" if items else "önceki konuşma özetlendi"})
             elif not text.startswith("[eski ekran görüntüsü"):
                 if text.startswith(PLAN_NOTE):
                     text = text[len(PLAN_NOTE):]
@@ -351,6 +358,7 @@ class Chat:
         if messages is not None:
             self.agent.messages = self.agent.messages[:1] + messages
         self.agent.on_step = self.save
+        self.agent.on_compact = lambda old: sess.archive(self.sid, old)  # özetlenen mesajlar ekranda kalsın
         self.queued = False
         self.abandoned = False  # durdurulamayan iş: thread'i bırakıldı, artık kaydetmez ve arayüze yazmaz
         self._jobs: queue.Queue = queue.Queue()
@@ -518,14 +526,15 @@ class AppState:
     def history_for(self, sid: str = "") -> list[dict[str, Any]]:
         """Görüntülenecek geçmiş: sid'in canlı sohbeti ya da diskteki kaydı; sid yoksa öndeki sohbet."""
         if not sid or sid == self.chat.sid:
-            return display_history(self.agent.messages, self.agent.tools)
+            return display_history(self.agent.messages, self.agent.tools, sess.load_archive(self.chat.sid))
         live = self.find_chat(sid)
         if live is not None:
-            return display_history(live.agent.messages, live.agent.tools)
+            return display_history(live.agent.messages, live.agent.tools, sess.load_archive(live.sid))
         loaded = sess.load(sid) if self._SID_RX.fullmatch(sid) else None
         if not loaded:
             return []
-        return display_history([{"role": "system", "content": ""}, *loaded[1]], self.agent.tools)
+        return display_history([{"role": "system", "content": ""}, *loaded[1]], self.agent.tools,
+                               sess.load_archive(loaded[0]))
 
     # ------------------------------------------------------------------ sohbet değiştirme
     def _make_room(self) -> str | None:
@@ -2132,7 +2141,7 @@ def make_handler(state: AppState):
                     ok = state.resume(str(d.get("id", "")))
                     return self._json({"ok": ok, "error": None if ok else "sohbet açılamadı (arkada çok fazla iş var "
                                        "ya da sohbet bulunamadı)",
-                                       "history": display_history(state.agent.messages, state.agent.tools),
+                                       "history": state.history_for(),
                                        **state.status()})
                 if p == "/api/dirs/mkdir":
                     from alice.app import folders
@@ -2158,7 +2167,7 @@ def make_handler(state: AppState):
                     return self._json({"ok": True, "note": note, **state.status()})
                 if p == "/api/rewind":
                     out = state.rewind(int(d.get("mi", -1)))
-                    return self._json({"ok": True, **out, "history": display_history(state.agent.messages, state.agent.tools),
+                    return self._json({"ok": True, **out, "history": state.history_for(),
                                        **state.status()})
                 if p == "/api/changes/revert":
                     ok = revert_change(state.agent.checkpoints, str(d.get("path", "")))
@@ -2171,6 +2180,7 @@ def make_handler(state: AppState):
                     f = sess.sessions_dir() / f"{sid}.json"
                     if sid and f.parent == sess.sessions_dir() and f.exists():
                         f.unlink()
+                        sess.archive_path(sid).unlink(missing_ok=True)
                         sess.set_meta(sid, title="", pinned=False)
                     return self._json({"ok": True})
                 if p in ("/api/session/rename", "/api/session/pin"):
@@ -2185,6 +2195,8 @@ def make_handler(state: AppState):
                     return self._json({"ok": True, **row})
                 if p == "/api/compact":
                     ok = state.agent.compact()
+                    if ok:
+                        state.chat.save()  # arşive geçen mesajlar oturum dosyasında da kalıp iki kez görünmesin
                     return self._json({"ok": ok, **state.status()})
                 if p == "/api/thinking":
                     from alice.config import set_config_value
@@ -2220,11 +2232,22 @@ def make_handler(state: AppState):
     return Handler
 
 
+class QuietHTTPServer(ThreadingHTTPServer):
+    """Tarayıcının/telefonun bağlantıyı kendi kapatması (sekme kapandı, sayfa yenilendi, ağ değişti) hata değildir.
+    Varsayılan sunucu her birinde çekirdek günlüğüne 20 satırlık iz döküyordu (bir günde 65 kez): gerçek hatalar
+    arada kayboluyordu."""
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        if isinstance(sys.exc_info()[1], (ConnectionError, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
+
+
 class AppServer:
     def __init__(self, state: AppState, port: int = 0, host: str = "127.0.0.1", owns_state: bool = True):
         self.state = state
         self.owns_state = owns_state  # çekirdekte hızlı bar/telefon ortak durumu kullanır: onu kapatmak sahibinin işi
-        self.httpd = ThreadingHTTPServer((host, port), make_handler(state))
+        self.httpd = QuietHTTPServer((host, port), make_handler(state))
         self.httpd.daemon_threads = True
         self._thread = threading.Thread(target=self.httpd.serve_forever, daemon=True, name="alice-http")
 

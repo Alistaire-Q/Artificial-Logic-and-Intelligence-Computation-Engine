@@ -41,7 +41,11 @@ def pick_window(wins: list[Any], title: str, text_of=lambda w: w.title or "", st
         raise ToolError("pencere başlığı boş olamaz")
     hits = [w for w in wins if want in fold(text_of(w))]
     if not hits:
-        raise ToolError(f"'{title}' başlıklı pencere yok")
+        # Açık pencereleri de söyle: model başlığı tahmin edip ("Setup - Sonora", "Setup - Sonora version 0.47.0")
+        # aynı hatayı tekrarlıyordu; doğru başlığı görünce tek seferde seçer.
+        names = list(dict.fromkeys(t.strip() for t in (text_of(w) for w in wins) if t and t.strip()))
+        seen = "; ".join(n[:60] for n in names[:12])
+        raise ToolError(f"'{title}' başlıklı pencere yok" + (f". Açık pencereler: {seen}" if seen else ""))
     for test in (lambda t: t == want, lambda t: t.startswith(want)):
         best = [w for w in hits if test(fold(text_of(w)).strip())]
         if best:

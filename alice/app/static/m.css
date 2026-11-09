@@ -196,6 +196,8 @@ body.kb #views { bottom: 0; }
 .opt .l small { color: var(--faint); font-size: 12.5px; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .opt .ck { color: var(--accent); width: 20px; height: 20px; }
 .opt.dim .l b { color: var(--faint); }
+.opt.new { color: var(--accent); font-weight: 600; }
+.opt.new .ic { width: 20px; height: 20px; }
 .btns { display: flex; gap: 8px; margin-top: 14px; }
 .btn { flex: 1; padding: 12px 0; border-radius: 14px; font-weight: 600; font-size: 15px; background: var(--sunken); text-align: center; }
 .btn.p { background: var(--text); color: var(--bg); }

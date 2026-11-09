@@ -729,6 +729,9 @@ class Router:
             pc = self.providers_cfg.get(provider)
             daily = getattr(e, "daily", False)
             wait = seconds_until_reset(provider, pc.base_url if pc else "") if daily else COOLDOWNS["quota"]
+            if e.retry_after and not daily:
+                # Sağlayıcı ne zaman açılacağını söyledi (ChatGPT: resets_in_seconds). Önceden yok sayılıyordu.
+                wait = min(max(float(e.retry_after), 60.0), 6 * 3600)
             self.cooldown_until[ref] = now + wait
             self.cooldown_kind[ref] = "quota"
             if daily and provider in ranking.ACCOUNT_QUOTA and ref.endswith(":free"):
@@ -769,7 +772,9 @@ class Router:
             n = self.strikes[ref] = self.strikes.get(ref, 0) + 1
             wait = base * 2 ** min(n - 1, 5)  # GLM-5.3 her 10 dk'da bir yine denenip 3 dk bekletiyordu
             if e.retry_after and e.kind == "rate_limit":
-                wait = e.retry_after
+                # Sağlayıcının söylediği süre esas; ama o süre dolunca yine 429 geliyorsa (Gemini kotası bitmişken
+                # "23 sn sonra dene" diyor) her seferinde aynı modele boşuna gidiliyordu: üst üste hatada katlanır.
+                wait = max(e.retry_after, base * 2 ** min(n - 2, 5)) if n > 1 else e.retry_after
             elif e.retry_after:
                 # 503 + Retry-After: sunucu ne zaman açılacağını söylüyor. Önceden yok sayılıp 30 sn sonra yine
                 # aynı modele gidiliyor, her seferinde boşuna bir istek ve bekleme harcanıyordu.

@@ -39,7 +39,7 @@ def task_view(t: ScheduledTask) -> dict[str, Any]:
         nxt = "hiç gelmiyor"
     return {"id": t.id, "text": t.description or t.prompt[:80], "prompt": t.prompt, "when": Cron(t.cron).describe(),
             "cron": t.cron, "next": nxt, "last": _when(t.last_run), "result": t.last_result[:600],
-            "catch_up": t.catch_up, "enabled": t.enabled, "pending": t.pending}
+            "catch_up": t.catch_up, "once": t.once, "enabled": t.enabled, "pending": t.pending}
 
 
 def open_file(path: Path) -> None:

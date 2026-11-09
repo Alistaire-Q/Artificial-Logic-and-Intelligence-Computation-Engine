@@ -184,8 +184,11 @@ class Reflex(Tool):
         "- Klavye işi tek adımdır: hesap makinesinde tuşlara tıklatma, text='1234*5678=', press_first=['escape'] "
         "ver; kombinasyonları keys'e yaz.\n"
         "- Uygulama açmaz: önce app/windows aracıyla aç, sonra title ver (boşsa öndeki pencere).\n"
-        "- Büyük işlerde sen planla: işi kısa hedeflere böl, her biri için reflex çağır; oyun kuralları, strateji "
-        "ya da ekranda neyin ne olduğunu notes'a yaz (İngilizce daha iyi).\n"
+        "- En iyi tek işlik hedefte çalışır (bir menü, bir alan, bir tuş, bir pencere). Birkaç iş içeren hedefi "
+        "kendi içinde adımlara böler ve sırayla yapar; yine de uzun işi sen kısa hedeflere bölüp her biri için ayrı "
+        "çağırırsan hangi adımda kalındığını görür, sonucu arada doğrulayabilirsin. Oyun kuralları, strateji ya da "
+        "ekranda neyin ne olduğunu notes'a yaz (İngilizce daha iyi).\n"
+        "- Sonuç 'steps_done' ise adımlar yapıldı ama hedefin bütünü doğrulanmadı: sonuca kendin bak.\n"
         "- Sonuç 'needs_help' ise nedenine bak; hedefi değiştir, notes'a bilgi ekle ya da kalanı kendin yap.\n"
         "- TypeSafe anahtarı varsa listede olmayan şeyleri (ikon, oyun taşı) ekran görüntüsünden de bulabilir."
     )
@@ -220,7 +223,8 @@ class Reflex(Tool):
             keys: list[str] | None = None, hold_seconds: float | None = None,
             press_first: list[str] | None = None, allow_irreversible: bool = False) -> ToolResult:
         from alice.config import alice_home
-        from alice.reflex.agent import ScreenAgent, make_consultant, make_translator
+        from alice.reflex.agent import (ScreenAgent, make_consultant, make_planner, make_translator,
+                                        multi_part_goal)
         from alice.reflex.loop import make_text_writer
         from alice.reflex.observers import BrowserObserver, DesktopObserver
 
@@ -236,11 +240,18 @@ class Reflex(Tool):
             observer.hold_seconds = max(0.05, min(float(hold_seconds), 10.0))
         loop.allow_irreversible = bool(allow_irreversible)
         loop.consult = make_consultant(ctx.router)  # takılınca içeriden danış, ana modele tam tur harcatma
+        if ((getattr(ctx.config, "data", None) or {}).get("reflex", {}) or {}).get("plan", True):
+            loop.plan = make_planner(ctx.router)  # çok parçalı hedef adımlara bölünür, her adım ayrı doğrulanır
         extra = {k: v for k, v in (("text", text), ("keys", keys), ("press_first", press_first)) if v}
         res = loop.run(goal, max_steps=max_steps, inputs=inputs, notes=notes or "", **extra)
-        verdict = reflex_verdict(getattr(res, "status", ""))
-        return ToolResult(res.report() + ("\n" + verdict if verdict else ""),
-                          is_error=getattr(res, "status", "") == "error")
+        status = getattr(res, "status", "")
+        verdict = reflex_verdict(status)
+        if status in ("max_steps", "needs_help") and multi_part_goal(goal) and "planın" not in getattr(res, "reason", ""):
+            # Uzun hedef tek parça denendi ve bitmedi: ana model aynı uzun hedefi yeniden yollamasın.
+            verdict += ("\nBu hedef birkaç iş içeriyordu. Aynısını tekrar yollama: yukarıdaki adımlara bakıp nerede "
+                        "kaldığını bul ve kalanını tek işlik kısa hedeflerle (her çağrıda bir menü, bir alan, bir tuş) "
+                        "sırayla çağır.")
+        return ToolResult(res.report() + ("\n" + verdict if verdict else ""), is_error=status == "error")
 
 
 def reflex_verdict(status: str) -> str:
@@ -252,6 +263,9 @@ def reflex_verdict(status: str) -> str:
             "likely_done": "SONUÇ: son eylem ekranı değiştirdi ve karar motoru hedefin büyük ihtimalle yapıldığını "
                            "düşünüyor ama emin değil. Bir ekran görüntüsüyle (ya da dosyaya bakarak) doğrula, sonra "
                            "kullanıcıya söyle.",
+            "steps_done": "SONUÇ: hedef adımlara bölündü ve adımlar sırayla yapıldı; hedefin bütününün gerçekleştiği "
+                          "ayrıca doğrulanmadı. Sonuca kendin bak (dosya oluştu mu, pencere ne gösteriyor), sonra "
+                          "kullanıcıya söyle; doğrulamadan 'yaptım' deme.",
             "needs_help": "SONUÇ: hedef YAPILAMADI (karar motoru cevap verdi ama yol bulamadı). Kullanıcıya başardı "
                           "deme; kalanını kendin yap ya da nedenini söyle.",
             "acted": "SONUÇ: bir eylem yapıldı ve ekran değişti; istenenin olup olmadığı ayrıca doğrulanmalı.",

@@ -53,6 +53,9 @@ finish_nudges = 2
 # sonuca eklenir (observe_outcomes).
 verify_claims = true
 observe_outcomes = true
+# Model aynı cevapta birden çok run_command isterse (izin gerektirmeyenler) aynı anda çalışır. Aynı depoya ya da
+# paket yöneticisine dokunan komutlar (git, npm, pip, winget...) yine sırayla. false: komutlar hep tek tek.
+parallel_commands = true
 # web_search önce Google'da arasın (Gemini grounding, GEMINI_API_KEY): kaynaklı, güncel özet. Kota dolarsa ya da
 # hata verirse DuckDuckGo/Bing'e düşer.
 search_grounding = true

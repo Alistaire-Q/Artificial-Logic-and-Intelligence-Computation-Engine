@@ -226,6 +226,10 @@ def test_parse_task():
     reply = '{"cron": "0 23 * * 0", "prompt": "D:/Unity klasörünü yedekle", "catch_up": true}'
     t = parse_task("her pazar gece unity projelerimi yedekle", FakeRouter(reply))
     assert t.cron == "0 23 * * 0" and t.catch_up
+    assert not t.once
+    one = parse_task("yarın 17:00'de toplantıyı hatırlat", FakeRouter(
+        '{"cron": "0 17 10 11 *", "prompt": "Toplantıyı hatırlat", "catch_up": true, "once": true}'))
+    assert one.once
 
 
 # ------------------------------------------------------------------ service
@@ -294,6 +298,28 @@ def test_core_runs_due_task(tmp_path):
         time.sleep(0.05)
     assert core.tasks.get(t.id).last_result == "bitti: rapor yaz"
     assert any(x.kind == "task" for x in sent)
+
+
+def test_one_time_task_removes_itself_after_running(tmp_path):
+    """Canlı kayıt (7 Kasım): "beni 1 dakika sonra ara" görevi '56 3 7 11 *' cron'uyla listede kaldı; her yıl yeniden
+    arayacaktı ve silmesi kullanıcıya kaldı."""
+    import time
+
+    core, sent = make_core(tmp_path, run_agent=lambda prompt: "aradım")
+    core.modes.forced = None
+    core.monitors[0].processes = set()
+    now = 1_760_000_000
+    once = core.tasks.add(ScheduledTask("* * * * *", "kullanıcıyı ara", created=now - 100, once=True))
+    keep = core.tasks.add(ScheduledTask("* * * * *", "rapor yaz", created=now - 100))
+    assert "tek sefer" in once.summary() and "tek sefer" not in keep.summary()
+    core.tick(now)
+    for _ in range(100):
+        if not core.running_tasks and core.tasks.get(once.id) is None:
+            break
+        time.sleep(0.05)
+    assert core.tasks.get(once.id) is None and core.tasks.get(keep.id) is not None
+    assert TaskStore(tmp_path / "tasks.json").get(once.id) is None  # diskten de silindi
+    assert sum(x.kind == "task" for x in sent) == 2  # sonucu yine bildirildi
 
 
 # -------------------------------------------------------------------- tools
