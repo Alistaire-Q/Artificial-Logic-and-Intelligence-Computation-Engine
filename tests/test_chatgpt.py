@@ -275,7 +275,10 @@ def test_models_fetched_later_if_login_was_before_list_existed(monkeypatch):
     cfg = make_config({"brain": ["a:m"]}, {"chatgpt": default_config_dict()["providers"]["chatgpt"]})
     router = Router(cfg, provider_factory=lambda p: None, auto_cache={})
     view = {p["name"]: p for p in router.catalog_view()}
-    assert view["chatgpt"]["loading"] and view["chatgpt"]["models"] == []
+    # Liste arka planda okunur: hızlı makinede deneme bu satırdan önce bitip hatasını yazmış olabilir (CI'da arada
+    # bir öyle oluyordu); ikisi de doğru durum.
+    assert view["chatgpt"]["models"] == []
+    assert view["chatgpt"]["loading"] or "404" in (view["chatgpt"].get("error") or "")
     for _ in range(50):
         if chatgpt.models_error():
             break
