@@ -70,7 +70,10 @@ def test_rate_limited_key_waits_and_next_key_answers(pc):
     assert rows[0]["state"] == "beklemede" and rows[0]["preview"] == "••••1111" and "m" in rows[0]["waiting"]
 
 
-def test_daily_quota_is_remembered_across_restarts(pc):
+def test_daily_quota_is_remembered_across_restarts(pc, monkeypatch):
+    # Sıfırlanmaya 10 dakikadan az kalmışsa (Pasifik gece yarısından hemen önce) kayıt bilerek yazılmıyor; test günün
+    # saatine bağlı kalmasın (CI 07:58 UTC'de düştü).
+    monkeypatch.setattr("alice.providers.router.seconds_until_reset", lambda *a, **k: 5 * 3600.0)
     FakeClient.plan = {"key-one-1111": [ProviderError("quota", "per day", 429, daily=True)]}
     KeyPool(pc, FakeClient, strategy="fill-first").chat("m", [])
     again = KeyPool(pc, FakeClient, strategy="fill-first")  # yeniden başladı
