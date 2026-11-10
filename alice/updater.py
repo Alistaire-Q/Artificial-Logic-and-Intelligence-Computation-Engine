@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -53,6 +54,12 @@ from alice.config import alice_home
 REPO = "hayatexe/Artificial-Logic-and-Intelligence-Computation-Engine"
 API = "https://api.github.com"
 NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
+WINDOWS = sys.platform == "win32"
+REMOTE_URL = f"https://github.com/{REPO}.git"
+# Windows kurulumunun (ALICE-Setup.exe) hangi commit'ten derlendiği. Kurulumda .git yoksa depo bu commit'ten yeniden
+# kurulur (dosyalara dokunmadan), böylece exe ile kurulan ALICE de kendini güncelleyebilir.
+BUILD_FILE = ".alice-build"
+GIT_INSTALL_RETRY = 86400.0  # saniye: winget ile Git kurulamadıysa en erken bu kadar sonra tekrar denenir
 DEFAULTS: dict[str, Any] = {
     "mode": "auto",              # auto | notify | off
     "branch": "main",
@@ -120,9 +127,44 @@ def _git(args: list[str], cwd: Path, timeout: float = 30.0) -> tuple[int, str]:
     return _git_run(args, cwd, timeout, env)
 
 
+def git_exe() -> str | None:
+    """git'in yolu. Exe kurulumunda Git winget ile yeni kurulmuşsa PATH'e henüz girmemiş olur (kurulumun hemen ardından
+    açılan ALICE eski PATH'le çalışır): o zaman Git'in bilinen kurulum klasörlerine bakılır."""
+    found = shutil.which("git")
+    if found or not WINDOWS:
+        return found
+    for env in ("LOCALAPPDATA", "ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"):
+        base = os.environ.get(env)
+        if not base:
+            continue
+        root = Path(base, "Programs", "Git") if env == "LOCALAPPDATA" else Path(base, "Git")
+        for exe in (root / "cmd" / "git.exe", root / "bin" / "git.exe"):
+            if exe.is_file():
+                return str(exe)
+    return None
+
+
+def ensure_git() -> str | None:
+    """Git yoksa (Windows, winget varsa) kullanıcıya özel kur; günde en çok bir deneme."""
+    exe = git_exe()
+    if exe or not WINDOWS:
+        return exe
+    winget = shutil.which("winget")
+    if not winget or time.time() - float(read_state().get("git_install_tried") or 0) < GIT_INSTALL_RETRY:
+        return None
+    write_state(git_install_tried=time.time())
+    try:
+        subprocess.run([winget, "install", "-e", "--id", "Git.Git", "--scope", "user", "--silent",
+                        "--accept-package-agreements", "--accept-source-agreements"], capture_output=True,
+                       timeout=900, creationflags=NO_WINDOW)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return git_exe()
+
+
 def _git_run(args: list[str], cwd: Path, timeout: float, env: dict[str, str]) -> tuple[int, str]:
     try:
-        r = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, encoding="utf-8",
+        r = subprocess.run([git_exe() or "git", *args], cwd=str(cwd), capture_output=True, text=True, encoding="utf-8",
                            errors="replace", timeout=timeout, env=env, creationflags=NO_WINDOW)
     except FileNotFoundError:
         return 127, "git bulunamadı"
@@ -143,6 +185,64 @@ def repo_dir() -> Path | None:
         return None
     top = Path(out.strip().splitlines()[-1]) if out.strip() else root
     return top if (top / "alice" / "__init__.py").exists() else None
+
+
+def install_root() -> Path | None:
+    """ALICE'in kaynak klasörü (editable kurulum: klon ya da exe'nin kurduğu klasör)."""
+    root = Path(__file__).resolve().parent.parent
+    return root if (root / "alice" / "__init__.py").exists() and (root / "pyproject.toml").exists() else None
+
+
+def bootstrap_repo(root: Path, branch: str = "main") -> tuple[Path | None, str]:
+    """Kurulumda .git yoksa depoyu kurulumun derlendiği commit'ten (BUILD_FILE) yeniden kur. Çalışma dosyalarına
+    dokunulmaz: yalnız geçmiş indirilir ve dizin o commit'e bağlanır; sonraki güncellemeler normal yoldan çekilir."""
+    try:
+        sha = (root / BUILD_FILE).read_text(encoding="utf-8").strip()
+    except OSError:
+        sha = ""
+    if not sha:
+        return None, ""
+    # HEAD ayarlardaki dala bağlanır: başka dalda kalırsa otomatik güncelleme "depo 'main' dalında" diye durur.
+    steps = [["init", "-q"], ["symbolic-ref", "HEAD", f"refs/heads/{branch}"], ["remote", "add", "origin", REMOTE_URL],
+             ["fetch", "--depth", "1", "origin", sha], ["reset", "-q", "--mixed", "FETCH_HEAD"]]
+    if WINDOWS:
+        steps.insert(1, ["config", "core.autocrlf", "true"])  # kurulumdaki dosyalar CRLF: "değişmiş" görünmesin
+    for args in steps:
+        code, out = _git(args, root, timeout=300 if args[0] == "fetch" else 30)
+        if code != 0:
+            shutil.rmtree(root / ".git", ignore_errors=True)  # yarım depo kalmasın, sonraki kontrol baştan denesin
+            return None, f"git {args[0]} başarısız: {out.strip()[-200:]}"
+    return repo_dir(), ""
+
+
+def _find_repo(branch: str = "main") -> tuple[Path | None, str]:
+    """Depo yoksa sebebini bul ve düzeltilebiliyorsa düzelt: Git'i bul/kur, eksik .git'i yeniden kur."""
+    repo = repo_dir()
+    if repo is not None:
+        return repo, ""
+    root = install_root()
+    if root is None:
+        return None, f"ALICE git deposundan kurulmamış; güncelleme için depoyu klonla (git clone https://github.com/{REPO})"
+    if ensure_git() is None:
+        return None, ("Git bulunamadı; otomatik güncelleme için Git gerekiyor. Git'i kur (winget install Git.Git "
+                      "ya da git-scm.com) ve ALICE'i yeniden aç")
+    # Uygulama ve çekirdek aynı anda buraya girebilir: biri .git'i kurarken öbürü yarım depoyu silmesin.
+    try:
+        with update_lock():
+            repo = repo_dir()  # kilidi beklerken başka süreç kurmuş olabilir
+            if repo is not None:
+                return repo, ""
+            if (root / ".git").exists():
+                return None, f"{root} bir git deposu ama git onu okuyamadı"
+            repo, err = bootstrap_repo(root, branch)
+    except UpdateBusy as e:
+        return None, f"{e}; birazdan tekrar denenecek"
+    if repo is not None:
+        return repo, ""
+    if err:
+        return None, f"güncelleme geçmişi indirilemedi ({err}); internet bağlantını kontrol et"
+    return None, (f"ALICE git deposundan kurulmamış; güncelleme için depoyu klonla (git clone https://github.com/{REPO}) "
+                  "ya da en son ALICE-Setup.exe'yi kur")
 
 
 def local_commit(repo: Path) -> str:
@@ -414,11 +514,10 @@ def consume_announcement(who: str) -> dict[str, Any] | None:
 def check(cfg: Any = None, timeout: float | None = None, details: bool = True) -> UpdateInfo:
     """Yeni commit var mı? Ağ turu: 1 (ls-remote) + ayrıntı istenirse 2 anahtarsız API çağrısı."""
     s = settings(cfg)
-    repo = repo_dir()
-    if repo is None:
-        return UpdateInfo(error="ALICE git deposundan kurulmamış; güncelleme için depoyu klonla "
-                                f"(git clone https://github.com/{REPO})")
     branch = str(s.get("branch") or "main")
+    repo, why = _find_repo(branch)
+    if repo is None:
+        return UpdateInfo(error=why)
     info = UpdateInfo(repo=repo, branch=branch, local=local_commit(repo), running=_RUNNING or "")
     info.remote, info.error = remote_head(repo, branch, float(timeout or s.get("startup_timeout") or 12))
     info.bad = bool(info.remote) and info.remote in (read_state().get("bad") or [])

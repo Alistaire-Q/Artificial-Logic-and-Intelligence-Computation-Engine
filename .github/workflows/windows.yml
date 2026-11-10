@@ -37,6 +37,10 @@ jobs:
           robocopy . dist\app /E /XD android dist .claude /XF bubblewrap-*.zip /NFL /NDL /NJH /NJS /NP
           if ($LASTEXITCODE -ge 8) { exit $LASTEXITCODE }
           git -C dist\app remote set-url origin "https://github.com/$env:GITHUB_REPOSITORY.git"
+          # Git, Windows'ta .git'i gizli yapıyor; kuruluma kesin girsin. Girmezse kurulan ALICE depoyu bu commit'ten
+          # yeniden kurar (alice/updater.py, BUILD_FILE).
+          attrib -h dist\app\.git
+          Set-Content -NoNewline -Encoding ascii dist\app\.alice-build $env:GITHUB_SHA
           exit 0
       - name: Derle (Inno Setup)
         shell: pwsh
