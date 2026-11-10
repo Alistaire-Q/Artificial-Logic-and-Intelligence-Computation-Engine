@@ -184,11 +184,8 @@ class Reflex(Tool):
         "- Klavye işi tek adımdır: hesap makinesinde tuşlara tıklatma, text='1234*5678=', press_first=['escape'] "
         "ver; kombinasyonları keys'e yaz.\n"
         "- Uygulama açmaz: önce app/windows aracıyla aç, sonra title ver (boşsa öndeki pencere).\n"
-        "- En iyi tek işlik hedefte çalışır (bir menü, bir alan, bir tuş, bir pencere). Birkaç iş içeren hedefi "
-        "kendi içinde adımlara böler ve sırayla yapar; yine de uzun işi sen kısa hedeflere bölüp her biri için ayrı "
-        "çağırırsan hangi adımda kalındığını görür, sonucu arada doğrulayabilirsin. Oyun kuralları, strateji ya da "
-        "ekranda neyin ne olduğunu notes'a yaz (İngilizce daha iyi).\n"
-        "- Sonuç 'steps_done' ise adımlar yapıldı ama hedefin bütünü doğrulanmadı: sonuca kendin bak.\n"
+        "- En iyi tek işlik hedefte çalışır: uzun işi kısa hedeflere böl, her biri için ayrı çağır; kuralları, "
+        "stratejiyi notes'a yaz.\n"
         "- Sonuç 'needs_help' ise nedenine bak; hedefi değiştir, notes'a bilgi ekle ya da kalanı kendin yap.\n"
         "- TypeSafe anahtarı varsa listede olmayan şeyleri (ikon, oyun taşı) ekran görüntüsünden de bulabilir."
     )
