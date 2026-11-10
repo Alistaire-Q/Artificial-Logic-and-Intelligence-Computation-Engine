@@ -884,6 +884,14 @@ def test_read_only_goal_never_touches_the_screen():
     assert res.status == "done" and obs.acts == [] and "Uydurma bir savunma" in res.reason
 
 
+def test_read_only_goal_does_not_press_keys_either():
+    """Review: "tuşa basma" yasağı tıklamayı engelliyordu ama Jev Enter/Escape seçerse ekran yine değişiyordu."""
+    obs = FakeScreen()
+    res = ScreenAgent(obs, Brain([{"action": "press_key", "key": "escape"}]), translate=lambda g: g,
+                      settle=0).run("Durumu oku, hiçbir tuşa basma")
+    assert res.status == "needs_help" and obs.acts == []
+
+
 def test_typing_into_a_button_is_refused():
     """Canlı kayıt (9 Kasım): Chrome'da Google'ın kod kutusu listede yoktu; "361819 yaz" için 'Next' yazısı seçildi,
     tıklanıp kod hiçbir yere yazılmadan form gönderildi."""

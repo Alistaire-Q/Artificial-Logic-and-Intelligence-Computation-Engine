@@ -372,3 +372,38 @@ def test_single_account_limit_keeps_server_reset_time():
     with pytest.raises(ProviderError) as ei:
         p.chat("gpt-5.5", [{"role": "user", "content": "x"}])
     assert ei.value.kind == "quota" and ei.value.retry_after == 7200
+
+
+def test_rate_limit_is_short_cooldown_not_quota():
+    """Review: geçici 429 hesabı bir saatliğine %100 dolu işaretliyordu; hepsi meşgulken hata 'quota' dönüyordu."""
+    chatgpt.save_auth(tokens())
+    chatgpt.save_auth(tokens(email="x@y.z", acc="acc2", refresh="r2"))
+    p = ChatGPTProvider(pc(), client=httpx.Client(transport=httpx.MockTransport(
+        lambda req: httpx.Response(429, text="slow down", headers={"retry-after": "5"}))))
+    with pytest.raises(ProviderError) as ei:
+        p.chat("gpt-5.5", [{"role": "user", "content": "x"}])
+    assert ei.value.kind == "rate_limit" and ei.value.retry_after <= chatgpt.RATE_COOLDOWN
+    for acc in chatgpt._store()["accounts"].values():
+        assert chatgpt._used(acc, time.time()) < 100.0  # kota dolu sayılmadı
+        assert acc["cooldown_until"] > time.time()  # yalnız kısa dinlenme
+
+
+def test_request_keeps_its_own_account_when_active_changes():
+    """Review: istek sürerken başka bir sohbet seçili hesabı değiştirirse limit yanlış hesaba yazılabiliyordu."""
+    chatgpt.save_auth(tokens(email="x@y.z", acc="acc2", refresh="r2"))
+    chatgpt.save_auth(tokens())  # seçili: acc1
+    seen = []
+
+    def handler(req):
+        seen.append(req.headers.get("chatgpt-account-id"))
+        if seen[-1] == "acc1":
+            chatgpt.use("acc2")  # istek akarken başka sohbet seçili hesabı değiştirdi
+            return _limit_429(7200)
+        return httpx.Response(200, content=sse({"type": "response.output_text.delta", "delta": "tamam"}))
+
+    p = ChatGPTProvider(pc(), client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert p.chat("gpt-5.5", [{"role": "user", "content": "x"}]).text == "tamam"
+    accs = chatgpt._store()["accounts"]
+    assert seen == ["acc1", "acc2"]
+    assert chatgpt._used(accs["acc1"], time.time()) >= 100.0  # dolu işareti isteği başlatan hesaba
+    assert chatgpt._used(accs["acc2"], time.time()) < 100.0

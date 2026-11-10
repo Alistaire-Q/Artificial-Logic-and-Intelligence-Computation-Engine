@@ -115,8 +115,8 @@ NO_TOUCH_RX = re.compile(
     r"(hi[çc]bir|herhangi bir)\s+(şeye|seye|düğmeye|dugmeye|kontrole|yere|tuşa|tusa)\s*(de\s+)?(bas|tıkla|tikla|dokun)|"
     r"\b(tıklamadan|tiklamadan|dokunmadan)\b|"
     r"\b(do not|don't|dont|without|never)\s+(click|touch|press)(ing)?\b|\bread[- ]only\b", re.I)
-TOUCHING = ("click", "double_click", "right_click", "type_text", "type_keys", "drag", "draw_across", "hold_key",
-            VISUAL_ACTION, VISUAL_DRAG)
+TOUCHING = ("click", "double_click", "right_click", "type_text", "type_keys", "press_key", "drag", "draw_across",
+            "hold_key", VISUAL_ACTION, VISUAL_DRAG)  # press_key: Enter/Escape da ekranı değiştirir
 # Yazı alanı olmayan, basılınca iş yapan denetimler: "buraya yaz" denince tıklanırlarsa form gönderilir.
 BUTTON_ROLES = ("button", "hyperlink", "menuitem", "tabitem", "checkbox", "radiobutton", "splitbutton", "a")
 BUTTON_WORDS = {"next", "ileri", "sonraki", "devam", "continue", "ok", "tamam", "kaydet", "save", "submit", "gönder",

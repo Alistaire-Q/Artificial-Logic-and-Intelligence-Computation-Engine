@@ -222,6 +222,15 @@ def test_due_and_catch_up(tmp_path):
     assert store.due(ts("2026-10-08T10:01")) == []
 
 
+def test_missed_one_time_task_without_catch_up_is_dropped(tmp_path):
+    """Review: telafi edilmeyecek tek seferlik görev atlanınca listede kalıyor, cron aynı günü ertesi yıl
+    yeniden tetikliyordu."""
+    store = TaskStore(tmp_path / "tasks.json")
+    t = store.add(ScheduledTask("0 17 10 11 *", "hatırlat", created=ts("2026-11-09T12:00"), catch_up=False, once=True))
+    assert store.due(ts("2026-11-11T09:00")) == []
+    assert store.get(t.id) is None and TaskStore(tmp_path / "tasks.json").get(t.id) is None
+
+
 def test_parse_task():
     reply = '{"cron": "0 23 * * 0", "prompt": "D:/Unity klasörünü yedekle", "catch_up": true}'
     t = parse_task("her pazar gece unity projelerimi yedekle", FakeRouter(reply))

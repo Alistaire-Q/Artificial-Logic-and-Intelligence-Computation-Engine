@@ -215,10 +215,12 @@ class TaskStore:
 
     def due(self, now: float | None = None, grace: float = 600) -> list[tuple[ScheduledTask, bool]]:
         """Vadesi gelen görevler: (görev, telafi mi). Kaçırılmış ve catch_up kapalı olanların
-        last_run'ı sessizce ileri alınır ki bir sonraki zamanı beklesinler."""
+        last_run'ı sessizce ileri alınır ki bir sonraki zamanı beklesinler; tek seferlikse silinir (yoksa cron
+        aynı günü ertesi yıl yeniden üretir)."""
         now = time.time() if now is None else now
         out = []
         changed = False
+        missed_once: set[str] = set()
         for t in self.tasks:
             if t.pending:
                 out.append((t, False))
@@ -233,10 +235,15 @@ class TaskStore:
                 continue
             late = now - nxt > grace
             if late and not t.catch_up:
-                t.last_run = now
+                if t.once:
+                    missed_once.add(t.id)
+                else:
+                    t.last_run = now
                 changed = True
                 continue
             out.append((t, late))
+        if missed_once:
+            self.tasks = [t for t in self.tasks if t.id not in missed_once]
         if changed:
             self.save()
         return out
