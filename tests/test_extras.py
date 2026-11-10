@@ -171,3 +171,90 @@ def test_parallel_skips_tools_needing_permission(workdir):
     agent, _, ui = make_agent([calls, "tamam"], workdir)
     agent.run_turn("x")
     assert ("ask", "run_command") in ui.events
+
+
+def _cmd(cid, command, **extra):
+    import json
+
+    return {"id": cid, "type": "function",
+            "function": {"name": "run_command", "arguments": json.dumps({"command": command, **extra})}}
+
+
+def test_independent_commands_in_one_reply_run_at_the_same_time(workdir, monkeypatch):
+    """Canlı kayıt (8 Kasım): "paralel yap işleri" denince model üç komutu aynı cevapta istedi ama komutlar tek tek
+    çalıştı; toplam süre üçünün toplamı oldu."""
+    import threading
+    import time
+
+    from alice.tools import shell
+    from alice.tools.base import ToolResult
+
+    seen = {"active": 0, "max": 0, "order": []}
+    lock = threading.Lock()
+
+    def fake_run(self, ctx, command, **kw):
+        with lock:
+            seen["active"] += 1
+            seen["max"] = max(seen["max"], seen["active"])
+            seen["order"].append(command)
+        time.sleep(0.3)
+        with lock:
+            seen["active"] -= 1
+        return ToolResult(f"çıkış kodu 0 {command}")
+
+    monkeypatch.setattr(shell.RunCommand, "run", fake_run)
+    calls = {"content": "", "tool_calls": [_cmd("a", "python a.py"), _cmd("b", "python b.py"), _cmd("c", "node c.js")]}
+    agent, _, ui = make_agent([calls, "bitti"], workdir, mode="auto")
+    t0 = time.monotonic()
+    agent.run_turn("üçünü paralel çalıştır")
+    assert seen["max"] == 3 and time.monotonic() - t0 < 0.8  # sırayla olsa 0.9 sn
+    tool_msgs = [m for m in agent.messages if m["role"] == "tool"]
+    assert [m["tool_call_id"] for m in tool_msgs] == ["a", "b", "c"]  # sonuçlar istenen sırayla döner
+    assert [m["content"] for m in tool_msgs] == [f"çıkış kodu 0 {c}" for c in ("python a.py", "python b.py", "node c.js")]
+
+    # Aynı depoya dokunan iki git komutu ve iki kurulum yan yana çalışmaz (index.lock, yarım kurulum)
+    seen.update(active=0, max=0, order=[])
+    calls = {"content": "", "tool_calls": [_cmd("g1", "git add -A"), _cmd("g2", "git commit -m x")]}
+    agent, _, ui = make_agent([calls, "bitti"], workdir, mode="auto")
+    agent.run_turn("commit")
+    assert seen["max"] == 1 and seen["order"] == ["git add -A", "git commit -m x"]
+    run = shell.RunCommand()
+    assert run.exclusive_key({"command": "pip install x"}) == run.exclusive_key({"command": "cd a; npm install"}) != ""
+    assert run.exclusive_key({"command": "python -m pip install x"}) and not run.exclusive_key({"command": "python x.py"})
+
+    # ayar kapalıyken eskisi gibi tek tek
+    seen.update(active=0, max=0, order=[])
+    calls = {"content": "", "tool_calls": [_cmd("a", "python a.py"), _cmd("b", "python b.py")]}
+    agent, _, ui = make_agent([calls, "bitti"], workdir, mode="auto")
+    agent.config.data.setdefault("agent", {})["parallel_commands"] = False
+    assert not run.parallel_for(agent.ctx, {"command": "python a.py"})
+    agent.run_turn("x")
+    assert seen["max"] == 1
+
+
+def test_background_logs_never_share_a_file(workdir, monkeypatch):
+    import time
+
+    from alice.tools import shell
+
+    monkeypatch.setattr(time, "time", lambda: 1_800_000_000.0)  # aynı milisaniye
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    agent, _, _ = make_agent(["x"], workdir)
+    run = shell.RunCommand()
+    a = run.run(agent.ctx, "echo bir", background=True).text
+    b = run.run(agent.ctx, "echo iki", background=True).text
+    log = lambda t: t.split("log: ")[1].splitlines()[0]  # noqa: E731
+    assert log(a) != log(b)
+    for p in list(agent.ctx.state["bg_procs"].values()):
+        p.popen.wait(timeout=20)
+        p.log.unlink(missing_ok=True)
+
+
+def test_powershell_error_hints():
+    from alice.tools.shell import _ps_hint
+
+    assert "${ad}" in _ps_hint('"$p: $r"', "Variable reference is not valid. ':' was not followed by a valid "
+                                           "variable name character.")
+    assert "@{" in _ps_hint("$m = @@{ 'a' = 1 }", "Unrecognized token in source text.")
+    assert "write_file" in _ps_hint('& python.exe -c "print(d.get(1))"', "SyntaxError: f-string expression")
+    assert _ps_hint("git status", "fatal: not a git repository") == ""

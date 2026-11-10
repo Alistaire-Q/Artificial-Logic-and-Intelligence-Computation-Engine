@@ -275,7 +275,10 @@ def test_models_fetched_later_if_login_was_before_list_existed(monkeypatch):
     cfg = make_config({"brain": ["a:m"]}, {"chatgpt": default_config_dict()["providers"]["chatgpt"]})
     router = Router(cfg, provider_factory=lambda p: None, auto_cache={})
     view = {p["name"]: p for p in router.catalog_view()}
-    assert view["chatgpt"]["loading"] and view["chatgpt"]["models"] == []
+    # Liste arka planda okunur: hızlı makinede deneme bu satırdan önce bitip hatasını yazmış olabilir (CI'da arada
+    # bir öyle oluyordu); ikisi de doğru durum.
+    assert view["chatgpt"]["models"] == []
+    assert view["chatgpt"]["loading"] or "404" in (view["chatgpt"].get("error") or "")
     for _ in range(50):
         if chatgpt.models_error():
             break
@@ -324,3 +327,94 @@ def test_empty_list_is_an_error_and_manual_add_works(monkeypatch):
     assert not panel.action("chatgpt_model_add", {"name": "  "})["ok"]
     assert panel.action("chatgpt_model_add", {"name": "gpt-5.5"})["models"] == ["gpt-5.5"]
     assert chatgpt.models_state() == "ok" and chatgpt.cached_models() == ["gpt-5.5"]
+
+
+def _limit_429(secs=1348566):
+    return httpx.Response(429, json={"error": {"type": "usage_limit_reached", "message": "The usage limit has been "
+                                               "reached", "plan_type": "free", "resets_in_seconds": secs}})
+
+
+def test_limited_account_switches_to_a_free_one():
+    """Canlı kayıt (9 Kasım): seçili hesap limite takılınca kayıtlı boş hesap dururken hata verip Gemini'ye düşüyordu."""
+    chatgpt.save_auth(tokens())
+    chatgpt.save_auth(tokens(email="x@y.z", acc="acc2", refresh="r2"))  # seçili: acc2
+    seen = []
+
+    def handler(req):
+        seen.append(req.headers.get("chatgpt-account-id"))
+        if seen[-1] == "acc2":
+            return _limit_429()
+        return httpx.Response(200, content=sse({"type": "response.output_text.delta", "delta": "tamam"}))
+
+    p = ChatGPTProvider(pc(), client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert p.chat("gpt-5.5", [{"role": "user", "content": "x"}]).text == "tamam"
+    assert seen == ["acc2", "acc1"] and chatgpt.load_auth()["email"] == "a@b.c"
+    # dolu hesabın sıfırlanması sunucunun söylediği süreyle kaydedildi; bir sonraki istek ona hiç gitmez
+    accs = chatgpt._store()["accounts"]
+    assert accs["acc2"]["limits"]["primary"]["reset_at"] > time.time() + 1_000_000
+    assert chatgpt.use("acc2") and p.chat("gpt-5.5", [{"role": "user", "content": "x"}]).text == "tamam"
+    assert seen == ["acc2", "acc1", "acc1"]
+
+
+def test_all_accounts_limited_is_quota_with_reset_time():
+    """Hepsi doluyken hata 20 sn'lik hız sınırı sayılıyor, aynı hesaplara yarım dakikada bir yeniden gidiliyordu."""
+    chatgpt.save_auth(tokens())
+    chatgpt.save_auth(tokens(email="x@y.z", acc="acc2", refresh="r2"))
+    p = ChatGPTProvider(pc(), client=httpx.Client(transport=httpx.MockTransport(lambda req: _limit_429(600))))
+    with pytest.raises(ProviderError) as ei:
+        p.chat("gpt-5.5", [{"role": "user", "content": "x"}])
+    assert ei.value.kind == "quota" and 500 < ei.value.retry_after <= 600 and "2 hesabın" in str(ei.value)
+
+
+def test_single_account_limit_keeps_server_reset_time():
+    chatgpt.save_auth(tokens())
+    p = ChatGPTProvider(pc(), client=httpx.Client(transport=httpx.MockTransport(lambda req: _limit_429(7200))))
+    with pytest.raises(ProviderError) as ei:
+        p.chat("gpt-5.5", [{"role": "user", "content": "x"}])
+    assert ei.value.kind == "quota" and ei.value.retry_after == 7200
+
+
+def test_temporary_rate_limit_does_not_mark_the_account_as_used_up():
+    """Geçici 429 hesabı bir saat "dolu" göstermez; istek yine de başka hesabı dener. Hepsi geçici sınırdaysa hata
+    kota değil hız sınırı olarak router'a gider."""
+    chatgpt.save_auth(tokens())
+    chatgpt.save_auth(tokens(email="x@y.z", acc="acc2", refresh="r2"))  # seçili: acc2
+    seen = []
+
+    def handler(req):
+        seen.append(req.headers.get("chatgpt-account-id"))
+        if seen[-1] == "acc2":
+            return httpx.Response(429, json={"error": {"message": "Too many requests"}})
+        return httpx.Response(200, content=sse({"type": "response.output_text.delta", "delta": "tamam"}))
+
+    p = ChatGPTProvider(pc(), client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert p.chat("gpt-5.5", [{"role": "user", "content": "x"}]).text == "tamam" and seen == ["acc2", "acc1"]
+    assert not (chatgpt._store()["accounts"]["acc2"].get("limits") or {}).get("primary")  # dolu işaretlenmedi
+
+    p = ChatGPTProvider(pc(), client=httpx.Client(transport=httpx.MockTransport(
+        lambda req: httpx.Response(429, json={"error": {"message": "Too many requests"}}))))
+    with pytest.raises(ProviderError) as ei:
+        p.chat("gpt-5.5", [{"role": "user", "content": "x"}])
+    assert ei.value.kind == "rate_limit"
+
+
+def test_request_keeps_its_own_account_when_another_chat_switches():
+    """İstek başladığı hesapla gider ve limit o hesaba yazılır; arada seçili hesap değişse de."""
+    chatgpt.save_auth(tokens())
+    chatgpt.save_auth(tokens(email="x@y.z", acc="acc2", refresh="r2"))  # seçili: acc2
+    seen = []
+
+    def handler(req):
+        seen.append(req.headers.get("chatgpt-account-id"))
+        chatgpt.use("acc1")  # istek sürerken başka bir sohbet hesabı değiştirdi
+        return httpx.Response(200, headers={"x-codex-primary-used-percent": "40", "x-codex-primary-window-minutes": "300"},
+                              content=sse({"type": "response.output_text.delta", "delta": "ok"}))
+
+    p = ChatGPTProvider(pc(), client=httpx.Client(transport=httpx.MockTransport(handler)))
+    p.chat("gpt-5.5", [{"role": "user", "content": "x"}])
+    accs = chatgpt._store()["accounts"]
+    assert seen == ["acc2"] and accs["acc2"]["limits"]["primary"]["used_percent"] == 40
+    assert not accs["acc1"].get("limits")  # limit yanlış hesaba yazılmadı
+    # süresi dolmuş anahtar yenilenirken seçili hesap değişmez
+    chatgpt.save_auth({"access_token": tokens()["access_token"]}, key="acc2")
+    assert chatgpt._store()["active"] == "acc1"

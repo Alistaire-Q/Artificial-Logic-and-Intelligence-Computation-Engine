@@ -140,6 +140,7 @@ class ScheduledTask:
     description: str = ""           # kullanıcının cümlesi
     catch_up: bool = True           # bilgisayar kapalıyken kaçırıldıysa açılışta çalıştır
     notify: bool = True
+    once: bool = False              # tek seferlik ("yarın 17:00", "5 dakika sonra"): çalışınca silinir
     enabled: bool = True
     created: float = field(default_factory=time.time)
     last_run: float | None = None
@@ -167,8 +168,9 @@ class ScheduledTask:
         except ValueError:
             nxt = "hiç gelmiyor"
         last = datetime.fromtimestamp(self.last_run).strftime("%d.%m %H:%M") if self.last_run else "hiç"
+        kind = "tek sefer, çalışınca kendiliğinden silinir; " if self.once else ""
         return (f"{self.id}: [{self.cron}] {Cron(self.cron).describe()} -> {self.description or self.prompt[:60]} "
-                f"(sonraki: {nxt}, son: {last})")
+                f"({kind}sonraki: {nxt}, son: {last})")
 
 
 class TaskStore:
@@ -217,6 +219,7 @@ class TaskStore:
         now = time.time() if now is None else now
         out = []
         changed = False
+        missed: list[str] = []  # telafi edilmeyecek, kaçırılmış tek seferlik görevler: silinir
         for t in self.tasks:
             if t.pending:
                 out.append((t, False))
@@ -231,10 +234,16 @@ class TaskStore:
                 continue
             late = now - nxt > grace
             if late and not t.catch_up:
-                t.last_run = now
+                if t.once:
+                    # Listede kalırsa cron aynı günü ertesi yıl yeniden üretir ve "tek seferlik" iş o zaman çalışır.
+                    missed.append(t.id)
+                else:
+                    t.last_run = now
                 changed = True
                 continue
             out.append((t, late))
+        if missed:
+            self.tasks = [t for t in self.tasks if t.id not in missed]
         if changed:
             self.save()
         return out
@@ -252,7 +261,9 @@ shell commands, edit files, browse the web and use the computer. Now: {now}.
 Reply ONLY with JSON:
 {{"cron": "<5-field cron: minute hour day-of-month month day-of-week (0=Sunday)>",
   "prompt": "<complete, self-contained Turkish instruction ALICE will execute unattended at that time; include paths/details the user gave>",
-  "catch_up": <true if it should still run once after the computer was off at the scheduled time>}}
+  "catch_up": <true if it should still run once after the computer was off at the scheduled time>,
+  "once": <true for a one-time request ("yarın", "5 dakika sonra", a specific date); false if it repeats ("her gün")>}}
+For a one-time request put the exact minute, hour, day and month in the cron.
 "Gece" without an hour means 23:00, "sabah" means 08:00, "akşam" means 19:00.
 User request: {text}"""
 
@@ -267,4 +278,4 @@ def parse_task(text: str, router) -> ScheduledTask:
     if not isinstance(data, dict) or "cron" not in data or "prompt" not in data:
         raise ValueError(f"model görev döndürmedi: {res.text[:200]}")
     return ScheduledTask(cron=str(data["cron"]), prompt=str(data["prompt"]), description=text,
-                         catch_up=bool(data.get("catch_up", True)))
+                         catch_up=bool(data.get("catch_up", True)), once=bool(data.get("once", False)))

@@ -88,8 +88,9 @@ def test_pick_window_empty_title(gw, title):
 
 
 def test_pick_window_missing(gw):
-    with pytest.raises(ToolError, match="pencere yok"):
+    with pytest.raises(ToolError, match="pencere yok") as ei:
         desktop.pick_window(gw, "Discord")
+    assert "Açık pencereler:" in str(ei.value) and "Not Defteri" in str(ei.value)  # model başlığı tahmin etmesin
 
 
 # --------------------------------------------------------------- pencere işlemleri

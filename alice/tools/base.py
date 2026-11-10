@@ -109,6 +109,14 @@ class Tool:
     def risk_for(self, args: dict[str, Any]) -> str:
         return self.risk
 
+    def parallel_for(self, ctx: "ToolContext", args: dict[str, Any]) -> bool:
+        """Bu çağrı aynı cevaptaki komşu çağrılarla aynı anda çalışabilir mi? Varsayılan: parallel_safe."""
+        return self.parallel_safe
+
+    def exclusive_key(self, args: dict[str, Any]) -> str:
+        """Boş değilse: aynı anahtarı taşıyan iki çağrı aynı anda çalışmaz (ör. aynı depoda iki git komutu)."""
+        return ""
+
     def summary(self, args: dict[str, Any]) -> str:
         """Ekranda gösterilecek kısa özet."""
         s = json.dumps(args, ensure_ascii=False)

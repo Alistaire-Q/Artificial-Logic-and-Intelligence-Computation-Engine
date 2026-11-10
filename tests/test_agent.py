@@ -285,9 +285,13 @@ def test_claim_without_evidence_is_sent_back_once(workdir):
               "Klasörde Sonora-Setup.exe yok; indirmeyi doğrulayamadım."]
     agent, provs, ui = make_agent(script, workdir, verify_claims=True)
     out = agent.run_turn("sonorayı indir")
-    assert out == "Klasörde Sonora-Setup.exe yok; indirmeyi doğrulayamadım."
+    # Düzeltme asıl cevabın yerine geçmez, ardına eklenir: hafızaya "selam" -> "Haklısın, doğrulayamadım" gibi
+    # asıl cevabı olmayan turlar yazılıyordu.
+    assert out == ("Sonora-Setup.exe indirildi, kurulum hazır.\n\n"
+                   "Klasörde Sonora-Setup.exe yok; indirmeyi doğrulayamadım.")
     nudge = [m for m in agent.messages if m.get("_nudge")]
     assert len(nudge) == 1 and "dayanağı yok" in nudge[0]["content"] and "Sonora-Setup.exe indirildi" in nudge[0]["content"]
+    assert "GÖRMÜYOR" in nudge[0]["content"]  # model hatırlatmaya "Haklısın" diye cevap yazmasın
 
 
 def test_supported_claim_passes_and_plain_answers_are_not_checked(workdir):
@@ -297,3 +301,30 @@ def test_supported_claim_passes_and_plain_answers_are_not_checked(workdir):
     assert not any(m.get("_nudge") for m in agent.messages)
     agent2, _, _ = make_agent(["Merhaba! Nasıl yardımcı olayım?"], workdir, verify_claims=True)
     assert agent2.run_turn("selam") == "Merhaba! Nasıl yardımcı olayım?"  # araç yok, iddia yok: kontrol yok
+
+
+def test_compacted_messages_are_kept_in_the_session_archive(workdir):
+    """Canlı kayıt (8-9 Kasım): uzun sohbet özetlenince eski mesajlar hem ekrandan hem oturum dosyasından siliniyordu.
+    Model özetle devam eder ama mesajlar oturumun arşivine yazılır ve sohbet ekranında görünmeye devam eder."""
+    from alice import session as sess
+    from alice.app.server import display_history
+
+    def script(model, messages, tools, **kw):
+        if messages[0]["content"].startswith("Summarize"):
+            return "ÖZET: kullanıcı dosyalarla uğraşıyor"
+        return "cevap " + "x" * 400
+
+    agent, _, ui = make_agent(script, workdir, compact_at_tokens=400)
+    agent.on_compact = lambda old: sess.archive("s1", old)
+    for i in range(6):
+        agent.run_turn(f"mesaj {i} " + "y" * 300)
+    assert any(str(m.get("content")).startswith("[Önceki konuşmanın özeti]") for m in agent.messages)
+    live = [h["text"] for h in display_history(agent.messages) if h["type"] == "user"]
+    assert not any(t.startswith("mesaj 0") for t in live)  # bağlamdan çıktı
+    items = display_history(agent.messages, archive=sess.load_archive("s1"))
+    users = [h for h in items if h["type"] == "user"]
+    assert [h["text"].split(" y")[0] for h in users] == [f"mesaj {i}" for i in range(6)]  # hepsi, sırayla, bir kez
+    # arşivdekiler ajan geçmişinde yok: geri sarma indeksi taşımazlar; canlı olanlar taşır
+    assert "mi" not in users[0] and agent.messages[users[-1]["mi"]]["role"] == "user"
+    assert any(h["type"] == "info" and "özetlendi" in h["text"] for h in items)
+    assert sess.load_archive("yok") == []

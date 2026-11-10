@@ -99,7 +99,7 @@ def _named_in_goal(key: str, by_key: dict[str, Element], elements: list[Element]
 @dataclass
 class ReflexResult:
     # done | clicked (tek tıklamalık hedef, sonuç doğrulanmadı) | likely_done (son eylem ekranı değiştirdi, Jev bitti
-    # sanıyor ama emin değil) | needs_help | needs_login (giriş ekranı, kullanıcının işi) | max_steps | error
+    # sanıyor ama emin değil) | steps_done (plan adımları yapıldı, bütünü doğrulanmadı) | needs_help | needs_login (giriş ekranı, kullanıcının işi) | max_steps | error
     status: str
     steps: int
     reason: str

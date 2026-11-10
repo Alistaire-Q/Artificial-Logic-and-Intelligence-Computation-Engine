@@ -216,6 +216,14 @@ _CLAIM_RX = re.compile(
     r"\bdone\b|\binstalled\b|\bdownloaded\b|\bnot found\b)", re.I)
 
 
+def _clip(text: str, limit: int) -> str:
+    """Uzun araç çıktısının başını ve sonunu tut (sonuç çoğu zaman sonda yazar), ortasını '…' ile kısalt."""
+    if len(text) <= limit:
+        return text
+    head = limit * 2 // 3
+    return text[:head] + "\n…\n" + text[-(limit - head):]
+
+
 class Agent:
     def __init__(
         self,
@@ -267,6 +275,7 @@ class Agent:
         self._error_streak = 0
         # Her araç adımından sonra çağrılır (oturumu kaydetmek için): tur takılır ya da çökerse iz kaybolmasın.
         self.on_step: Any = None
+        self.on_compact: Any = None  # özetlemede bağlamdan çıkan mesajlar buraya verilir (uygulama arşive yazar)
         self.on_usage: Any = None  # her model cevabının kullanım bilgisi (token, varsa ücret) buraya da bildirilir
         # Uzun süreli hafıza (alice.memory.LongMemory): oturum kuranlar bağlar; testler ve gözetimsiz görevlerde None.
         self.memory: Any = None
@@ -454,6 +463,7 @@ class Agent:
         self._turn_tools: set[str] = set()
         nudges = 0
         verified = False
+        answered = ""  # kanıt kontrolü hatırlatmasından önce verilen cevap
         self._turn_start = len(self.messages) - 1
         stop_hooks = 3  # Stop hook'u ajanı en fazla bu kadar kez geri çevirebilir (sonsuz döngü olmasın)
         try:
@@ -512,7 +522,13 @@ class Agent:
                     if not nudge and not verified:
                         verified = True  # turda bir kez: doğrulamanın kendisi döngüye girmesin
                         nudge = self._unverified(msg.get("content") or "")
+                        if nudge:
+                            answered = final  # asıl cevap ekranda duruyor: düzeltme onun yerine geçmez, eklenir
                     if not nudge:
+                        # Kanıt kontrolünden sonra yazılan düzeltme tek başına kayda geçince asıl cevap kayboluyor,
+                        # hafızada "Merhaba" -> "Haklısın, doğrulama başarısız oldu" gibi kopuk turlar kalıyordu.
+                        if answered and final != answered:
+                            final = answered + "\n\n" + final
                         return final
                     nudges += 1
                     self.messages.append({"role": "user", "content": nudge, "_nudge": True})
@@ -582,7 +598,7 @@ class Agent:
         evidence: list[str] = []
         for m in self.messages[getattr(self, "_turn_start", 0):]:
             if m.get("role") == "tool":
-                evidence.append(f"[{m.get('name')}] {str(m.get('content') or '')[:1500]}")
+                evidence.append(f"[{m.get('name')}] {_clip(str(m.get('content') or ''), 3000)}")
             elif m.get("role") == "assistant" and m.get("tool_calls"):
                 evidence.append("çağrılar: " + "; ".join(
                     f"{c['function']['name']}({str(c['function'].get('arguments') or '')[:200]})"
@@ -590,16 +606,22 @@ class Agent:
         ask = next((str(m.get("content")) for m in reversed(self.messages[:getattr(self, "_turn_start", 0) + 1])
                     if m.get("role") == "user"), "")
         prompt = (
-            "Bir asistanın cevabını, bu turda kullandığı araçların SONUÇLARIYLA karşılaştır. Cevaptaki olgu iddialarını "
-            "(bir işin yapıldığı/bittiği, bir dosyanın indiği/var olduğu, bir şeyin olmadığı/bulunamadığı, bir sayı ya da "
-            "durum) bul. Araç sonuçlarında açıkça dayanağı olmayan ya da sonuçlarla çelişen iddiaları listele. Niyet, "
-            "öneri ve soru iddia değildir. Emin değilsen listeye koyma.\n"
+            "Bir asistanın cevabını, bu turda kullandığı araçların SONUÇLARIYLA karşılaştır. Yalnızca şu iki tür "
+            "iddiayı listele:\n"
+            "1. Asistanın BU TURDA yaptığını söylediği ama karşılığında hiçbir araç çağrısı olmayan iş (kurdum, "
+            "indirdim, gönderdim, sildim, kaydettim, açtım gibi).\n"
+            "2. Araç sonuçlarıyla AÇIKÇA ÇELİŞEN iddia (sonuç hata derken 'oldu' demek, sonuçta varken 'yok' demek, "
+            "farklı bir sayı ya da durum söylemek).\n"
+            "Şunları LİSTELEME: önceki turlardan ya da konuşmadan bilinen şeyler, genel bilgi, açıklama, yorum, tahmin "
+            "ya da 'doğrulamadım' diye sunulanlar, niyet, öneri, soru. Araç çıktıları burada kısaltılmış olabilir "
+            "('…' ile): kısaltılan yerde bulunabilecek ayrıntıyı dayanaksız sayma. Emin değilsen listeye koyma.\n"
             'Sadece JSON yaz: {"unsupported": ["kısa iddia", ...]}\n\n'
-            f"KULLANICI İSTEĞİ:\n{ask[:1500]}\n\nARAÇ SONUÇLARI:\n" + "\n".join(evidence)[-9000:]
-            + f"\n\nCEVAP:\n{text[:2500]}")
+            f"KULLANICI İSTEĞİ:\n{ask[:1500]}\n\nARAÇ SONUÇLARI:\n" + "\n".join(evidence)[-24000:]
+            + f"\n\nCEVAP:\n{text[:4000]}")
         try:
+            # 400 token düşünen modellerde (Cerebras qwen, step) düşünmeye gidip cevap boş dönüyordu.
             res = self.router.chat(str(self.config.agent.get("verify_role", "fast")),
-                                   [{"role": "user", "content": prompt}], temperature=0, max_tokens=400)
+                                   [{"role": "user", "content": prompt}], temperature=0, max_tokens=1200)
             m = re.search(r"\{.*\}", res.text or "", re.S)
             bad = [str(x)[:160] for x in (json.loads(m.group(0)).get("unsupported") or [])] if m else []
         except Exception:  # noqa: BLE001 - doğrulama yapılamadıysa cevabı engelleme
@@ -608,7 +630,11 @@ class Agent:
             return ""
         return (NUDGE_PREFIX + "Cevabındaki şu iddiaların bu turdaki araç sonuçlarında dayanağı yok: "
                 + "; ".join(bad[:5]) + ". Ya bir araçla gerçekten doğrula, ya da kullanıcıya bunu doğrulamadığını "
-                "açıkça söyle. Kontrol etmeden 'yaptım/indirildi/yok' deme.")
+                "açıkça söyle. Kontrol etmeden 'yaptım/indirildi/yok' deme.\n"
+                "Bu notu kullanıcı GÖRMÜYOR ve o yazmadı; önceki cevabın ekranda duruyor. Bu yüzden: nota cevap verir "
+                "gibi yazma ('Haklısın', 'kontrol ettim', 'bu turda' diye başlama, bu kontrolden söz etme), önceki "
+                "cevabı baştan tekrar etme. Yalnızca kısa bir ek yaz: doğruladıysan sonucu bir iki cümleyle, "
+                "doğrulayamadıysan 'Düzeltme:' diye başlayıp hangi kısmın kesin olmadığını söyle.")
 
     def stop(self) -> None:
         """Başka bir thread'den (ör. uygulamadaki Durdur butonu) mevcut turu durdur. Model ya da araç cevabı
@@ -738,10 +764,15 @@ class Agent:
             batch = [(i, prep)]
             j = i + 1
             if self._parallel_ok(prep):
+                busy = {prep[0].exclusive_key(prep[1])} - {""}
                 while j < len(calls) and not self.cancel.is_set():
                     nxt = self._prepare(calls[j], quiet=True)
                     if isinstance(nxt, ToolResult) or not self._parallel_ok(nxt):
                         break
+                    key = nxt[0].exclusive_key(nxt[1])
+                    if key and key in busy:
+                        break  # aynı depoya/paket yöneticisine dokunan ikinci komut: öncekiler bitince çalışır
+                    busy.add(key)
                     batch.append((j, nxt))
                     j += 1
             if len(batch) == 1:
@@ -763,7 +794,7 @@ class Agent:
         if self.hooks.has("PreToolUse") or self.hooks.has("PostToolUse"):
             return False  # hook'lar her çağrıda sırayla çalışsın (paralel yol _execute'u atlıyor)
         try:
-            return bool(getattr(tool, "parallel_safe", False)) and self.permissions.decide(tool, args, self.ctx) == "allow"
+            return bool(tool.parallel_for(self.ctx, args)) and self.permissions.decide(tool, args, self.ctx) == "allow"
         except Exception:  # noqa: BLE001 - bozuk argüman: sıralı yolda hata olarak modele dönecek
             return False
 
@@ -1058,6 +1089,11 @@ class Agent:
         except AllProvidersFailed as e:
             self.ui.info(f"özetleme başarısız: {e}")
             return False
+        if self.on_compact is not None:
+            try:
+                self.on_compact(old)  # arayüz eski mesajları göstermeye devam etsin (oturum arşivi)
+            except Exception:  # noqa: BLE001 - arşiv yazılamadı diye özetleme durmasın
+                log.debug("on_compact hata verdi", exc_info=True)
         head = [self.messages[0], {"role": "user", "content": f"[Önceki konuşmanın özeti]\n{res.text}"}]
         if self.messages[cut]["role"] == "user":  # roller sırayla gitsin
             head.append({"role": "assistant", "content": "Özeti aldım, kaldığım yerden devam ediyorum."})

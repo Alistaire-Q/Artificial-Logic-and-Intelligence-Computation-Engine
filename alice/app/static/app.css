@@ -3,10 +3,17 @@
 @font-face { font-family: "Geist"; src: url("/static/Geist.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
 @font-face { font-family: "Geist Mono"; src: url("/static/GeistMono.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
 :root {
+  /* Yakınlaştırma (Ctrl +/-): #zoomLayer ölçeklenir. Katmanın içinde vh/vw ekranın değil katmanın ölçüsü
+     olmalı; yoksa büyütünce pencereler, menüler ve paneller ekrandan taşar. İçeride hep --vh/--vw kullan. */
+  --zoom: 1;
+  --vh: calc(1vh / var(--zoom));
+  --vw: calc(1vw / var(--zoom));
   /* ölçüler */
   --r-xs: 4px; --r-sm: 6px; --r-md: 10px; --r-lg: 14px; --r-full: 999px;
   --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px; --s7: 48px;
   --t-xs: 12px; --t-sm: 13px; --t-md: 14px; --t-lg: 16px; --t-xl: 22px; --t-2xl: 30px;
+  /* sohbet sütununun genişliği: geniş modda (#app.wide) pencereye yayılır */
+  --chat-w: 760px;
 
   --bg: #fbfbfb;
   --side: #f3f3f4;
@@ -141,7 +148,15 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 code, pre, .mono, kbd { font-family: var(--mono); }
 ::selection { background: var(--accent-soft); }
 
-#app { display: flex; height: 100vh; overflow: hidden; }
+body { overflow: hidden; margin: 0; width: 100vw; height: 100vh; background: var(--bg); }
+#zoomLayer {
+  height: calc(100vh / var(--zoom));
+  width: calc(100vw / var(--zoom));
+  transform: scale(var(--zoom));
+  transform-origin: top left;
+}
+#app { display: flex; height: 100%; overflow: hidden; }
+#zoomLayer #palette, #zoomLayer #menu, #zoomLayer #overlay, #zoomLayer #dropzone, #zoomLayer #toast { position: fixed; }
 
 /* ------------------------------------------------------------- kenar çubuğu */
 /* -------------------------------------------------------------- sol şerit */
@@ -264,27 +279,27 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: r
 #openSide { display: none; }
 #app.side-hidden #openSide { display: grid; }
 /* Üst çubuk: sohbetin adı, yanında klasör ve dal etiketleri. */
-.chat-title { font-size: 14px; font-weight: 600; color: var(--text); padding: 4px 8px; border-radius: var(--r-sm); max-width: min(420px, 40vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: -.01em; }
+.chat-title { font-size: 14px; font-weight: 600; color: var(--text); padding: 4px 8px; border-radius: var(--r-sm); max-width: min(420px, calc(var(--vw) * 40)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: -.01em; }
 .chat-title:not(:disabled):hover { background: var(--hover); }
 .chat-title.new { color: var(--muted); font-weight: 500; cursor: default; }
 #app.empty .chat-title { display: none; }
 .cwd-chip {
   border: 1px solid var(--line); height: 26px; font-size: 12.5px !important;
   display: flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: var(--r-sm); color: var(--muted); font-size: 13px;
-  max-width: min(560px, 60vw);
+  max-width: min(560px, calc(var(--vw) * 60));
 }
 .cwd-chip svg { width: 15px; height: 15px; }
 .cwd-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cwd-chip:hover { background: var(--hover); color: var(--text); }
 
 #scroller { flex: 1; overflow-y: auto; scroll-behavior: auto; }
-#messages { max-width: 760px; margin: 0 auto; padding: 20px 28px 32px; display: flex; flex-direction: column; }
+#messages { max-width: var(--chat-w); margin: 0 auto; padding: 20px 28px 32px; display: flex; flex-direction: column; }
 
 /* Boş sohbet: selamlama ortada, yazma kutusu hemen altında. */
 #hero { display: none; }
 #app.empty #scroller { flex: 0 0 auto; overflow: visible; }
 #app.empty #messages { display: none; }
-#app.empty #hero { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 18vh 24px 26px; }
+#app.empty #hero { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: calc(var(--vh) * 18) 24px 26px; }
 .hero-mark img { width: 72px; height: 72px; border-radius: 50%; object-fit: cover; box-shadow: 0 0 0 2px var(--line); }
 #hero h1 { margin: 0; font: 600 30px/1.2 var(--sans); letter-spacing: -.025em; text-align: center; color: var(--text); }
 #suggest { display: none; }
@@ -552,7 +567,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: r
 /* --------------------------------------------------------------- composer */
 #dock { flex: none; padding: 0 24px 6px; }
 #app.empty #dock { padding-bottom: 0; }
-#composerWrap { max-width: 760px; margin: 0 auto; position: relative; }
+#composerWrap { max-width: var(--chat-w); margin: 0 auto; position: relative; }
 #composer {
   background: var(--raised); border: 1px solid var(--line-strong); border-radius: var(--r-lg); box-shadow: var(--shadow);
   padding: 12px 12px 10px 16px; transition: border-color .15s, box-shadow .15s;
@@ -601,7 +616,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: r
 }
 .att button svg { width: 11px; height: 11px; stroke-width: 2.6; }
 
-#dockTop { max-width: 760px; margin: 0 auto; position: relative; }
+#dockTop { max-width: var(--chat-w); margin: 0 auto; position: relative; }
 #jump {
   position: absolute; right: 0; bottom: 8px; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center;
   background: var(--raised); border: 1px solid var(--line-strong); box-shadow: var(--shadow); color: var(--muted); cursor: pointer;
@@ -641,7 +656,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: r
   background: var(--accent-soft); color: var(--warn);
 }
 .working .secs { color: var(--faint); font-size: 12.5px; font-variant-numeric: tabular-nums; }
-#team { max-width: 760px; margin: 0 auto 8px; border: 1px solid var(--line-strong); border-radius: var(--r-lg); background: var(--panel); padding: 7px 8px 7px 10px; }
+#team { max-width: var(--chat-w); margin: 0 auto 8px; border: 1px solid var(--line-strong); border-radius: var(--r-lg); background: var(--panel); padding: 7px 8px 7px 10px; }
 #team[hidden] { display: none; }
 .team-head { display: flex; align-items: center; gap: 6px; }
 .team-open { flex: 1; display: flex; align-items: center; gap: 9px; min-width: 0; text-align: left; padding: 2px 2px; }
@@ -650,7 +665,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: r
 .team-sum { color: var(--muted); font-size: 12px; flex: none; font-variant-numeric: tabular-nums; }
 .team-line { color: var(--muted); font: 12px var(--mono); margin: 3px 0 0 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .team-line.ask { color: var(--warn); font-family: var(--sans); }
-#queue { max-width: 760px; margin: 0 auto 6px; display: flex; flex-direction: column; gap: 4px; }
+#queue { max-width: var(--chat-w); margin: 0 auto 6px; display: flex; flex-direction: column; gap: 4px; }
 .queued {
   display: flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px dashed var(--line-strong); border-radius: var(--r-md);
   color: var(--muted); font-size: 13px;
@@ -669,7 +684,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: r
 .pi .tag { margin-left: auto; font-size: 11px; color: var(--faint); }
 
 #statusbar {
-  max-width: 760px; margin: 7px auto 0; display: flex; justify-content: center; align-items: center; gap: 7px;
+  max-width: var(--chat-w); margin: 7px auto 0; display: flex; justify-content: center; align-items: center; gap: 7px;
   color: var(--faint); font-size: 11.5px; white-space: nowrap; overflow: hidden;
 }
 #statusbar .sep { opacity: .6; }
@@ -683,7 +698,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: r
 /* ------------------------------------------------------------ menü/dialog */
 #menu {
   position: fixed; z-index: 30; min-width: 240px; max-width: 380px; background: var(--raised); border: 1px solid var(--line-strong);
-  border-radius: var(--r-md); box-shadow: var(--shadow); padding: 5px; max-height: min(72vh, 620px); overflow-y: auto;
+  border-radius: var(--r-md); box-shadow: var(--shadow); padding: 5px; max-height: min(calc(var(--vh) * 72), 620px); overflow-y: auto;
 }
 .mi { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border-radius: var(--r-sm); cursor: pointer; width: 100%; text-align: left; }
 .mi:hover { background: var(--hover); }
@@ -699,7 +714,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: r
 #overlay[hidden] { display: none; }
 .dialog {
   background: var(--bg); border: 1px solid var(--line-strong); border-radius: var(--r-lg); box-shadow: var(--shadow);
-  width: min(680px, 100%); max-height: 84vh; overflow: auto; padding: 22px 24px;
+  width: min(680px, 100%); max-height: calc(var(--vh) * 84); overflow: auto; padding: 22px 24px;
 }
 .dialog h2 { margin: 0 0 6px; font: 600 20px/1.3 var(--sans); letter-spacing: -.01em; }
 .dialog p, .page p { color: var(--muted); margin: 0 0 14px; }
@@ -835,7 +850,7 @@ kbd {
 
 /* ------------------------------------------------------------------ plan çubuğu */
 #planbar {
-  max-width: 760px; margin: 0 auto 8px; display: flex; align-items: center; gap: 10px; width: 100%;
+  max-width: var(--chat-w); margin: 0 auto 8px; display: flex; align-items: center; gap: 10px; width: 100%;
   padding: 8px 12px; border-radius: var(--r-md); border: 1px solid var(--line); background: var(--panel); text-align: left;
   box-shadow: var(--shadow); font-size: 13.5px;
 }
@@ -854,7 +869,7 @@ kbd {
   width: 0; flex: none; overflow: hidden; border-left: 1px solid transparent; background: var(--side);
   display: flex; flex-direction: column; transition: width .22s ease;
 }
-#app.panel-open #panel { width: min(460px, 42vw); border-left-color: var(--line); }
+#app.panel-open #panel { width: min(460px, calc(var(--vw) * 42)); border-left-color: var(--line); }
 .panel-head { display: flex; align-items: center; gap: 6px; padding: 10px 10px 0 12px; height: 46px; flex: none; min-width: 300px; }
 .tabs { display: flex; gap: 2px; flex: 1; }
 .tab {
@@ -900,10 +915,10 @@ kbd {
 #panel .kv { padding: 4px 2px; }
 
 /* ------------------------------------------------------------- komut paleti */
-#palette { position: fixed; inset: 0; z-index: 45; background: var(--overlay); display: flex; justify-content: center; padding-top: 12vh; }
+#palette { position: fixed; inset: 0; z-index: 45; background: var(--overlay); display: flex; justify-content: center; padding-top: calc(var(--vh) * 12); }
 #palette[hidden] { display: none; }
 .pal {
-  width: min(640px, calc(100% - 32px)); max-height: 66vh; display: flex; flex-direction: column; background: var(--bg);
+  width: min(640px, calc(100% - 32px)); max-height: calc(var(--vh) * 66); display: flex; flex-direction: column; background: var(--bg);
   border: 1px solid var(--line-strong); border-radius: var(--r-lg); box-shadow: 0 18px 60px rgba(0, 0, 0, .28); overflow: hidden;
   align-self: flex-start;
 }
@@ -924,7 +939,7 @@ kbd {
 .pal-foot kbd { margin-right: 3px; }
 
 /* ------------------------------------------------------------------ ayarlar */
-.dialog.settings { width: min(860px, 100%); height: min(620px, 84vh); padding: 0; display: flex; overflow: hidden; }
+.dialog.settings { width: min(860px, 100%); height: min(620px, calc(var(--vh) * 84)); padding: 0; display: flex; overflow: hidden; }
 .set-nav { width: 200px; flex: none; background: var(--side); border-right: 1px solid var(--line); padding: 16px 8px; display: flex; flex-direction: column; gap: 2px; }
 .set-h { font: 500 18px var(--serif); padding: 2px 10px 12px; }
 .set-nav button { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: var(--r-sm); color: var(--muted); font-size: 13.5px; text-align: left; }
@@ -976,7 +991,7 @@ kbd {
   #stDec, #stReq, #stBranch, #stClock, #statusbar .sep:nth-of-type(n+2) { display: none; }
   #paletteBtn span, #paletteBtn kbd, .branch-chip { display: none; }
   #app.panel-open #panel { position: absolute; right: 0; top: 0; height: 100%; width: min(420px, 100%); z-index: 25; box-shadow: var(--shadow); }
-  .dialog.settings { flex-direction: column; height: 84vh; }
+  .dialog.settings { flex-direction: column; height: calc(var(--vh) * 84); }
   .set-nav { width: auto; flex-direction: row; overflow-x: auto; padding: 8px; border-right: none; border-bottom: 1px solid var(--line); }
   .set-h { display: none; }
 }
@@ -985,7 +1000,7 @@ kbd {
 .side-sec { display: flex; align-items: center; justify-content: space-between; padding: 14px 4px 2px 12px; font-size: 12px; color: var(--faint); }
 .side-sec .icon-btn { width: 24px; height: 24px; }
 .side-sec .icon-btn svg { width: 15px; height: 15px; }
-#projects { display: flex; flex-direction: column; gap: 1px; max-height: 32vh; overflow-y: auto; flex: none; }
+#projects { display: flex; flex-direction: column; gap: 1px; max-height: calc(var(--vh) * 32); overflow-y: auto; flex: none; }
 .proj-row { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: var(--r-sm); font-size: 13.5px; color: var(--muted); text-align: left; width: 100%; }
 .proj-row:hover, .proj-row.active { background: var(--hover); color: var(--text); }
 .proj-row .pt { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1033,7 +1048,7 @@ kbd {
 .pv-ask-row input, .pd-ask-row input { flex: 1; min-width: 0; border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--bg); color: var(--text); font: inherit; font-size: 13px; padding: 6px 10px; }
 .pv-summary { border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--panel); padding: 8px 14px; }
 .pv-summary summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--ok); }
-.pv-summary .prose { font-size: 14px; max-height: min(260px, 32vh); overflow-y: auto; margin-top: 8px;
+.pv-summary .prose { font-size: 14px; max-height: min(260px, calc(var(--vh) * 32)); overflow-y: auto; margin-top: 8px;
   padding-right: 6px; }
 .pv-summary .prose h1 { font-size: 17px; } .pv-summary .prose h2 { font-size: 15px; } .pv-summary .prose h3 { font-size: 14px; }
 .pv-summary summary { display: flex; gap: 8px; align-items: baseline; list-style-position: inside; }
@@ -1119,7 +1134,7 @@ kbd {
 }
 
 /* yeni proje penceresi */
-.dialog.np { width: min(720px, calc(100vw - 32px)); max-height: calc(100vh - 48px); overflow-y: auto; }
+.dialog.np { width: min(720px, calc(calc(var(--vw) * 100) - 32px)); max-height: calc(calc(var(--vh) * 100) - 48px); overflow-y: auto; }
 .fld { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .fl { font-size: 12px; color: var(--muted); font-weight: 500; }
 .fh { font-size: 11.5px; color: var(--faint); }
@@ -1656,7 +1671,7 @@ details > summary::marker { color: var(--faint); }
 .np-row select, .np-grid select { width: 100%; }
 
 /* ---------------------------------------------------------- klasör seçici */
-.dialog.fp { width: min(860px, calc(100vw - 32px)); height: min(600px, calc(100vh - 48px)); padding: 0; display: flex; flex-direction: column; overflow: hidden; }
+.dialog.fp { width: min(860px, calc(calc(var(--vw) * 100) - 32px)); height: min(600px, calc(calc(var(--vh) * 100) - 48px)); padding: 0; display: flex; flex-direction: column; overflow: hidden; }
 .fp-head { display: flex; align-items: center; gap: var(--s3); padding: var(--s4) var(--s5) var(--s3); border-bottom: 1px solid var(--line); }
 .fp-head h2 { margin: 0; }
 .fp-tabs button { padding: 4px 12px; }
@@ -1709,7 +1724,14 @@ details > summary::marker { color: var(--faint); }
 
 /* ------------------------------------------------------------- başlarken */
 #onboard { display: none; }
-#app.empty #onboard:not([hidden]) { display: block; max-width: 760px; margin: var(--s5) auto 0; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); overflow: hidden; }
+#app.empty #onboard:not([hidden]) { display: block; max-width: var(--chat-w); margin: var(--s5) auto 0; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--panel); overflow: hidden; }
+
+/* Geniş sohbet: sütun pencereyle büyür (çok geniş ekranda okunabilirlik için 1600px tavan) */
+#app.wide { --chat-w: min(1600px, calc(100% - 48px)); }
+#wideBtn .i-narrow { display: none; }
+#app.wide #wideBtn .i-wide { display: none; }
+#app.wide #wideBtn .i-narrow { display: block; }
+#app.wide #wideBtn { color: var(--text); }
 .ob-head { display: flex; align-items: center; gap: var(--s3); padding: var(--s3) var(--s3) var(--s3) var(--s4); border-bottom: 1px solid var(--line); }
 .ob-head > div { display: flex; align-items: baseline; gap: var(--s2); }
 .ob-head b { font-weight: 600; }

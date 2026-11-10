@@ -13,7 +13,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -43,6 +45,12 @@ DANGEROUS = [
     r"\bcurl\b.*\|\s*(sh|bash|iex)", r"\biwr\b.*\|\s*iex", r"Invoke-Expression.*DownloadString",
 ]
 _DANGER_RX = [re.compile(p, re.I) for p in DANGEROUS]
+# Aynı anda iki kopyası çalışınca kilit dosyasına takılan ya da kurulumu yarım bırakan programlar: paralel
+# çalıştırmada bunlar birbirini bekler (bkz. RunCommand.exclusive_key).
+_GIT_RX = re.compile(r"(?:^|[;&|({]|\s)git(?:\.exe)?\s", re.I)
+_INSTALLER_RX = re.compile(r"(?:^|[;&|({]|\s)(?:npm|pnpm|yarn|npx|pip3?|uv|poetry|conda|winget|choco|scoop|apt|apt-get|"
+                           r"brew|cargo|dotnet|msiexec)(?:\.exe|\.cmd)?\s|-m\s+pip\s", re.I)
+_sandbox_lock = threading.Lock()  # ilk kullanımda klasör etiketlenir: paralel komutlar aynı anda etiketlemesin
 READ_ONLY = re.compile(r"^\s*(get-\w+|dir|ls|type|cat|where(\.exe)?|test-path|select-string)(\s|$)", re.I)
 ACCESS_DENIED = re.compile(r"access (is )?denied|access to the path .* is denied|erişim (engellendi|reddedildi)|UnauthorizedAccess|permission denied|"
                            r"EACCES|EPERM", re.I)
@@ -90,6 +98,9 @@ class RunCommand(Tool):
         "- Dosya okumak/aramak/düzenlemek için komut değil read_file, grep, glob, edit_file kullan.\n"
         "- Pencereli program ya da site açmak için windows action=open; Blender için blender aracı.\n"
         "- Sürekli çalışan işler (sunucu, izleme) için background=true, sonra process_output.\n"
+        "- Birbirinden bağımsız komutları AYNI cevapta ayrı ayrı iste: aynı anda çalışırlar (toplam süre en uzun "
+        "komut kadar olur). Biri diğerinin sonucuna muhtaçsa (klasör oluştur + içinde çalış, kur + kullan) ayrı "
+        "çağrı yapma, tek komutta ';' ile sırala.\n"
         "- PowerShell 5.1'de '&&' yok: komutları ';' ile ayır. Boşluklu yolları tırnak içine al."
     )
     parameters = obj({
@@ -111,6 +122,17 @@ class RunCommand(Tool):
     def summary(self, args: dict[str, Any]) -> str:
         return args.get("command", "")[:300]
 
+    def parallel_for(self, ctx: ToolContext, args: dict[str, Any]) -> bool:
+        # Onay isteyen (tehlikeli, sandbox dışı) komutlar zaten tek tek sorulur; gerisi yan yana çalışabilir.
+        return (bool(ctx.config.agent.get("parallel_commands", True)) and not args.get("unsandboxed")
+                and not is_dangerous(str(args.get("command", ""))))
+
+    def exclusive_key(self, args: dict[str, Any]) -> str:
+        command = str(args.get("command", ""))
+        if _INSTALLER_RX.search(command):
+            return "kurulum"
+        return "git" if _GIT_RX.search(command) else ""
+
     def run(self, ctx: ToolContext, command: str, cwd: str | None = None, timeout: int = 120,
             background: bool = False, unsandboxed: bool = False) -> ToolResult:
         wd = ctx.resolve(cwd) if cwd else ctx.cwd
@@ -123,14 +145,16 @@ class RunCommand(Tool):
         boxed = sandbox.applies(ctx, {"command": command, "unsandboxed": unsandboxed})
         if boxed:
             try:
-                argv, extra = sandbox.wrap(argv, wd, ctx)
+                with _sandbox_lock:
+                    argv, extra = sandbox.wrap(argv, wd, ctx)
             except (RuntimeError, OSError, subprocess.SubprocessError) as e:
                 raise ToolError(f"sandbox kurulamadı, komut çalıştırılmadı: {e}. Gerekiyorsa unsandboxed=true ile "
                                 "(kullanıcı onayıyla) çalıştır.") from e
             env.update(extra)
         limit = int(ctx.config.agent.get("tool_output_chars", 12000))
         if background:
-            log = Path(tempfile.gettempdir()) / f"alice-bg-{int(time.time() * 1000)}.log"
+            # Ad zaman damgasıydı: aynı milisaniyede başlayan iki süreç aynı dosyaya yazıp çıktıları karışıyordu.
+            log = Path(tempfile.gettempdir()) / f"alice-bg-{int(time.time() * 1000)}-{uuid.uuid4().hex[:6]}.log"
             kwargs: dict[str, Any] = {}
             if IS_WIN:
                 kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | NO_WINDOW  # type: ignore[attr-defined]
@@ -174,6 +198,7 @@ class RunCommand(Tool):
         if IS_WIN and "is not a valid statement separator" in err:
             body += ("\n[ipucu] Bu Windows PowerShell 5.1: '&&' ve '||' yok. Komutları ';' ile ayır, "
                      "koşul için 'if ($?) { ... }' ya da 'if (-not $?) { ... }' kullan.")
+        body += _ps_hint(command, err) if IS_WIN else ""
         # Yalnız gerçek erişim hatasında ya da yazmaya çalışan komut başarısız olunca (düşük bütünlükte engellenen
         # yazma bazen hiç çıktı vermiyor). Salt okuma komutunun hatası ("dosya yok") sandbox'tan değil.
         if boxed and (ACCESS_DENIED.search(out + err) or (returncode != 0 and not READ_ONLY.match(command))):
@@ -182,6 +207,23 @@ class RunCommand(Tool):
             body += (f"\n[sandbox: komut sadece {wd} ve geçici klasöre yazabildi. Bu erişim hatası bu yüzdense ve proje "
                      "dışına yazmak gerçekten gerekiyorsa unsandboxed=true ile tekrar dene.]")
         return ToolResult(f"çıkış kodu {returncode}\n{body}", is_error=returncode != 0)
+
+
+_INLINE_CODE_RX = re.compile(r"(python(\.exe)?\"?|py|node(\.exe)?)\s+-[ce]\s", re.I)
+
+
+def _ps_hint(command: str, err: str) -> str:
+    """PowerShell'in sık yapılan sözdizimi hatalarına tek satırlık çare (oturum kayıtlarında tekrar edenler):
+    model hatayı çözmek için birkaç tur harcıyordu."""
+    if "was not followed by a valid variable name character" in err:
+        return ("\n[ipucu] PowerShell \"$ad: ...\" içindeki ':' işaretini değişken adının parçası sanıyor. "
+                "\"${ad}: ...\" ya da \"$($ad): ...\" yaz.")
+    if "Unrecognized token" in err and "@@" in command:
+        return "\n[ipucu] Sözlük '@{ ... }' ile yazılır; '@@{' geçersiz."
+    if _INLINE_CODE_RX.search(command) and ("SyntaxError" in err or "unexpected EOF" in err or "Unexpected token" in err):
+        return ("\n[ipucu] PowerShell, -c ile verilen kodun içindeki çift tırnakları ve ters eğik çizgileri bozuyor. "
+                "Kodu write_file ile geçici bir dosyaya yaz ve dosyayı çalıştır; satır içi kodda sadece tek tırnak kullan.")
+    return ""
 
 
 class ProcessOutput(Tool):

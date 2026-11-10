@@ -409,7 +409,7 @@ function renderProject() {
     if (ui.rail) return;
     e.preventDefault(); grip.setPointerCapture(e.pointerId);
     const x0 = e.clientX, w0 = ui.w;
-    const mv = (ev) => { ui.w = Math.max(220, Math.min(480, w0 + ev.clientX - x0)); body.style.setProperty("--list-w", ui.w + "px"); };
+    const mv = (ev) => { ui.w = Math.max(220, Math.min(480, w0 + (ev.clientX - x0) / uiZoom())); body.style.setProperty("--list-w", ui.w + "px"); };
     const up = () => { grip.removeEventListener("pointermove", mv); projUI({ w: ui.w }); };
     grip.addEventListener("pointermove", mv);
     grip.addEventListener("pointerup", up, { once: true });

@@ -45,6 +45,46 @@ def save(session_id: str, messages: list[dict[str, Any]], cwd: Path) -> Path:
     return path
 
 
+ARCHIVE_TOOL_CHARS = 4000  # arşivde araç çıktısı bu kadar tutulur (yalnız ekranda göstermek için)
+
+
+def archive_path(session_id: str) -> Path:
+    # .jsonl: oturumları listeleyen "*.json" taramalarına girmez.
+    return sessions_dir() / f"{session_id}.archive.jsonl"
+
+
+def archive(session_id: str, messages: list[dict[str, Any]]) -> None:
+    """Özetleme sırasında bağlamdan çıkan mesajları oturumun arşivine ekle. Model artık bunları görmez (özetini
+    görür) ama sohbet ekranında durmaya devam ederler: önceden özetlenince bütün eski mesajlar ekrandan ve
+    oturum dosyasından siliniyordu."""
+    if not messages:
+        return
+    lines = []
+    for m in strip_images(messages):
+        m = {k: v for k, v in m.items() if k != "reasoning_content"}
+        if m.get("role") == "tool" and isinstance(m.get("content"), str) and len(m["content"]) > ARCHIVE_TOOL_CHARS:
+            m["content"] = m["content"][:ARCHIVE_TOOL_CHARS] + "\n…(kısaltıldı)"
+        lines.append(json.dumps(m, ensure_ascii=False))
+    with open(archive_path(session_id), "a", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def load_archive(session_id: str) -> list[dict[str, Any]]:
+    try:
+        text = archive_path(session_id).read_text(encoding="utf-8")
+    except OSError:
+        return []
+    out = []
+    for line in text.splitlines():
+        try:
+            m = json.loads(line)
+        except json.JSONDecodeError:  # yarım yazılmış son satır
+            continue
+        if isinstance(m, dict):
+            out.append(m)
+    return out
+
+
 def list_sessions(limit: int = 15) -> list[tuple[str, str, str]]:
     out = []
     for p in sorted(sessions_dir().glob("*.json"), reverse=True)[:limit]:

@@ -16,6 +16,7 @@
 <script src="/static/main.js" defer></script>
 </head>
 <body>
+<div id="zoomLayer">
 <div id="app" class="empty">
   <nav id="rail" aria-label="Bölümler">
     <button class="rail-logo" data-sec="chat" title="ALICE"><img src="/static/alice.png" alt="Alice"></button>
@@ -88,6 +89,10 @@
       <button id="changesBtn" class="top-btn changes" hidden title="Bu oturumdaki değişiklikler">
         <svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 14h6M12 11v6"/></svg>
         <span class="a" id="chA">+0</span><span class="d" id="chD">−0</span>
+      </button>
+      <button class="icon-btn" id="wideBtn" title="Sohbeti genişlet/daralt (Ctrl+Shift+E)">
+        <svg class="i-wide" viewBox="0 0 24 24"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5M3 12h18"/></svg>
+        <svg class="i-narrow" viewBox="0 0 24 24"><path d="M4 7l5 5-5 5M20 7l-5 5 5 5M9 12h6"/></svg>
       </button>
       <button class="icon-btn" id="panelBtn" title="Yan paneli aç/kapat (Ctrl+J)">
         <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M15 4v16"/></svg>
@@ -215,5 +220,6 @@
 <div id="overlay" hidden><div class="dialog" id="dialog"></div></div>
 <div id="dropzone" hidden><div>Görseli bırak</div></div>
 <div id="toast" hidden></div>
+</div>
 </body>
 </html>
