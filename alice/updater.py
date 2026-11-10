@@ -193,7 +193,7 @@ def install_root() -> Path | None:
     return root if (root / "alice" / "__init__.py").exists() and (root / "pyproject.toml").exists() else None
 
 
-def bootstrap_repo(root: Path) -> tuple[Path | None, str]:
+def bootstrap_repo(root: Path, branch: str = "main") -> tuple[Path | None, str]:
     """Kurulumda .git yoksa depoyu kurulumun derlendiği commit'ten (BUILD_FILE) yeniden kur. Çalışma dosyalarına
     dokunulmaz: yalnız geçmiş indirilir ve dizin o commit'e bağlanır; sonraki güncellemeler normal yoldan çekilir."""
     try:
@@ -202,7 +202,8 @@ def bootstrap_repo(root: Path) -> tuple[Path | None, str]:
         sha = ""
     if not sha:
         return None, ""
-    steps = [["init", "-q"], ["symbolic-ref", "HEAD", "refs/heads/main"], ["remote", "add", "origin", REMOTE_URL],
+    # HEAD ayarlardaki dala bağlanır: başka dalda kalırsa otomatik güncelleme "depo 'main' dalında" diye durur.
+    steps = [["init", "-q"], ["symbolic-ref", "HEAD", f"refs/heads/{branch}"], ["remote", "add", "origin", REMOTE_URL],
              ["fetch", "--depth", "1", "origin", sha], ["reset", "-q", "--mixed", "FETCH_HEAD"]]
     if WINDOWS:
         steps.insert(1, ["config", "core.autocrlf", "true"])  # kurulumdaki dosyalar CRLF: "değişmiş" görünmesin
@@ -214,7 +215,7 @@ def bootstrap_repo(root: Path) -> tuple[Path | None, str]:
     return repo_dir(), ""
 
 
-def _find_repo() -> tuple[Path | None, str]:
+def _find_repo(branch: str = "main") -> tuple[Path | None, str]:
     """Depo yoksa sebebini bul ve düzeltilebiliyorsa düzelt: Git'i bul/kur, eksik .git'i yeniden kur."""
     repo = repo_dir()
     if repo is not None:
@@ -225,10 +226,17 @@ def _find_repo() -> tuple[Path | None, str]:
     if ensure_git() is None:
         return None, ("Git bulunamadı; otomatik güncelleme için Git gerekiyor. Git'i kur (winget install Git.Git "
                       "ya da git-scm.com) ve ALICE'i yeniden aç")
-    if (root / ".git").exists():
-        repo = repo_dir()
-        return repo, "" if repo else f"{root} bir git deposu ama git onu okuyamadı"
-    repo, err = bootstrap_repo(root)
+    # Uygulama ve çekirdek aynı anda buraya girebilir: biri .git'i kurarken öbürü yarım depoyu silmesin.
+    try:
+        with update_lock():
+            repo = repo_dir()  # kilidi beklerken başka süreç kurmuş olabilir
+            if repo is not None:
+                return repo, ""
+            if (root / ".git").exists():
+                return None, f"{root} bir git deposu ama git onu okuyamadı"
+            repo, err = bootstrap_repo(root, branch)
+    except UpdateBusy as e:
+        return None, f"{e}; birazdan tekrar denenecek"
     if repo is not None:
         return repo, ""
     if err:
@@ -506,10 +514,10 @@ def consume_announcement(who: str) -> dict[str, Any] | None:
 def check(cfg: Any = None, timeout: float | None = None, details: bool = True) -> UpdateInfo:
     """Yeni commit var mı? Ağ turu: 1 (ls-remote) + ayrıntı istenirse 2 anahtarsız API çağrısı."""
     s = settings(cfg)
-    repo, why = _find_repo()
+    branch = str(s.get("branch") or "main")
+    repo, why = _find_repo(branch)
     if repo is None:
         return UpdateInfo(error=why)
-    branch = str(s.get("branch") or "main")
     info = UpdateInfo(repo=repo, branch=branch, local=local_commit(repo), running=_RUNNING or "")
     info.remote, info.error = remote_head(repo, branch, float(timeout or s.get("startup_timeout") or 12))
     info.bad = bool(info.remote) and info.remote in (read_state().get("bad") or [])

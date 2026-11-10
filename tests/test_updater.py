@@ -409,3 +409,26 @@ def test_path_disindaki_git_bulunur(monkeypatch, tmp_path):
     for env in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"):
         monkeypatch.delenv(env, raising=False)
     assert updater.git_exe() == str(exe)
+
+
+def test_yeniden_kurulan_depo_ayarlardaki_dalda(repos, tmp_path, monkeypatch):
+    """Review: HEAD hep main'e bağlanıyordu; ayarlarda başka dal seçiliyse otomatik güncelleme duruyordu."""
+    clone, origin = repos
+    app = _exe_install(clone, tmp_path / "ALICE", git(clone, "rev-parse", "HEAD"))
+    monkeypatch.setattr(updater, "REMOTE_URL", origin.as_uri())
+    monkeypatch.setattr(updater, "repo_dir", lambda: app if (app / ".git").exists() else None)
+    repo, err = updater.bootstrap_repo(app, "master")
+    assert repo == app and err == "" and updater.current_branch(app) == "master" and not updater.is_dirty(app)
+
+
+def test_baska_surec_guncellerken_depo_kurulmaz(repos, monkeypatch, tmp_path):
+    """Review: uygulama ve çekirdek aynı anda kurarsa biri öbürünün yarım .git'ini silebiliyordu."""
+    clone, origin = repos
+    app = _exe_install(clone, tmp_path / "ALICE", git(clone, "rev-parse", "HEAD"))
+    monkeypatch.setattr(updater, "REMOTE_URL", origin.as_uri())
+    monkeypatch.setattr(updater, "install_root", lambda: app)
+    monkeypatch.setattr(updater, "repo_dir", lambda: app if (app / ".git").exists() else None)
+    with updater.update_lock():
+        info = updater.check(make_config({"brain": ["a:m"]}))
+    assert "başka bir ALICE süreci" in info.error and not (app / ".git").exists()
+    assert updater.check(make_config({"brain": ["a:m"]})).error == ""  # kilit bırakılınca kurulur
