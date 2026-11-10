@@ -219,6 +219,7 @@ class TaskStore:
         now = time.time() if now is None else now
         out = []
         changed = False
+        missed: list[str] = []  # telafi edilmeyecek, kaçırılmış tek seferlik görevler: silinir
         for t in self.tasks:
             if t.pending:
                 out.append((t, False))
@@ -233,10 +234,16 @@ class TaskStore:
                 continue
             late = now - nxt > grace
             if late and not t.catch_up:
-                t.last_run = now
+                if t.once:
+                    # Listede kalırsa cron aynı günü ertesi yıl yeniden üretir ve "tek seferlik" iş o zaman çalışır.
+                    missed.append(t.id)
+                else:
+                    t.last_run = now
                 changed = True
                 continue
             out.append((t, late))
+        if missed:
+            self.tasks = [t for t in self.tasks if t.id not in missed]
         if changed:
             self.save()
         return out

@@ -421,3 +421,15 @@ def test_muted_notification_recorded_once(store):
     for _ in range(3):  # uçuşta susturulan rapor her turda yeniden denenir
         assert not n.send(Notification("ALICE sağlık raporu: 2 sorun", "x", "warn", "core"))
     assert sent == [] and len(store.events(limit=10)) == 1
+
+
+def test_missed_one_time_task_without_catch_up_is_removed(tmp_path):
+    """Bilgisayar kapalıyken kaçan ve telafi edilmeyecek tek seferlik görev listede kalırsa cron aynı günü ertesi yıl
+    yeniden üretir."""
+    store = TaskStore(tmp_path / "tasks.json")
+    created = ts("2026-10-05T12:00")
+    once = store.add(ScheduledTask("0 23 5 10 *", "ara", created=created, catch_up=False, once=True))
+    keep = store.add(ScheduledTask("0 23 * * *", "özet", created=created, catch_up=False))
+    assert store.due(ts("2026-10-08T10:00")) == []
+    assert store.get(once.id) is None and store.get(keep.id) is not None
+    assert TaskStore(tmp_path / "tasks.json").get(once.id) is None

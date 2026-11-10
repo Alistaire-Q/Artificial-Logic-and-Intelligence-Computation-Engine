@@ -85,10 +85,10 @@ def _write(store: dict[str, Any]) -> None:
         pass
 
 
-def load_auth() -> dict[str, Any]:
-    """Kullanılan (seçili) hesabın giriş bilgisi."""
+def load_auth(key: str | None = None) -> dict[str, Any]:
+    """Kullanılan (seçili) hesabın giriş bilgisi; key verilirse o hesabınki."""
     st = _store()
-    return dict(st["accounts"].get(st["active"]) or {})
+    return dict(st["accounts"].get(key or st["active"]) or {})
 
 
 def save_auth(tokens: dict[str, Any], key: str | None = None) -> dict[str, Any]:
@@ -98,6 +98,7 @@ def save_auth(tokens: dict[str, Any], key: str | None = None) -> dict[str, Any]:
     auth_claims = claims.get("https://api.openai.com/auth") or {}
     access = tokens.get("access_token") or ""
     st = _store()
+    select = key is None  # yeni giriş seçili hesap olur; var olan hesabın yenilenmesi seçimi değiştirmez
     if key is None:
         key = auth_claims.get("chatgpt_account_id") or claims.get("email") or f"hesap{len(st['accounts']) + 1}"
     prev = st["accounts"].get(key) or {}
@@ -111,7 +112,8 @@ def save_auth(tokens: dict[str, Any], key: str | None = None) -> dict[str, Any]:
         "expires_at": float(_jwt_claims(access).get("exp") or time.time() + 3600),
     }
     st["accounts"][key] = data
-    st["active"] = key
+    if select or not st["active"]:
+        st["active"] = key
     _write(st)
     return data
 
@@ -151,13 +153,22 @@ def remove(key: str | None = None) -> bool:
     return True
 
 
-def _update_active(**fields: Any) -> None:
+def _update(key: str | None, **fields: Any) -> None:
+    """key'li hesabın (None: seçili hesap) alanlarını güncelle."""
     st = _store()
-    acc = st["accounts"].get(st["active"])
+    acc = st["accounts"].get(key or st["active"])
     if acc is None:
         return
     acc.update(fields)
     _write(st)
+
+
+def _update_active(**fields: Any) -> None:
+    _update(None, **fields)
+
+
+# Hesap seçimi ve değişimi tek tek yapılır: uygulamada birkaç sohbet aynı sağlayıcıyı aynı anda kullanabiliyor.
+_switch_lock = threading.Lock()
 
 
 _fetching = threading.Lock()
@@ -280,8 +291,8 @@ def limit_note() -> str:
     return " · ".join(parts)
 
 
-def save_limits(limits: dict[str, Any]) -> None:
-    _update_active(limits={**limits, "updated": time.time()})
+def save_limits(limits: dict[str, Any], key: str | None = None) -> None:
+    _update(key, limits={**limits, "updated": time.time()})
 
 
 def _used(acc: dict[str, Any], now: float) -> float:
@@ -293,10 +304,10 @@ def _used(acc: dict[str, Any], now: float) -> float:
     return worst
 
 
-def _mark_exhausted(reset_in: float | None = None) -> None:
-    """Limite takılan seçili hesabı dolu işaretle: sıradaki seçimde atlanır. reset_in: sunucunun söylediği
-    sıfırlanma süresi (sn); bilinmiyorsa kayıtlı pencereninki, o da yoksa 1 saat."""
-    a = load_auth()
+def _mark_exhausted(reset_in: float | None = None, key: str | None = None) -> None:
+    """Kullanım limiti dolan hesabı (key; None: seçili) dolu işaretle: sıradaki seçimde atlanır. reset_in: sunucunun
+    söylediği sıfırlanma süresi (sn); bilinmiyorsa kayıtlı pencereninki, o da yoksa 1 saat."""
+    a = load_auth(key)
     lim = dict(a.get("limits") or {})
     w = dict(lim.get("primary") or {})
     w["used_percent"] = 100.0
@@ -305,7 +316,7 @@ def _mark_exhausted(reset_in: float | None = None) -> None:
     elif float(w.get("reset_at") or 0) <= time.time():
         w["reset_at"] = time.time() + 3600
     lim["primary"] = w
-    _update_active(limits={**lim, "updated": time.time()})
+    _update(key, limits={**lim, "updated": time.time()})
 
 
 def _next_account(tried: set[str]) -> str | None:
@@ -394,8 +405,9 @@ def fetch_usage(client: httpx.Client | None = None) -> dict[str, Any]:
     return limits
 
 
-def refresh(client: httpx.Client | None = None) -> dict[str, Any]:
-    a = load_auth()
+def refresh(client: httpx.Client | None = None, key: str | None = None) -> dict[str, Any]:
+    key = key or _store()["active"]
+    a = load_auth(key)
     if not a.get("refresh_token"):
         raise ProviderError("auth", "ChatGPT'ye giriş yapılmamış (Sistem → Kurulum → ChatGPT ile giriş)")
     c = client or httpx.Client(timeout=30.0)
@@ -410,15 +422,15 @@ def refresh(client: httpx.Client | None = None) -> dict[str, Any]:
     if r.status_code != 200:
         kind = "auth" if r.status_code in (400, 401, 403) else "server"
         raise ProviderError(kind, f"ChatGPT oturumu yenilenemedi ({r.status_code}); tekrar giriş yap", r.status_code)
-    return save_auth(r.json(), key=_store()["active"])
+    return save_auth(r.json(), key=key)
 
 
-def access(client: httpx.Client | None = None) -> dict[str, Any]:
-    a = load_auth()
+def access(client: httpx.Client | None = None, key: str | None = None) -> dict[str, Any]:
+    a = load_auth(key)
     if not a.get("access_token") and not a.get("refresh_token"):
         raise ProviderError("auth", "ChatGPT'ye giriş yapılmamış (Sistem → Kurulum → ChatGPT ile giriş)")
     if float(a.get("expires_at") or 0) - REFRESH_EARLY < time.time():
-        a = refresh(client)
+        a = refresh(client, key)
     return a
 
 
@@ -596,8 +608,8 @@ class ChatGPTProvider(OpenAICompatProvider):
         self.session = str(uuid.uuid4())
         self.use_codex_prompt = False  # arka uç kendi talimatımızı reddederse True olur
 
-    def _auth_headers(self) -> dict[str, str]:
-        a = access(self._client)
+    def _auth_headers(self, key: str | None = None) -> dict[str, str]:
+        a = access(self._client, key)
         h = {"Authorization": f"Bearer {a['access_token']}", "OpenAI-Beta": "responses=experimental",
              "originator": "codex_cli_rs", "session_id": self.session, "Accept": "text/event-stream",
              "Content-Type": "application/json"}
@@ -634,40 +646,51 @@ class ChatGPTProvider(OpenAICompatProvider):
     def chat_stream(self, model, messages, on_delta, tools=None, temperature=None, max_tokens=None,
                     response_format=None, extra=None, cancel=None, on_reasoning=None, on_first=None, on_tool=None):
         """Seçili hesap limite takılırsa ya da oturumu düşmüşse kayıtlı diğer hesaplara sırayla geçer."""
-        st = _store()
         tried: set[str] = set()
-        if _used(st["accounts"].get(st["active"]) or {}, time.time()) >= 100.0:
-            # Seçili hesabın dolu olduğu zaten biliniyor: boşuna istek atmadan boş hesaba geç.
-            free = _next_account({st["active"]})
-            if free is not None:
-                tried.add(st["active"])
-                use(free)
+        full = 0  # kullanım limiti dolduğu için elenen hesap sayısı (geçici hız sınırı sayılmaz)
+        with _switch_lock:
+            st = _store()
+            key = st["active"]  # bu isteğin hesabı: başka bir sohbet seçili hesabı değiştirse de istek bununla gider
+            if _used(st["accounts"].get(key) or {}, time.time()) >= 100.0:
+                # Seçili hesabın dolu olduğu zaten biliniyor: boşuna istek atmadan boş hesaba geç.
+                free = _next_account({key})
+                if free is not None:
+                    tried.add(key)
+                    full += 1
+                    use(free)
+                    key = free
         while True:
-            tried.add(_store()["active"])
+            tried.add(key)
             started = [False]  # veri gelmeye başladıysa hesap değiştirilmez: ekrana yarım cevap basılmış olur
             try:
                 return self._chat_one(model, messages, on_delta, tools, extra, cancel, on_reasoning, on_first, on_tool,
-                                      started)
+                                      started, key)
             except ProviderError as e:
                 if e.kind not in ("rate_limit", "quota", "auth") or started[0]:
                     raise
-                limited = e.kind in ("rate_limit", "quota")
-                if limited:
-                    _mark_exhausted(e.retry_after if e.kind == "quota" else None)
-                nxt = _next_account(tried)
+                # Kullanım limiti (kota) hesabı uzun süre kapatır; geçici hız sınırı (429) kapatmaz: yalnız bu istek
+                # başka hesabı dener, hesap dolu diye işaretlenmez.
+                used_up = e.kind == "quota" or getattr(e, "usage_limit", False)
+                with _switch_lock:
+                    if used_up:
+                        full += 1
+                        _mark_exhausted(e.retry_after if e.kind == "quota" else None, key)
+                    nxt = _next_account(tried)
+                    if nxt is not None and _store()["active"] == key:
+                        use(nxt)  # seçili hesap hâlâ başarısız olansa değiştir; başkası değiştirdiyse dokunma
                 if nxt is not None:
-                    use(nxt)
+                    key = nxt
                     continue
-                if not limited or len(tried) < 2:
-                    raise
-                # Bütün hesaplar dolu: router bu modeli en erken sıfırlanmaya kadar (en çok yarım saat; arada hesap
-                # eklenebilir) rahat bıraksın.
+                if full < 2 or full < len(tried):
+                    raise  # tek hesap, giriş hatası ya da geçici hız sınırı: hata olduğu gibi router'a
+                # Bütün hesapların kullanım limiti dolu: router bu modeli en erken sıfırlanmaya kadar (en çok yarım
+                # saat; arada hesap eklenebilir) rahat bıraksın.
                 wait = min(_earliest_reset() or 1800.0, 1800.0)
                 raise ProviderError("quota", f"ChatGPT: kayıtlı {len(tried)} hesabın hepsinin limiti dolu", 429,
                                     max(wait, 60.0)) from e
 
     def _chat_one(self, model, messages, on_delta, tools, extra, cancel, on_reasoning, on_first, on_tool,
-                  started: list[bool] | None = None):
+                  started: list[bool] | None = None, key: str | None = None):
         started = started if started is not None else [False]
 
         def first() -> None:
@@ -681,16 +704,17 @@ class ChatGPTProvider(OpenAICompatProvider):
 
         try:
             try:
-                return self._stream(model, messages, delta, tools, extra, cancel, on_reasoning, first, on_tool)
+                return self._stream(model, messages, delta, tools, extra, cancel, on_reasoning, first, on_tool, key)
             except ProviderError as e:
                 if self.use_codex_prompt or e.kind != "bad_request" or "instruction" not in str(e).lower():
                     raise
                 self.use_codex_prompt = True  # arka uç kendi istemini istiyor: onunla tekrar dene
-                return self._stream(model, messages, delta, tools, extra, cancel, on_reasoning, first, on_tool)
+                return self._stream(model, messages, delta, tools, extra, cancel, on_reasoning, first, on_tool, key)
         except ProviderError as e:
             raise self._scrub(e) from e.__cause__
 
-    def _stream(self, model, messages, on_delta, tools, extra, cancel, on_reasoning, on_first, on_tool) -> ChatResult:
+    def _stream(self, model, messages, on_delta, tools, extra, cancel, on_reasoning, on_first, on_tool,
+                key: str | None = None) -> ChatResult:
         instructions, items = to_responses(messages, codex_prompt(self._client) if self.use_codex_prompt else None)
         body: dict[str, Any] = {"model": model, "instructions": instructions, "input": items, "tools": to_tools(tools),
                                 "tool_choice": "auto", "parallel_tool_calls": bool(tools), "store": False,
@@ -705,11 +729,11 @@ class ChatGPTProvider(OpenAICompatProvider):
         served = model
         got_data = False
         try:
-            with self._client.stream("POST", f"{self.cfg.base_url}/responses", headers=self._auth_headers(),
+            with self._client.stream("POST", f"{self.cfg.base_url}/responses", headers=self._auth_headers(key),
                                      json=body, timeout=httpx.Timeout(self.FIRST_DATA, connect=15.0)) as r:
                 lim = limits_from_headers(r.headers)
                 if lim:
-                    save_limits(lim)
+                    save_limits(lim, key)
                 if r.status_code != 200:
                     r.read()
                     raise _limit_error(r.status_code, r.text, dict(r.headers))
@@ -756,7 +780,9 @@ class ChatGPTProvider(OpenAICompatProvider):
                         msg = err.get("message") if isinstance(err, dict) else str(err)
                         code = str(err.get("code") or "") if isinstance(err, dict) else ""
                         if "usage_limit" in code or "rate_limit" in code:
-                            raise ProviderError("rate_limit", f"ChatGPT limiti doldu: {msg}", 429)
+                            limit_err = ProviderError("rate_limit", f"ChatGPT limiti doldu: {msg}", 429)
+                            limit_err.usage_limit = "usage_limit" in code  # kullanım limiti: hesap dolu sayılır
+                            raise limit_err
                         raise ProviderError("server", f"ChatGPT: {msg}")
         except _TRANSPORT_ERRORS as e:
             raise _transport_error(e) from e

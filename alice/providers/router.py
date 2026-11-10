@@ -731,7 +731,9 @@ class Router:
             wait = seconds_until_reset(provider, pc.base_url if pc else "") if daily else COOLDOWNS["quota"]
             if e.retry_after and not daily:
                 # Sağlayıcı ne zaman açılacağını söyledi (ChatGPT: resets_in_seconds). Önceden yok sayılıyordu.
-                wait = min(max(float(e.retry_after), 60.0), 6 * 3600)
+                # Süre kısaltılmaz: 15 gün sonra açılacak hesaba 6 saatte bir boşuna gidilirdi. (Bütün hesaplar
+                # doluyken sağlayıcı zaten kısa bir süre verir; hesap eklenince/değişince soğuma temizlenir.)
+                wait = min(max(float(e.retry_after), 60.0), 30 * 86400)
             self.cooldown_until[ref] = now + wait
             self.cooldown_kind[ref] = "quota"
             if daily and provider in ranking.ACCOUNT_QUOTA and ref.endswith(":free"):

@@ -398,3 +398,13 @@ def test_quota_with_known_reset_waits_that_long():
     r = router_with(cfg, {"a": a, "b": FakeProvider("b", ["ok"])})
     r.chat("brain", [{"role": "user", "content": "x"}])
     assert 1400 < r.cooldown_until["a:m"] - time.monotonic() < 1501 and r.cooldown_kind["a:m"] == "quota"
+
+
+def test_long_quota_reset_is_not_cut_to_six_hours():
+    import time
+
+    cfg = make_config({"brain": ["a:m", "b:m"]})
+    a = FakeProvider("a", [ProviderError("quota", "limit doldu", 429, retry_after=15 * 86400)])
+    r = router_with(cfg, {"a": a, "b": FakeProvider("b", ["ok"])})
+    r.chat("brain", [{"role": "user", "content": "x"}])
+    assert r.cooldown_until["a:m"] - time.monotonic() > 14 * 86400

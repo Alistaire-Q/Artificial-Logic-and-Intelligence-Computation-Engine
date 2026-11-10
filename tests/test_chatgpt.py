@@ -372,3 +372,49 @@ def test_single_account_limit_keeps_server_reset_time():
     with pytest.raises(ProviderError) as ei:
         p.chat("gpt-5.5", [{"role": "user", "content": "x"}])
     assert ei.value.kind == "quota" and ei.value.retry_after == 7200
+
+
+def test_temporary_rate_limit_does_not_mark_the_account_as_used_up():
+    """Geçici 429 hesabı bir saat "dolu" göstermez; istek yine de başka hesabı dener. Hepsi geçici sınırdaysa hata
+    kota değil hız sınırı olarak router'a gider."""
+    chatgpt.save_auth(tokens())
+    chatgpt.save_auth(tokens(email="x@y.z", acc="acc2", refresh="r2"))  # seçili: acc2
+    seen = []
+
+    def handler(req):
+        seen.append(req.headers.get("chatgpt-account-id"))
+        if seen[-1] == "acc2":
+            return httpx.Response(429, json={"error": {"message": "Too many requests"}})
+        return httpx.Response(200, content=sse({"type": "response.output_text.delta", "delta": "tamam"}))
+
+    p = ChatGPTProvider(pc(), client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert p.chat("gpt-5.5", [{"role": "user", "content": "x"}]).text == "tamam" and seen == ["acc2", "acc1"]
+    assert not (chatgpt._store()["accounts"]["acc2"].get("limits") or {}).get("primary")  # dolu işaretlenmedi
+
+    p = ChatGPTProvider(pc(), client=httpx.Client(transport=httpx.MockTransport(
+        lambda req: httpx.Response(429, json={"error": {"message": "Too many requests"}}))))
+    with pytest.raises(ProviderError) as ei:
+        p.chat("gpt-5.5", [{"role": "user", "content": "x"}])
+    assert ei.value.kind == "rate_limit"
+
+
+def test_request_keeps_its_own_account_when_another_chat_switches():
+    """İstek başladığı hesapla gider ve limit o hesaba yazılır; arada seçili hesap değişse de."""
+    chatgpt.save_auth(tokens())
+    chatgpt.save_auth(tokens(email="x@y.z", acc="acc2", refresh="r2"))  # seçili: acc2
+    seen = []
+
+    def handler(req):
+        seen.append(req.headers.get("chatgpt-account-id"))
+        chatgpt.use("acc1")  # istek sürerken başka bir sohbet hesabı değiştirdi
+        return httpx.Response(200, headers={"x-codex-primary-used-percent": "40", "x-codex-primary-window-minutes": "300"},
+                              content=sse({"type": "response.output_text.delta", "delta": "ok"}))
+
+    p = ChatGPTProvider(pc(), client=httpx.Client(transport=httpx.MockTransport(handler)))
+    p.chat("gpt-5.5", [{"role": "user", "content": "x"}])
+    accs = chatgpt._store()["accounts"]
+    assert seen == ["acc2"] and accs["acc2"]["limits"]["primary"]["used_percent"] == 40
+    assert not accs["acc1"].get("limits")  # limit yanlış hesaba yazılmadı
+    # süresi dolmuş anahtar yenilenirken seçili hesap değişmez
+    chatgpt.save_auth({"access_token": tokens()["access_token"]}, key="acc2")
+    assert chatgpt._store()["active"] == "acc1"
