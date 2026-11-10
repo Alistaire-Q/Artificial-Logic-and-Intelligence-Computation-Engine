@@ -148,6 +148,7 @@ def test_pip_sadece_bagimlilik_degisince_calisir(repos, monkeypatch, offline):
 
 def test_git_deposu_degilse_anlasilir_hata(monkeypatch, tmp_path):
     monkeypatch.setattr(updater, "repo_dir", lambda: None)
+    monkeypatch.setattr(updater, "install_root", lambda: None)
     info = updater.check(make_config({"brain": ["a:m"]}))
     assert not info.available and "git deposundan kurulmamış" in info.error
 
@@ -349,3 +350,62 @@ def test_unauthorized_alice_token_falls_back_to_git_login(monkeypatch, tmp_path)
     assert updater._git(["fetch", "origin"], tmp_path) == (0, "abc\trefs/heads/main") and runs == [True, False]
     runs.clear()
     assert updater._git(["status"], tmp_path)[0] == 0 and runs == [False]  # yerel komuta anahtar verilmez
+
+
+def _exe_install(clone: Path, dest: Path, sha: str) -> Path:
+    """ALICE-Setup.exe'nin kurduğu klasör gibi: kaynak dosyalar var, .git yok, derlendiği commit yazılı."""
+    import shutil
+
+    shutil.copytree(clone, dest, ignore=shutil.ignore_patterns(".git"))
+    (dest / updater.BUILD_FILE).write_text(sha, encoding="utf-8")
+    return dest
+
+
+def test_exe_kurulumunda_git_gecmisi_yoksa_yeniden_kurulur_ve_guncellenir(repos, monkeypatch, offline, tmp_path):
+    """Canlı kayıt (10 Kasım): exe'den kurulan ALICE "git deposundan kurulmamış" deyip hiç güncellenmiyordu."""
+    clone, origin = repos
+    app = _exe_install(clone, tmp_path / "ALICE", git(clone, "rev-parse", "HEAD"))
+    (app / ".venv").mkdir()  # kurulumun kendi dosyaları dokunulmadan kalır
+    monkeypatch.setattr(updater, "REMOTE_URL", origin.as_uri())
+    monkeypatch.setattr(updater, "install_root", lambda: app)
+    monkeypatch.setattr(updater, "repo_dir", lambda: app if (app / ".git").exists() else None)
+    cfg = make_config({"brain": ["a:m"]})
+    info = updater.check(cfg)
+    assert info.error == "" and not info.available and not updater.is_dirty(app)
+    new = push(origin, "yeni özellik")
+    info = updater.check(cfg)
+    assert info.available and info.can_auto
+    ok, msg = updater.apply_update(info, cfg)
+    assert ok, msg
+    assert (app / "alice" / "new.py").exists() and updater.local_commit(app) == new and (app / ".venv").is_dir()
+
+
+def test_gecmis_indirilemezse_yarim_depo_kalmaz(repos, monkeypatch, tmp_path):
+    clone, _origin = repos
+    app = _exe_install(clone, tmp_path / "ALICE", "0" * 40)
+    monkeypatch.setattr(updater, "REMOTE_URL", (tmp_path / "yok").as_uri())
+    monkeypatch.setattr(updater, "install_root", lambda: app)
+    monkeypatch.setattr(updater, "repo_dir", lambda: app if (app / ".git").exists() else None)
+    info = updater.check(make_config({"brain": ["a:m"]}))
+    assert "indirilemedi" in info.error and not (app / ".git").exists()
+
+
+def test_git_yoksa_dogru_sebep_soylenir(repos, monkeypatch, tmp_path):
+    clone, _origin = repos
+    monkeypatch.setattr(updater, "install_root", lambda: clone)
+    monkeypatch.setattr(updater, "repo_dir", lambda: None)
+    monkeypatch.setattr(updater, "ensure_git", lambda: None)
+    assert "Git bulunamadı" in updater.check(make_config({"brain": ["a:m"]})).error
+
+
+def test_path_disindaki_git_bulunur(monkeypatch, tmp_path):
+    """winget Git'i yeni kurduysa kurulumun hemen ardından açılan ALICE'in PATH'inde henüz yok."""
+    exe = tmp_path / "Programs" / "Git" / "cmd" / "git.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("", encoding="utf-8")
+    monkeypatch.setattr(updater.shutil, "which", lambda name: None)
+    monkeypatch.setattr(updater, "WINDOWS", True)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    for env in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"):
+        monkeypatch.delenv(env, raising=False)
+    assert updater.git_exe() == str(exe)
