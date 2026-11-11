@@ -272,6 +272,9 @@ barge_in = true
 # Discord'da konuşurken ya da oyundayken: "wake" = "Alice" cümlenin başında olmalı ve ses senin sesin olmalı
 # (ses izi, Sistem → Ses → Sesimi tanıt); "ptt" = mikrofon ALICE'e tamamen kapalı, sadece bas-konuş tuşu.
 social_mode = "wake"
+# Oyun/uçuş uyarılarını (tehdit, irtifa vb. anonslar) aç/kapatır; sesli sohbet etkilenmez. Boş = kapalı.
+# Kapanınca alçalan, açılınca yükselen bip çalar. WT'nin kendi tuşlarıyla çakışmasın.
+game_mute_key = "ctrl+shift+m"
 # ALICE cevap verdikten sonra bu kadar saniye "Hey Alice" demeden devam edebilirsin (en fazla 5).
 # "Alice sus" dersen yeniden "Alice" diyene kadar hiçbir şeyi komut saymaz.
 follow_up = 5
@@ -568,8 +571,8 @@ auto_install = true
 # Boş = denenmiş sabit sürüm; "latest" ya da "v8.0.57" gibi bir etiket de yazılabilir.
 version = ""
 
-# git / GitHub araçlarının kuralları. Anahtar: .env'deki GITHUB_TOKEN, yoksa GitHub MCP sunucusunun anahtarı,
-# yoksa GITHUB_MODELS_TOKEN, yoksa `gh auth token`.
+# git / GitHub araçlarının kuralları. Anahtar önceliği: `gh auth token` (keyring), yoksa .env'deki GITHUB_TOKEN,
+# yoksa GitHub MCP sunucusunun anahtarı, yoksa GITHUB_MODELS_TOKEN.
 [connect]
 # Servis bağlantıları (alice/connect): yerleşik tanımlar + ~/.alice/connect/*.toml
 disabled = []       # kapatılacak bağlantı adları, ör. ["discord"]

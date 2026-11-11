@@ -123,7 +123,9 @@ function onBackground(ev) {
   input.focus();
   refreshChanges();
   if (PREFS.panel) openPanel();
-  setInterval(() => { if (!S.busy) refreshStatus(); }, 10000);
+  // SSE kısa süre koparsa tur bitti olayı kaçabilir ve arayüz sonsuza kadar "Çalışıyor"da kalır.
+  // Durumu her zaman sunucudan uzlaştır; busy iken de bu yalnızca hafif bir GET isteğidir.
+  setInterval(refreshStatus, 10000);
   const clock = () => {
     const m = Math.floor((Date.now() - S.started) / 60000);
     $("#stClock").textContent = m < 60 ? `${m} dk` : `${Math.floor(m / 60)} sa ${m % 60} dk`;

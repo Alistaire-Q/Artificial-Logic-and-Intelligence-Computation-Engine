@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from alice.tools import (apps, blender, browser, computer, core, desktop, extras, files, findfiles, flight, game, github,
+from alice.tools import (apps, blender, browser, computer, core, desktop, diagnostics, extras, files, findfiles, flight, game, github,
                          gmail, groups, home, meta, nowtool, patch, phonecall, selftool, shell, system,
                          tasks, timelinetool, web)
 from alice.tools.base import Tool, ToolContext, ToolError, ToolResult
@@ -9,7 +9,7 @@ from alice.tools.base import Tool, ToolContext, ToolError, ToolResult
 def builtin_tools() -> list[Tool]:
     return [*files.TOOLS, *patch.TOOLS, *shell.TOOLS, *web.TOOLS, *system.TOOLS, *computer.TOOLS, *desktop.TOOLS,
             *browser.TOOLS, *blender.TOOLS, *meta.TOOLS, *groups.TOOLS, *core.TOOLS, *flight.TOOLS, *extras.TOOLS,
-            *tasks.TOOLS, *github.TOOLS, *home.TOOLS, *apps.TOOLS, *gmail.TOOLS, *game.TOOLS, *findfiles.TOOLS,
+            *diagnostics.TOOLS, *tasks.TOOLS, *github.TOOLS, *home.TOOLS, *apps.TOOLS, *gmail.TOOLS, *game.TOOLS, *findfiles.TOOLS,
             *selftool.TOOLS, *nowtool.TOOLS, *timelinetool.TOOLS, *phonecall.TOOLS]
 
 

@@ -1,8 +1,8 @@
 """git ve GitHub: depo klonlama, dal, commit, push, PR açma/birleştirme.
 
-Anahtar: GITHUB_TOKEN / GH_TOKEN (.env), yoksa config'teki GitHub MCP sunucusunun anahtarı, yoksa
-GITHUB_MODELS_TOKEN, en son `gh auth token`. Anahtar git'e yalnızca o komutun ortamında verilir (GIT_CONFIG_*),
-hiçbir dosyaya yazılmaz.
+Anahtar önceliği: Öncelikle kullanıcının `gh auth token` oturumu (keyring), yoksa GITHUB_TOKEN / GH_TOKEN (.env),
+yoksa config'teki GitHub MCP sunucusunun anahtarı, en son GITHUB_MODELS_TOKEN. Anahtar git'e yalnızca o komutun
+ortamında verilir (GIT_CONFIG_*), hiçbir dosyaya yazılmaz.
 
 Kurallar (Claude Code / Codex'teki gibi), config.toml [github]:
   protected_branches = ["main", "master"]  # bu dallara ve deponun varsayılan dalına push her izin modunda onay ister
@@ -49,7 +49,24 @@ def settings(cfg: Any) -> dict[str, Any]:
 
 
 def _token_candidates(cfg: Any = None):
-    """Anahtarlar, öncelik sırasıyla (tembel: gh yalnızca gerekirse çalışır)."""
+    """Anahtarlar, öncelik sırasıyla (tembel: gh yalnızca gerekirse çalışır):
+
+    1. `gh auth token` (keyring — kullanıcının bilgisayındaki girişi),
+    2. GITHUB_TOKEN / GH_TOKEN (.env),
+    3. config'teki GitHub MCP sunucusunun anahtarı,
+    4. GITHUB_MODELS_TOKEN.
+    """
+    # Öncelik: gh CLI oturumu (kullanıcı tercihi)
+    gh = shutil.which("gh")
+    if gh:
+        try:
+            r = subprocess.run([gh, "auth", "token"], capture_output=True, text=True, timeout=10,
+                               creationflags=NO_WINDOW)
+            if r.returncode == 0 and r.stdout.strip():
+                yield r.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            pass
+
     for k in TOKEN_ENVS:
         if os.environ.get(k):
             yield os.environ[k]
@@ -68,15 +85,6 @@ def _token_candidates(cfg: Any = None):
                 yield m.group(1)
     if os.environ.get("GITHUB_MODELS_TOKEN"):
         yield os.environ["GITHUB_MODELS_TOKEN"]
-    gh = shutil.which("gh")
-    if gh:
-        try:
-            r = subprocess.run([gh, "auth", "token"], capture_output=True, text=True, timeout=10,
-                               creationflags=NO_WINDOW)
-            if r.returncode == 0 and r.stdout.strip():
-                yield r.stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            pass
 
 
 _private_cache: dict[str, bool | None] = {}
@@ -101,9 +109,9 @@ def _private_access(token: str) -> bool | None:
 
 
 def github_token(cfg: Any = None) -> str | None:
-    """Kullanılacak GitHub anahtarı. İlk anahtar ince ayarlı (github_pat_) ve özel depoları göremiyorsa, özel
-    depolara erişen sıradaki anahtar (ör. `gh auth token`) seçilir: .env'deki yalnızca açık depolara yetkili
-    anahtar yüzünden ALICE kullanıcının özel depolarını hiç göremiyordu (7 Kasım: 7 depo, 0 özel; gh ile 16 özel)."""
+    """Kullanılacak GitHub anahtarı. İlk aday (gh keyring) ince ayarlı (github_pat_) ve özel depoları göremiyorsa,
+    özel depolara erişen sıradaki anahtar seçilir: .env'deki yalnızca açık depolara yetkili anahtar yüzünden ALICE
+    kullanıcının özel depolarını hiç göremiyordu (7 Kasım: 7 depo, 0 özel; gh ile 16 özel)."""
     tokens = _token_candidates(cfg)
     first = next(tokens, None)
     if first is None or not first.startswith("github_pat_") or _private_access(first) is not False:
@@ -112,6 +120,39 @@ def github_token(cfg: Any = None) -> str | None:
         if other != first and _private_access(other):
             return other
     return first
+
+
+def token_source(cfg: Any, token: str | None) -> str:
+    """Seçilen anahtarın nereden geldiğini _token_candidates ile aynı sırayla bul (gh, ortam, MCP, Models).
+    Audit raporu 'Auth: bilinmiyor' demesin: MCP sunucusundan gelen anahtar da adıyla görünsün."""
+    if not token:
+        return "yok"
+    gh = shutil.which("gh")
+    if gh:
+        try:
+            r = subprocess.run([gh, "auth", "token"], capture_output=True, text=True, timeout=10,
+                               creationflags=NO_WINDOW)
+            if r.returncode == 0 and r.stdout.strip() == token:
+                return "gh CLI (keyring)"
+        except (OSError, subprocess.SubprocessError):
+            pass
+    for k in TOKEN_ENVS:
+        if os.environ.get(k) == token:
+            return f"Environment ({k})"
+    data = getattr(cfg, "data", None) or {}
+    for name, spec in ((data.get("mcp") or {}).get("servers") or {}).items():
+        if "github" not in name.lower():
+            continue
+        for k, v in (spec.get("env") or {}).items():
+            if "TOKEN" in k.upper() and os.path.expandvars(str(v)) == token:
+                return f"MCP sunucusu ({name})"
+        for h in (spec.get("headers") or {}).values():
+            m = re.match(r"(?i)bearer\s+(\S+)", os.path.expandvars(str(h)))
+            if m and m.group(1) == token:
+                return f"MCP sunucusu ({name})"
+    if os.environ.get("GITHUB_MODELS_TOKEN") == token:
+        return "Environment (GITHUB_MODELS_TOKEN)"
+    return "bilinmiyor"
 
 
 # ---------------------------------------------------------------------------------------------- git
@@ -308,20 +349,20 @@ def _token(ctx: ToolContext) -> str | None:
 
 
 # --------------------------------------------------------------------------------------------- git aracı
-GIT_READ = {"status", "diff", "log", "branches"}
+GIT_READ = {"status", "diff", "log", "branches", "audit"}
 
 
 class Git(Tool):
     name = "git"
     description = (
         "Çalışma klasöründeki git deposunda iş yapar; GitHub anahtarını kendisi kullanır.\n"
-        "status/diff/log/branches: okuma. switch: dala geç (create=true yeni dal açar). commit: files ya da "
-        "all=true ile ekleyip commit'ler (.env ve anahtar içeren değişiklikler reddedilir). pull. push: dalı "
-        "origin'e gönderir; main/master gibi korumalı dala ya da force ile push onay ister.\n"
+        "status/diff/log/branches/audit: okuma. switch: dala geç (create=true yeni dal açar). "
+        "commit: files ya da all=true ile ekleyip commit'ler (.env ve anahtar içeren değişiklikler reddedilir). "
+        "pull. push: dalı origin'e gönderir; main/master gibi korumalı dala ya da force ile push onay ister.\n"
         "Kural: korumalı dalda çalışma; önce switch create=true ile dal aç, commit, push, sonra github pr_create."
     )
     parameters = obj({
-        "action": {"type": "string", "enum": ["status", "diff", "log", "branches", "switch", "commit", "pull", "push"],
+        "action": {"type": "string", "enum": ["status", "diff", "log", "branches", "switch", "commit", "pull", "push", "audit"],
                    "description": "Yapılacak iş."},
         "branch": {"type": "string", "description": "switch/push için dal adı. push'ta boşsa şu anki dal."},
         "create": {"type": "boolean", "description": "switch: dal yoksa oluştur. Varsayılan false."},
@@ -371,6 +412,8 @@ class Git(Tool):
         if action == "branches":
             _, out = run_git(["branch", "-vv", "--sort=-committerdate"], root)
             return ToolResult(out)
+        if action == "audit":
+            return self._audit(ctx, root)
         if action == "switch":
             if not branch:
                 raise ToolError("switch için branch gerekli")
@@ -402,6 +445,83 @@ class Git(Tool):
             raise ToolError("commit'lenecek değişiklik yok (files ya da all=true ver)")
         _, out = run_git(["commit", "-m", message], root)
         return ToolResult(out.splitlines()[0] if out else "commit'lendi")
+
+    def _audit(self, ctx: ToolContext, root: Path) -> ToolResult:
+        """Depo ve yetki durumunu denetler (hepsi okuma)."""
+        issues: list[str] = []
+
+        # 1. Uzak depo bilgisi ve Erişilebilirlik (Fetch Sağlığı)
+        # Rapor, URL'lerdeki kullanıcı:token kısmını MASKELEYEREK yazar; ham değer yalnızca tespit için tutulur
+        # (aksi hâlde audit'in kendisi anahtarı ajana/loga sızdırıyordu).
+        remotes_out = run_git(["remote", "-v"], root)[1]
+        remotes_shown = re.sub(r"(https?://)[^/@\s]+:[^/@\s]+@", r"\1***:***@", remotes_out)
+        lines = [f"Remotes:\n{remotes_shown or 'yok'}"]
+        if not remotes_out.strip():
+            issues.append("remote tanımlı değil: push/pull yapılamaz")
+        else:
+            # Uzak bağlantı erişilebilirlik kontrolü (ls-remote); 15 sn ile sınırlı, ağ yoksa audit takılmaz.
+            fetch_check = run_git(["ls-remote", "--exit-code", "--refs", "origin", "HEAD"], root, timeout=15, check=False)
+            if fetch_check[0] != 0:
+                issues.append("remote'a (origin) erişilemiyor veya ağ bağlantısı/yetki sorunu var")
+            else:
+                lines.append("Remote Erişilebilirlik: OK (origin bağlantısı aktif)")
+        # Remote URL'de maskelemeyle gömülü anahtar bilgisi taşıyorsa
+        if re.search(r"(https?://)[^/@\s]+:[^/@\s]+@github\.com", remotes_out):
+            issues.append("remote URL'de kullanıcı:token gömülü (`.git/config` temizlenmeli)")
+        bad_hosts = set(re.findall(r"git@([^:]+):", remotes_out)) - {"github.com"}
+        for host in sorted(bad_hosts):
+            issues.append(f"remote ana makine tanınmıyor: {host}")
+
+        # 2. Dal ve Upstream durumu
+        branch = current_branch(root)
+        if branch:
+            upstream = run_git(["rev-parse", "--abbrev-ref", f"{branch}@{{u}}"], root, check=False)[1].strip()
+            lines.append(f"\nDal: {branch}")
+            if upstream:
+                lines.append(f"Upstream: {upstream}")
+                # Ahead/Behind
+                ab_out = run_git(["rev-list", "--left-right", "--count", f"{upstream}...{branch}"], root, check=False)[1]
+                if ab_out and "\t" in ab_out:
+                    behind, ahead = ab_out.strip().split("\t")
+                    lines.append(f"Durum: {ahead} ahead, {behind} behind")
+                
+                # Yerel-sadece commitler
+                local_only = run_git(["log", f"{upstream}..{branch}", "--oneline", "-n", "5"], root, check=False)[1]
+                if local_only.strip():
+                    lines.append(f"Gönderilmemiş commitler (son 5):\n{local_only}")
+            else:
+                lines.append("Upstream ayarlanmamış.")
+                issues.append(f"'{branch}' dalının upstream'i yok: push edilmiş sayılmaz")
+        else:
+            lines.append("\nAyrık (detached) HEAD.")
+            issues.append("ayrık HEAD: commit'lenecek dal yok")
+
+        # 2b. Upstream'i olmayan dallar (gönderilmemiş olabilir)
+        no_up = run_git(["for-each-ref", "--format=%(refname:short)", "refs/heads/"], root, check=False)[1].splitlines()
+        orphans = [b.strip() for b in no_up if b.strip()
+                   and not run_git(["rev-parse", "--abbrev-ref", f"{b.strip()}@{{u}}"], root, check=False)[1].strip()]
+        if len(orphans) > 1 or (orphans and orphans != [branch]):
+            lines.append("Upstream'siz diğer dallar: " + ", ".join(orphans))
+
+        # 3. Auth Durumu
+        token = _token(ctx)
+        if token:
+            source = token_source(ctx.config, token)
+            mask = token[:4] + "..." + token[-4:] if len(token) > 8 else "****"
+            lines.append(f"\nAuth: {source} (token: {mask})")
+        else:
+            lines.append("\nAuth: Token bulunamadı.")
+
+        # 5. Uzak ile çelişen durum (upstream silinmiş olabilir)
+        branches_vv = run_git(["branch", "-vv"], root, check=False)[1]
+        if ": gone]" in branches_vv:
+            issues.append("upstream'i silinmiş dal var (': gone]'), yeniden yayınlanmalı")
+
+        if issues:
+            lines.append("\nSorunlar:" + "".join(f"\n- {i}" for i in issues))
+        else:
+            lines.append("\nSorun bulunmadı.")
+        return ToolResult("\n".join(lines))
 
     def _push(self, ctx: ToolContext, root: Path, branch: str, force: bool, allow_protected: bool) -> ToolResult:
         branch = branch or current_branch(root)

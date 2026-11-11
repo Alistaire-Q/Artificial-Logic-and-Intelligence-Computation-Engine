@@ -80,6 +80,53 @@ def test_token_order(monkeypatch):
     assert github_token(cfg) == "env"
 
 
+def test_gh_cli_token_has_priority_over_env(monkeypatch):
+    """Kullanıcı tercihi: `gh` oturumu, .env'deki değişkenlerden önce gelmeli."""
+    class FakeProc:
+        returncode = 0
+        stdout = "gho_cli_token\n"
+    import subprocess as sub_mod
+
+    real_run = sub_mod.run
+    monkeypatch.setattr(sub_mod, "run",
+                        lambda a, **kw: FakeProc() if "auth" in a and "token" in a else real_run(a, **kw))
+    real_which = shutil.which
+    monkeypatch.setattr("alice.tools.github.shutil.which", lambda name: "gh.exe" if name == "gh" else real_which(name))
+    monkeypatch.setenv("GITHUB_TOKEN", "env_token")
+    assert github_token(cfg_with()) == "gho_cli_token"
+
+
+def test_gh_cli_failure_falls_back_to_env(monkeypatch):
+    """gh oturumu yoksa (hata/boş) .env değişkenlerine düşülmeli."""
+    class FailProc:
+        returncode = 1
+        stdout = ""
+    import subprocess as sub_mod
+
+    real_run = sub_mod.run
+    monkeypatch.setattr(sub_mod, "run",
+                        lambda a, **kw: FailProc() if "auth" in a and "token" in a else real_run(a, **kw))
+    real_which = shutil.which
+    monkeypatch.setattr("alice.tools.github.shutil.which", lambda name: "gh.exe" if name == "gh" else real_which(name))
+    monkeypatch.setenv("GITHUB_TOKEN", "env_token")
+    assert github_token(cfg_with()) == "env_token"
+
+
+def test_gh_cli_timeout_does_not_break_token_lookup(monkeypatch):
+    """gh yanıt vermezse (zaman aşımı) akış bozulmamalı, .env değişkeni kullanılmalı."""
+    import subprocess as sub_mod
+
+    def hang(a, **kw):
+        if "auth" in a and "token" in a:
+            raise sub_mod.TimeoutExpired(a, 10)
+        raise AssertionError("beklenmeyen komut")
+    monkeypatch.setattr(sub_mod, "run", hang)
+    real_which = shutil.which
+    monkeypatch.setattr("alice.tools.github.shutil.which", lambda name: "gh.exe" if name == "gh" else real_which(name))
+    monkeypatch.setenv("GITHUB_TOKEN", "env_token")
+    assert github_token(cfg_with()) == "env_token"
+
+
 def test_public_only_fine_grained_token_yields_to_one_with_private_access(monkeypatch):
     """.env'deki ince ayarlı anahtar sadece açık depoları görüyordu: özel depoları gören anahtar (gh) seçilmeli."""
     from alice.tools import github as gh_mod
@@ -179,6 +226,48 @@ def test_commit_without_changes_and_outside_repo(repo, tmp_path):
     empty.mkdir()
     with pytest.raises(ToolError, match="git deposu değil"):
         Git().run(ctx_for(empty), action="status")
+
+
+@needs_git
+def test_audit(repo, monkeypatch):
+    work, remote = repo
+    ctx = ctx_for(work)
+    t = Git()
+    
+    # 1. Temiz depo audit
+    out = t.run(ctx, action="audit").text
+    assert "Remotes:" in out
+    assert "Dal: " in out
+    assert "Upstream: origin/" in out
+
+    # 2. Ahead durumu
+    (work / "c.txt").write_text("c", encoding="utf-8")
+    t.run(ctx, action="commit", message="c ekle", all=True)
+    out = t.run(ctx, action="audit").text
+    assert "1 ahead, 0 behind" in out
+    assert "c ekle" in out
+
+    # 3. Auth kaynağı testi (mock)
+    monkeypatch.setenv("GITHUB_TOKEN", "env_token_123456789")
+
+    class MockProcess:
+        returncode = 0
+        stdout = "gh_token_987654321\n"
+
+    original_run = subprocess.run
+
+    def simple_mock_run(args, **kwargs):
+        if "gh" in str(args[0]) and "auth" in args and "token" in args:
+            return MockProcess()
+        return original_run(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", simple_mock_run)
+    original_which = shutil.which
+    monkeypatch.setattr(shutil, "which", lambda x: "gh" if x == "gh" else original_which(x))
+
+    # gh (keyring) öncelikli olmalı ve kaynağı adıyla raporlanmalı
+    out = t.run(ctx, action="audit").text
+    assert "Auth: gh CLI (keyring) (token: gh_t...4321)" in out
 
 
 # ------------------------------------------------------------------------------------- GitHub API

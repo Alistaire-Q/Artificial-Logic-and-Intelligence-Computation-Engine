@@ -3,6 +3,7 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
+import difflib
 import shutil
 import subprocess
 from pathlib import Path
@@ -18,6 +19,8 @@ SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cach
 SEARCH_SECONDS = 20.0
 SEARCH_MAX_FILES = 20000
 SEARCH_MAX_BYTES = 2_000_000
+# Sayfalamalı grep'te belleğe en fazla bu kadar eşleşme satırı toplanır (sayfa boyutundan bağımsız üst sınır).
+MAX_SCAN_LINES = 5000
 
 
 def _skip_dir(name: str) -> bool:
@@ -196,54 +199,128 @@ def require_read(ctx: ToolContext, p: Path) -> None:
     seen = ctx.state.get("read_files", {})
     key = str(p)
     if key not in seen:
-        raise ToolError(f"{p} bu oturumda okunmadı. Önce read_file ile oku, sonra düzenle (içerik tahmin edilmesin).")
+        raise ToolError(f"'{p.name}' ({p}) bu oturumda okunmadı. Önce read_file ile oku, sonra düzenle "
+                        f"(içerik tahmin edilmesin).") 
     if seen[key] != _mtime(p):
-        raise ToolError(f"{p} okunduktan sonra diskte değişti. read_file ile yeniden oku, sonra düzenle.")
+        raise ToolError(f"'{p.name}' ({p}) okunduktan sonra diskte değişti: read_file'dan bu yana dosyaya yazıldığı için "
+                        f"eski içerik göreli düzenlenemez. Güncel hâlini read_file ile oku, sonra düzenle.")
+
+
+def _find_symbol_range(lines: list[str], symbol: str) -> tuple[int, int]:
+    """Metin içindeki sembol/fonksiyon/sınıf tanımının başlangıç ve bitiş satır indekslerini (0 tabanlı) bulur.
+    Python, JS/TS, Rust ve C-style dillerini destekler."""
+    import re
+    symbol_pat = re.escape(symbol)
+    patterns = [
+        re.compile(r"^\s*(?:async\s+)?(?:def|class)\s+" + symbol_pat + r"\b"),  # Python/Ruby
+        re.compile(r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|class|const|let|var|type|interface|enum)\s+" + symbol_pat + r"\b"),  # JS/TS
+        re.compile(r"^\s*(?:pub\s+)?(?:fn|struct|enum|trait|impl|type)\s+" + symbol_pat + r"\b"),  # Rust
+        re.compile(r"^\s*(?:public|private|protected|static|final|abstract|class|struct|interface|enum|void|int|string|bool)\s+.*\b" + symbol_pat + r"\s*(?:\(|{)"), # C++/Java/C#/Go
+    ]
+
+    matches: list[int] = []
+    for idx, line in enumerate(lines):
+        for pat in patterns:
+            if pat.search(line):
+                matches.append(idx)
+                break
+
+    if not matches:
+        # Fallback: kelime sınırı olan herhangi bir satır eşleşmesi
+        fallback_pat = re.compile(r"\b" + symbol_pat + r"\b")
+        for idx, line in enumerate(lines):
+            if fallback_pat.search(line):
+                matches.append(idx)
+                break
+
+    if not matches:
+        raise ToolError(f"'{symbol}' sembolü dosyada bulunamadı.")
+
+    start_idx = matches[0]
+    start_line = lines[start_idx]
+    start_indent = len(start_line) - len(start_line.lstrip())
+
+    brace_count = 0
+    has_braces = False
+    end_idx = start_idx
+
+    for i in range(start_idx, len(lines)):
+        l = lines[i]
+        brace_count += l.count("{") - l.count("}")
+        if "{" in l:
+            has_braces = True
+        end_idx = i
+        if has_braces:
+            if brace_count <= 0 and i > start_idx:
+                break
+        else:
+            if i > start_idx:
+                stripped = l.strip()
+                if stripped and not stripped.startswith(("#", "//", "/*", "*")):
+                    current_indent = len(l) - len(l.lstrip())
+                    if current_indent <= start_indent:
+                        end_idx = i - 1
+                        break
+    return start_idx, max(start_idx, end_idx)
 
 
 class ReadFile(Tool):
     name = "read_file"
     parallel_safe = True
-    description = ("Bir dosyanın içeriğini satır numaralarıyla okur; png/jpg görseller görüntü olarak, PDF metin olarak, "
-                   ".ipynb hücreleri ve çıktılarıyla döner.\n"
-                   "- Düzenlemeden önce dosyayı bununla oku; edit_file'a buradan birebir kopyala (satır numarası hariç).\n"
-                   "- Büyük dosyada önce grep ile yeri bul, sonra offset/limit ile o bölümü oku.\n"
-                   "- Klasör için list_dir, dosya aramak için glob kullan.")
+    description = ("Bir dosyanın içeriğini satır numaralarıyla okur; görseller görüntü, PDF metin, .ipynb hücre olarak döner.\n"
+                   "- Düzenlemeden önce dosyayı oku; edit_file'a buradan birebir kopyala (satır no hariç).\n"
+                   "- Büyük dosyada grep ile yeri bul, sonra offset/limit veya symbol ile oku.\n"
+                   "- symbol verilirse (ör. 'my_func'), dosyadaki o tanımın bulunduğu blok okunur.")
     parameters = obj({
         "path": {"type": "string", "description": "Dosya yolu; mutlak ya da çalışma klasörüne göre, ör. 'src/main.py'."},
         "offset": {"type": "integer", "description": "Okumaya başlanacak satır (1'den başlar). Varsayılan 1."},
         "limit": {"type": "integer", "description": "Okunacak en fazla satır. Varsayılan 2000."},
+        "symbol": {"type": "string", "description": "Okunacak sembol/fonksiyon/sınıf adı. Verilirse o blok okunur."},
         "pages": {"type": "string", "description": "Sadece PDF: okunacak sayfalar, ör. '3' ya da '1-5'. Varsayılan: "
                   "hepsi (büyük PDF'te sayfa ver)."},
     }, ["path"])
 
     def summary(self, args: dict[str, Any]) -> str:
-        extra = f" (satır {args['offset']}+)" if args.get("offset") else ""
-        return f"{args.get('path', '')}{extra}"
+        s = args.get("symbol")
+        extra = f" [{s}]" if s else (f" (satır {args['offset']}+)" if args.get("offset") else "")
+        return f"{args.get('path', '')}{extra}"[:120]
 
-    def run(self, ctx: ToolContext, path: str, offset: int = 1, limit: int = 2000, pages: str | None = None) -> ToolResult:
+    def run(self, ctx: ToolContext, path: str, offset: int = 1, limit: int = 2000, pages: str | None = None,
+            symbol: str | None = None) -> ToolResult:
         p = ctx.resolve(path)
         if not p.exists():
             raise ToolError(f"dosya yok: {p}")
         if p.is_dir():
             raise ToolError(f"{p} bir klasör, list_dir kullan")
-        mark_read(ctx, p)
         if p.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"):
             from alice.tools.imaging import file_to_png_b64
+            mark_read(ctx, p)
             return ToolResult(f"görüntü: {p}", images=[file_to_png_b64(p, ctx.config.agent.get("screenshot_max_width", 1366))])
         if p.suffix.lower() == ".pdf":
-            return ToolResult(read_pdf(p, pages, int(ctx.config.agent.get("tool_output_chars", 12000)) * 4))
+            content = read_pdf(p, pages, int(ctx.config.agent.get("tool_output_chars", 12000)) * 4)
+            mark_read(ctx, p)
+            return ToolResult(content)
         if _is_binary(p):
             raise ToolError(f"{p} binary bir dosya ({p.stat().st_size} byte)")
         text = render_notebook(p) if p.suffix.lower() == ".ipynb" else _read_text(p)
         lines = text.splitlines()
-        start = max(offset, 1)
+        header = ""
+        if symbol:
+            s_start, s_end = _find_symbol_range(lines, symbol)
+            offset, limit = s_start + 1, (s_end - s_start) + 1
+            header = f"[Sembol '{symbol}' okundu (satır {offset}-{s_end + 1})]\n"
+
+        start = max(int(offset or 1), 1)
+        limit = max(int(limit or 2000), 1)
         chunk = lines[start - 1:start - 1 + limit]
         body = "\n".join(f"{i:>6}\t{line[:2000]}" for i, line in enumerate(chunk, start))
         more = len(lines) - (start - 1 + len(chunk))
         if more > 0:
             body += f"\n... ({more} satır daha, offset={start + len(chunk)} ile devam et)"
-        return ToolResult(body or "(boş dosya)")
+        # Sadece içerik gerçekten teslim edildikten sonra "okundu" say: sembol bulunamazsa dosya okunmuş sayılmasın
+        # (yoksa edit_file, içeriği hiç görmemiş bir ajana izin verirdi).
+        mark_read(ctx, p)
+        return ToolResult(header + (body or "(boş dosya)"))
 
 
 class WriteFile(Tool):
@@ -292,12 +369,55 @@ def _apply_edit(text: str, old: str, new: str, replace_all: bool, where: str = "
             old, new = old_crlf, new.replace("\r\n", "\n").replace("\n", "\r\n")
             count = text.count(old)
     if count == 0:
-        raise ToolError(f"{where}old_string dosyada bulunamadı. Dosyayı read_file ile tekrar oku ve birebir kopyala.")
+        # Hata teşhisi: hangi türde uyuşmazlık var? İçerik neredeyse aynı mı, gerçekten yok mu?
+        norm_old = "".join(old.split())
+        norm_text = "".join(text.split())
+        if norm_old in norm_text:
+            hint = "\n[İPUCU: Metnin kendisi dosyada var, ama boşluk/girinti/tab farkı var. " \
+                   "read_file çıktısındaki satırları birebir (satır numarası hariç) kopyala.]"
+        else:
+            hint = _similar_hint(text, old)
+        raise ToolError(f"{where}old_string dosyada bulunamadı. Dosyayı read_file ile tekrar oku ve birebir kopyala.{hint}")
     if count > 1 and not replace_all:
-        raise ToolError(f"{where}old_string {count} kez geçiyor; bağlam ekle ya da replace_all=true kullan")
+        lines = text.splitlines()
+        old_lines = [l.strip() for l in old.splitlines() if l.strip()]
+        probe = old_lines[0] if old_lines else old.strip()
+        where_at = [i + 1 for i, l in enumerate(lines)
+                    if probe in l or (probe and difflib.SequenceMatcher(None, probe, l.strip()).ratio() > 0.8)]
+        loc = ""
+        if where_at:
+            shown = ", ".join(map(str, where_at[:5]))
+            loc = f" (satır {shown}{'...' if len(where_at) > 5 else ''})"
+        raise ToolError(f"{where}old_string {count} kez geçiyor{loc}; bağlam ekle ya da replace_all=true kullan")
     if replace_all:
         return text.replace(old, new), count
     return text.replace(old, new, 1), 1
+
+
+def _similar_hint(text: str, old: str) -> str:
+    """Bulunamayan old_string için en benzer satırları bulup yönlendirici ipucu üretir."""
+    lines = text.splitlines()
+    old_lines = [l.strip() for l in old.splitlines() if l.strip()]
+    if not old_lines:
+        return ""
+    probe = old_lines[0]
+    probe_words = set(re.findall(r"\w\w+", probe))
+    scored: list[tuple[float, int, str]] = []
+    for i, line in enumerate(lines, 1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        ratio = difflib.SequenceMatcher(None, probe, stripped).ratio()
+        overlap = len(probe_words & set(re.findall(r"\w\w+", stripped))) / max(len(probe_words), 1)
+        score = max(ratio, overlap)
+        if score >= 0.55:
+            scored.append((score, i, stripped))
+    scored.sort(reverse=True)
+    top = scored[:3]
+    if not top:
+        return "\n[İPUCU: Benzer bir satır da bulunamadı; dosya büyük ölçüde değişmiş. Tüm dosyayı read_file ile oku.]"
+    shown = "\n  ".join(f"{i}. satır: {line[:100]}" for _, i, line in top)
+    return f"\n[İPUCU: Benzer satırlar bulundu:\n  {shown}\n read_file ile güncel satırlara bakıp birebir kopyala.]"
 
 
 class EditFile(Tool):
@@ -511,7 +631,9 @@ class Grep(Tool):
                    "- output_mode: content 'dosya:satır:metin' satırları (varsayılan), files_with_matches sadece dosya "
                    "adları (önce hangi dosyalar diye bakmak için en ucuzu), count dosya başına eşleşme sayısı.\n"
                    "- context ile eşleşmenin etrafındaki satırları da gör; multiline ile satırlar arası desen ara.\n"
-                   "- Çok sonuç varsa offset ile sonraki sayfaya geç.")
+                   "- Çok sonuç varsa: önce files_with_matches ile dosyaları daralt, sonra path ile tek dosyaya "
+                   "bak; ya da offset ile sonraki sayfayı oku. max_results her sayfada gösterilen satır sayısıdır.\n"
+                   "- Hem kod hem metin aramalarında glob='*.py' gibi dosya filtresi sonucu çok hızlandırır.")
     parameters = obj({
         "pattern": {"type": "string", "description": "Regex, ör. 'def \\w+_test' ya da 'TODO'. Özel karakterleri "
                     "(. ( [ {) birebir aramak için kaçır."},
@@ -524,7 +646,8 @@ class Grep(Tool):
         "ignore_case": {"type": "boolean", "description": "Büyük/küçük harf duyarsız ara. Varsayılan false."},
         "multiline": {"type": "boolean", "description": "true: desen satır sonlarını aşabilir ('.' satır sonunu da "
                       "kapsar). Varsayılan false."},
-        "max_results": {"type": "integer", "description": "En fazla sonuç satırı. Varsayılan 200."},
+        "max_results": {"type": "integer", "description": "En fazla sonuç satırı (sayfa büyüklüğü). "
+                        "Varsayılan 200; az sonuç için düşür, çok sonuç için offset ile sayfa sayfa geç."},
         "offset": {"type": "integer", "description": "İlk bu kadar sonuç satırını atla (sayfalama). Varsayılan 0."},
     }, ["pattern"])
 
@@ -544,16 +667,41 @@ class Grep(Tool):
         offset = max(0, int(offset or 0))
         multiline = multiline or "\\n" in pattern  # satır sonu arayan desen tek satırda asla eşleşmez
         rg = shutil.which("rg")
+        exact_total = True  # rg content modu dosya başına 100 eşleşmede kesiliyor: toplam o zaman "en az" olur
         if rg:
             lines, note = self._rg(rg, ctx, base, pattern, glob, output_mode, context, ignore_case, multiline)
+            if output_mode == "content" and len(lines) > offset + max_results:
+                exact_total = False
         else:
-            lines, note = self._py(ctx, base, pattern, glob, output_mode, context, ignore_case, multiline,
-                                   offset + max_results)
+            # Python yolunda tüm eşleşmeleri topla (üst sınır MAX_SCAN_LINES): erken kesilirse sayı "en az" olur.
+            lines, note, cut = self._py(ctx, base, pattern, glob, output_mode, context, ignore_case, multiline,
+                                        MAX_SCAN_LINES)
+            if cut:
+                exact_total = False
+                note = note or _limit_note(f"{MAX_SCAN_LINES} eşleşme satırı tarandı")
         total = len(lines)
         page = lines[offset:offset + max_results]
-        body = "\n".join(page) if page else ("eşleşme yok" if not offset else f"bu sayfada sonuç yok ({total} satır var)")
-        if total > offset + max_results:
-            body += f"\n... (daha fazla sonuç var; offset={offset + max_results} ile devam et ya da aramayı daralt)"
+        scanned = str(base) if base.is_dir() else str(base.parent)
+        shown_total = f"{total}" if exact_total else f"en az {total}"
+        if not page:
+            if offset and total:
+                # offset son sayfayı geçmiş: "eşleşme yok" demek yanıltıcı, eşleşmeler var ama bu sayfada değil.
+                body = f"bu sayfada sonuç yok ({shown_total} eşleşme satırı var, offset={offset} son sayfayı geçiyor)"
+            else:
+                body = f"eşleşme yok (pattern={pattern!r}"
+                if glob:
+                    body += f", glob={glob!r}"
+                body += f", taranan alan: {scanned})"
+                if glob:
+                    body += ("\n[İPUCU: glob filtresi çok dar olabilir; önce files_with_matches ile dosyaları gör, "
+                             "sonra path ile tek dosyaya bak.]")
+        else:
+            body = "\n".join(page)
+            if total > offset + max_results:
+                body += (f"\n... (toplam {shown_total} eşleşme satırından {offset + max_results} tanesi gösteriliyor; "
+                         f"offset={offset + max_results} ile devam et"
+                         + (", ya da path/glob ile aramayı daralt" if base.is_dir() else "")
+                         + ")")
         return _with_note(body, note)
 
     @staticmethod
@@ -590,7 +738,7 @@ class Grep(Tool):
         return lines, ""
 
     def _py(self, ctx: ToolContext, base: Path, pattern: str, glob: str | None, mode: str, context: int,
-            ignore_case: bool, multiline: bool, enough: int) -> tuple[list[str], str]:
+            ignore_case: bool, multiline: bool, enough: int) -> tuple[list[str], str, bool]:
         import time
 
         flags = (re.I if ignore_case else 0) | ((re.S | re.M) if multiline else 0)
@@ -600,18 +748,22 @@ class Grep(Tool):
             raise ToolError(f"geçersiz regex: {e}") from e
         out: list[str] = []
         note = ""
+        truncated = False  # tarama erken bittiyse eşleşme sayısı "en az" olur
         deadline = time.monotonic() + SEARCH_SECONDS
         files = [base] if base.is_file() else self._walk(base)
         for n, f in enumerate(files):
             if n % 200 == 0:
                 if ctx.cancelled():
                     note = _limit_note("kullanıcı durdurdu")
+                    truncated = True
                     break
                 if time.monotonic() > deadline:
                     note = _limit_note(f"{SEARCH_SECONDS:.0f} sn doldu")
+                    truncated = True
                     break
             if n >= SEARCH_MAX_FILES:
                 note = _limit_note(f"{SEARCH_MAX_FILES} dosyaya bakıldı")
+                truncated = True
                 break
             if glob and not _glob_match(f.name, glob):
                 continue
@@ -647,8 +799,9 @@ class Grep(Tool):
                         shown_lines.add(j)
                         prev = j
             if len(out) >= enough:
+                truncated = True  # daha fazla eşleşme olabilir: tam sayı bilinmiyor
                 break
-        return out, note
+        return out, note, truncated
 
     @staticmethod
     def _walk(base: Path):

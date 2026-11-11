@@ -101,7 +101,9 @@ class RunCommand(Tool):
         "- Birbirinden bağımsız komutları AYNI cevapta ayrı ayrı iste: aynı anda çalışırlar (toplam süre en uzun "
         "komut kadar olur). Biri diğerinin sonucuna muhtaçsa (klasör oluştur + içinde çalış, kur + kullan) ayrı "
         "çağrı yapma, tek komutta ';' ile sırala.\n"
-        "- PowerShell 5.1'de '&&' yok: komutları ';' ile ayır. Boşluklu yolları tırnak içine al."
+        "- PowerShell 5.1'de '&&' yok: komutları ';' ile ayır. Boşluklu yolları tırnak içine al.\n"
+        "- Çıktı sınıra sığmazsa kesilir ama tamamı geçici bir dosyaya yazılır; sonuçta dosya yolu verilir, "
+        "gerekirse oradan oku."
     )
     parameters = obj({
         "command": {"type": "string", "description": "Çalıştırılacak komut, ör. 'git status' ya da 'python -m pytest -q'."},
@@ -195,6 +197,16 @@ class RunCommand(Tool):
         if err.strip():
             body += ("\n[stderr]\n" if out.strip() else "[stderr]\n") + err
         body = truncate(body.strip(), limit) or "(çıktı yok)"
+        if len(out) + len(err) > limit:
+            # Kesilen çıktı kaybolmasın: tamamı geçici bir dosyaya yazılır, model oradan okuyabilir.
+            # mkstemp: POSIX'te dosyayı 0600 ile açar; write_bytes 0644 bırakıp çıktıyı başka kullanıcılara açardı.
+            try:
+                fd, name = tempfile.mkstemp(prefix="alice-out-", suffix=".log")
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write((out + ("\n" + err if err.strip() else "")).encode("utf-8", errors="replace"))
+                body += f"\n[tam çıktı dosyada: {name} - kesilen kısmı read_file/grep ile oku]"
+            except OSError:
+                pass
         if IS_WIN and "is not a valid statement separator" in err:
             body += ("\n[ipucu] Bu Windows PowerShell 5.1: '&&' ve '||' yok. Komutları ';' ile ayır, "
                      "koşul için 'if ($?) { ... }' ya da 'if (-not $?) { ... }' kullan.")

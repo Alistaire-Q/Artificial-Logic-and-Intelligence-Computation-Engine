@@ -51,6 +51,12 @@ GROUPS: dict[str, tuple[set[str], str, str]] = {
                "CPU/RAM/GPU/disk durumu, çalışan işlemler, geçmiş ölçümler",
                r"cpu|ram|gpu|işlemci|ekran kartı|sıcaklık|derece|bellek|disk|pil|batarya|performans|işlem|süreç|"
                r"process|görev yöneticisi|kasıyor|yavaş|fps|metrik"),
+    "diagnostics": ({"app_state", "service_diagnose", "test_run"},
+                    "uygulama/ajanın güncel durumu (mod, yüklü araç grupları, arka plan süreçleri), ALICE çekirdek "
+                    "servisi ve arka plan süreçlerinin sağlığı/logları, testleri çalıştırıp sadece özet ve hataları gösterme",
+                    r"app_state|uygulama durumu|ajan durum|çalışıyor mu|ne yapıyor|durum raporu|servis|log(lar)?ı?|"
+                    r"durduruldu|çalışmıyor|crash|çöktü|patladı|test(leri|lerimi)? (çalıştır|yap|koş)|pytest|unittest|"
+                    r"birim test|entegrasyon test|teşhis|diagnos|hata ayıkla|teşhis et"),
     "automation": ({"rules", "schedule", "feeds", "action_log"},
                    "uyarı kuralları, zamanlanmış görevler, servis akışları ve gönderilenlerin kaydı",
                    r"kural|uyar|hatırlat|zamanla|her gün|her sabah|her akşam|haftada|alarm|schedule|rule|cron|"
