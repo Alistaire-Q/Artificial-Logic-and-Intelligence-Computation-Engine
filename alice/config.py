@@ -571,8 +571,8 @@ auto_install = true
 # Boş = denenmiş sabit sürüm; "latest" ya da "v8.0.57" gibi bir etiket de yazılabilir.
 version = ""
 
-# git / GitHub araçlarının kuralları. Anahtar: .env'deki GITHUB_TOKEN, yoksa GitHub MCP sunucusunun anahtarı,
-# yoksa GITHUB_MODELS_TOKEN, yoksa `gh auth token`.
+# git / GitHub araçlarının kuralları. Anahtar önceliği: `gh auth token` (keyring), yoksa .env'deki GITHUB_TOKEN,
+# yoksa GitHub MCP sunucusunun anahtarı, yoksa GITHUB_MODELS_TOKEN.
 [connect]
 # Servis bağlantıları (alice/connect): yerleşik tanımlar + ~/.alice/connect/*.toml
 disabled = []       # kapatılacak bağlantı adları, ör. ["discord"]

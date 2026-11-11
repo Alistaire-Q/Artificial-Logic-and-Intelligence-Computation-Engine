@@ -105,10 +105,16 @@ class ServiceDiagnose(Tool):
             else:
                 out.append("Durum: DURDURULDU veya çalışmıyor.")
             
-            # Hataları Store'dan çek
+            # Hataları Store'dan çek (sadece uyarı/hata önem dereceleri)
+            own_store = False
+            st = ctx.state.get("core_store")
             try:
-                st = ctx.state.get("core_store") or Store()
-                errors = st.events(severity="warn", limit=20)
+                if st is None:
+                    st = Store()
+                    own_store = True
+                events = st.events(limit=100)
+                errors = [e for e in events if str(getattr(e, "severity", "")).lower() in ("warn", "warning", "error",
+                                                                                          "critical")][:20]
                 if errors:
                     out.append("\n### Son Hatalar/Uyarılar")
                     for e in errors:
@@ -117,6 +123,12 @@ class ServiceDiagnose(Tool):
                     out.append("\nKayıtlı kritik hata bulunmadı.")
             except Exception as e:
                 out.append(f"\nStore okunurken hata oluştu: {e}")
+            finally:
+                if own_store:
+                    try:
+                        st.close()
+                    except Exception:  # noqa: BLE001 - kapanış hatası teşhisi engellemesin
+                        pass
 
         if service in ("all", "bg_procs") or service.isdigit():
             bg_procs = ctx.state.get("bg_procs", {})
@@ -200,25 +212,34 @@ class TestRun(Tool):
         body = out + ("\n[stderr]\n" + err if err.strip() else "")
         
         if filter_noise:
-            # Pytest için özet ve hata ayıklama
-            summary_match = re.search(r"===+ (.*) in [\d.]+s ===+", body)
-            failures = re.findall(r"_+ (FAIL|ERROR): (.*) _+\n([\s\S]*?)(?=\n_+|$)", body)
-            
+            # Pytest çıktısını ayrıştır: hem "FAILED x::y - msg" kısa listesi hem "_____ FAIL: test _____" blokları.
+            summary_match = re.search(r"^=+ (.*?(?:passed|failed|error).*?) in [\d.]+s =+$", body, re.M)
+            if not summary_match:
+                summary_match = re.search(r"^=+ (.*) in [\d.]+s =+$", body, re.M)
+            blocks = re.findall(r"^_+ (FAILED|FAIL|ERROR) (.*?) _+$\n([\s\S]*?)(?=^_+ (?:FAILED|FAIL|ERROR) |^=+ |\Z)",
+                                body, re.M)
+            short_failed = re.findall(r"^(?:FAILED|ERROR) (\S+)(?: - (.*))?$", body, re.M)
+
             filtered = [f"### Test Özeti: {full_command}", f"Süre: {duration:.2f}s, Kod: {returncode}"]
             if summary_match:
-                filtered.append(f"Durum: {summary_match.group(1)}")
-            
-            if failures:
+                filtered.append(f"Durum: {summary_match.group(1).strip()}")
+
+            if blocks:
                 filtered.append("\n### Hatalar")
-                for kind, name, trace in failures:
-                    filtered.append(f"\n--- {kind}: {name} ---\n{truncate(trace.strip(), 2000)}")
-            
-            if not failures and returncode != 0:
+                for kind, name, trace in blocks[:10]:
+                    filtered.append(f"\n--- {kind}: {name.strip()} ---\n{truncate(trace.strip(), 2000)}")
+            elif short_failed:
+                filtered.append("\n### Başarısız Testler")
+                for name, msg in short_failed[:30]:
+                    filtered.append(f"- {name}" + (f" — {msg.strip()[:200]}" if msg.strip() else ""))
+
+            total_failures = bool(blocks or short_failed)
+            if not total_failures and returncode != 0:
                 filtered.append("\n### Çıktı (Hata var ama ayrıştırılamadı)")
                 filtered.append(truncate(body, 4000))
-            elif not failures:
+            elif not total_failures:
                 filtered.append("\nBütün testler başarıyla geçti.")
-                
+
             return ToolResult("\n".join(filtered), is_error=returncode != 0)
 
         return ToolResult(f"Test Sonucu ({returncode}):\n{truncate(body, 8000)}", is_error=returncode != 0)

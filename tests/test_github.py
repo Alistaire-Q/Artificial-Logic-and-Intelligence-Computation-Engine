@@ -249,31 +249,25 @@ def test_audit(repo, monkeypatch):
 
     # 3. Auth kaynağı testi (mock)
     monkeypatch.setenv("GITHUB_TOKEN", "env_token_123456789")
-    
-    # gh taklidi yapalım
+
     class MockProcess:
         returncode = 0
         stdout = "gh_token_987654321\n"
-    
-    def mock_run(args, **kwargs):
-        if args[:3] == ["gh", "auth", "token"] or (isinstance(args[0], str) and "gh" in args[0] and args[1:3] == ["auth", "token"]):
-            return MockProcess()
-        return subprocess.RealProcess() # Bu kısım hatalı olabilir, sadece gh'ı yakalayalım
 
-    # Daha basit bir mock:
     original_run = subprocess.run
+
     def simple_mock_run(args, **kwargs):
         if "gh" in str(args[0]) and "auth" in args and "token" in args:
             return MockProcess()
         return original_run(args, **kwargs)
-    
+
     monkeypatch.setattr(subprocess, "run", simple_mock_run)
     original_which = shutil.which
     monkeypatch.setattr(shutil, "which", lambda x: "gh" if x == "gh" else original_which(x))
-    
-    # gh öncelikli olmalı
+
+    # gh (keyring) öncelikli olmalı ve kaynağı adıyla raporlanmalı
     out = t.run(ctx, action="audit").text
-    assert "Auth: gh CLI (token: gh_t...4321)" in out
+    assert "Auth: gh CLI (keyring) (token: gh_t...4321)" in out
 
 
 # ------------------------------------------------------------------------------------- GitHub API

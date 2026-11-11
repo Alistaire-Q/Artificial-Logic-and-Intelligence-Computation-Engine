@@ -199,10 +199,12 @@ class RunCommand(Tool):
         body = truncate(body.strip(), limit) or "(çıktı yok)"
         if len(out) + len(err) > limit:
             # Kesilen çıktı kaybolmasın: tamamı geçici bir dosyaya yazılır, model oradan okuyabilir.
-            dump = Path(tempfile.gettempdir()) / f"alice-out-{int(time.time() * 1000)}-{uuid.uuid4().hex[:6]}.log"
+            # mkstemp: POSIX'te dosyayı 0600 ile açar; write_bytes 0644 bırakıp çıktıyı başka kullanıcılara açardı.
             try:
-                dump.write_bytes((out + ("\n" + err if err.strip() else "")).encode("utf-8", errors="replace"))
-                body += f"\n[tam çıktı dosyada: {dump} - kesilen kısmı read_file/grep ile oku]"
+                fd, name = tempfile.mkstemp(prefix="alice-out-", suffix=".log")
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write((out + ("\n" + err if err.strip() else "")).encode("utf-8", errors="replace"))
+                body += f"\n[tam çıktı dosyada: {name} - kesilen kısmı read_file/grep ile oku]"
             except OSError:
                 pass
         if IS_WIN and "is not a valid statement separator" in err:

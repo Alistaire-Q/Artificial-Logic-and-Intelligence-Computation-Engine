@@ -340,7 +340,9 @@ def _start_voice(cfg, core):
     # Eskiden "War Thunder açık mı" diye SocialWatch.reason()'a bakıyordu; Discord'dayken o "Discord sesli
     # konuşmada" döndürdüğü için tuş hiçbir şey yapmıyordu. Artık koşulsuz çalışır, bip ile durumu söyler.
     alert_mute_key = v.get("game_mute_key", "")
-    if alert_mute_key:
+    # WinHotkeys yalnızca Windows'ta (RegisterHotKey / ctypes.windll). Linux/macOS'ta kayıt denenirse işçi
+    # düşer, _ready hiç kurulmaz ve start() 5 sn bekleyip başarılı gibi dönerdi; kayıt platforma bağlandı.
+    if alert_mute_key and sys.platform == "win32":
         from alice.hotkeys import WinHotkeys
 
         def beep(muted: bool) -> None:

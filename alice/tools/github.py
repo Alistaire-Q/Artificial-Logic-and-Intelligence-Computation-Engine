@@ -1,8 +1,8 @@
 """git ve GitHub: depo klonlama, dal, commit, push, PR açma/birleştirme.
 
-Anahtar: GITHUB_TOKEN / GH_TOKEN (.env), yoksa config'teki GitHub MCP sunucusunun anahtarı, yoksa
-GITHUB_MODELS_TOKEN, en son `gh auth token`. Anahtar git'e yalnızca o komutun ortamında verilir (GIT_CONFIG_*),
-hiçbir dosyaya yazılmaz.
+Anahtar önceliği: Öncelikle kullanıcının `gh auth token` oturumu (keyring), yoksa GITHUB_TOKEN / GH_TOKEN (.env),
+yoksa config'teki GitHub MCP sunucusunun anahtarı, en son GITHUB_MODELS_TOKEN. Anahtar git'e yalnızca o komutun
+ortamında verilir (GIT_CONFIG_*), hiçbir dosyaya yazılmaz.
 
 Kurallar (Claude Code / Codex'teki gibi), config.toml [github]:
   protected_branches = ["main", "master"]  # bu dallara ve deponun varsayılan dalına push her izin modunda onay ister
@@ -49,7 +49,13 @@ def settings(cfg: Any) -> dict[str, Any]:
 
 
 def _token_candidates(cfg: Any = None):
-    """Anahtarlar, öncelik sırasıyla (tembel: gh yalnızca gerekirse çalışır)."""
+    """Anahtarlar, öncelik sırasıyla (tembel: gh yalnızca gerekirse çalışır):
+
+    1. `gh auth token` (keyring — kullanıcının bilgisayındaki girişi),
+    2. GITHUB_TOKEN / GH_TOKEN (.env),
+    3. config'teki GitHub MCP sunucusunun anahtarı,
+    4. GITHUB_MODELS_TOKEN.
+    """
     # Öncelik: gh CLI oturumu (kullanıcı tercihi)
     gh = shutil.which("gh")
     if gh:
@@ -103,9 +109,9 @@ def _private_access(token: str) -> bool | None:
 
 
 def github_token(cfg: Any = None) -> str | None:
-    """Kullanılacak GitHub anahtarı. İlk anahtar ince ayarlı (github_pat_) ve özel depoları göremiyorsa, özel
-    depolara erişen sıradaki anahtar (ör. `gh auth token`) seçilir: .env'deki yalnızca açık depolara yetkili
-    anahtar yüzünden ALICE kullanıcının özel depolarını hiç göremiyordu (7 Kasım: 7 depo, 0 özel; gh ile 16 özel)."""
+    """Kullanılacak GitHub anahtarı. İlk aday (gh keyring) ince ayarlı (github_pat_) ve özel depoları göremiyorsa,
+    özel depolara erişen sıradaki anahtar seçilir: .env'deki yalnızca açık depolara yetkili anahtar yüzünden ALICE
+    kullanıcının özel depolarını hiç göremiyordu (7 Kasım: 7 depo, 0 özel; gh ile 16 özel)."""
     tokens = _token_candidates(cfg)
     first = next(tokens, None)
     if first is None or not first.startswith("github_pat_") or _private_access(first) is not False:
@@ -114,6 +120,39 @@ def github_token(cfg: Any = None) -> str | None:
         if other != first and _private_access(other):
             return other
     return first
+
+
+def token_source(cfg: Any, token: str | None) -> str:
+    """Seçilen anahtarın nereden geldiğini _token_candidates ile aynı sırayla bul (gh, ortam, MCP, Models).
+    Audit raporu 'Auth: bilinmiyor' demesin: MCP sunucusundan gelen anahtar da adıyla görünsün."""
+    if not token:
+        return "yok"
+    gh = shutil.which("gh")
+    if gh:
+        try:
+            r = subprocess.run([gh, "auth", "token"], capture_output=True, text=True, timeout=10,
+                               creationflags=NO_WINDOW)
+            if r.returncode == 0 and r.stdout.strip() == token:
+                return "gh CLI (keyring)"
+        except (OSError, subprocess.SubprocessError):
+            pass
+    for k in TOKEN_ENVS:
+        if os.environ.get(k) == token:
+            return f"Environment ({k})"
+    data = getattr(cfg, "data", None) or {}
+    for name, spec in ((data.get("mcp") or {}).get("servers") or {}).items():
+        if "github" not in name.lower():
+            continue
+        for k, v in (spec.get("env") or {}).items():
+            if "TOKEN" in k.upper() and os.path.expandvars(str(v)) == token:
+                return f"MCP sunucusu ({name})"
+        for h in (spec.get("headers") or {}).values():
+            m = re.match(r"(?i)bearer\s+(\S+)", os.path.expandvars(str(h)))
+            if m and m.group(1) == token:
+                return f"MCP sunucusu ({name})"
+    if os.environ.get("GITHUB_MODELS_TOKEN") == token:
+        return "Environment (GITHUB_MODELS_TOKEN)"
+    return "bilinmiyor"
 
 
 # ---------------------------------------------------------------------------------------------- git
@@ -412,12 +451,15 @@ class Git(Tool):
         issues: list[str] = []
 
         # 1. Uzak depo bilgisi ve Erişilebilirlik (Fetch Sağlığı)
+        # Rapor, URL'lerdeki kullanıcı:token kısmını MASKELEYEREK yazar; ham değer yalnızca tespit için tutulur
+        # (aksi hâlde audit'in kendisi anahtarı ajana/loga sızdırıyordu).
         remotes_out = run_git(["remote", "-v"], root)[1]
-        lines = [f"Remotes:\n{remotes_out or 'yok'}"]
+        remotes_shown = re.sub(r"(https?://)[^/@\s]+:[^/@\s]+@", r"\1***:***@", remotes_out)
+        lines = [f"Remotes:\n{remotes_shown or 'yok'}"]
         if not remotes_out.strip():
             issues.append("remote tanımlı değil: push/pull yapılamaz")
         else:
-            # Uzak bağlantı erişilebilirlik kontrolü (ls-remote)
+            # Uzak bağlantı erişilebilirlik kontrolü (ls-remote); 15 sn ile sınırlı, ağ yoksa audit takılmaz.
             fetch_check = run_git(["ls-remote", "--exit-code", "--refs", "origin", "HEAD"], root, timeout=15, check=False)
             if fetch_check[0] != 0:
                 issues.append("remote'a (origin) erişilemiyor veya ağ bağlantısı/yetki sorunu var")
@@ -463,26 +505,8 @@ class Git(Tool):
 
         # 3. Auth Durumu
         token = _token(ctx)
-        source = "bilinmiyor"
         if token:
-            # Kaynağı bul (tokenlar alice/tools/github.py içinde aynı yoldan geliyor)
-            gh_path = shutil.which("gh")
-            if gh_path:
-                try:
-                    r = subprocess.run([gh_path, "auth", "token"], capture_output=True, text=True, timeout=5,
-                                       creationflags=NO_WINDOW)
-                    if r.returncode == 0 and r.stdout.strip() == token:
-                        source = "gh CLI"
-                except (OSError, subprocess.SubprocessError):
-                    pass
-            if source == "bilinmiyor":
-                for k in TOKEN_ENVS:
-                    if os.environ.get(k) == token:
-                        source = f"Environment ({k})"
-                        break
-                if source == "bilinmiyor" and os.environ.get("GITHUB_MODELS_TOKEN") == token:
-                    source = "Environment (GITHUB_MODELS_TOKEN)"
-
+            source = token_source(ctx.config, token)
             mask = token[:4] + "..." + token[-4:] if len(token) > 8 else "****"
             lines.append(f"\nAuth: {source} (token: {mask})")
         else:

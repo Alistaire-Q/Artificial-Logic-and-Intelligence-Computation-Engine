@@ -19,6 +19,8 @@ SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".mypy_cach
 SEARCH_SECONDS = 20.0
 SEARCH_MAX_FILES = 20000
 SEARCH_MAX_BYTES = 2_000_000
+# Sayfalamalı grep'te belleğe en fazla bu kadar eşleşme satırı toplanır (sayfa boyutundan bağımsız üst sınır).
+MAX_SCAN_LINES = 5000
 
 
 def _skip_dir(name: str) -> bool:
@@ -290,12 +292,14 @@ class ReadFile(Tool):
             raise ToolError(f"dosya yok: {p}")
         if p.is_dir():
             raise ToolError(f"{p} bir klasör, list_dir kullan")
-        mark_read(ctx, p)
         if p.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"):
             from alice.tools.imaging import file_to_png_b64
+            mark_read(ctx, p)
             return ToolResult(f"görüntü: {p}", images=[file_to_png_b64(p, ctx.config.agent.get("screenshot_max_width", 1366))])
         if p.suffix.lower() == ".pdf":
-            return ToolResult(read_pdf(p, pages, int(ctx.config.agent.get("tool_output_chars", 12000)) * 4))
+            content = read_pdf(p, pages, int(ctx.config.agent.get("tool_output_chars", 12000)) * 4)
+            mark_read(ctx, p)
+            return ToolResult(content)
         if _is_binary(p):
             raise ToolError(f"{p} binary bir dosya ({p.stat().st_size} byte)")
         text = render_notebook(p) if p.suffix.lower() == ".ipynb" else _read_text(p)
@@ -313,6 +317,9 @@ class ReadFile(Tool):
         more = len(lines) - (start - 1 + len(chunk))
         if more > 0:
             body += f"\n... ({more} satır daha, offset={start + len(chunk)} ile devam et)"
+        # Sadece içerik gerçekten teslim edildikten sonra "okundu" say: sembol bulunamazsa dosya okunmuş sayılmasın
+        # (yoksa edit_file, içeriği hiç görmemiş bir ajana izin verirdi).
+        mark_read(ctx, p)
         return ToolResult(header + (body or "(boş dosya)"))
 
 
@@ -660,17 +667,26 @@ class Grep(Tool):
         offset = max(0, int(offset or 0))
         multiline = multiline or "\\n" in pattern  # satır sonu arayan desen tek satırda asla eşleşmez
         rg = shutil.which("rg")
+        exact_total = True  # rg content modu dosya başına 100 eşleşmede kesiliyor: toplam o zaman "en az" olur
         if rg:
             lines, note = self._rg(rg, ctx, base, pattern, glob, output_mode, context, ignore_case, multiline)
+            if output_mode == "content" and len(lines) > offset + max_results:
+                exact_total = False
         else:
-            lines, note = self._py(ctx, base, pattern, glob, output_mode, context, ignore_case, multiline,
-                                   SEARCH_MAX_FILES)
+            # Python yolunda tüm eşleşmeleri topla (üst sınır MAX_SCAN_LINES): erken kesilirse sayı "en az" olur.
+            lines, note, cut = self._py(ctx, base, pattern, glob, output_mode, context, ignore_case, multiline,
+                                        MAX_SCAN_LINES)
+            if cut:
+                exact_total = False
+                note = note or _limit_note(f"{MAX_SCAN_LINES} eşleşme satırı tarandı")
         total = len(lines)
         page = lines[offset:offset + max_results]
         scanned = str(base) if base.is_dir() else str(base.parent)
+        shown_total = f"{total}" if exact_total else f"en az {total}"
         if not page:
-            if not offset and total:
-                body = f"bu sayfada sonuç yok ({total} satır var)"
+            if offset and total:
+                # offset son sayfayı geçmiş: "eşleşme yok" demek yanıltıcı, eşleşmeler var ama bu sayfada değil.
+                body = f"bu sayfada sonuç yok ({shown_total} eşleşme satırı var, offset={offset} son sayfayı geçiyor)"
             else:
                 body = f"eşleşme yok (pattern={pattern!r}"
                 if glob:
@@ -682,7 +698,7 @@ class Grep(Tool):
         else:
             body = "\n".join(page)
             if total > offset + max_results:
-                body += (f"\n... (toplam {total} eşleşme satırından {offset + max_results} tanesi gösteriliyor; "
+                body += (f"\n... (toplam {shown_total} eşleşme satırından {offset + max_results} tanesi gösteriliyor; "
                          f"offset={offset + max_results} ile devam et"
                          + (", ya da path/glob ile aramayı daralt" if base.is_dir() else "")
                          + ")")
@@ -722,7 +738,7 @@ class Grep(Tool):
         return lines, ""
 
     def _py(self, ctx: ToolContext, base: Path, pattern: str, glob: str | None, mode: str, context: int,
-            ignore_case: bool, multiline: bool, enough: int) -> tuple[list[str], str]:
+            ignore_case: bool, multiline: bool, enough: int) -> tuple[list[str], str, bool]:
         import time
 
         flags = (re.I if ignore_case else 0) | ((re.S | re.M) if multiline else 0)
@@ -732,18 +748,22 @@ class Grep(Tool):
             raise ToolError(f"geçersiz regex: {e}") from e
         out: list[str] = []
         note = ""
+        truncated = False  # tarama erken bittiyse eşleşme sayısı "en az" olur
         deadline = time.monotonic() + SEARCH_SECONDS
         files = [base] if base.is_file() else self._walk(base)
         for n, f in enumerate(files):
             if n % 200 == 0:
                 if ctx.cancelled():
                     note = _limit_note("kullanıcı durdurdu")
+                    truncated = True
                     break
                 if time.monotonic() > deadline:
                     note = _limit_note(f"{SEARCH_SECONDS:.0f} sn doldu")
+                    truncated = True
                     break
             if n >= SEARCH_MAX_FILES:
                 note = _limit_note(f"{SEARCH_MAX_FILES} dosyaya bakıldı")
+                truncated = True
                 break
             if glob and not _glob_match(f.name, glob):
                 continue
@@ -779,8 +799,9 @@ class Grep(Tool):
                         shown_lines.add(j)
                         prev = j
             if len(out) >= enough:
+                truncated = True  # daha fazla eşleşme olabilir: tam sayı bilinmiyor
                 break
-        return out, note
+        return out, note, truncated
 
     @staticmethod
     def _walk(base: Path):
