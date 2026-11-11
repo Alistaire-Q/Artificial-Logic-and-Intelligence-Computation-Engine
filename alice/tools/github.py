@@ -50,6 +50,17 @@ def settings(cfg: Any) -> dict[str, Any]:
 
 def _token_candidates(cfg: Any = None):
     """Anahtarlar, öncelik sırasıyla (tembel: gh yalnızca gerekirse çalışır)."""
+    # Öncelik: gh CLI oturumu (kullanıcı tercihi)
+    gh = shutil.which("gh")
+    if gh:
+        try:
+            r = subprocess.run([gh, "auth", "token"], capture_output=True, text=True, timeout=10,
+                               creationflags=NO_WINDOW)
+            if r.returncode == 0 and r.stdout.strip():
+                yield r.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            pass
+
     for k in TOKEN_ENVS:
         if os.environ.get(k):
             yield os.environ[k]
@@ -68,15 +79,6 @@ def _token_candidates(cfg: Any = None):
                 yield m.group(1)
     if os.environ.get("GITHUB_MODELS_TOKEN"):
         yield os.environ["GITHUB_MODELS_TOKEN"]
-    gh = shutil.which("gh")
-    if gh:
-        try:
-            r = subprocess.run([gh, "auth", "token"], capture_output=True, text=True, timeout=10,
-                               creationflags=NO_WINDOW)
-            if r.returncode == 0 and r.stdout.strip():
-                yield r.stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            pass
 
 
 _private_cache: dict[str, bool | None] = {}
@@ -308,20 +310,20 @@ def _token(ctx: ToolContext) -> str | None:
 
 
 # --------------------------------------------------------------------------------------------- git aracı
-GIT_READ = {"status", "diff", "log", "branches"}
+GIT_READ = {"status", "diff", "log", "branches", "audit"}
 
 
 class Git(Tool):
     name = "git"
     description = (
         "Çalışma klasöründeki git deposunda iş yapar; GitHub anahtarını kendisi kullanır.\n"
-        "status/diff/log/branches: okuma. switch: dala geç (create=true yeni dal açar). commit: files ya da "
-        "all=true ile ekleyip commit'ler (.env ve anahtar içeren değişiklikler reddedilir). pull. push: dalı "
-        "origin'e gönderir; main/master gibi korumalı dala ya da force ile push onay ister.\n"
+        "status/diff/log/branches/audit: okuma. switch: dala geç (create=true yeni dal açar). "
+        "commit: files ya da all=true ile ekleyip commit'ler (.env ve anahtar içeren değişiklikler reddedilir). "
+        "pull. push: dalı origin'e gönderir; main/master gibi korumalı dala ya da force ile push onay ister.\n"
         "Kural: korumalı dalda çalışma; önce switch create=true ile dal aç, commit, push, sonra github pr_create."
     )
     parameters = obj({
-        "action": {"type": "string", "enum": ["status", "diff", "log", "branches", "switch", "commit", "pull", "push"],
+        "action": {"type": "string", "enum": ["status", "diff", "log", "branches", "switch", "commit", "pull", "push", "audit"],
                    "description": "Yapılacak iş."},
         "branch": {"type": "string", "description": "switch/push için dal adı. push'ta boşsa şu anki dal."},
         "create": {"type": "boolean", "description": "switch: dal yoksa oluştur. Varsayılan false."},
@@ -371,6 +373,8 @@ class Git(Tool):
         if action == "branches":
             _, out = run_git(["branch", "-vv", "--sort=-committerdate"], root)
             return ToolResult(out)
+        if action == "audit":
+            return self._audit(ctx, root)
         if action == "switch":
             if not branch:
                 raise ToolError("switch için branch gerekli")
@@ -402,6 +406,91 @@ class Git(Tool):
             raise ToolError("commit'lenecek değişiklik yok (files ya da all=true ver)")
         _, out = run_git(["commit", "-m", message], root)
         return ToolResult(out.splitlines()[0] if out else "commit'lendi")
+
+    def _audit(self, ctx: ToolContext, root: Path) -> ToolResult:
+        """Depo ve yetki durumunu denetler (hepsi okuma)."""
+        issues: list[str] = []
+
+        # 1. Uzak depo bilgisi
+        remotes_out = run_git(["remote", "-v"], root)[1]
+        lines = [f"Remotes:\n{remotes_out or 'yok'}"]
+        if not remotes_out.strip():
+            issues.append("remote tanımlı değil: push/pull yapılamaz")
+        # Remote URL'de maskelemeyle gömülü anahtar bilgisi taşıyorsa
+        if re.search(r"(https?://)[^/@\s]+:[^/@\s]+@github\.com", remotes_out):
+            issues.append("remote URL'de kullanıcı:token gömülü (`.git/config` temizlenmeli)")
+        bad_hosts = set(re.findall(r"git@([^:]+):", remotes_out)) - {"github.com"}
+        for host in sorted(bad_hosts):
+            issues.append(f"remote ana makine tanınmıyor: {host}")
+
+        # 2. Dal ve Upstream durumu
+        branch = current_branch(root)
+        if branch:
+            upstream = run_git(["rev-parse", "--abbrev-ref", f"{branch}@{{u}}"], root, check=False)[1].strip()
+            lines.append(f"\nDal: {branch}")
+            if upstream:
+                lines.append(f"Upstream: {upstream}")
+                # Ahead/Behind
+                ab_out = run_git(["rev-list", "--left-right", "--count", f"{upstream}...{branch}"], root, check=False)[1]
+                if ab_out and "\t" in ab_out:
+                    behind, ahead = ab_out.strip().split("\t")
+                    lines.append(f"Durum: {ahead} ahead, {behind} behind")
+                
+                # Yerel-sadece commitler
+                local_only = run_git(["log", f"{upstream}..{branch}", "--oneline", "-n", "5"], root, check=False)[1]
+                if local_only.strip():
+                    lines.append(f"Gönderilmemiş commitler (son 5):\n{local_only}")
+            else:
+                lines.append("Upstream ayarlanmamış.")
+                issues.append(f"'{branch}' dalının upstream'i yok: push edilmiş sayılmaz")
+        else:
+            lines.append("\nAyrık (detached) HEAD.")
+            issues.append("ayrık HEAD: commit'lenecek dal yok")
+
+        # 2b. Upstream'i olmayan dallar (gönderilmemiş olabilir)
+        no_up = run_git(["for-each-ref", "--format=%(refname:short)", "refs/heads/"], root, check=False)[1].splitlines()
+        orphans = [b.strip() for b in no_up if b.strip()
+                   and not run_git(["rev-parse", "--abbrev-ref", f"{b.strip()}@{{u}}"], root, check=False)[1].strip()]
+        if len(orphans) > 1 or (orphans and orphans != [branch]):
+            lines.append("Upstream'siz diğer dallar: " + ", ".join(orphans))
+
+        # 3. Auth Durumu
+        token = _token(ctx)
+        source = "bilinmiyor"
+        if token:
+            # Kaynağı bul (tokenlar alice/tools/github.py içinde aynı yoldan geliyor)
+            gh_path = shutil.which("gh")
+            if gh_path:
+                try:
+                    r = subprocess.run([gh_path, "auth", "token"], capture_output=True, text=True, timeout=5,
+                                       creationflags=NO_WINDOW)
+                    if r.returncode == 0 and r.stdout.strip() == token:
+                        source = "gh CLI"
+                except (OSError, subprocess.SubprocessError):
+                    pass
+            if source == "bilinmiyor":
+                for k in TOKEN_ENVS:
+                    if os.environ.get(k) == token:
+                        source = f"Environment ({k})"
+                        break
+                if source == "bilinmiyor" and os.environ.get("GITHUB_MODELS_TOKEN") == token:
+                    source = "Environment (GITHUB_MODELS_TOKEN)"
+
+            mask = token[:4] + "..." + token[-4:] if len(token) > 8 else "****"
+            lines.append(f"\nAuth: {source} (token: {mask})")
+        else:
+            lines.append("\nAuth: Token bulunamadı.")
+
+        # 5. Uzak ile çelişen durum (upstream silinmiş olabilir)
+        branches_vv = run_git(["branch", "-vv"], root, check=False)[1]
+        if ": gone]" in branches_vv:
+            issues.append("upstream'i silinmiş dal var (': gone]'), yeniden yayınlanmalı")
+
+        if issues:
+            lines.append("\nSorunlar:" + "".join(f"\n- {i}" for i in issues))
+        else:
+            lines.append("\nSorun bulunmadı.")
+        return ToolResult("\n".join(lines))
 
     def _push(self, ctx: ToolContext, root: Path, branch: str, force: bool, allow_protected: bool) -> ToolResult:
         branch = branch or current_branch(root)
