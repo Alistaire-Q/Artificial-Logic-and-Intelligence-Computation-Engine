@@ -49,6 +49,7 @@ class Speaker:
         self._now = ""  # çalınan cümle
         self._now_alert = False  # çalınan ses bir uçuş/oyun uyarısı mı
         self._last_alert = False  # sıraya en son eklenen uyarı mıydı
+        self.alerts_muted = False  # oyun/ucuş uyarıları için ayrı sessiz mod
         self._making: tuple[int, str] | None = None  # sentezlenen cümle (henüz hiçbir kuyrukta değil)
         # Son stop()'ta söylenemeyenler: {"playing": yarıda kesilen cümle, "pending": hiç söylenmeyenler}
         self.last_cut: dict[str, object] | None = None
@@ -71,7 +72,7 @@ class Speaker:
         text = for_speech(text)
         emotion = emotion or pick(text, severity, topic)  # emoji (😄) tonu belirler, sonra atılır
         text = drop_emoji(text)
-        if not text or not self.enabled():
+        if not text or not self.enabled() or (topic == "flight" and self.alerts_muted):
             return False
         deadline = None
         if topic == "flight":
@@ -103,6 +104,12 @@ class Speaker:
             with self._cv:
                 self._pending = max(0, self._pending - dropped)
                 self._cv.notify_all()
+
+    def stop_alerts(self) -> None:
+        """Çalan oyun/ucuş uyarısını kes; konuşma kuyruğunu etkileme."""
+        # Kuyruktakiler synth/play döngüsünde alerts_muted ile atlanır; çalanı burada kes.
+        if self._playing and self._now_alert:
+            self.player.stop()
 
     def stop(self) -> None:
         """Sus: kuyruğu boşalt, çalanı kes. Söylenemeyenler last_cut'a yazılır."""
@@ -223,8 +230,8 @@ class Speaker:
             gen, text, emotion, deadline, _sev = self._synth_q.get()
             if gen != self._gen:
                 continue
-            if deadline is not None and time.monotonic() > deadline:
-                self._done_one(gen)  # bayatladı: hiç üretme
+            if deadline is not None and (self.alerts_muted or time.monotonic() > deadline):
+                self._done_one(gen)  # bayatladı ya da uyarılar susturuldu: hiç üretme
                 continue
             n = 1
             if deadline is None:
@@ -249,8 +256,8 @@ class Speaker:
             gen, text, audio, deadline, n, sev = self._play_q.get()
             if gen != self._gen:
                 continue
-            if deadline is not None and time.monotonic() > deadline + 3:
-                self._done_one(gen, n)  # sesi üretilirken bayatladı
+            if deadline is not None and (self.alerts_muted or time.monotonic() > deadline + 3):
+                self._done_one(gen, n)  # sesi üretilirken bayatladı ya da uyarılar susturuldu
                 continue
             with self._cv:
                 self._playing = True

@@ -335,6 +335,40 @@ def _start_voice(cfg, core):
             speaker.say(n.body or n.title, n.emotion or None, severity=n.severity, topic=n.topic)
 
     core.notifier.channels.append(speak)
+
+    # Oyun/uçuş uyarılarını (topic "flight") tek tuşla aç/kapat; sesli sohbet etkilenmez.
+    # Eskiden "War Thunder açık mı" diye SocialWatch.reason()'a bakıyordu; Discord'dayken o "Discord sesli
+    # konuşmada" döndürdüğü için tuş hiçbir şey yapmıyordu. Artık koşulsuz çalışır, bip ile durumu söyler.
+    alert_mute_key = v.get("game_mute_key", "")
+    if alert_mute_key:
+        from alice.hotkeys import WinHotkeys
+
+        def beep(muted: bool) -> None:
+            try:
+                import winsound
+
+                if muted:  # kapandı: alçalan iki bip
+                    winsound.Beep(880, 90); winsound.Beep(440, 140)
+                else:  # açıldı: yükselen iki bip
+                    winsound.Beep(440, 90); winsound.Beep(880, 140)
+            except Exception:  # noqa: BLE001
+                pass
+
+        def toggle_alerts() -> None:
+            speaker.alerts_muted = not speaker.alerts_muted
+            if speaker.alerts_muted:
+                speaker.stop_alerts()
+            state = "kapalı" if speaker.alerts_muted else "açık"
+            voice_log(f"oyun uyarı sesi {state} ({alert_mute_key})")
+            console.print(f"[dim]oyun uyarı sesi {state}[/]")
+            threading.Thread(target=beep, args=(speaker.alerts_muted,), daemon=True).start()
+
+        alert_hotkey = WinHotkeys({alert_mute_key: toggle_alerts})
+        alert_hotkey.start()
+        if alert_hotkey.failed:
+            voice_log(f"uyarı susturma kısayolu kaydedilemedi (başka program tutuyor olabilir): {alert_hotkey.failed}")
+        else:
+            voice_log(f"uyarı susturma kısayolu hazır: {alert_mute_key}")
     if v.get("prewarm_callouts", True):
         # Uçuş uyarılarının sesi önceden diske: uçuşta ses buluttan geliyor, önbellekteki anında çalar.
         from alice.sims.flight import callouts

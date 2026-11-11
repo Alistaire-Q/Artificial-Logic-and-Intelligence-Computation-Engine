@@ -272,6 +272,9 @@ barge_in = true
 # Discord'da konuşurken ya da oyundayken: "wake" = "Alice" cümlenin başında olmalı ve ses senin sesin olmalı
 # (ses izi, Sistem → Ses → Sesimi tanıt); "ptt" = mikrofon ALICE'e tamamen kapalı, sadece bas-konuş tuşu.
 social_mode = "wake"
+# Oyun/uçuş uyarılarını (tehdit, irtifa vb. anonslar) aç/kapatır; sesli sohbet etkilenmez. Boş = kapalı.
+# Kapanınca alçalan, açılınca yükselen bip çalar. WT'nin kendi tuşlarıyla çakışmasın.
+game_mute_key = "ctrl+shift+m"
 # ALICE cevap verdikten sonra bu kadar saniye "Hey Alice" demeden devam edebilirsin (en fazla 5).
 # "Alice sus" dersen yeniden "Alice" diyene kadar hiçbir şeyi komut saymaz.
 follow_up = 5
