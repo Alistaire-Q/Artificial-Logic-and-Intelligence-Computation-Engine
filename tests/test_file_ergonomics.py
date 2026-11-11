@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from alice.tools import ToolContext, groups
+from alice.tools import ToolContext
 from alice.tools.base import ToolError
 from alice.tools.files import EditFile, Grep, ReadFile
 from tests.conftest import make_config

@@ -8,9 +8,6 @@ import re
 import subprocess
 import sys
 import time
-from datetime import datetime
-from pathlib import Path
-from typing import Any
 
 from alice.tools.base import EXEC, READ, Tool, ToolContext, ToolError, ToolResult, obj, truncate
 from alice.tools.shell import IS_WIN, NO_WINDOW, kill_tree
@@ -67,7 +64,13 @@ class AppState(Tool):
         if section in ("all", "config"):
             out.append("### Yapılandırma Özeti")
             cfg = ctx.config
-            out.append(f"Model: {cfg.brain[0] if cfg.brain else 'varsayılan'}")
+            brain_val = getattr(cfg, "brain", None)
+            if brain_val and isinstance(brain_val, (list, tuple)):
+                model_str = brain_val[0] if brain_val else "varsayılan"
+            else:
+                roles = getattr(cfg, "roles", None)
+                model_str = (roles.get("brain") if roles else None) or "varsayılan"
+            out.append(f"Model: {model_str}")
             out.append(f"Çalışma Dizini: {ctx.cwd}")
             out.append(f"ALICE Home: {os.environ.get('ALICE_HOME', '~/.alice')}")
 
@@ -173,9 +176,6 @@ class TestRun(Tool):
             else:
                 argv = ["/bin/bash", "-c", full_command]
 
-        out_lines = []
-        err_lines = []
-        
         start_time = time.monotonic()
         try:
             pop = subprocess.Popen(argv, cwd=wd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -192,7 +192,7 @@ class TestRun(Tool):
             err = stderr.decode("utf-8", errors="replace")
             
         except Exception as e:
-            raise ToolError(f"Test başlatılamadı: {e}")
+            raise ToolError(f"Test başlatılamadı: {e}") from e
 
         duration = time.monotonic() - start_time
         

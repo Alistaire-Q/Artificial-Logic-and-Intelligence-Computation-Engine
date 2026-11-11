@@ -261,7 +261,6 @@ def test_audit(repo, monkeypatch):
         return subprocess.RealProcess() # Bu kısım hatalı olabilir, sadece gh'ı yakalayalım
 
     # Daha basit bir mock:
-    import alice.tools.github
     original_run = subprocess.run
     def simple_mock_run(args, **kwargs):
         if "gh" in str(args[0]) and "auth" in args and "token" in args:

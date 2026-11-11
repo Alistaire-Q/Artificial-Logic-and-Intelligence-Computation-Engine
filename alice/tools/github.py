@@ -411,11 +411,18 @@ class Git(Tool):
         """Depo ve yetki durumunu denetler (hepsi okuma)."""
         issues: list[str] = []
 
-        # 1. Uzak depo bilgisi
+        # 1. Uzak depo bilgisi ve Erişilebilirlik (Fetch Sağlığı)
         remotes_out = run_git(["remote", "-v"], root)[1]
         lines = [f"Remotes:\n{remotes_out or 'yok'}"]
         if not remotes_out.strip():
             issues.append("remote tanımlı değil: push/pull yapılamaz")
+        else:
+            # Uzak bağlantı erişilebilirlik kontrolü (ls-remote)
+            fetch_check = run_git(["ls-remote", "--exit-code", "--refs", "origin", "HEAD"], root, timeout=15, check=False)
+            if fetch_check[0] != 0:
+                issues.append("remote'a (origin) erişilemiyor veya ağ bağlantısı/yetki sorunu var")
+            else:
+                lines.append("Remote Erişilebilirlik: OK (origin bağlantısı aktif)")
         # Remote URL'de maskelemeyle gömülü anahtar bilgisi taşıyorsa
         if re.search(r"(https?://)[^/@\s]+:[^/@\s]+@github\.com", remotes_out):
             issues.append("remote URL'de kullanıcı:token gömülü (`.git/config` temizlenmeli)")
