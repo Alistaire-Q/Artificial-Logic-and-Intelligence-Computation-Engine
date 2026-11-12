@@ -2022,3 +2022,30 @@ details > summary::marker { color: var(--faint); }
 .bb-idle p { max-width: 340px; margin: 0; font-size: 13px; line-height: 1.5; }
 .bb-foot { padding: 6px 12px; border-top: 1px solid var(--line); color: var(--faint); font-size: 11.5px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 26px; }
+
+/* ------------------------------------------------------------------ PR paneli */
+.prp { display: flex; flex-direction: column; gap: 10px; }
+.prp-head { display: flex; align-items: center; gap: 8px; }
+.prp-suggest { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px dashed var(--line);
+  border-radius: 10px; font-size: 12.5px; color: var(--muted); }
+.prp-suggest b { color: var(--text); font-weight: 600; }
+.prp-suggest .btn { align-self: flex-start; }
+.prp-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column;
+  gap: 6px; }
+.prp-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.prp-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--faint); }
+.prp-dot.success { background: #3fb950; } .prp-dot.failure { background: #f85149; }
+.prp-dot.pending { background: #d29922; } .prp-dot.merged { background: #a371f7; }
+.prp-title { color: var(--text); font-weight: 600; font-size: 13px; text-decoration: none; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.prp-title:hover { text-decoration: underline; }
+.prp-meta, .prp-status, .prp-foot { color: var(--faint); font-size: 11.5px; overflow-wrap: anywhere; }
+.prp-status { color: var(--muted); }
+.prp-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.prp-chip { font-size: 11px; padding: 2px 7px; border-radius: 999px; background: var(--bg-soft, rgba(127,127,127,.12)); }
+.prp-chip.bad { color: #f85149; } .prp-chip.ok { color: #3fb950; } .prp-chip.wait { color: #d29922; }
+.prp-flags { display: flex; flex-direction: column; gap: 4px; padding-top: 2px; }
+.prp-flag { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12.5px; }
+.prp-acts { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.prp-hist { display: none; font-size: 11.5px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 6px; }
+.prp-card.open .prp-hist { display: block; }

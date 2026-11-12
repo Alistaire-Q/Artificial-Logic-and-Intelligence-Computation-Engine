@@ -118,6 +118,52 @@ def unwatch(repo: str, number: int) -> str:
     return f"{repo}#{number} artık izlenmiyor" if len(left) != len(rows) else f"{repo}#{number} zaten izlenmiyordu"
 
 
+FLAGS = ("auto_fix", "address_comments", "auto_review", "auto_merge")
+
+
+def set_flag(repo: str, number: int, flag: str, value: bool) -> bool:
+    """Arayüzdeki düğmeler: izlenen PR'ın bir davranışını aç/kapat."""
+    if flag not in FLAGS:
+        return False
+    found = [False]
+
+    def fn(w: Watch) -> None:
+        setattr(w, flag, bool(value))
+        w.log(f"{flag} {'açıldı' if value else 'kapatıldı'}")
+        found[0] = True
+
+    _update(f"{repo}#{int(number)}", fn)
+    return found[0]
+
+
+_live_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+LIVE_TTL = 30.0
+
+
+def live_status(api: Any, repo: str, number: int, cache: bool = True) -> dict[str, Any]:
+    """PR panelindeki satır: başlık, durum, CI (başarısız/süren adları), açık inceleme konusu sayısı, çakışma."""
+    from alice.tools.github import review_threads
+
+    key = f"{repo}#{number}"
+    hit = _live_cache.get(key)
+    if cache and hit and time.monotonic() - hit[0] < LIVE_TTL:
+        return hit[1]
+    pr = api.get(f"/repos/{repo}/pulls/{number}")
+    ch = api.checks(repo, pr["head"]["sha"]) if pr.get("state") == "open" else {"state": "none", "failed": [],
+                                                                                "pending": [], "total": 0}
+    try:
+        open_threads = sum(1 for t in review_threads(api, repo, number)["threads"] if not t["resolved"])
+    except Exception:  # noqa: BLE001 - GraphQL yetkisi yoksa sayı bilinmez
+        open_threads = -1
+    row = {"title": pr.get("title", ""), "url": pr.get("html_url", ""), "state": "merged" if pr.get("merged")
+           else pr.get("state", ""), "draft": bool(pr.get("draft")), "head": pr["head"]["ref"],
+           "base": pr["base"]["ref"], "sha": pr["head"]["sha"][:7], "mergeable": pr.get("mergeable"),
+           "ci": ch["state"], "failed": ch["failed"][:8], "pending": ch["pending"][:8], "checks": ch["total"],
+           "open_threads": open_threads}
+    _live_cache[key] = (time.monotonic(), row)
+    return row
+
+
 def describe() -> str:
     rows = load()
     if not rows:

@@ -849,6 +849,41 @@ class AppState:
             "update_mode": self._update_mode(),
         }
 
+    def pr_panel(self, force: bool = False) -> dict[str, Any]:
+        """PR paneli: izlenen PR'lar (canlı durumla) ve bulunulan dalın izlenmeyen açık PR'ı (izlemeye almak için)."""
+        from alice import prwatch
+        from alice.tools.base import ToolError
+        from alice.tools.github import GitHubAPI, current_branch, github_token, origin_repo
+
+        watches = prwatch.load()
+        out: dict[str, Any] = {"ok": True, "watching": [], "suggest": None, "error": ""}
+        try:
+            api = GitHubAPI(github_token(self.cfg))
+        except ToolError as e:
+            out.update(ok=False, error=str(e)[:200])
+            api = None
+        for w in watches:
+            row = {"repo": w.repo, "number": w.number, "status": w.status, "history": w.history[-5:],
+                   "session": w.session, **{f: getattr(w, f) for f in prwatch.FLAGS}}
+            if api is not None:
+                try:
+                    row.update(prwatch.live_status(api, w.repo, w.number, cache=not force))
+                except Exception as e:  # noqa: BLE001 - bir PR'ın hatası paneli düşürmesin
+                    row["error"] = str(e)[:160]
+            out["watching"].append(row)
+        if api is not None:
+            try:
+                repo, branch = origin_repo(self.ctx.cwd), current_branch(self.ctx.cwd)
+                if repo and branch:
+                    owner = repo.split("/")[0]
+                    prs = api.get(f"/repos/{repo}/pulls", head=f"{owner}:{branch}", state="open")
+                    if prs and not any(w.repo == repo and w.number == prs[0]["number"] for w in watches):
+                        out["suggest"] = {"repo": repo, "number": prs[0]["number"], "title": prs[0]["title"],
+                                          "url": prs[0]["html_url"], "head": branch}
+            except Exception:  # noqa: BLE001 - git deposu değil, ağ yok
+                pass
+        return out
+
     def _thinking_options(self) -> dict[str, Any]:
         """Seçili (ya da son cevap veren) ana modelin desteklediği düşünme seviyeleri: menü yalnız bunları gösterir."""
         from alice.providers import thinking
@@ -2037,6 +2072,8 @@ def make_handler(state: AppState):
                     return self._json(state.project_detail((q.get("id") or [""])[0], (q.get("member") or [""])[0]))
                 except ToolError as e:
                     return self._json({"ok": False, "error": str(e)}, 404)
+            if u.path == "/api/prs":
+                return self._json(state.pr_panel(force=(q.get("force") or [""])[0] == "1"))
             if u.path in ("/api/browser/frame", "/api/browser/tabs"):
                 from alice.app.builtin_browser import BrowserError
 
@@ -2405,6 +2442,46 @@ def make_handler(state: AppState):
                     ok = revert_change(state.agent.checkpoints, str(d.get("path", "")))
                     return self._json({"ok": ok, "changes": session_changes(state.agent.checkpoints, state.ctx.cwd)},
                                       200 if ok else 404)
+                if p.startswith("/api/prs/"):
+                    # PR paneli: izlemeye al / bırak, davranış düğmeleri, başarısız CI'ı yeniden çalıştır.
+                    from alice import prwatch
+                    from alice.tools.base import ToolError
+
+                    repo, number = str(d.get("repo", "")), int(d.get("number") or 0)
+                    if not repo or not number:
+                        return self._json({"ok": False, "error": "repo ve number gerekli"}, 400)
+                    try:
+                        if p == "/api/prs/watch":
+                            local = ""
+                            try:
+                                from alice.tools.github import origin_repo, repo_root
+
+                                if origin_repo(state.ctx.cwd) == repo:
+                                    local = str(repo_root(state.ctx.cwd))
+                            except ToolError:
+                                pass
+                            note = prwatch.watch(repo, number, local, session=state.sid)
+                        elif p == "/api/prs/unwatch":
+                            note = prwatch.unwatch(repo, number)
+                        elif p == "/api/prs/flag":
+                            if str(d.get("flag")) == "auto_merge" and d.get("value") and not d.get("confirmed"):
+                                return self._json({"ok": False, "error": "otomatik birleştirme onay ister"}, 400)
+                            if not prwatch.set_flag(repo, number, str(d.get("flag", "")), bool(d.get("value"))):
+                                return self._json({"ok": False, "error": "izlenmiyor ya da bilinmeyen ayar"}, 404)
+                            note = "kaydedildi"
+                        elif p == "/api/prs/rerun":
+                            from alice.tools.github import GitHubAPI, github_token, rerun_failed
+
+                            api = GitHubAPI(github_token(state.cfg))
+                            sha = api.get(f"/repos/{repo}/pulls/{number}")["head"]["sha"]
+                            done = rerun_failed(api, repo, sha)
+                            note = ("yeniden başlatıldı: " + ", ".join(done)) if done else "başarısız iş yok"
+                        else:
+                            return self._json({"ok": False, "error": "bilinmeyen işlem"}, 404)
+                    except ToolError as e:
+                        return self._json({"ok": False, "error": str(e)[:200]})
+                    prwatch._live_cache.pop(f"{repo}#{number}", None)
+                    return self._json({"ok": True, "note": note})
                 if p == "/api/browser/input":
                     # Paneldeki yerleşik tarayıcı: kullanıcı görüntüye tıklayıp yazarak kontrolü devralır.
                     from alice.app.builtin_browser import BrowserError

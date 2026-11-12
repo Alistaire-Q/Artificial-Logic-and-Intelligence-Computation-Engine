@@ -582,6 +582,7 @@ function renderPanel() {
   $$("#panel .tab").forEach((b) => b.classList.toggle("on", b.dataset.tab === PREFS.tab));
   app.classList.toggle("panel-browser", PREFS.tab === "browser");
   if (PREFS.tab === "browser") { renderBrowserPane(); return; }
+  if (PREFS.tab === "prs") { renderPrPane(); return; }
   const body = $("#panelBody");
   const keep = body.scrollTop;
   body.replaceChildren();
@@ -3275,4 +3276,125 @@ function browserLoop() {
     if (!(PREFS.panel && PREFS.tab === "browser")) { clearInterval(BB.timer); return; }
     bbTick(false);
   }, 330);
+}
+
+/* ============================================================= PR paneli
+   İzlenen PR'lar (alice/prwatch.py): CI durumu, açık inceleme konuları, çakışma ve davranış düğmeleri. Bulunulan dalın
+   açık PR'ı izlenmiyorsa tek tıkla izlemeye alınır. Sekme açıkken 30 sn'de bir tazelenir. */
+const PRP = { timer: null, busy: false };
+const PR_FLAGS = [
+  ["auto_fix", "CI kırmızıysa düzelt"],
+  ["address_comments", "İnceleme yorumlarını uygula"],
+  ["auto_review", "Her commit'i bağımsız incele"],
+  ["auto_merge", "Hepsi yeşilken birleştir"],
+];
+async function prAct(path, body) {
+  const r = await api("/api/prs/" + path, body);
+  if (!r || !r.ok) toast((r && r.error) || "olmadı");
+  else if (r.note && path !== "flag") toast(r.note);
+  renderPrPane(true);
+}
+async function renderPrPane(force) {
+  const body = $("#panelBody");
+  clearInterval(PRP.timer);
+  PRP.timer = setInterval(() => {
+    if (!(PREFS.panel && PREFS.tab === "prs")) { clearInterval(PRP.timer); return; }
+    if (!document.hidden) renderPrPane(false);
+  }, 30000);
+  if (PRP.busy) return;
+  if (!body.querySelector(".prp")) body.replaceChildren(el("div", "prp note", "PR'lar yükleniyor…"));
+  PRP.busy = true;
+  let r;
+  try { r = await api("/api/prs" + (force ? "?force=1" : "")); } finally { PRP.busy = false; }
+  if (!(PREFS.panel && PREFS.tab === "prs")) return;
+  const wrap = el("div", "prp");
+  const head = el("div", "prp-head");
+  head.append(el("b", "", "İzlenen PR'lar"), el("span", "grow"),
+    iconAct(IC.rewind, "Tazele", () => renderPrPane(true)));
+  wrap.appendChild(head);
+  if (!r || (!r.ok && !r.watching.length)) {
+    wrap.appendChild(el("div", "note", (r && r.error) || "GitHub'a ulaşılamadı"));
+  }
+  if (r && r.suggest) {
+    const s = r.suggest, card = el("div", "prp-suggest");
+    card.append(el("div", "", `Bu dalın (${s.head}) açık PR'ı izlenmiyor:`),
+      el("b", "", `#${s.number} ${s.title}`));
+    const b = el("button", "btn accent", "İzlemeye al");
+    b.addEventListener("click", () => { b.disabled = true; prAct("watch", { repo: s.repo, number: s.number }); });
+    card.appendChild(b);
+    wrap.appendChild(card);
+  }
+  const rows = (r && r.watching) || [];
+  if (!rows.length && !(r && r.suggest)) {
+    wrap.appendChild(emptyState(IC.branch, "İzlenen PR yok",
+      "ALICE bir PR açınca ya da sohbette \"bu PR'ı takip et\" deyince burada görünür: CI kırmızıya dönünce, " +
+      "inceleme yorumu ya da çakışma gelince kendisi düzeltir."));
+  }
+  for (const w of rows) wrap.appendChild(prCard(w));
+  if (rows.length) wrap.appendChild(el("div", "prp-foot",
+    "Kontrolleri ALICE çekirdeği birkaç dakikada bir yapar; düzeltmeler PR'ı açan sohbete gelir."));
+  body.replaceChildren(wrap);
+}
+function prCard(w) {
+  const c = el("div", "prp-card");
+  const top = el("div", "prp-top");
+  const ci = w.state === "merged" ? "merged" : w.state === "closed" ? "closed" : (w.ci || "none");
+  const dot = el("span", "prp-dot " + ci);
+  dot.title = { success: "CI yeşil", failure: "CI kırmızı", pending: "CI sürüyor", none: "CI yok",
+    merged: "birleşti", closed: "kapandı" }[ci] || ci;
+  const title = el("a", "prp-title", `#${w.number} ${w.title || ""}`);
+  if (w.url) { title.href = w.url; title.target = "_blank"; title.rel = "noopener"; }
+  top.append(dot, title);
+  c.appendChild(top);
+  const meta = el("div", "prp-meta");
+  const bits = [w.repo];
+  if (w.head) bits.push(`${w.head} → ${w.base}`);
+  if (w.sha) bits.push(w.sha);
+  if (w.draft) bits.push("taslak");
+  meta.textContent = bits.join(" · ");
+  c.appendChild(meta);
+  const chips = el("div", "prp-chips");
+  const chip = (cls, text) => chips.appendChild(el("span", "prp-chip " + cls, text));
+  if (w.error) chip("bad", w.error);
+  if (ci === "failure") chip("bad", `${w.failed.length} iş kırmızı: ${w.failed.slice(0, 3).join(", ")}`);
+  else if (ci === "pending") chip("wait", `${w.pending.length} iş sürüyor`);
+  else if (ci === "success") chip("ok", `${w.checks} kontrol yeşil`);
+  if (w.open_threads > 0) chip("wait", `${w.open_threads} açık yorum`);
+  if (w.mergeable === false) chip("bad", "çakışma var");
+  if (chips.childNodes.length) c.appendChild(chips);
+  if (w.status) c.appendChild(el("div", "prp-status", w.status));
+  const flags = el("div", "prp-flags");
+  for (const [k, label] of PR_FLAGS) {
+    const row = el("div", "prp-flag");
+    row.append(el("span", "", label), switchEl(!!w[k], label, async (v) => {
+      let confirmed = false;
+      if (k === "auto_merge" && v) {
+        confirmed = await confirmDialog("Otomatik birleştirme",
+          `#${w.number}: CI yeşil, açık yorum ve çakışma yokken ALICE PR'ı kendisi birleştirecek.`, "Aç");
+        if (!confirmed) return;
+      }
+      prAct("flag", { repo: w.repo, number: w.number, flag: k, value: v, confirmed });
+    }));
+    flags.appendChild(row);
+  }
+  c.appendChild(flags);
+  const acts = el("div", "prp-acts");
+  if (ci === "failure") {
+    const b = el("button", "act", "Başarısızları yeniden çalıştır");
+    b.addEventListener("click", () => { b.disabled = true; prAct("rerun", { repo: w.repo, number: w.number }); });
+    acts.appendChild(b);
+  }
+  if (w.history && w.history.length) {
+    const b = el("button", "act", "Geçmiş");
+    b.addEventListener("click", () => c.classList.toggle("open"));
+    acts.appendChild(b);
+  }
+  const un = el("button", "act", "İzlemeyi bırak");
+  un.addEventListener("click", () => prAct("unwatch", { repo: w.repo, number: w.number }));
+  acts.append(el("span", "grow"), un);
+  c.appendChild(acts);
+  const hist = el("div", "prp-hist");
+  for (const h of w.history || []) hist.appendChild(el("div", "", h));
+  c.appendChild(hist);
+  return c;
 }
