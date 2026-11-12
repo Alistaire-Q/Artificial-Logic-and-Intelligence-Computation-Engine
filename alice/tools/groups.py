@@ -44,9 +44,11 @@ GROUPS: dict[str, tuple[set[str], str, str]] = {
     "browser": ({"browser"}, "kullanıcının tarayıcısında web sayfası okuma, tıklama, form doldurma",
                 r"site|tarayıcı|browser|chrome|edge|firefox|opera|google|sayfa|link|https?://|www\.|\.com|"
                 r"giriş yap|login|online|internetten|instagram|twitter|github|e-?posta|mail"),
-    "github": ({"git", "github"}, "git (commit, dal, push) ve GitHub (depo klonlama, PR açma/birleştirme, CI durumu)",
+    "github": ({"git", "github", "code_review"},
+               "git (commit, dal, push), GitHub (PR açma/birleştirme, CI durumu/logları/yeniden çalıştırma, inceleme "
+               "yorumlarına cevap, PR'ı arka planda izleyip düzeltme) ve bağımsız kod incelemesi",
                r"git\b|git ?hub|\brepo|depo|commit|push|pull|pull request|\bpr\b|merge|birleştir|branch|\bdal\b|"
-               r"issue|klonla|clone|\bci\b"),
+               r"issue|klonla|clone|\bci\b|review|incele|gözden geçir|kod kontrol|yorum(lar)?a? (bak|cevap)"),
     "system": ({"system_info", "process_list", "process_kill", "metrics"},
                "CPU/RAM/GPU/disk durumu, çalışan işlemler, geçmiş ölçümler",
                r"cpu|ram|gpu|işlemci|ekran kartı|sıcaklık|derece|bellek|disk|pil|batarya|performans|işlem|süreç|"
