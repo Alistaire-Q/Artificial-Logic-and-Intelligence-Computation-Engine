@@ -7,7 +7,6 @@ import base64
 import ctypes
 import json
 import os
-import subprocess
 import sys
 import threading
 import time
@@ -882,14 +881,20 @@ def test_cli_capture_runs_headless_browser(monkeypatch):
     png = b"\x89PNG" + b"0" * 2000
     cmds = []
 
-    def run(cmd, **kw):
-        cmds.append(cmd)
-        shot = next(a for a in cmd if a.startswith("--screenshot=")).split("=", 1)[1]
-        Path(shot).write_bytes(png if len(cmds) == 1 else b"kucuk")  # ikinci görüntü bozuk/boş
-        return SimpleNamespace(returncode=0)
+    class Proc:  # görüntüyü yazıp kapanan sahte tarayıcı
+        def __init__(self, cmd, **kw):
+            cmds.append(cmd)
+            shot = next(a for a in cmd if a.startswith("--screenshot=")).split("=", 1)[1]
+            Path(shot).write_bytes(png if len(cmds) == 1 else b"kucuk")  # ikinci görüntü bozuk/boş
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
 
     monkeypatch.setattr(site, "browser_exe", lambda: "chrome")
-    monkeypatch.setattr(site.subprocess, "run", run)
+    monkeypatch.setattr(site.subprocess, "Popen", Proc)
     for env in ("HTTPS_PROXY", "https_proxy"):  # Windows'ta ikisi aynı değişken
         monkeypatch.setenv(env, "http://proxy:3128")
     out = site._cli_capture("https://ornek.com", timeout=5, settle=100)
@@ -906,14 +911,32 @@ def test_cli_capture_timeout_and_no_browser(monkeypatch):
     monkeypatch.setattr(site, "browser_exe", lambda: "")
     assert site._cli_capture("https://x") == {}
     monkeypatch.setattr(site, "browser_exe", lambda: "chrome")
-    calls = []
+    procs = []
 
-    def slow(cmd, **kw):
-        calls.append(cmd)
-        raise subprocess.TimeoutExpired(cmd, 1)
+    class Hung:  # görüntü yazmadan asılı kalan tarayıcı
+        def __init__(self, cmd, **kw):
+            self.killed = False
+            procs.append(self)
 
-    monkeypatch.setattr(site.subprocess, "run", slow)
-    assert site._cli_capture("https://x") == {} and len(calls) == 1  # zaman aşımında diğer boyutlar denenmez
+        def poll(self):
+            return -9 if self.killed else None
+
+        def kill(self):
+            self.killed = True
+
+        def wait(self, timeout=None):
+            return -9
+
+    monkeypatch.setattr(site.subprocess, "Popen", Hung)
+    # Boyutlar aynı anda başlar; süre dolunca hepsi kapatılır, boş döner.
+    assert site._cli_capture("https://x", timeout=0.3) == {}
+    assert len(procs) == 2 and all(p.killed for p in procs)
+
+    def broken(cmd, **kw):
+        raise OSError("tarayıcı açılamadı")
+
+    monkeypatch.setattr(site.subprocess, "Popen", broken)
+    assert site._cli_capture("https://x") == {}
 
 
 def test_capture_falls_back_to_cli(monkeypatch):
