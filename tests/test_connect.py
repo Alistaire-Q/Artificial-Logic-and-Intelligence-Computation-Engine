@@ -366,6 +366,45 @@ def test_oauth_state_uyusmazsa_reddeder(monkeypatch):
     assert store.get("servis") == {}
 
 
+def test_oauth_tarayicinin_bos_on_baglantisina_takilmaz(monkeypatch):
+    """Edge/Chrome geri dönüş adresine önce boş bir bağlantı açar; tek bağlantılık sunucu ona takılıp Google'ın asıl
+    yönlendirmesini cevapsız bırakıyordu (izin sayfası 'Devam Et'ten sonra donuyordu)."""
+    import socket
+
+    import httpx
+
+    class FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {"access_token": "AT", "expires_in": 3600}
+
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: FakeResp())
+    auth = mf.Auth(kind="oauth2", client_id_env="X", authorize_url="https://s.example/a",
+                   token_url="https://s.example/t")
+    idle: list = []
+
+    def browser(url: str):
+        import urllib.parse as up
+
+        q = up.parse_qs(up.urlparse(url).query)
+        cb = up.urlparse(q["redirect_uri"][0])
+        idle.append(socket.create_connection((cb.hostname, cb.port)))  # hiçbir şey göndermeyen ön bağlantı
+
+        def go():
+            with pytest.raises(urllib.error.HTTPError):  # favicon sonucu etkilemez
+                urllib.request.urlopen(f"http://{cb.hostname}:{cb.port}/favicon.ico", timeout=5)
+            urllib.request.urlopen(q["redirect_uri"][0] + f"?code=KOD&state={q['state'][0]}", timeout=5).read()
+
+        threading.Thread(target=go).start()
+
+    try:
+        assert oauth.authorize(auth, "servis", "cid", open_browser=browser, timeout=8)["access_token"] == "AT"
+    finally:
+        for s in idle:
+            s.close()
+
+
 def test_oauth_zaman_asimi_adresi_soyler():
     auth = mf.Auth(kind="oauth2", client_id_env="X", authorize_url="https://s.example/a",
                    token_url="https://s.example/t")

@@ -41,22 +41,33 @@ def _pkce() -> tuple[str, str]:
 class _Catcher(http.server.BaseHTTPRequestHandler):
     result: dict[str, str] = {}
     want_state = ""
+    done = threading.Event()
+    timeout = 15  # sn: istek göndermeyen boş bağlantı (tarayıcının ön bağlantısı) sonsuza dek beklenmesin
 
     def log_message(self, *a: Any) -> None:  # sessiz
         pass
 
     def do_GET(self) -> None:  # noqa: N802
-        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        u = urllib.parse.urlparse(self.path)
+        if u.path != "/callback":  # favicon vb.: sonucu etkilemez
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        q = urllib.parse.parse_qs(u.query)
         code = (q.get("code") or [""])[0]
         state = (q.get("state") or [""])[0]
         err = (q.get("error") or [""])[0]
         ok = bool(code) and secrets.compare_digest(state, type(self).want_state)
-        if ok:
+        if "code" in type(self).result:  # aynı adres ikinci kez açıldı (yenileme): ilk sonuç geçerli
+            title, text = "Bağlandı", "Bu sekmeyi kapatabilirsin, ALICE'e dön."
+        elif ok:
             type(self).result = {"code": code}
             title, text = "Bağlandı", "Bu sekmeyi kapatabilirsin, ALICE'e dön."
         else:
             type(self).result = {"error": err or ("state uyuşmadı" if code else "kod gelmedi")}
             title, text = "Olmadı", type(self).result["error"]
+        type(self).done.set()
         body = PAGE.format(title=title, text=text).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -73,7 +84,10 @@ def authorize(auth: Auth, name: str, client_id: str, client_secret: str = "", ti
 
     say = emit or (lambda _s: None)
     try:
-        srv = http.server.HTTPServer(("127.0.0.1", auth.redirect_port), _Catcher)
+        # Her bağlantı ayrı thread'de: tarayıcı önce boş bir ön bağlantı açınca tek bağlantılık sunucu ona takılıyor,
+        # Google'ın asıl yönlendirmesi cevapsız kalıp izin sayfası "Devam Et"ten sonra donuyordu.
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", auth.redirect_port), _Catcher)
+        srv.daemon_threads = True
     except OSError as e:
         raise OAuthError(f"geri dönüş adresi açılamadı (port {auth.redirect_port}): {e}. "
                          "O portu kullanan programı kapatıp tekrar dene.") from e
@@ -82,6 +96,7 @@ def authorize(auth: Auth, name: str, client_id: str, client_secret: str = "", ti
     state = secrets.token_urlsafe(16)
     _Catcher.want_state = state
     _Catcher.result = {}
+    _Catcher.done = threading.Event()
     verifier, challenge = _pkce()
     params = {"response_type": "code", "client_id": client_id, "redirect_uri": redirect, "state": state,
               **auth.extra_authorize}
@@ -91,15 +106,16 @@ def authorize(auth: Auth, name: str, client_id: str, client_secret: str = "", ti
         params.update(code_challenge=challenge, code_challenge_method="S256")
     url = auth.authorize_url + ("&" if "?" in auth.authorize_url else "?") + urllib.parse.urlencode(params)
 
-    t = threading.Thread(target=srv.handle_request, daemon=True)
+    t = threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.2}, daemon=True)
     t.start()
     say(f"geri dönüş adresi: {redirect}  (servisin uygulama ayarında kayıtlı olmalı)")
     say(f"tarayıcıda izin sayfası açılıyor: {auth.authorize_url}")
-    open_browser(url)
-    end = time.time() + timeout
-    while t.is_alive() and time.time() < end:
-        t.join(0.2)
-    srv.server_close()
+    try:
+        open_browser(url)
+        _Catcher.done.wait(timeout)
+    finally:
+        srv.shutdown()
+        srv.server_close()
     if not _Catcher.result:
         raise OAuthError(f"izin beklenirken süre doldu ({int(timeout)} sn). Adresi elle açabilirsin: {url}")
     if "error" in _Catcher.result:
