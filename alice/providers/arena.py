@@ -25,7 +25,9 @@ ROWS_URL = "https://datasets-server.huggingface.co/rows"
 DATASET = "lmarena-ai/leaderboard-dataset"
 CATEGORIES = {"overall": 0.25, "coding": 0.25, "instruction_following": 0.2, "non_english": 0.15, "multi_turn": 0.15}
 PAGE = 100
-ELO_PER_POINT = 3.0  # liderin bu kadar Elo altı = 1 puan eksik (lider 100, 150 Elo geride 50)
+# Liderin bu kadar Elo altı = 1 puan eksik (lider 100, 100 Elo geride 50). 3 iken ölçek çok sıkışıktı: Opus 5.5 91,
+# flash-lite 62 çıkıyor, küçük modeller ana iş için "yeterli" görünüyordu. 2 ile Opus ~87, flash ~75, flash-lite ~45.
+ELO_PER_POINT = 2.0
 MAX_AGE = 3 * 24 * 3600
 TIMEOUT = 90.0
 
@@ -75,10 +77,23 @@ def load(path: Path | None = None) -> dict[str, Any]:
                 data = json.loads((path or cache_path()).read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 data = {}
+            data = _rescaled(data) if isinstance(data, dict) else {}
             if path is not None:
-                return data if isinstance(data, dict) else {}
-            _cache = data if isinstance(data, dict) else {}
+                return data
+            _cache = data
         return _cache
+
+
+def _rescaled(data: dict[str, Any]) -> dict[str, Any]:
+    """Diskteki veri eski Elo ölçeğiyle (3) puanlanmışsa güncel ölçeğe çevir: puan liderle farkın doğrusal
+    fonksiyonu, yeniden indirmeye gerek yok. Böylece ölçek değişince eşikler eski puanlarla karşılaştırılmaz."""
+    old = data.get("elo_per_point") or 3.0
+    scores = data.get("scores")
+    if not isinstance(scores, dict) or old == ELO_PER_POINT:
+        return data
+    fixed = {k: ({**v, "q": round(max(0.0, 100 - (100 - float(v["q"])) * old / ELO_PER_POINT), 1)}
+                 if isinstance(v, dict) and isinstance(v.get("q"), (int, float)) else v) for k, v in scores.items()}
+    return {**data, "scores": fixed, "elo_per_point": ELO_PER_POINT}
 
 
 def set_cache(data: dict[str, Any]) -> None:
@@ -88,8 +103,9 @@ def set_cache(data: dict[str, Any]) -> None:
 
 
 def age(data: dict[str, Any] | None = None) -> float:
+    data = data if data is not None else load()
     try:
-        return time.time() - float((data if data is not None else load()).get("fetched_ts", 0))
+        return time.time() - float(data.get("fetched_ts", 0))
     except (TypeError, ValueError):
         return float("inf")
 
@@ -139,10 +155,18 @@ def fetch(get: Callable[..., Any] | None = None, workers: int = 8) -> list[dict[
         get = client.get
 
     def page(offset: int) -> dict[str, Any]:
-        r = get(ROWS_URL, params={"dataset": DATASET, "config": "text", "split": "latest", "offset": offset,
-                                  "length": PAGE})
-        r.raise_for_status()
-        return r.json()
+        # Sunucu ara sıra tek bir sayfada 502/503 veriyor; bir sayfa yüzünden bütün yenileme boşa gidiyordu.
+        for attempt in range(4 if client is not None else 1):  # verilen get (test, özel istemci) tek deneme
+            try:
+                r = get(ROWS_URL, params={"dataset": DATASET, "config": "text", "split": "latest", "offset": offset,
+                                          "length": PAGE})
+                r.raise_for_status()
+                return r.json()
+            except Exception:  # noqa: BLE001 - son denemede yukarı fırlatılır
+                if client is None or attempt == 3:
+                    raise
+                time.sleep(1.5 * (attempt + 1))
+        raise RuntimeError("ulaşılamaz")
 
     try:
         first = page(0)
@@ -170,7 +194,7 @@ def refresh(emit: Callable[[str], None] = lambda s: None, get: Callable[..., Any
         emit("LMArena sıralaması boş geldi, eski veriyle devam")
         return load()
     published = max((str(r.get("leaderboard_publish_date") or "") for r in rows), default="")
-    data = {"fetched_ts": time.time(), "published": published, "scores": scores}
+    data = {"fetched_ts": time.time(), "published": published, "scores": scores, "elo_per_point": ELO_PER_POINT}
     p = path or cache_path()
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -214,7 +238,51 @@ def lookup(ref: str, data: dict[str, Any] | None = None) -> dict[str, Any] | Non
     if hit is None:  # "qwen-3.8-27b" (Cerebras) = "qwen3.8-27b": harf ile sürüm arasındaki tire önemsiz
         squashed = {squash(k): v for k, v in scores.items()}
         hit = squashed.get(squash(dated)) or squashed.get(squash(key))
+    if hit is None:
+        # Abonelik proxy'sinin adları: "claude-opus-5-5" (sürüm tireli), "gemini-3.8-flash-high" (çaba ekli).
+        # Önceden bunların hiçbiri bulunamıyor, Opus dahil hepsi "zekâ bilinmiyor" görünüyordu.
+        alt = dotted(_EFFORT_SUFFIX.sub("", key))
+        hit = scores.get(alt) or _older_sibling(scores, alt)
     return hit
+
+
+_EFFORT_SUFFIX = re.compile(r"-(minimal|low|medium|high|xhigh|max|tiered|highspeed|\d+k)$")
+_VERSIONED = re.compile(r"^(.*?)(\d+(?:\.\d+)?)(.*)$")
+
+
+def dotted(key: str) -> str:
+    """'claude-opus-5-5' -> 'claude-opus-5.5' (iki tek haneli sürüm parçası noktayla birleşir)."""
+    return _DASHED.sub(lambda m: f"{m.group(1)}.{m.group(2)}", key)
+
+
+_DASHED = re.compile(r"(?<=-)(\d)-(\d)(?=$|-)")
+
+
+def _older_sibling(scores: dict[str, Any], key: str) -> dict[str, Any] | None:
+    """Sıralamaya henüz girmemiş yeni sürüm ('claude-fable-5.2', 'gpt-6.1-terra'): aynı ailenin sıralamadaki en yakın
+    eski sürümünün puanı. Yeni sürüm eskisinden kötü olmaz varsayımı; tahmin, ama 'bilinmiyor'dan doğru."""
+    m = _VERSIONED.match(key)
+    if not m:
+        return None
+    head, ver, tail = m.groups()
+    want = tuple(int(x) for x in ver.split("."))
+    rx = re.compile(rf"^{re.escape(head)}(\d+(?:\.\d+)?){re.escape(tail)}$")
+    def near(v: tuple[int, ...]) -> bool:
+        # Yalnız aynı ana sürümün bir önceki ara sürümü (fable 5.2 -> 5.1). Daha uzağı tahmin değil uydurma olur:
+        # gemini-3.8-flash-lite'a 3.5'in puanını vermek yanlış.
+        return v < want and v[0] == want[0] and len(v) == len(want) == 2 and want[1] - v[1] <= 1
+
+    older = []
+    for k in scores:
+        mm = rx.match(k)
+        if mm:
+            v = tuple(int(x) for x in mm.group(1).split("."))
+            if near(v):
+                older.append((v, k))
+    if not older:
+        return None
+    hit = scores[max(older)[1]]
+    return {**hit, "estimated": True}
 
 
 def squash(key: str) -> str:

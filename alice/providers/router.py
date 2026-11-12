@@ -190,9 +190,12 @@ class StreamSink(Protocol):
 
 
 class AllProvidersFailed(Exception):
-    def __init__(self, role: str, errors: list[str]):
-        super().__init__(f"'{role}' rolündeki hiçbir model cevap veremedi:\n  " + "\n  ".join(errors))
+    def __init__(self, role: str, errors: list[str], pinned: bool = False):
+        head = ("Seçtiğin model cevap veremedi; elle seçildiği için başka modele geçilmedi. Model menüsünden başka "
+                "bir model ya da Otomatik seç:" if pinned else f"'{role}' rolündeki hiçbir model cevap veremedi:")
+        super().__init__(head + "\n  " + "\n  ".join(errors))
         self.errors = errors
+        self.pinned = pinned
 
 
 @dataclass
@@ -245,6 +248,7 @@ class Router:
         self.providers_cfg = config.providers()
         self._factory = provider_factory or make_client
         self._real_clients = provider_factory is None
+        self._subscription_models: list[str] | None = None  # testlerde proxy'nin model listesi yerine
         self._probe_checked = False
         self._clients: dict[str, Any] = {}
         self.cooldown_until: dict[str, float] = {}
@@ -305,12 +309,31 @@ class Router:
         (kalkmış, bu anahtarla kapalı) modeller atlanır; rastgele model seçen router'lar en sona itilir."""
         if role in self.role_overrides:
             pinned = self.role_overrides[role]
-            if role not in self.config.roles or not self.config.agent.get("pinned_fallback", True):
+            if role not in self.config.roles or not self.config.agent.get("pinned_fallback", False):
+                # Elle seçilen model cevap veremezse ALICE durur ve nedenini söyler. Önceden sessizce rolün
+                # zincirine geçiliyordu: Opus seçiliyken iş flash-lite gibi çok zayıf bir modelle sürüyordu.
                 return pinned
-            # Arayüzden seçilen model önce denenir; aşırı yük (503) ya da kota yüzünden cevap veremezse iş
-            # durmasın diye rolün normal zinciriyle devam edilir.
+            # [agent] pinned_fallback = true: seçilen model önce denenir, cevap veremezse rolün zinciriyle devam edilir.
             return pinned + [r for r in self._role_chain(role) if r not in pinned]
         return self._role_chain(role)
+
+    def brain_floor(self) -> int:
+        """Ana modelin otomatik sırasına girebilmek için gereken en düşük zekâ puanı ([agent] min_brain_quality)."""
+        try:
+            return int(self.config.agent.get("min_brain_quality", ranking.BRAIN_MIN_QUALITY))
+        except (TypeError, ValueError):
+            return ranking.BRAIN_MIN_QUALITY
+
+    def strong_enough(self, refs: list[str]) -> list[str]:
+        """Otomatik gelen modellerden ana iş için yeterince güçlü olanlar. Hiçbiri eşiği geçmiyorsa (sadece küçük
+        modellere erişimi olan kurulum) liste olduğu gibi kalır: ALICE tamamen çalışamaz hale gelmesin."""
+        floor = self.brain_floor()
+        if floor <= 0:
+            return refs
+        from alice.providers import picker
+
+        good = [r for r in refs if picker.quality(r) >= floor]
+        return good or refs
 
     def _role_chain(self, role: str) -> list[str]:
         if ":" in role and role.split(":", 1)[0] in self.providers_cfg:
@@ -352,7 +375,54 @@ class Router:
                           if r in res and res[r].get("ok", True) else (2, 0))
         if role == "vision" and res:
             refs = list(refs) + ranking.vision_backups(res, self.providers_cfg, list(refs))
-        return [r for r in refs if r.partition(":")[0] in self.providers_cfg]
+        refs = [r for r in refs if r.partition(":")[0] in self.providers_cfg]
+        if role == "brain":
+            # Güçlü modellerin kotası dolunca iş flash-lite, gemma, step-5 gibi küçük modellere düşüyor, onlar da
+            # uzun ajan işini beceremiyordu. Zayıf modelle saçmalamaktansa durup "uygun model kalmadı" demek doğru.
+            refs = self.strong_enough(refs)
+            subs = self.subscription_chain()
+            if subs:
+                if any(r.startswith("cliproxy:gpt-") for r in subs):
+                    # ChatGPT hesabı proxy'de bağlı: aynı hesabın doğrudan girişi ikinci kez sıraya girmesin.
+                    refs = [r for r in refs if not r.startswith("chatgpt:")]
+                refs = subs + [r for r in refs if r not in subs]
+        return refs
+
+    SUBSCRIPTION_ORDER = ("claude", "codex", "antigravity")
+    SUBSCRIPTION_PER_GROUP = 2
+
+    def subscription_chain(self) -> list[str]:
+        """Abonelik proxy'sindeki (CLIProxyAPI) modeller, ana modelin otomatik sırasının başı: önce Claude, sonra
+        ChatGPT, sonra Antigravity ([agent] subscription_order). Aynı servisteki hesaplar arasında geçişi proxy
+        kendisi yapar; bir servisin bütün hesapları dolu ya da hatalıysa sıradaki servise geçilir. Her serviste en
+        güçlü birkaç model alınır; hiç kullanılabilir hesabı olmayan servis atlanır."""
+        cp = self.providers_cfg.get("cliproxy")
+        if cp is None or not cp.enabled or not (self._real_clients or self._subscription_models is not None):
+            return []
+        from alice.providers import picker
+
+        try:
+            from alice.app import cliproxy
+
+            models = (self._subscription_models if self._subscription_models is not None
+                      else cliproxy.tidy_models(cliproxy.live_models()))
+            ready = {} if self._subscription_models is not None else cliproxy.groups_ready()
+        except Exception:  # noqa: BLE001 - proxy kapalı: abonelik sırası yok
+            return []
+        order = [str(x) for x in self.config.agent.get("subscription_order") or self.SUBSCRIPTION_ORDER]
+        floor = self.brain_floor()
+        out: list[str] = []
+        for gid in order:
+            if ready.get(gid) is False:
+                continue  # bu servisin bütün hesapları kapalı / kotada / yeniden giriş istiyor
+            refs = [f"cliproxy:{m}" for m in models if cliproxy.model_group(m)[0] == gid]
+            refs = [r for r in refs if not self.is_hidden(r) and not ranking.excluded(r)]
+            # Eşit puanda yeni sürüm önce (gpt-6.1-terra, gpt-5.6-terra'dan önce).
+            refs.sort(key=lambda r: (-picker.quality(r), [-int(x) for x in re.findall(r"\d+", r)]))
+            # Eşiği geçenler önce; servis sırada hiç temsil edilmeden kalmasın diye eksik kalan yer en iyilerle dolar.
+            good = [r for r in refs if picker.quality(r) >= floor]
+            out += (good + [r for r in refs if r not in good])[:self.SUBSCRIPTION_PER_GROUP]
+        return out
 
     def _cached_dead(self) -> set[str]:
         if ranking.cache_age(self.auto_cache) > 7 * 24 * 3600:
@@ -433,28 +503,32 @@ class Router:
             if pc.auth == "chatgpt":
                 from alice.providers.chatgpt import limit_note, models_error, models_state
 
+                # Önce durum, sonra hata okunur: arka plandaki liste isteği iki okuma arasında biterse (önceden hata
+                # önce okunuyordu) ikisi de boş görünüp menü ne yüklendiğini ne de hatayı gösteriyordu.
+                state = models_state() if pc.enabled and not rows else ""
                 entry.update(key="ChatGPT girişi", note=limit_note() if pc.enabled else "",
                              error=models_error() if pc.enabled and not rows else "",
-                             loading=pc.enabled and not rows and models_state() == "loading")
+                             loading=state == "loading")
             out.append(entry)
         return self._split_proxy(out, hidden)
 
     @staticmethod
     def _split_proxy(out: list[dict[str, Any]], hidden: set[str] | None = None) -> list[dict[str, Any]]:
         """Claude Code proxy'sinin modelleri tek bir "cliproxy" yığını yerine sağlayıcı sağlayıcı (Claude, ChatGPT,
-        Kimi, Gemini...). ChatGPT girişinde zaten görünen GPT modelleri proxy grubunda tekrar listelenmez."""
+        Kimi, Gemini...). Proxy'de ChatGPT hesabı varsa doğrudan ChatGPT girişinin grubu menüde gösterilmez: aynı
+        hesap iki ayrı "ChatGPT" başlığı altında, yarısı birinde yarısı ötekinde görünüyordu."""
         idx = next((i for i, e in enumerate(out) if e["name"] == "cliproxy"), None)
         if idx is None or not out[idx]["models"]:
             return out
         from alice.app.cliproxy import model_group
 
         proxy = out.pop(idx)
-        direct = {m["model"] for e in out if e["name"] == "chatgpt" and e.get("enabled") for m in e["models"]}
+        if any(model_group(row["model"])[0] == "codex" for row in proxy["models"]):
+            out[:] = [e for e in out if e["name"] != "chatgpt"]
+            idx = min(idx, len(out))
         groups: dict[str, dict[str, Any]] = {}
         for row in proxy["models"]:
             gid, label, pattern = model_group(row["model"])
-            if gid == "codex" and row["model"] in direct:
-                continue  # aynı model ChatGPT girişinden de var: iki kez görünmesin
             g = groups.setdefault(gid, {**{k: v for k, v in proxy.items() if k not in ("models", "error")},
                                          "name": pattern or "cliproxy", "label": label, "via": "cliproxy",
                                          "models": []})
@@ -698,9 +772,11 @@ class Router:
                     out_tokens = float((res.usage or {}).get("completion_tokens") or 0)
                     ranking.record_outcome(ref, True, ttft=ttft,
                                            tps=out_tokens / gen if first[0] and gen > 0.2 and out_tokens >= 20 else 0.0)
-                if failed:
+                # Beklenip yeniden denenen aynı model "X hata verdi, X modeline geçildi" diye yazılıyordu.
+                others = [f for f in failed if f.rpartition(" (")[0] != ref]
+                if others:
                     # Arayüz bunu not olarak gösterir: hangi model düştü, kim devraldı.
-                    msg = f"{role}: {', '.join(failed[-3:])} hata verdi, {ref} modeline geçildi"
+                    msg = f"{role}: {', '.join(others[-3:])} hata verdi, {ref} modeline geçildi"
                     self.on_event(msg)
                     self._log(msg)
                 if self.last_ref.get(role) != ref and not role.startswith(("team:", "council:")):  # panel gösterir
@@ -719,7 +795,7 @@ class Router:
                 self.sleep(w)
                 continue
             self._log(f"{role} TÜM MODELLER BAŞARISIZ: " + " | ".join(errors))
-            raise AllProvidersFailed(role, errors)
+            raise AllProvidersFailed(role, errors, pinned=role in self.role_overrides and role in self.config.roles)
 
     def _penalize(self, ref: str, provider: str, e: ProviderError, had_tools: bool, had_format: bool,
                   est: int = 0, images: bool = False) -> None:
@@ -746,7 +822,12 @@ class Router:
             # Görsel destekliyor sanılan model görseli reddetti: bu oturumda ona görsel gönderme, sıradakine geç.
             self.no_vision.add(ref)
             return
-        if e.kind == "auth":
+        if e.kind == "auth" and provider == "cliproxy":
+            # Proxy'nin arkasında birçok servis ve hesap var: Claude hesabının girişi düştü diye ChatGPT ve
+            # Antigravity modelleri de oturum boyunca kapanıyordu. Sadece bu model bir süre atlanır.
+            self.cooldown_until[ref] = now + 900
+            self.cooldown_kind[ref] = "auth"
+        elif e.kind == "auth":
             self.dead_providers.add(provider)
         elif e.kind == "not_found":
             self.dead_models.add(ref)

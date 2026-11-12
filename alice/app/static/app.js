@@ -906,10 +906,21 @@ function turnSummary() {
 }
 /* ================================================================ güncelleme */
 // Sunucu açılışta ve saatte bir GitHub'daki dala bakar; yeni commit varsa bu çubuk çıkar.
-function renderUpdate(u) {
+// "Sonra" denen sürüm hatırlanır: durum her yenilendiğinde çubuk geri geliyordu. Yeni bir commit gelince yine çıkar.
+const updateKey = (u) => (u.available ? "r:" + u.remote : "s:" + u.local);
+function updateDismissed(u) {
+  try { return localStorage.getItem("alice.updateLater") === updateKey(u); } catch (e) { return false; }
+}
+function renderUpdate(u, manual) {
   const bar = $("#update");
   S.update = u && (u.available || u.stale) ? u : null;
   if (!S.update) { bar.hidden = true; return; }
+  // Depo başka bir daldaysa (geliştirme) ya da kullanıcı "Sonra" dediyse çubuk kendiliğinden çıkmaz; sürüm
+  // yazısındaki nokta kalır, "Güncellemeleri denetle" yine gösterir.
+  const quiet = !manual && bar.hidden && ((u.available && u.off_branch) || updateDismissed(u));
+  const v0 = $("#ver");
+  if (v0 && !v0.querySelector(".up-dot")) v0.appendChild(el("i", "up-dot"));
+  if (quiet) return;
   const n = u.count || 0;
   $("#upText").textContent = !u.available
     ? "Yeni sürüm indirildi · yeniden başlatınca açılır"
@@ -921,8 +932,6 @@ function renderUpdate(u) {
   btn.textContent = !u.available ? "Yeniden başlat" : u.blocked ? "Yine de güncelle" : "Güncelle ve yeniden başlat";
   $("#upLater").hidden = false;
   bar.hidden = false;
-  const v = $("#ver");
-  if (v && !v.querySelector(".up-dot")) v.appendChild(el("i", "up-dot"));
 }
 async function applyUpdate() {
   const btn = $("#upApply");
@@ -944,7 +953,7 @@ async function checkUpdate() {
   const u = await api("/api/update/check", {});
   if (!u) return toast("Denetlenemedi");
   if (!u.available && !u.stale) return toast(u.error || "ALICE güncel");
-  renderUpdate(u);
+  renderUpdate(u, true);
 }
 
 function applyStatus(s) {
@@ -1005,7 +1014,10 @@ function applyStatus(s) {
 }
 async function refreshStatus() { const s = await api("/api/state"); if (s && s.version) applyStatus(s); }
 $("#upApply").addEventListener("click", applyUpdate);
-$("#upLater").addEventListener("click", () => { $("#update").hidden = true; });
+$("#upLater").addEventListener("click", () => {
+  $("#update").hidden = true;
+  try { if (S.update) localStorage.setItem("alice.updateLater", updateKey(S.update)); } catch (e) { /* depolama kapalı */ }
+});
 
 /* ============================================================ geçmiş/oturum */
 function renderHistory(items) {

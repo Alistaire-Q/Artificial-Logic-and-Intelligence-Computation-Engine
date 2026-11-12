@@ -2169,7 +2169,7 @@ function serverCard() {
 function cliproxySection(pane) {
   const box = el("div", "cp-section");
   pane.appendChild(box);
-  const busy = (a) => a.disabled || a.quota_blocked || a.cooldown || a.needs_sign_in;
+  const busy = cpBlocked;
   const refresh = () => api("/api/cliproxy").then((d) => draw(d || {}));
   const draw = (d) => {
     box.replaceChildren();
@@ -2187,6 +2187,12 @@ function cliproxySection(pane) {
     box.appendChild(grid);
   };
   refresh();
+}
+// Hesap şu an istek alamıyor mu: kapalı, kotada, girişi düşmüş ya da proxy hata bildiriyor.
+function cpBlocked(a) { return !!(a.disabled || a.quota_blocked || a.cooldown || a.needs_sign_in || a.error || a.ready === false); }
+function cpUntil(ts) {
+  const m = Math.max(0, Math.round((ts * 1000 - Date.now()) / 60000));
+  return m >= 1440 ? `${Math.round(m / 1440)} gün sonra sıfırlanır` : m >= 60 ? `${Math.floor(m / 60)} sa ${m % 60} dk sonra sıfırlanır` : `${m} dk sonra sıfırlanır`;
 }
 function proxyStatusCard(d, refresh) {
   const card = el("div", "key-card cp-card" + (d.installed ? " partial" : ""));
@@ -2239,7 +2245,7 @@ function proxyStatusCard(d, refresh) {
   return card;
 }
 function serviceCard(key, name, accs, refresh) {
-  const ready = accs.filter((a) => !(a.disabled || a.quota_blocked || a.cooldown || a.needs_sign_in)).length;
+  const ready = accs.filter((a) => !cpBlocked(a)).length;
   const card = el("div", "key-card" + (accs.length ? " cp-card" : "") + (ready ? " set" : accs.length ? " partial" : ""));
   const head = el("div", "kc-head");
   const l = el("span", "l");
@@ -2289,22 +2295,28 @@ function serviceCard(key, name, accs, refresh) {
   };
   go.addEventListener("click", login);
   for (const a of accs) {
-    const blocked = a.disabled || a.quota_blocked || a.cooldown || a.needs_sign_in;
+    const blocked = cpBlocked(a);
     const row = el("div", "cp-acc" + (blocked ? " off" : ""));
     const who = el("div", "cp-who");
     who.appendChild(el("b", "", a.email || a.name));
-    const state = a.needs_sign_in ? "yeniden giriş gerekli" : a.disabled ? "kapalı" : a.cooldown ? "beklemede · " + a.cooldown
-      : a.quota_blocked ? "kota doldu" : "hazır";
+    const state = a.needs_sign_in ? "yeniden giriş gerekli" : a.disabled ? "kapalı"
+      : a.cooldown ? "kota doldu · " + a.cooldown + " sonra açılır" : a.quota_blocked ? "kota doldu"
+      : a.error ? "hata" : "hazır";
     const q = el("div", "cp-quota");
-    if (a.quota && a.quota.percent != null) {
-      const pct = Math.max(0, Math.min(100, a.quota.percent));
+    // Her kota penceresi (Claude: 5 saat ve 7 gün) ayrı çubuk. Sıfırlanma zamanı geçmiş pencere boş sayılır.
+    const wins = (a.quota && a.quota.windows) || (a.quota && a.quota.percent != null ? [a.quota] : []);
+    for (const w of wins) {
+      const pct = Math.max(0, Math.min(100, w.percent));
       const bar = el("span", "cp-bar");
       const fill = el("i", pct >= 100 ? "full" : pct >= 85 ? "high" : "");
       fill.style.width = pct + "%";
       bar.appendChild(fill);
-      q.append(bar, el("small", "", `${a.quota.label || "kota"} · %${pct} kullanıldı`));
-      if (a.quota.reset) q.title = "Sıfırlanma: " + a.quota.reset;
+      const when = w.reset ? " · " + cpUntil(w.reset) : w.stale ? " · sıfırlandı" : "";
+      q.append(bar, el("small", "", `${w.label || "kota"} · %${pct}${when}`));
     }
+    if (!wins.length) q.appendChild(el("small", "", a.needs_sign_in || a.error ? "" : "kullanım bilgisi yok (henüz istek gitmedi)"));
+    if (a.quota && a.quota.observed) q.title = "Son ölçüm: " + new Date(a.quota.observed * 1000).toLocaleString("tr-TR");
+    if (a.error) who.title = a.error;
     const acts = el("div", "cp-acts");
     if (a.needs_sign_in) {
       const re = el("button", "btn", "Giriş yap");
@@ -2317,7 +2329,7 @@ function serviceCard(key, name, accs, refresh) {
         api("/api/cliproxy/remove", { name: a.name }).then((r) => { toast(r && r.ok ? "hesap kaldırıldı" : (r && r.error) || "kaldırılamadı"); refresh(); });
       });
     }, "danger"));
-    row.append(who, q, el("span", "cp-state " + (blocked ? (a.needs_sign_in ? "bad" : "wait") : "ok"), state), acts);
+    row.append(who, q, el("span", "cp-state " + (blocked ? (a.needs_sign_in || a.error ? "bad" : "wait") : "ok"), state), acts);
     body.appendChild(row);
   }
   if (accs.length > 1) body.appendChild(el("small", "kc-hint", "İstekler bu hesaplar arasında sırayla paylaşılır; biri sınıra takılınca beklemeden diğerine geçilir."));
@@ -2859,9 +2871,14 @@ async function submit(textArg) {
     return;
   }
   if (textArg === undefined) remember(text);
-  if (S.busy) {
-    S.queue.push({ text, images });
+  if (S.busy && text.startsWith("/")) {
+    S.queue.push({ text, images });  // komutlar yeni tur ister: iş bitince çalışır
     drawQueue();
+  } else if (S.busy) {
+    // Çalışan işe ilet (steer): ALICE bir sonraki adımda görür, iş bitmesi beklenmez. Tur tam o an bittiyse sunucu
+    // "çalışıyor" der ya da yeni tur başlatır; olmazsa eskisi gibi sıraya girer.
+    const r = await api("/api/send", { text, images });
+    if (!r || !r.ok) { S.queue.push({ text, images }); drawQueue(); }
   } else {
     const r = await api("/api/send", { text, images });
     if (!r.ok) {
@@ -2949,6 +2966,45 @@ $("#modeBtn").addEventListener("click", modeMenu);
 $("#modelBtn").addEventListener("click", modelMenu);
 $("#thinkBtn").addEventListener("click", thinkMenu);
 $("#cwdBtn").addEventListener("click", askCwd);
+/* Dal menüsü: üst çubuktaki dal etiketine tıklayınca yerel ve uzaktaki dallar; seçilene geçilir, uzakta olup
+   yerelde olmayan dal izleyen dal olarak açılır. "Yeni dal" şu anki daldan yeni bir dal açar. */
+async function branchMenu() {
+  const r = await api("/api/git/branches", {});
+  if (!r || !r.ok) return toast((r && r.error) || "dallar okunamadı");
+  const go = async (name, create) => {
+    toast(create ? `'${name}' açılıyor…` : `'${name}' dalına geçiliyor…`);
+    const x = await api("/api/git/switch", { branch: name, create: !!create });
+    if (!x || !x.ok) return toast((x && x.error) || "dal değiştirilemedi");
+    applyStatus(x);
+    toast("Dal: " + name);
+    refreshChanges();
+  };
+  openMenu($("#branchChip"), (m) => {
+    m.appendChild(el("div", "menu-title", "Dal değiştir"));
+    for (const b of r.branches || []) {
+      const when = b.ts ? new Date(b.ts * 1000).toLocaleDateString("tr-TR") : "";
+      menuItem(m, IC.branch, b.name, (b.remote ? "yalnız GitHub'da · " : "") + [when, b.subject].filter(Boolean).join(" · "),
+        () => { if (!b.current) go(b.name); }, b.current);
+    }
+    menuItem(m, IC.plus || IC.branch, "Yeni dal…", "Şu anki daldan yeni bir dal aç", async () => {
+      showDialog((d) => {
+        const inp = el("input", "text");
+        inp.placeholder = "ör. ozellik/yeni-ayar";
+        const row = el("div", "row");
+        const no = el("button", "btn", "Vazgeç");
+        const yes = el("button", "btn accent", "Aç ve geç");
+        const ok = () => { const name = inp.value.trim(); if (!name) return; closeDialog(); go(name, true); };
+        no.addEventListener("click", closeDialog);
+        yes.addEventListener("click", ok);
+        inp.addEventListener("keydown", (e) => { if (e.key === "Enter") ok(); });
+        row.append(no, yes);
+        d.append(el("h2", "", "Yeni dal"), inp, row);
+        setTimeout(() => inp.focus(), 0);
+      });
+    });
+  }, "left", true);
+}
+$("#branchChip").addEventListener("click", branchMenu);
 $("#newChat").addEventListener("click", newChat);
 $("#chatTitle").addEventListener("click", () => {
   const s = (S.sessions || []).find((x) => x.id === S.status.session);

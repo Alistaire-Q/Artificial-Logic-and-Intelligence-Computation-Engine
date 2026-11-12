@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import json
 import os
 import re
 import difflib
@@ -185,9 +186,48 @@ def _mtime(p: Path) -> int:
         return 0
 
 
+def _stamp(p: Path) -> tuple[int, int]:
+    """Dosyanın hâli: (değişme zamanı, boyut). Yalnız zamana bakılınca Windows'ta art arda iki yazma aynı zamanı
+    alabiliyor, arada değişen dosya "değişmedi" sayılıyordu; boyut da karşılaştırılır."""
+    try:
+        st = p.stat()
+        return st.st_mtime_ns, st.st_size
+    except OSError:
+        return 0, -1
+
+
 def mark_read(ctx: ToolContext, p: Path) -> None:
     """Bu oturumda okundu: düzenleme araçları dosyanın hangi hâline göre yazıldığını bilsin."""
-    ctx.state.setdefault("read_files", {})[str(p)] = _mtime(p)
+    ctx.state.setdefault("read_files", {})[str(p)] = _stamp(p)
+
+
+_READS = ("read_file", "write_file", "edit_file", "multi_edit", "notebook_edit")
+
+
+def restore_reads(ctx: ToolContext, messages: list[dict[str, Any]], saved_at: float) -> int:
+    """Diskten yüklenen sohbetin "okundu" kaydını geçmişten geri kur. Kayıt yalnız bellekte tutuluyordu: ALICE
+    yeniden başlayınca (güncelleme, çökme) model az önce okuduğu dosyayı düzenlemek isteyince "bu oturumda okunmadı"
+    hatası alıyor, aynı dosyayı yeniden okumak zorunda kalıyordu. Yalnız sohbetin son kaydından (saved_at) sonra
+    diskte değişmemiş dosyalar okunmuş sayılır: değişmişse eski içeriğe göre düzenleme yine reddedilir."""
+    ok = {m.get("tool_call_id") for m in messages
+          if m.get("role") == "tool" and not str(m.get("content") or "").startswith("HATA:")}
+    n = 0
+    for m in messages:
+        for tc in m.get("tool_calls") or []:
+            fn = tc.get("function") or {}
+            if fn.get("name") not in _READS or tc.get("id") not in ok:
+                continue
+            try:
+                path = json.loads(fn.get("arguments") or "{}").get("path")
+                p = ctx.resolve(str(path)) if path else None
+            except (ValueError, TypeError, OSError, AttributeError):
+                continue
+            if p is None or not p.is_file():
+                continue
+            if _mtime(p) / 1e9 <= saved_at:  # kayıttan sonra (aynı saniye içinde bile) değişen dosya okunmuş sayılmaz
+                mark_read(ctx, p)
+                n += 1
+    return n
 
 
 def require_read(ctx: ToolContext, p: Path) -> None:
@@ -201,7 +241,7 @@ def require_read(ctx: ToolContext, p: Path) -> None:
     if key not in seen:
         raise ToolError(f"'{p.name}' ({p}) bu oturumda okunmadı. Önce read_file ile oku, sonra düzenle "
                         f"(içerik tahmin edilmesin).") 
-    if seen[key] != _mtime(p):
+    if seen[key] != _stamp(p):
         raise ToolError(f"'{p.name}' ({p}) okunduktan sonra diskte değişti: read_file'dan bu yana dosyaya yazıldığı için "
                         f"eski içerik göreli düzenlenemez. Güncel hâlini read_file ile oku, sonra düzenle.")
 

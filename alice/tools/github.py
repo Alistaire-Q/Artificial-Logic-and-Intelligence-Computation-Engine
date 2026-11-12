@@ -202,6 +202,76 @@ def repo_root(cwd: Path) -> Path:
     return p
 
 
+def list_branches(cwd: Path, fetch: bool = False, token: str | None = None) -> list[dict[str, Any]]:
+    """Yerel ve uzaktaki dallar (son commit'e göre, yenisi önce). Uzakta olup yerelde olmayan dal remote=True.
+    fetch: önce origin'in dallarını yenile (klondan sonra GitHub'da açılan dal da listede görünsün). Ağ yoksa ya
+    da yavaşsa eldeki liste kullanılır."""
+    root = repo_root(cwd)
+    if fetch:
+        try:
+            run_git(["fetch", "--prune", "origin"], root, token, timeout=20, check=False)
+        except ToolError:  # zaman aşımı: bilinen dallarla devam
+            pass
+    cur = current_branch(root)
+    fmt = "%(refname)\t%(committerdate:unix)\t%(subject)"
+    _, out = run_git(["for-each-ref", f"--format={fmt}", "--sort=-committerdate", "refs/heads", "refs/remotes"],
+                     root, check=False)
+    seen: dict[str, dict[str, Any]] = {}
+    for line in out.splitlines():
+        ref, _, rest = line.partition("\t")
+        ts, _, subject = rest.partition("\t")
+        if ref.startswith("refs/heads/"):
+            name, remote = ref[len("refs/heads/"):], False
+        elif ref.startswith("refs/remotes/"):
+            name = ref[len("refs/remotes/"):].partition("/")[2]
+            remote = True
+            if not name or name == "HEAD":
+                continue
+        else:
+            continue
+        row = seen.get(name)
+        if row is None:
+            seen[name] = {"name": name, "current": name == cur, "remote": remote, "subject": subject[:100],
+                          "ts": int(ts or 0)}
+        elif not remote:
+            row["remote"] = False  # yerelde de var
+    return list(seen.values())
+
+
+def switch_branch(cwd: Path, branch: str, create: bool = False, token: str | None = None) -> str:
+    """Dala geç. Yerelde yoksa uzaktakinden izleyen dal açılır (gerekirse önce fetch). Kaydedilmemiş değişiklik
+    geçişi engelliyorsa ham git hatası yerine ne yapılacağı söylenir."""
+    root = repo_root(cwd)
+    branch = branch.strip()
+    if branch.startswith("origin/"):
+        branch = branch[len("origin/"):]
+    if not branch or branch.startswith("-") or ".." in branch:
+        raise ToolError(f"geçersiz dal adı: {branch!r}")
+    if branch == current_branch(root):
+        return f"zaten '{branch}' dalındasın"
+
+    def has(ref: str) -> bool:
+        return run_git(["rev-parse", "--verify", "--quiet", ref], root, check=False)[0] == 0
+
+    if create:
+        args = ["switch", "-c", branch]
+    elif has(f"refs/heads/{branch}"):
+        args = ["switch", branch]
+    else:
+        if not has(f"refs/remotes/origin/{branch}"):
+            run_git(["fetch", "--prune", "origin"], root, token, timeout=300, check=False)
+        if not has(f"refs/remotes/origin/{branch}"):
+            raise ToolError(f"'{branch}' adlı dal ne yerelde ne de origin'de var. Yeni dal açmak için create=true.")
+        args = ["switch", "--track", f"origin/{branch}"]
+    code, out = run_git(args, root, check=False)
+    if code != 0:
+        if "would be overwritten" in out or "commit your changes or stash" in out.lower():
+            raise ToolError(f"'{branch}' dalına geçilemedi: kaydedilmemiş değişiklikler o dalda üzerine yazılırdı. "
+                            f"Önce commit'le ya da `git stash` ile kenara al.\n{out}")
+        raise ToolError(f"'{branch}' dalına geçilemedi (kod {code}):\n{out}")
+    return out or f"dal: {branch}"
+
+
 def current_branch(cwd: Path) -> str:
     _, out = run_git(["branch", "--show-current"], cwd, check=False)
     return out.strip()
@@ -251,7 +321,7 @@ def clone_or_update(cfg: Any, repo: str, branch: str = "", token: str | None = N
         run_git(["fetch", "--prune", "origin"], target, token, timeout=300)
         note = "güncellendi (fetch)"
         if branch and branch != current_branch(target):
-            run_git(["switch", branch], target, token)
+            switch_branch(target, branch, token=token)
             note += f", dal: {branch}"
         _, dirty = run_git(["status", "--porcelain"], target, check=False)
         if not dirty.strip():
@@ -410,15 +480,14 @@ class Git(Tool):
                              + (["--", path] if path else []), root)
             return ToolResult(out or "commit yok")
         if action == "branches":
-            _, out = run_git(["branch", "-vv", "--sort=-committerdate"], root)
+            _, out = run_git(["branch", "-a", "-vv", "--sort=-committerdate"], root)
             return ToolResult(out)
         if action == "audit":
             return self._audit(ctx, root)
         if action == "switch":
             if not branch:
                 raise ToolError("switch için branch gerekli")
-            _, out = run_git(["switch", "-c", branch] if create else ["switch", branch], root)
-            return ToolResult(out or f"dal: {branch}")
+            return ToolResult(switch_branch(root, branch, create, github_token(ctx.config)))
         if action == "commit":
             return self._commit(root, message, files or [], all)
         if action == "pull":

@@ -65,8 +65,32 @@ def archive(session_id: str, messages: list[dict[str, Any]]) -> None:
         if m.get("role") == "tool" and isinstance(m.get("content"), str) and len(m["content"]) > ARCHIVE_TOOL_CHARS:
             m["content"] = m["content"][:ARCHIVE_TOOL_CHARS] + "\n…(kısaltıldı)"
         lines.append(json.dumps(m, ensure_ascii=False))
-    with open(archive_path(session_id), "a", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
+    path = archive_path(session_id)
+    block = ("\n".join(lines) + "\n").encode("utf-8")
+    # Aynı mesajlar ikinci kez geliyorsa (özetlemeden sonra oturum kaydedilemeden yeniden yüklendi) yazma:
+    # arşivin sonu zaten bunlar. 11 Kasım'da 164 mesaj iki kez yazıldı, sohbet ekranda kendini tekrar ediyordu.
+    # Yalnız dosyanın sonu okunur: arşiv MB'larca olabilir, her özetlemede tamamını okumak gereksiz.
+    if _ends_with(path, block):
+        return
+    with open(path, "ab") as f:
+        f.write(block)
+
+
+def _ends_with(path: Path, block: bytes) -> bool:
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            if size < len(block):
+                return False
+            start = size - len(block)
+            f.seek(max(0, start - 1))
+            tail = f.read()
+    except OSError:
+        return False
+    if start == 0:
+        return tail == block
+    return tail[0:1] == b"\n" and tail[1:] == block  # satır sınırından başlamalı
 
 
 def load_archive(session_id: str) -> list[dict[str, Any]]:
@@ -85,6 +109,46 @@ def load_archive(session_id: str) -> list[dict[str, Any]]:
     return out
 
 
+_NOT_A_PROMPT = ("[Önceki konuşmanın özeti]", "[devam kontrolü]", "[eski ekran görüntüsü")
+
+
+def first_prompt(messages: list[dict[str, Any]]) -> str:
+    """Kullanıcının gerçekten yazdığı ilk mesaj (özet, hatırlatma ve ekran görüntüsü notları atlanır)."""
+    for m in messages:
+        if m.get("role") != "user" or m.get("_nudge") or m.get("_image"):
+            continue
+        c = m.get("_display") or m.get("content")
+        if isinstance(c, list):
+            c = next((p.get("text", "") for p in c if isinstance(p, dict) and p.get("type") == "text"), "")
+        if isinstance(c, str) and c.strip() and not c.lstrip().startswith(_NOT_A_PROMPT):
+            return c.strip()
+    return ""
+
+
+def _first_archived(session_id: str) -> str:
+    """Arşivin ilk kullanıcı mesajı: bütün dosyayı okumadan (arşiv MB'larca olabilir) baştaki satırlara bakılır."""
+    try:
+        with open(archive_path(session_id), encoding="utf-8") as f:
+            head = []
+            for _ in range(40):
+                line = f.readline()
+                if not line:
+                    break
+                try:
+                    head.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        return ""
+    return first_prompt([m for m in head if isinstance(m, dict)])
+
+
+def session_prompt(session_id: str, messages: list[dict[str, Any]]) -> str:
+    """Sohbetin ilk isteği. Özetlenmiş sohbette oturum dosyasının ilk mesajı özettir; asıl ilk mesaj arşivdedir.
+    Önceden başlık özetin ilk 70 karakteri oluyordu ("[Önceki konuşmanın özeti] <tool calls>…")."""
+    return _first_archived(session_id) or first_prompt(messages)
+
+
 def list_sessions(limit: int = 15) -> list[tuple[str, str, str]]:
     out = []
     for p in sorted(sessions_dir().glob("*.json"), reverse=True)[:limit]:
@@ -92,8 +156,7 @@ def list_sessions(limit: int = 15) -> list[tuple[str, str, str]]:
             data = json.loads(p.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        first = next((m["content"] for m in data.get("messages", [])
-                      if m.get("role") == "user" and isinstance(m.get("content"), str)), "")
+        first = session_prompt(p.stem, data.get("messages", []))
         out.append((p.stem, data.get("cwd", ""), first[:70].replace("\n", " ")))
     return out
 
@@ -126,8 +189,55 @@ def load_meta() -> dict[str, dict[str, Any]]:
     return data if isinstance(data, dict) else {}
 
 
+_meta_lock = threading.Lock()
+
+
 def set_meta(session_id: str, **fields: Any) -> dict[str, Any]:
     """Alanları güncelle; boş başlık ya da False sabitleme alanı siler."""
+    with _meta_lock:  # başlık üreten arka plan işi ile arayüzden yeniden adlandırma birbirini ezmesin
+        return _set_meta(session_id, **fields)
+
+
+TITLE_PROMPT = (
+    "Aşağıdaki mesaj bir sohbetin ilk isteği. Sohbet listesinde görünecek kısa bir başlık yaz: isteğin konusunu "
+    "anlatan 3-6 kelime, mesajın dilinde, baş harfi büyük. Tırnak, nokta, emoji ve açıklama yok; yalnız başlık.")
+
+
+def make_title(router: Any, prompt: str) -> str:
+    """İlk istekten kısa bir başlık (hızlı model). Olmazsa boş: liste isteğin başını gösterir."""
+    import re
+
+    text = " ".join(prompt.split())[:1500]
+    if len(text) < 4:
+        return ""
+    try:
+        res = router.chat("fast", [{"role": "system", "content": TITLE_PROMPT}, {"role": "user", "content": text}],
+                          max_tokens=200, temperature=0.2)
+    except Exception:  # noqa: BLE001 - model yok: başlıksız kalır
+        return ""
+    lines = [ln.strip() for ln in (res.text or "").splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    title = re.sub(r"^(başlık|title)\s*[:：-]\s*", "", lines[-1], flags=re.I).strip(" \"'`*#.«»“”")
+    if not 2 <= len(title) <= 70 or title.startswith(("<", "{", "[")) or len(title.split()) > 10:
+        return ""
+    return title
+
+
+def ensure_title(router: Any, session_id: str, messages: list[dict[str, Any]]) -> str:
+    """Sohbetin otomatik başlığı yoksa ilk istekten üret ve sakla (session_meta: auto_title). Bir kez yapılır:
+    başlık sonradan, konuşma özetlenince ya da uzayınca değişmez. Kullanıcının verdiği ad (title) ayrı durur."""
+    row = load_meta().get(session_id) or {}
+    if row.get("auto_title") or row.get("title"):
+        return str(row.get("auto_title") or row.get("title"))
+    prompt = session_prompt(session_id, messages)
+    title = make_title(router, prompt) if prompt else ""
+    if title:
+        set_meta(session_id, auto_title=title)
+    return title
+
+
+def _set_meta(session_id: str, **fields: Any) -> dict[str, Any]:
     meta = load_meta()
     row = dict(meta.get(session_id) or {})
     for k, v in fields.items():

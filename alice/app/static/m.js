@@ -546,8 +546,9 @@ async function send() {
   const ta = $("#q");
   const text = ta.value.trim();
   if (!text && !S.images.length) return;
-  if (S.busy) return toast("ALICE hâlâ bir önceki işte; bitince gönder ya da durdur");
+  if (S.busy && text.startsWith("/")) return toast("Komut yeni iş başlatır; ALICE bitince gönder ya da durdur");
   const images = S.images.slice();
+  // Çalışırken gönderilen mesaj işe iletilir (ALICE bir sonraki adımda görür), bitmesi beklenmez.
   const r = await api("/api/send", { text, images, sid: S.sid });
   if (!r.ok) { toast(r.error || "gönderilemedi"); return; }
   ta.value = "";

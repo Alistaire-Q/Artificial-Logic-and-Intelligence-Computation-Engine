@@ -87,7 +87,10 @@ def test_permission_via_api(app, workdir):
     perm = events[-1]
     assert perm["risk"] == "danger"
     assert client.get("/api/state").json()["pending"][0]["id"] == perm["id"]
-    assert client.post("/api/send", json={"text": "başka"}).status_code == 409  # meşgulken yeni iş yok
+    # Meşgulken yazılan mesaj yeni iş başlatmaz, çalışan işe iletilir (bir sonraki adımda modele gider).
+    assert client.post("/api/send", json={"text": "başka"}).status_code == 200
+    assert state.agent._inbox and state.agent._inbox[0][0] == "başka"
+    assert client.post("/api/send", json={"text": "/plan"}).status_code == 409  # komut yeni tur ister
     done, t2 = collect(state, lambda e: e["type"] == "status")
     assert client.post("/api/permission", json={"id": perm["id"], "answer": "y"}).json()["ok"]
     t2.join()

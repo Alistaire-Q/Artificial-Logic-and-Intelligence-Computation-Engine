@@ -218,13 +218,17 @@ def _cli_capture(url: str, timeout: float = 20.0, settle: int = 600,
     exe = browser_exe()
     if not exe:
         return {}
+    import time
+
     out: dict[str, str] = {}
     with tempfile.TemporaryDirectory(prefix="alice-shot-") as tmp:
-        for name, (w, h) in (viewports or VIEWPORTS).items():
-            png = Path(tmp) / f"{len(out)}.png"
+        # Görünüm boyutları aynı anda çekilir (her biri kendi profiliyle): sırayla çekmek süreyi ikiye katlıyordu.
+        jobs: list[tuple[str, Path, subprocess.Popen]] = []
+        for i, (name, (w, h)) in enumerate((viewports or VIEWPORTS).items()):
+            png = Path(tmp) / f"{i}.png"
             cmd = [exe, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-first-run",
                    "--no-default-browser-check", "--disable-extensions", "--mute-audio",
-                   f"--user-data-dir={Path(tmp) / 'profile'}",  # açık tarayıcıya bağlanmasın
+                   f"--user-data-dir={Path(tmp) / f'profile{i}'}",  # açık tarayıcıya bağlanmasın
                    f"--window-size={w},{h}", f"--virtual-time-budget={1900 + settle}", f"--screenshot={png}", url]
             if os.name != "nt" and hasattr(os, "geteuid") and os.geteuid() == 0:
                 cmd.insert(1, "--no-sandbox")
@@ -232,12 +236,35 @@ def _cli_capture(url: str, timeout: float = 20.0, settle: int = 600,
             if proxy and not url.startswith("http://127.0.0.1"):
                 cmd.insert(1, f"--proxy-server={proxy}")
             try:
-                subprocess.run(cmd, capture_output=True, timeout=timeout, check=False,
-                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            except (OSError, subprocess.TimeoutExpired):
+                proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                        stdin=subprocess.DEVNULL,
+                                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            except OSError:
                 break
-            if png.is_file() and png.stat().st_size > 1000:
-                out[name] = base64.b64encode(png.read_bytes()).decode()
+            jobs.append((name, png, proc))
+        procs = [proc for _, _, proc in jobs]
+        # Görüntü yazılınca beklemeden geç: headless tarayıcı ekran görüntüsünden sonra bazen saniyelerce kapanmıyor.
+        deadline = time.monotonic() + timeout
+        sizes: dict[str, int] = {}
+        while jobs and time.monotonic() < deadline:
+            for name, png, proc in list(jobs):
+                size = png.stat().st_size if png.is_file() else 0
+                done = proc.poll() is not None or (size > 1000 and sizes.get(name) == size)  # boyut sabitlendi
+                sizes[name] = size
+                if done:
+                    jobs.remove((name, png, proc))
+                    if size > 1000:
+                        out[name] = base64.b64encode(png.read_bytes()).decode()
+            if jobs:
+                time.sleep(0.2)
+        # Görüntüsü alınmış ama kapanmamış ya da süresi dolan tarayıcılar: geçici profil klasörü silinebilsin diye kapat.
+        for proc in procs:
+            if proc.poll() is None:
+                proc.kill()
+            try:
+                proc.wait(5)
+            except subprocess.TimeoutExpired:
+                pass
     return out
 
 

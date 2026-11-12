@@ -43,8 +43,8 @@ def test_build_scores_relative_to_leader_and_weights_categories():
     s = arena.build(ROWS)
     assert s["gemini-4-argon"]["q"] == 100
     assert s["gemini-3-flash"]["name"] == "Gemini 3 Flash"  # parantezsiz çeşit (Minimal değil)
-    # GLM-5.3: genelde 52 Elo geride (82.7), kodda 30 (90): ağırlıklı ortalama ikisinin arası
-    assert 82.7 < s["glm-5.3"]["q"] < 90
+    # GLM-5.3: genelde 52 Elo geride (74), kodda 30 (85): ağırlıklı ortalama ikisinin arası (2 Elo = 1 puan)
+    assert 74 < s["glm-5.3"]["q"] < 85
     assert "some-model" not in s  # ajan işiyle ilgisiz kategori sayılmaz
     assert s["mistral-medium-2508"]["name"] == "Mistral Medium 3.1 (2508)"  # tarihli kimlik de bulunur
 
@@ -122,3 +122,25 @@ def test_brain_prefers_smart_enough_over_fastest():
     flash = {"quality": 82, "latency": 2.6, "ttft": 2.6, "context": 1_000_000}
     assert ranking.role_score(flash, "brain") > ranking.role_score(lite, "brain")
     assert ranking.role_score(lite, "voice") > ranking.role_score(flash, "voice")  # seste ilk kelime önemli
+
+
+def test_proxy_names_dashed_versions_and_effort_suffixes():
+    """Abonelik proxy'sinin adları (claude-opus-5-5, gemini-3.8-flash-high) sıralamada bulunur: önceden Opus dahil
+    proxy modellerinin hepsi "zekâ bilinmiyor" görünüyordu."""
+    rows = ROWS + [row("Claude Opus 5.5 (High)", 1513), row("Claude Fable 5.1 (Max)", 1513)]
+    d = {"fetched_ts": time.time(), "scores": arena.build(rows)}
+    assert arena.lookup("cliproxy:claude-opus-5-5", d)["name"] == "Claude Opus 5.5 (High)"
+    assert arena.lookup("cliproxy:gemini-3.8-flash-high", d)["name"] == "Gemini 3.8 Flash (High)"
+    near = arena.lookup("cliproxy:claude-fable-5-2", d)  # sıralamaya girmemiş yeni ara sürüm: bir öncekinin puanı
+    assert near["name"] == "Claude Fable 5.1 (Max)" and near["estimated"]
+    assert arena.lookup("cliproxy:claude-fable-6-0", d) is None  # ana sürüm farkı: tahmin yok
+
+
+def test_old_scale_cache_is_rescaled_on_load(tmp_path):
+    import json
+
+    p = tmp_path / "arena.json"
+    p.write_text(json.dumps({"fetched_ts": time.time(), "scores": {"x": {"q": 70.0, "name": "X", "elo": 1}}}),
+                 encoding="utf-8")
+    d = arena.load(p)
+    assert d["elo_per_point"] == arena.ELO_PER_POINT and d["scores"]["x"]["q"] == 55.0  # 30 geride -> 45 geride

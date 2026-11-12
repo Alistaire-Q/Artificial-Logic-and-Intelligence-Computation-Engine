@@ -52,7 +52,7 @@ def test_status_lists_accounts_with_quota_and_cooldown(proxy_home, monkeypatch):
     assert [a["provider"] for a in d["accounts"]] == ["claude", "codex"]
     claude, codex = d["accounts"]
     assert claude["provider_name"] == "Claude (Pro / Max)"
-    assert claude["quota"] == {"label": "5 saat", "percent": 0, "reset": 1793983800}
+    assert claude["quota"]["windows"] == [{"label": "5 saat", "percent": 0, "reset": 0, "stale": True}]  # geçmiş
     assert codex["quota"]["percent"] == 46
     assert codex["cooldown"]  # beklemede
     assert codex["failed"] == 1
@@ -212,3 +212,43 @@ def test_model_group():
     assert cliproxy.model_group("kimi-k3") == ("kimi", "Kimi", "cliproxy:kimi-*")
     assert cliproxy.model_group("gpt-6-luna")[0] == "codex"
     assert cliproxy.model_group("mystery-1")[0] == "other"
+
+
+def test_quota_shows_fullest_window_and_resets_stale_ones():
+    """Claude: 5 saatlik pencere dün dolmuş (sıfırlanma geçti) ama haftalık %91: kart %100 ya da %13 değil, %91 der."""
+    now = 1_000_000.0
+    q = cliproxy._quota_summary({"signals": {
+        "Anthropic-Ratelimit-Unified-5h-Utilization": "1.0", "Anthropic-Ratelimit-Unified-5h-Reset": str(now - 60),
+        "Anthropic-Ratelimit-Unified-7d-Utilization": "0.91", "Anthropic-Ratelimit-Unified-7d-Reset": str(now + 9000)}},
+        now=now)
+    assert (q["label"], q["percent"]) == ("7 gün", 91)
+    assert [(w["label"], w["percent"], w["stale"]) for w in q["windows"]] == [("5 saat", 0, True), ("7 gün", 91, False)]
+
+
+def test_dead_refresh_token_is_not_ready_and_cooldown_has_duration():
+    """Proxy yenileme jetonu ölmüş hesabı requires_sign_in=false ile bildiriyor: kart "hazır" dememeli."""
+    acc = cliproxy._account({"id": "claude-x-a@b.com.json", "provider": "claude", "email": "a@b.com", "status": "error",
+                             "unavailable": True, "refresh_error": {"code": "invalid_grant", "message": "expired"}})
+    assert acc["needs_sign_in"] and not acc["ready"]
+    quota = cliproxy._account({"id": "antigravity-c.json", "provider": "antigravity", "quota_blocked": True,
+                               "status": "error", "unavailable": True,
+                               "cooldowns": [{"reason": "quota", "remaining_seconds": 390092}]})
+    assert quota["cooldown"] == "5 gün" and not quota["needs_sign_in"] and not quota["ready"]
+
+
+def test_groups_ready_skips_services_without_usable_accounts():
+    files = [{"id": "claude-1.json", "provider": "claude", "status": "error", "unavailable": True,
+              "refresh_error": {"code": "invalid_grant"}},
+             {"id": "codex-1.json", "provider": "codex", "status": "active"}]
+    assert cliproxy.groups_ready(lambda: {"files": files}) == {"claude": False, "codex": True}
+
+
+def test_expired_cooldown_does_not_keep_account_busy():
+    """Proxy süresi geçmiş bekleme kaydını temizlemeden bırakırsa hesap sonsuza dek meşgul görünmemeli."""
+    now = __import__("time").time()
+    acc = cliproxy._account({"id": "claude-x.json", "provider": "claude", "status": "active",
+                             "cooldowns": [{"reason": "quota", "retry_at": now - 3600}]})
+    assert acc["cooldown"] == "" and acc["ready"]
+    unknown = cliproxy._account({"id": "claude-y.json", "provider": "claude", "status": "active",
+                                 "cooldowns": [{"reason": "quota"}]})  # süre yok: proxy bekliyor diyor
+    assert unknown["cooldown"] == "kısa süre" and not unknown["ready"]

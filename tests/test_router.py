@@ -362,7 +362,9 @@ def test_proxy_models_are_split_by_provider_without_chatgpt_duplicates():
     view = {e["name"]: e for e in Router._split_proxy(out, {"cliproxy:kimi-*"})}
     assert "cliproxy" not in view
     assert [m["model"] for m in view["cliproxy:claude-*"]["models"]] == ["claude-opus-5-5"]
-    assert [m["model"] for m in view["cliproxy:gpt-*"]["models"]] == ["gpt-6.1-terra"]  # luna ChatGPT girişinde var
+    # Proxy'de ChatGPT hesabı varken doğrudan ChatGPT girişinin grubu ayrıca gösterilmez: tek ChatGPT başlığı.
+    assert "chatgpt" not in view
+    assert [m["model"] for m in view["cliproxy:gpt-*"]["models"]] == ["gpt-6-luna", "gpt-6.1-terra"]
     assert view["cliproxy:kimi-*"]["hidden"] and view["cliproxy:kimi-*"]["label"] == "Kimi"
 
 
@@ -408,3 +410,88 @@ def test_long_quota_reset_is_not_cut_to_six_hours():
     r = router_with(cfg, {"a": a, "b": FakeProvider("b", ["ok"])})
     r.chat("brain", [{"role": "user", "content": "x"}])
     assert r.cooldown_until["a:m"] - time.monotonic() > 14 * 86400
+
+
+def test_pinned_model_does_not_fall_back_to_the_role_chain():
+    # 11 Kasım: Opus elle seçiliyken 503 verdi, iş sessizce gemini-flash-lite ile sürdü. Elle seçim kesin olmalı.
+    cfg = make_config({"brain": ["a:m1", "b:m2"]})
+    a = FakeProvider("a", [ProviderError("server", "503", 503)])
+    b = FakeProvider("b", ["from b"])
+    r = router_with(cfg, {"a": a, "b": b}, max_wait=0)
+    r.role_overrides["brain"] = ["a:m1"]
+    assert r.chain("brain") == ["a:m1"]
+    with pytest.raises(AllProvidersFailed) as e:
+        r.chat("brain", [{"role": "user", "content": "hi"}])
+    assert e.value.pinned and "Seçtiğin model" in str(e.value)
+    assert not b.calls
+
+
+def test_pinned_fallback_can_be_turned_back_on():
+    cfg = make_config({"brain": ["a:m1", "b:m2"]}, pinned_fallback=True)
+    r = router_with(cfg, {"a": FakeProvider("a", []), "b": FakeProvider("b", [])})
+    r.role_overrides["brain"] = ["b:m2"]
+    assert r.chain("brain") == ["b:m2", "a:m1"]
+
+
+def test_auto_brain_chain_skips_weak_models(monkeypatch):
+    # Güçlü modellerin kotası dolunca flash-lite / gemma gibi küçük modellere düşülmez; elle yazılanlara dokunulmaz.
+    from alice.providers import picker
+
+    scores = {"a:gemini-3.5-flash": 66, "b:gemini-flash-lite-latest": 44, "b:gemma-4-31b-it": 48}
+    monkeypatch.setattr(picker, "quality", lambda r: scores.get(r, 0))
+    cache = {"chains": {"brain": ["a:gemini-3.5-flash", "b:gemini-flash-lite-latest", "b:gemma-4-31b-it"]}}
+    cfg = make_config({"brain": ["b:mistral-small", "auto"]})
+    r = router_with(cfg, {"a": FakeProvider("a", []), "b": FakeProvider("b", [])}, auto_cache=cache)
+    assert r.chain("brain") == ["b:mistral-small", "a:gemini-3.5-flash"]
+    # Yalnız küçük modellere erişim varsa rol boş kalmaz.
+    weak = {"chains": {"brain": ["b:gemini-flash-lite-latest"]}}
+    r2 = router_with(make_config({"brain": ["auto"]}), {"a": FakeProvider("a", []), "b": FakeProvider("b", [])},
+                     auto_cache=weak)
+    assert r2.chain("brain") == ["b:gemini-flash-lite-latest"]
+    r3 = router_with(make_config({"brain": ["auto"]}, min_brain_quality=0),
+                     {"a": FakeProvider("a", []), "b": FakeProvider("b", [])}, auto_cache=cache)
+    assert len(r3.chain("brain")) == 3
+
+
+def test_retry_on_same_model_is_not_reported_as_a_switch():
+    cfg = make_config({"brain": ["a:m1"]})
+    a = FakeProvider("a", [ProviderError("rate_limit", "429", 429, retry_after=1), "ok"])
+    events: list[str] = []
+    r = router_with(cfg, {"a": a}, on_event=events.append)
+    r.sleep = lambda s: r.cooldown_until.clear()  # bekleme bitti: soğuma doldu
+    assert r.chat("brain", [{"role": "user", "content": "hi"}]).text == "ok"
+    assert not any("modeline geçildi" in e for e in events)
+
+
+def test_subscription_order_claude_then_chatgpt_then_antigravity(monkeypatch):
+    """Ana modelin otomatik sırası abonelikle başlar: önce Claude hesapları, hepsi kapalıysa ChatGPT, sonra
+    Antigravity. Bütün hesapları dolu/girişi düşmüş servis sıraya hiç girmez."""
+    from alice.app import cliproxy
+    from alice.providers import picker
+
+    providers = {"cliproxy": {"base_url": "http://p", "api_key_env": "", "max_input_tokens": 200000},
+                 "a": {"base_url": "http://a", "api_key_env": "", "max_input_tokens": 100000}}
+    scores = {"cliproxy:claude-opus-5-5": 86, "cliproxy:claude-haiku-5-5": 32, "cliproxy:gpt-6-luna": 26,
+              "cliproxy:gpt-6.1-terra": 61, "cliproxy:gemini-3.8-flash-high": 76, "a:x": 80}
+    monkeypatch.setattr(picker, "quality", lambda r: scores.get(r, 0))
+    r = router_with(make_config({"brain": ["auto"]}, providers=providers), {}, auto_cache={"chains": {"brain": ["a:x"]}})
+    r._subscription_models = ["gemini-3.8-flash-high", "gpt-6-luna", "gpt-6.1-terra", "claude-haiku-5-5",
+                              "claude-opus-5-5"]
+    chain = r.chain("brain")
+    assert chain[:4] == ["cliproxy:claude-opus-5-5", "cliproxy:claude-haiku-5-5", "cliproxy:gpt-6.1-terra",
+                         "cliproxy:gpt-6-luna"]
+    assert chain[4:] == ["cliproxy:gemini-3.8-flash-high", "a:x"]
+    r._subscription_models = None
+    r._real_clients = True
+    monkeypatch.setattr(cliproxy, "live_models", lambda: ["claude-opus-5-5", "gpt-6.1-terra"])
+    monkeypatch.setattr(cliproxy, "groups_ready", lambda: {"claude": False, "codex": True})
+    assert r.subscription_chain() == ["cliproxy:gpt-6.1-terra"]  # Claude hesaplarının girişi düşmüş: atlanır
+
+
+def test_proxy_auth_error_does_not_close_the_whole_proxy():
+    """Claude hesabının girişi düştü diye proxy'deki ChatGPT ve Gemini modelleri oturum boyunca kapanmamalı."""
+    providers = {"cliproxy": {"base_url": "http://p", "api_key_env": "", "max_input_tokens": 200000}}
+    r = router_with(make_config({"brain": ["cliproxy:claude-opus-5-5"]}, providers=providers), {})
+    r._penalize("cliproxy:claude-opus-5-5", "cliproxy", ProviderError("auth", "401", 401), False, False)
+    assert "cliproxy" not in r.dead_providers
+    assert r.available("cliproxy:gpt-6.1-terra")[0] and not r.available("cliproxy:claude-opus-5-5")[0]

@@ -128,6 +128,11 @@ def check_calendar(cfg, network: bool = True) -> Check:
                          "Sistem → Kurulum → Takvimi bağla (komut: alice connect google_calendar)")
     if ok:
         return Check(name, "ok", "bağlı")
+    if "yeniden giriş" in why:
+        # Bağlıydı ama Google girişi reddediyor: kapalı ("off") değil, kullanıcının yapması gereken bir iş.
+        return Check(name, "fail", "Google girişi geçersiz; ALICE jetonu kendisi yenileyemiyor",
+                     "Sistem → Kurulum → Takvimi bağla (komut: alice connect google_calendar). Her hafta "
+                     "tekrarlıyorsa Google Cloud'da OAuth uygulamasını 'In production'a al")
     fix = "Sistem → Kurulum → Google (komut: alice setup google)" if "GOOGLE_CLIENT_ID" in why or \
         not os.environ.get("GOOGLE_CLIENT_ID") else "Sistem → Kurulum → Takvimi bağla (komut: alice connect google_calendar)"
     return Check(name, "off", why, fix)
@@ -141,9 +146,14 @@ def check_gmail(cfg, network: bool = True) -> Check:
     accs = gmail.accounts()
     if not accs:
         return Check(name, "off", "bağlı hesap yok", "Sistem → Kurulum → Gmail ekle (komut: alice setup google)")
+    from alice.connect import oauth
+
     parts, bad = [], []
     for acc in accs:
         email = store.get(gmail.PREFIX + acc).get("email", "")
+        if oauth.needs_sign_in(gmail.PREFIX + acc):
+            bad.append(f"{acc}: giriş geçersiz, yeniden giriş gerekiyor")
+            continue
         if network:
             try:
                 gmail.token(acc)

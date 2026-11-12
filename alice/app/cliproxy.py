@@ -255,46 +255,118 @@ def _pct(value: Any) -> int | None:
     return round(f * 100) if f <= 1 else round(f)
 
 
-def _quota_summary(quota: Any) -> dict[str, Any]:
-    """Kotanın en anlamlı satırı: etiket, yüzde ve sıfırlanma zamanı (unix). Sağlayıcıya göre değişir."""
+def _num(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+# (sinyal öneki, etiket). Claude: 5 saatlik ve haftalık pencere; ChatGPT (Codex): birincil ve ikincil pencere.
+_WINDOWS = (("Anthropic-Ratelimit-Unified-5h", "5 saat"), ("Anthropic-Ratelimit-Unified-7d", "7 gün"),
+            ("X-Codex-Primary", "kısa dönem"), ("X-Codex-Secondary", "hafta"))
+
+
+def _window_label(sig: dict[str, Any], prefix: str, label: str) -> str:
+    mins = _num(sig.get(f"{prefix}-Window-Minutes"))
+    if not mins:
+        return label
+    return f"{round(mins / 1440)} gün" if mins >= 1440 else f"{round(mins / 60)} saat" if mins >= 60 else f"{round(mins)} dk"
+
+
+def _iso_ts(value: Any) -> float:
+    """ISO zaman damgası (Go'nun 7-9 haneli kesirli saniyesiyle) -> unix; okunamazsa 0."""
+    if not value:
+        return 0.0
+    from datetime import datetime
+
+    text = re.sub(r"(\.\d{6})\d+", lambda m: m.group(1), str(value).strip()).replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(text).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _quota_summary(quota: Any, now: float | None = None) -> dict[str, Any]:
+    """Hesabın kota pencereleri: {"windows": [{label, percent, reset, stale}], label, percent, reset}. Üstteki
+    label/percent/reset en dolu penceredir (çubuk onu gösterir). Önceden yalnız ilk pencere (5 saat) gösteriliyordu:
+    haftalığı %91 olan hesap "%13" görünüyordu. Sinyaller hesabın son isteğinden kalmadır; sıfırlanma zamanı geçmiş
+    pencere artık boştur (%0, stale): dün dolan 5 saatlik pencere bugün hâlâ "%100" diye gösteriliyordu."""
     sig = (quota or {}).get("signals") if isinstance(quota, dict) else None
     if not isinstance(sig, dict):
         return {}
-    checks = (("Anthropic-Ratelimit-Unified-5h", "5 saat"), ("Anthropic-Ratelimit-Unified-7d", "7 gün"),
-              ("X-Codex-Primary", "hafta"), ("X-Codex-Secondary", "hafta"))
-    for prefix, label in checks:
+    now = time.time() if now is None else now
+    observed = _iso_ts((quota or {}).get("observed_at"))
+    windows: list[dict[str, Any]] = []
+    for prefix, label in _WINDOWS:
         pct = _pct(sig.get(f"{prefix}-Utilization")) if f"{prefix}-Utilization" in sig else _pct(sig.get(f"{prefix}-Used-Percent"))
         if pct is None:
             continue
-        reset = sig.get(f"{prefix}-Reset") or sig.get(f"{prefix}-Reset-At") or 0
-        try:
-            reset = int(float(reset))
-        except (TypeError, ValueError):
-            reset = 0
-        return {"label": label, "percent": pct, "reset": reset}
-    return {}
+        reset = _num(sig.get(f"{prefix}-Reset") or sig.get(f"{prefix}-Reset-At")) or 0
+        after = _num(sig.get(f"{prefix}-Reset-After-Seconds"))
+        if not reset and after is not None and observed:
+            reset = observed + after
+        stale = bool(reset and reset <= now)
+        windows.append({"label": _window_label(sig, prefix, label), "percent": 0 if stale else pct,
+                        "reset": 0 if stale else int(reset), "stale": stale})
+    if not windows:
+        return {}
+    top = max(windows, key=lambda w: w["percent"])
+    return {"label": top["label"], "percent": top["percent"], "reset": top["reset"], "windows": windows,
+            "observed": int(observed or 0)}
 
 
-def _cooldown_summary(cooldowns: Any) -> str:
-    """Bekleyen model varsa kısa metin ("dk"), yoksa boş."""
+def _duration(seconds: float) -> str:
+    if seconds >= 86400:
+        return f"{round(seconds / 86400)} gün"
+    if seconds >= 3600:
+        return f"{round(seconds / 3600)} sa"
+    return f"{max(1, round(seconds / 60))} dk"
+
+
+def _cooldown_summary(cooldowns: Any, now: float | None = None) -> str:
+    """Bekleyen model varsa ne kadar kaldığı ("3 gün", "2 sa", "15 dk"), yoksa boş. Proxy süreyi `remaining_seconds`
+    ve `retry_at` ile veriyor; önceden bunlar okunmuyor, kart "beklemede · beklemede" yazıyordu."""
     if not cooldowns:
         return ""
     items = cooldowns if isinstance(cooldowns, list) else [cooldowns]
-    now = time.time()
+    now = time.time() if now is None else now
     best = 0.0
+    unknown = False  # süresi okunamayan kayıt: proxy beklemede diyor ama ne kadar bilinmiyor
     for it in items:
         if not isinstance(it, dict):
             continue
-        until = it.get("until") or it.get("until_ts") or it.get("expires_at") or it.get("reset")
-        try:
-            ts = float(until)
-        except (TypeError, ValueError):
-            continue
-        if ts > now:
-            best = max(best, ts - now)
-    if best <= 0:
-        return "beklemede"
-    return f"{max(1, round(best / 60))} dk"
+        left = _num(it.get("remaining_seconds"))
+        if left is None:
+            until = it.get("retry_at") or it.get("until") or it.get("until_ts") or it.get("expires_at") or it.get("reset")
+            ts = _num(until) or _iso_ts(until)
+            left = ts - now if ts else None
+        if left is None:
+            unknown = True
+        elif left > 0:
+            best = max(best, left)
+    # Süresi geçmiş kayıtlar engel sayılmaz: proxy temizlemeden bıraksa hesap sonsuza dek "meşgul" kalıyordu.
+    return _duration(best) if best > 0 else "kısa süre" if unknown else ""
+
+
+_SIGN_IN_CODES = ("invalid_grant", "refresh_failed", "unauthorized", "invalid_token")
+
+
+def _account_error(f: dict[str, Any]) -> tuple[bool, str]:
+    """(yeniden giriş gerekli mi, kısa hata). Proxy, yenileme jetonu ölmüş hesabı `status: error, unavailable: true`
+    diye bildiriyor ama `requires_sign_in` çoğu zaman false kalıyor: kart bu hesapları "hazır" gösteriyordu."""
+    err = f.get("refresh_error") if isinstance(f.get("refresh_error"), dict) else {}
+    code = str(err.get("code") or "").lower()
+    msg = str(err.get("message") or f.get("status_message") or "")
+    if bool(f.get("requires_sign_in")) or code in _SIGN_IN_CODES:
+        if "restricted" in msg.lower():
+            return True, "hesap kısıtlanmış (sağlayıcı girişi reddediyor)"
+        return True, "giriş süresi dolmuş"
+    if str(f.get("status") or "").lower() == "error" or f.get("unavailable"):
+        if f.get("quota_blocked") or _cooldown_summary(f.get("cooldowns")):
+            return False, ""  # kota: ayrı gösterilir
+        return False, " ".join(msg.split())[:120] or "hata"
+    return False, ""
 
 
 def _provider_of(name: str, provider: str) -> str:
@@ -310,6 +382,8 @@ def _provider_of(name: str, provider: str) -> str:
 def _account(f: dict[str, Any]) -> dict[str, Any]:
     name = str(f.get("id") or f.get("name") or "")
     provider = _provider_of(name, str(f.get("provider") or ""))
+    sign_in, error = _account_error(f)
+    cooldown = _cooldown_summary(f.get("cooldowns"))
     return {
         "name": name,
         "email": str(f.get("email") or f.get("account") or f.get("label") or name),
@@ -318,13 +392,43 @@ def _account(f: dict[str, Any]) -> dict[str, Any]:
         "disabled": bool(f.get("disabled")),
         "status": str(f.get("status") or ""),
         "status_message": str(f.get("status_message") or ""),
-        "needs_sign_in": bool(f.get("requires_sign_in")),
+        "needs_sign_in": sign_in,
+        "error": error,
         "expires_at": str(f.get("access_token_expires_at") or ""),
         "quota_blocked": bool(f.get("quota_blocked")),
-        "cooldown": _cooldown_summary(f.get("cooldowns")),
+        "cooldown": cooldown,
         "quota": _quota_summary(f.get("quota")),
         "failed": int(f.get("failed") or 0),
+        # Ham cooldowns listesi değil, hâlâ süren bekleme: süresi geçmiş kayıt hesabı meşgul göstermez.
+        "ready": not (sign_in or error or f.get("disabled") or f.get("quota_blocked") or cooldown),
     }
+
+
+READY_TTL = 60.0  # sn
+_ready_cache: dict[str, Any] = {"at": 0.0, "groups": {}}
+
+
+def groups_ready(fetch: Any = None) -> dict[str, bool]:
+    """Servis (claude, codex, antigravity...) -> kullanılabilir en az bir hesabı var mı. Hesabı olmayan servis
+    sözlükte yoktur. Router bununla bütün hesapları dolu/girişi düşmüş servisi atlar: her istekte önce o servisi
+    deneyip hata beklemek yerine doğrudan sıradakine geçer. Proxy'ye ulaşılamazsa boş döner (hiçbiri atlanmaz)."""
+    now = time.monotonic()
+    if fetch is None and _ready_cache["at"] and now - _ready_cache["at"] < READY_TTL:
+        return dict(_ready_cache["groups"])
+    out: dict[str, bool] = {}
+    try:
+        data = fetch() if fetch is not None else _req("GET", "/v8/management/credentials")
+        files = data.get("files") if isinstance(data, dict) else None
+        for f in files or []:
+            if isinstance(f, dict):
+                acc = _account(f)
+                if acc["provider"]:
+                    out[acc["provider"]] = out.get(acc["provider"], False) or acc["ready"]
+    except Exception:  # noqa: BLE001 - proxy kapalı: bilinmiyor
+        out = {}
+    if fetch is None:
+        _ready_cache.update(at=now, groups=out)
+    return dict(out)
 
 
 def status() -> dict[str, Any]:

@@ -97,6 +97,11 @@ browser_ext_port = 9340
 auto_models = true
 # Arayüzde gizlenen modeller ya da sağlayıcılar ("groq" ya da "groq:model"): otomatik zincirlerde kullanılmaz.
 hidden_models = []
+# Ana modelin otomatik sırasına girmek için en düşük zekâ puanı (0-100). Güçlü modellerin kotası dolunca ALICE
+# bunun altındaki küçük modellere geçmez, durup söyler. Elle yazdığın/seçtiğin modellere uygulanmaz. 0 = kapalı.
+min_brain_quality = 60
+# false: menüden elle seçtiğin model cevap veremezse ALICE durur. true: rolün otomatik sırasıyla devam eder.
+pinned_fallback = false
 
 # Arka plan çekirdeği (`alice core run`): veri toplar, kuralları değerlendirir, görevleri çalıştırır.
 [core]

@@ -130,6 +130,10 @@ def refresh(auth: Auth, name: str, client_id: str, client_secret: str = "") -> d
     rt = str(row.get("refresh_token") or "")
     if not rt:
         raise OAuthError(f"{name}: yenileme token'ı yok, tekrar bağlan: alice connect {name}")
+    if row.get("refresh_dead") == _fingerprint(rt):
+        # Sağlayıcı bu jetonu zaten reddetti: her arka plan işinde ve sağlık kontrolünde aynı ölü jetonla yeniden
+        # istek atıp aynı hatayı üretmenin anlamı yok. Kullanıcı yeniden bağlanınca jeton değişir, kilit kalkar.
+        raise OAuthError(dead_message(name, str(row.get("refresh_error") or "")))
     data = {"grant_type": "refresh_token", "refresh_token": rt, "client_id": client_id}
     if client_secret:
         data["client_secret"] = client_secret
@@ -138,9 +142,43 @@ def refresh(auth: Auth, name: str, client_id: str, client_secret: str = "") -> d
     except Exception as e:  # noqa: BLE001
         raise OAuthError(f"token yenilenemedi: {e}") from e
     if r.status_code >= 400:
+        # Yalnız invalid_grant jetonun öldüğünü söyler. unauthorized_client gibi hatalar istemci kimliği/ayar hatasıdır:
+        # kalıcı kilit konmaz, her seferinde gerçek hata gösterilir (ayar düzelince kendiliğinden geçer).
+        if r.status_code in (400, 401) and "invalid_grant" in r.text:
+            why = "süresi dolmuş ya da iptal edilmiş" if "expired or revoked" in r.text else "geçersiz"
+            store.save(name, refresh_dead=_fingerprint(rt), refresh_error=why, refresh_dead_at=time.time())
+            raise OAuthError(dead_message(name, why))
         raise OAuthError(f"token yenilenemedi (HTTP {r.status_code}): {r.text[:200]}. "
                          f"Tekrar bağlan: alice connect {name}")
     return _save(name, r.json(), keep_refresh=rt)
+
+
+def _fingerprint(token: str) -> str:
+    """Jetonun kendisi değil, kısa özeti: ölü işaretinin hangi jetona ait olduğunu bilmek için."""
+    import hashlib
+
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+
+
+def needs_sign_in(name: str) -> bool:
+    """Yenileme jetonu sağlayıcı tarafından reddedildi mi (yeniden giriş yapılana kadar)."""
+    row = store.get(name)
+    rt = str(row.get("refresh_token") or "")
+    return bool(rt) and row.get("refresh_dead") == _fingerprint(rt)
+
+
+GOOGLE_CONNECTIONS = ("google_", "gmail:")  # Google'ın OAuth istemcisini kullanan bağlantılar
+
+
+def dead_message(name: str, why: str = "") -> str:
+    text = (f"{name}: giriş geçersiz, yeniden giriş gerekiyor (sağlayıcı yenileme jetonunu kabul etmiyor"
+            + (f": {why}" if why else "") + "). ALICE bunu kendisi yenileyemez. Yeniden bağlan: "
+            + (f"alice connect gmail --account {name[len('gmail:'):]}" if name.startswith("gmail:")
+               else f"alice connect {name}") + ".")
+    if name.startswith(GOOGLE_CONNECTIONS):
+        text += (" Bu her hafta tekrarlıyorsa: Google Cloud'daki OAuth uygulaması 'Testing' durumundayken Google "
+                 "yenileme jetonlarını 7 günde geçersiz kılar; kalıcı çözüm uygulamayı 'In production' durumuna almak.")
+    return text
 
 
 def _save(name: str, body: dict[str, Any], keep_refresh: str = "") -> dict[str, Any]:

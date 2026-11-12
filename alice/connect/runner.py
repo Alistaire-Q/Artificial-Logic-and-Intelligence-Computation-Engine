@@ -75,6 +75,10 @@ def ready(m: Manifest) -> tuple[bool, str]:
         return False, f"bağlı değil (alice connect {m.name})"
     if store.expired(row) and not row.get("refresh_token"):
         return False, f"oturum bitti (alice connect {m.name})"
+    from alice.connect import oauth
+
+    if oauth.needs_sign_in(m.name):
+        return False, f"giriş geçersiz, yeniden giriş gerekiyor (alice connect {m.name})"
     return True, "bağlı"
 
 
