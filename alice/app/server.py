@@ -402,6 +402,9 @@ class Chat:
         self.ctx.state["teams"] = app.teams  # projeler bütün sohbetlerin
         self.ctx.state["desktop_lock"] = app.desktop_lock
         self.ctx.state["session_id"] = self.sid  # PR takibi olayları kodu yazan bu sohbete geri getirebilsin
+        # Arka plandan bu sohbete mesaj (monitor olayları, ayrı oturumun sonucu) ve ayrı oturum başlatma.
+        self.ctx.state["deliver"] = lambda text: app.deliver(self.sid, text)
+        self.ctx.state["sessions"] = SessionsAPI(app, self)
         attach_memory(self.agent, "uygulama")
         if messages is not None:
             self.agent.messages = self.agent.messages[:1] + messages
@@ -472,6 +475,64 @@ class Chat:
         """Araçların bıraktıklarını (tarayıcı bağlantısı, arka plan komutları) kendi thread'inde temizle, thread'i bitir."""
         self.run(lambda: cleanup(self.ctx), wait=wait)
         self._jobs.put(None)
+
+
+def fork_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Ayrı oturuma verilecek geçmiş: sistem mesajı hariç, sonda cevabı gelmemiş araç çağrısı varsa (oturumu
+    başlatan çağrının kendisi) ondan öncesi. Cevapsız tool_calls sağlayıcıya giderse istek 400 ile reddedilir."""
+    rows = [dict(m) for m in messages[1:]]
+    answered = {m.get("tool_call_id") for m in rows if m.get("role") == "tool"}
+    for i in range(len(rows) - 1, -1, -1):
+        m = rows[i]
+        if m.get("role") == "assistant" and m.get("tool_calls") and \
+                any(tc.get("id") not in answered for tc in m["tool_calls"]):
+            rows = rows[:i]
+            break
+    return rows
+
+
+class SessionsAPI:
+    """Bir sohbetin başlattığı ayrı oturumlar (session aracı)."""
+
+    def __init__(self, app: "AppState", chat: "Chat"):
+        self.app, self.chat = app, chat
+
+    def start(self, prompt: str, title: str, fork: bool) -> tuple[str, str]:
+        app, parent = self.app, self.chat
+        with app._chats_lock:
+            if len(app.running()) >= app.MAX_BACKGROUND:
+                return "", f"arkada zaten {app.MAX_BACKGROUND} sohbet çalışıyor; biri bitince tekrar dene"
+            sid = sess.new_session_id()
+            msgs = fork_messages(parent.agent.messages) if fork else None
+            chat = Chat(app, parent.ctx.cwd, parent.agent.permissions.mode, sid=sid, messages=msgs)
+            chat.ctx.state["report_to"] = parent.sid
+            chat.ctx.state["report_title"] = title
+            app.background[sid] = chat
+        try:
+            sess.set_meta(sid, title=title)
+        except OSError:
+            pass
+        parent.ctx.state.setdefault("linked_sessions", []).append(sid)
+        ok, err = app.send(prompt, sid=sid)
+        if not ok:
+            return "", err or "oturum başlatılamadı"
+        app.bus.publish({"type": "sessions"})
+        return sid, ""
+
+    def linked(self) -> list[dict[str, str]]:
+        meta = sess.load_meta()
+        rows = []
+        for sid in self.chat.ctx.state.get("linked_sessions", []):
+            live = self.app.find_chat(sid)
+            state = "çalışıyor" if live is not None and live.busy else "bitti/boşta"
+            rows.append({"id": sid, "title": str((meta.get(sid) or {}).get("title") or ""), "state": state})
+        return rows
+
+    def message(self, sid: str, text: str) -> str:
+        if sid not in self.chat.ctx.state.get("linked_sessions", []):
+            return "bu sohbetten başlatılmış böyle bir oturum yok"
+        ok, err = self.app.send(text, sid=sid)
+        return "" if ok else (err or "gönderilemedi")
 
 
 class AppState:
@@ -1578,6 +1639,30 @@ class AppState:
         self._start_turn(chat, text, prompt, images or [])
         return True, None
 
+    def deliver(self, sid: str, text: str, tries: int = 30) -> str:
+        """Arka plandan bir sohbete mesaj (izleme olayı, ayrı oturumun sonucu): sohbet çalışıyorsa işe iletilir,
+        boştaysa yeni tur başlar. Tam o an tur bitiyorsa birkaç kez yeniden denenir. Boş: iletildi."""
+        err = ""
+        for _ in range(max(1, tries)):
+            ok, err = self.send(text, sid=sid)
+            if ok:
+                return ""
+            if "çalışıyor" not in (err or ""):
+                break
+            time.sleep(1.0)
+        return err or "iletilemedi"
+
+    def _report_to_parent(self, chat: Chat) -> None:
+        """Ayrı oturumun turu bittiyse sonucu onu başlatan sohbete bildir (kullanıcı durdurduysa bildirme)."""
+        parent = chat.ctx.state.get("report_to")
+        if not parent or chat.agent.cancel.is_set() or chat.abandoned:
+            return
+        final = next((m.get("content") for m in reversed(chat.agent.messages)
+                      if m.get("role") == "assistant" and isinstance(m.get("content"), str) and m["content"].strip()), "")
+        title = chat.ctx.state.get("report_title") or chat.sid
+        text = f"[Oturum bitti] '{title}' ({chat.sid}):\n{(final or '(cevap yok)')[:3000]}"
+        threading.Thread(target=self.deliver, args=(parent, text), daemon=True, name="alice-report").start()
+
     def _start_turn(self, chat: Chat, text: str, prompt: str, images: list[str]) -> None:
         agent, pub = chat.agent, chat.ui.publish
         chat.queued = True
@@ -1609,6 +1694,7 @@ class AppState:
                     joined = "\n\n".join(t for t, _ in left)
                     self._start_turn(chat, joined, joined, [img for _, imgs in left for img in imgs][:6])
                 else:
+                    self._report_to_parent(chat)
                     self._finished(chat)
                     chat.ui.publish({"type": "busy", "value": False})
                     self.bus.publish({"type": "status", **self.status()})

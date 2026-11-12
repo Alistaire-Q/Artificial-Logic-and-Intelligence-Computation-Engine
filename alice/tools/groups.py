@@ -28,12 +28,14 @@ GROUPS: dict[str, tuple[set[str], str, str]] = {
               r"taşı|kopyala|\bsil(in|e|er misin)?\b|yeniden adlandır|adını değiştir|çöp|düzenle|değiştir|düzelt|refactor|"
               r"yama|patch|notebook|ipynb|jupyter|\bkod|code|script|fonksiyon|\.py\b|\.js\b|\.ts\b|bug|klasör|"
               r"indirdiğim|indirilen|açtığım|nerede(ydi)?\b|\bpdf|excel|word dosya|belge(yi|si|m)|toparla"),
-    "plan": ({"todo_write", "next_step", "run_plan", "task_control", "task", "process_output", "process_stop", "process_wait",
-              "skill", "exit_plan_mode"},
-             "çok adımlı iş planı ve yapılacaklar listesi, alt ajan, arka plandaki komutun çıktısı/bekleme/durdurma, "
+    "plan": ({"todo_write", "next_step", "monitor", "session", "run_plan", "task_control", "task", "process_output",
+              "process_stop", "process_wait", "skill", "exit_plan_mode"},
+             "çok adımlı iş planı ve yapılacaklar listesi, tur sonu özet kutusu, alt ajan, ayrı sohbet başlatma/"
+             "devretme, arka planda izleyip olay olunca dönme, arka plandaki komutun çıktısı/bekleme/durdurma, "
              "beceriler, plan onayı",
              r"önce .* sonra|ardından|sonra da|adım adım|planla|alt ajan|arka planda|background|sunucu(yu)? başlat|"
-             r"dev server|npm run|\bwatch\b|beceri|skill"),
+             r"dev server|npm run|\bwatch\b|beceri|skill|bitince|bitti(ğ|g)inde|haber ver|izle|ayrı (sohbet|oturum)|"
+             r"paralel|devret"),
     "desktop": ({"computer", "computer_task", "ui_elements", "ui_act", "clipboard", "reflex", "app", "windows", "game"},
                 "uygulama/pencere açma-kapama, ekran görüntüsü, fare/klavye, masaüstü uygulamalarında tıklama, pano, "
                 "oyun oturumu (turlar, notlar)",
