@@ -77,6 +77,19 @@ def no_project_scan(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_real_package_install(monkeypatch):
+    """`alice core run` açılışta eksik paketleri arka planda gerçek `pip install -e .[...]` ile kurar. Çekirdeği
+    başlatan testlerde bu, depoya gerçek kurulum yapıp dakikalarca sürüyordu (ve test ortamını değiştiriyordu).
+    deps.heal'i sınayan testler kendi sahte `run`'ını verir; arka plan sürümü burada kapatılır."""
+    import threading
+
+    from alice import deps, updater
+
+    monkeypatch.setattr(deps, "heal_in_background", lambda log=None: threading.Thread(target=lambda: None))
+    monkeypatch.setattr(updater, "install_deps", lambda repo, emit=None: True)
+
+
+@pytest.fixture(autouse=True)
 def no_real_keyboard(monkeypatch):
     """Testler gerçek klavye girdisi göndermesin (send_unicode Windows'ta öndeki pencereye yazar). Bir test kendi
     sahtesini koyabilir."""
