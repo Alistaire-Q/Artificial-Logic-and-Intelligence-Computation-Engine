@@ -66,6 +66,7 @@ PAID_QUALITY: list[tuple[str, int]] = [
     ("claude-opus", 99), ("claude-sonnet", 96), ("claude-haiku", 84), ("claude", 92),
     ("gpt-5-nano", 78), ("gpt-5-mini", 88), ("gpt-5", 97), (r"\bo[34]-mini", 88), (r"\bo[34]\b|o3-|o4-", 95),
     ("gpt-4.1-mini", 80), ("gpt-4.1", 86), ("gpt-4o", 82), ("grok-4", 92), ("grok", 85), ("mistral-medium", 72),
+    ("gpt-6", 90), ("kimi-k3", 92), ("kimi", 82),
 ]
 
 MIN_AGENT_CONTEXT = 32_000  # bundan dar bağlamlı model ajan işinde çabuk tıkanır
@@ -91,6 +92,16 @@ def base_quality(ref: str) -> int:
     return 0
 
 
+def quality(ref: str) -> int:
+    """Zekâ puanı, tek ölçekte: LMArena / ölçüm tablosu, orada yoksa ücretli aile tahmini (aynı ölçeğe çekilmiş).
+    0 = bilinmiyor."""
+    q = ranking.quality(ref)
+    if q:
+        return q
+    b = base_quality(ref)
+    return max(1, min(100, b + ranking._table_offset())) if b else 0
+
+
 def bonus(ref: str, domain: str) -> int:
     low = ref.lower()
     for pat, table in STRENGTHS:
@@ -112,7 +123,7 @@ def pool(router) -> list[str]:
     out: list[str] = []
     for r in refs:
         if r in out or r in ranking.RANDOM_ROUTERS or r in getattr(router, "no_tools", set()) \
-                or any(x in r.lower() for x in ranking.EXCLUDE):
+                or ranking.excluded(r):
             continue
         try:
             ok, why = router.available(r)
@@ -124,7 +135,7 @@ def pool(router) -> list[str]:
 
 
 def score(router, ref: str, domain: str) -> float:
-    q = ranking.quality(ref) or base_quality(ref) or 60  # bilinmeyen ama kullanıcının seçtiği model: orta
+    q = quality(ref) or 60  # bilinmeyen ama kullanıcının seçtiği model: orta
     s = q + bonus(ref, domain)
     try:
         ctx = router.context_limit(ref)
@@ -145,6 +156,10 @@ def chain_for(router, domain: str, fallback: str = "brain") -> list[str]:
         ranked = sorted(vis, key=lambda r: -score(router, r, domain))
     else:
         ranked = sorted(pool(router), key=lambda r: -score(router, r, domain))
+        strong = getattr(router, "strong_enough", None)
+        if domain != "light" and callable(strong):
+            # Ajan/kurul işi de ana iş: sıranın sonunda yedek diye duran küçük modellere düşmesin.
+            ranked = strong(ranked)
     try:
         rest = router.chain(fallback)
     except KeyError:

@@ -802,8 +802,9 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: r
 /* ------------------------------------------------------------------ üst çubuk */
 .branch-chip {
   display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line);
-  color: var(--muted); font: 12px var(--mono); max-width: 220px;
+  color: var(--muted); font: 12px var(--mono); max-width: 220px; background: none; cursor: pointer;
 }
+.branch-chip:hover { color: var(--text); border-color: var(--muted); }
 .branch-chip svg { width: 13px; height: 13px; }
 .branch-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .branch-chip[hidden], .top-btn[hidden] { display: none; }

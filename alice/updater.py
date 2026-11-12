@@ -381,6 +381,8 @@ class UpdateInfo:
         return {"available": self.available, "branch": self.branch, "local": self.local[:7],
                 "remote": self.remote[:7], "commits": self.commits, "ci": self.ci, "dirty": self.dirty,
                 "blocked": self.blocked, "error": self.error, "count": len(self.commits), "stale": self.stale,
+                # Depo bilerek başka bir dalda (geliştirme): arayüz her açılışta çubuk çıkarmaz, elle denetlenince gösterir.
+                "off_branch": bool(self.available and self.on and self.on not in ("HEAD", self.branch)),
                 "running": self.running[:7]}
 
 

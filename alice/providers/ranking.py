@@ -43,8 +43,14 @@ QUALITY: list[tuple[str, int]] = [
     ("deepseek-v3", 84), ("qwen3-235b", 82), ("qwen3-32b", 70),
 ]
 # Tabloda olmayan model: yine ölçülür (SambaNova gibi sağlayıcıların modelleri hiç denenmiyordu), ama zekâsı
-# bilinmediği için bu puanla ana/ses zincirine (60+) girmez; ekranda "zekâ bilinmiyor" diye görünür.
-UNKNOWN_QUALITY = 45
+# bilinmediği için bu puanla ana/ses zincirine girmez; ekranda "zekâ bilinmiyor" diye görünür.
+UNKNOWN_QUALITY = 35
+# Ana modelin (uzun ajan işi) otomatik sırasına girmek için en düşük zekâ puanı. Ölçekte (lider 100, 2 Elo = 1 puan)
+# Opus 5.5 ~86, gemini-3.8-flash ~76, 3.5-flash ~66, sonnet-5.5 ~64; flash-lite ~44, gemma-4-31b ~48, step-5 ~51:
+# bu sonuncular araç zincirini yürütemiyor.
+BRAIN_MIN_QUALITY = 60
+VOICE_MIN_QUALITY = 45  # sesli asistan: kısa konuşma, hız önemli
+FAST_MIN_QUALITY = 40   # özet, sınıflandırma gibi hızlı işler
 # Sohbet/araç işi yapmayan ya da ajan için uygun olmayan modeller.
 EXCLUDE = ("openrouter/free", "openrouter/auto", "tts", "image", "embed", "live", "audio", "guard", "safety",
            "reward", "parse", "translate", "transcribe", "robotics", "computer-use", "lyria", "veo", "banana",
@@ -80,10 +86,20 @@ DEFAULT_AUTO: dict[str, list[str]] = {
 }
 
 
+def excluded(ref: str) -> bool:
+    """Sohbet/ajan işine uygun olmayan model mi? Sadece model adına bakılır: "clip" kalıbı "cliproxy:" sağlayıcı
+    adına da uyuyor, proxy'deki bütün modeller (Opus dahil) 0 puan alıp "zekâ bilinmiyor" görünüyordu."""
+    low = ref.lower()
+    if low in RANDOM_ROUTERS:
+        return True
+    model = low.partition(":")[2] or low
+    return any(x in model for x in EXCLUDE)
+
+
 def table_quality(ref: str) -> int:
     """Elle yazılmış tablodan tahmin (LMArena'da bulunamayan modeller için)."""
     low = ref.lower()
-    if any(x in low for x in EXCLUDE):
+    if excluded(ref):
         return 0
     for pat, score in QUALITY:
         if pat in low:
@@ -111,8 +127,7 @@ def _table_offset() -> int:
 
 def quality(ref: str) -> int:
     """Zekâ puanı: LMArena'daki gerçek sıralama, bulunamazsa elle yazılmış tablo (aynı ölçeğe çekilmiş)."""
-    low = ref.lower()
-    if any(x in low for x in EXCLUDE):
+    if excluded(ref):
         return 0
     hit = arena.lookup(ref)
     if hit is not None:
@@ -203,7 +218,7 @@ def candidates(router, per_provider: int = PER_PROVIDER,
                                     for m in models} - {""})
         for f in (_openrouter(models) if name == "openrouter" else _generic(name, models)):
             q = quality(f.ref)
-            if q == 0 and not any(x in f.ref.lower() for x in EXCLUDE) and name != "openrouter":
+            if q == 0 and not excluded(f.ref) and name != "openrouter":
                 q = UNKNOWN_QUALITY  # OpenRouter'ın yüzlerce bilinmeyen modeli ölçümü boğmasın
             if q > 0 and f.tools is not False:
                 by_provider.setdefault(name, []).append((q, f.ref))
@@ -601,21 +616,23 @@ def build_chains(results: list[Probe], providers_cfg: dict[str, Any], limit: int
         pc = provider_cfg(ref)
         return bool(pc and pc.max_input_tokens >= 16000)
 
-    brain = [r for r in ok if r.quality >= 60 and roomy(r.ref)]
+    brain = [r for r in ok if r.quality >= BRAIN_MIN_QUALITY and roomy(r.ref)]
+    if not brain:  # sadece küçük modellere erişim var: hiç model kalmamasındansa eldekiler
+        brain = [r for r in ok if r.quality >= VOICE_MIN_QUALITY and roomy(r.ref)]
     brain = _diversify(sorted(brain, key=lambda r: -brain_score(r)), brain_score)
     # Ölçüm anında geçici hata veren (rate limit, 5xx) iyi modeller de sona yedek olarak girer.
     # Zaman aşımına uğrayanlar girmez: o kadar yavaş bir model beyin için işe yaramaz.
     # Günlük kotası dolmuş ama daha önce çalıştığı görülmüş modeller de (kota ertesi gün döner); hiç
     # çalışmamış kota hatalıları (ör. ücretsiz katmanda kotası 0 olan pro modeller) girmez.
-    transient = [r for r in results if not r.ok and r.quality >= 70
+    transient = [r for r in results if not r.ok and r.quality >= BRAIN_MIN_QUALITY
                  and (r.error_kind in ("rate_limit", "server") or (r.error_kind == "quota" and r.ever_ok))
                  and roomy(r.ref)]
     transient = sorted(transient, key=lambda r: -r.quality)[:3]
     brain = brain[:limit - len(transient)] + transient
     # Küçük bağlamlı hızlı sağlayıcılar (Groq) da girer: istek sığmazsa router onları atlayıp sonrakine geçer.
-    voice = [r for r in ok if r.quality >= 60]
+    voice = [r for r in ok if r.quality >= VOICE_MIN_QUALITY]
     voice = _diversify(sorted(voice, key=lambda r: -voice_score(r)), voice_score)
-    fast = [r for r in ok if r.quality >= 55 and r.latency <= 15]
+    fast = [r for r in ok if r.quality >= FAST_MIN_QUALITY and r.latency <= 15]
     fast.sort(key=lambda r: -fast_score(r))
     vision = [r for r in ok if (pc := provider_cfg(r.ref)) and pc.supports_vision(r.ref.split(":", 1)[1])]
     vision.sort(key=lambda r: -vision_score(r))
@@ -687,11 +704,12 @@ def left_out(r: dict[str, Any], role: str, providers_cfg: dict[str, Any] | None)
     pc = (providers_cfg or {}).get(prov)
     if not quality(str(r.get("ref", ""))):
         return "zekâ puanı bilinmiyor"
-    if role in ("brain", "voice") and q < 60:
-        return "zekâ 60'ın altında"
+    floor = BRAIN_MIN_QUALITY if role == "brain" else VOICE_MIN_QUALITY
+    if role in ("brain", "voice") and q < floor:
+        return f"zekâ {floor}'in altında"
     if role == "brain" and pc is not None and pc.max_input_tokens < 16000:
         return f"bağlamı küçük ({pc.max_input_tokens // 1000}K), ana modelin isteğine sığmaz"
-    if role == "fast" and (q < 55 or lat > 15):
+    if role == "fast" and (q < FAST_MIN_QUALITY or lat > 15):
         return "yeterince iyi ya da hızlı değil"
     if role == "vision" and pc is not None and not pc.supports_vision(model):
         return "görsel desteklemiyor"

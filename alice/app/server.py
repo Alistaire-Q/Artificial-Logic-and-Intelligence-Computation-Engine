@@ -233,7 +233,9 @@ def display_history(messages: list[dict[str, Any]], tools: dict[str, Any] | None
             elif not text.startswith("[eski ekran görüntüsü"):
                 if text.startswith(PLAN_NOTE):
                     text = text[len(PLAN_NOTE):]
-                items.append({"type": "user", "text": text, "mi": i, "n_images": m.get("_user_images", 0)})
+                # Çalışırken araya yazılan mesajda geri sarma noktası yok (tur ortası): indeks verilmez.
+                items.append({"type": "user", "text": text, "mi": None if m.get("_steer") else i,
+                              "n_images": m.get("_user_images", 0)})
         elif role == "assistant":
             if content and content != "Özeti aldım, kaldığım yerden devam ediyorum.":
                 items.append({"type": "assistant", "text": content})
@@ -357,6 +359,13 @@ class Chat:
         attach_memory(self.agent, "uygulama")
         if messages is not None:
             self.agent.messages = self.agent.messages[:1] + messages
+            try:  # yeniden açılan sohbette az önce okunan dosyalar yine "okunmuş" sayılsın
+                from alice.tools.files import restore_reads
+
+                saved = (sess.sessions_dir() / f"{self.sid}.json").stat().st_mtime
+                restore_reads(self.ctx, messages, saved)
+            except Exception:  # noqa: BLE001 - kayıt geri kurulamazsa eski davranış: önce okumak gerekir
+                pass
         self.agent.on_step = self.save
         self.agent.on_compact = lambda old: sess.archive(self.sid, old)  # özetlenen mesajlar ekranda kalsın
         self.queued = False
@@ -375,6 +384,22 @@ class Chat:
     def save(self) -> None:
         if not self.abandoned:
             sess.save(self.sid, self.agent.messages, self.ctx.cwd)
+            self._title_once()
+
+    def _title_once(self) -> None:
+        """İlk kayıtta sohbete ilk istekten bir başlık üret (arka planda, bir kez)."""
+        if getattr(self, "_titled", False) or not getattr(self.app.router, "_real_clients", False):
+            return
+        self._titled = True
+        sid, msgs = self.sid, list(self.agent.messages[1:6])
+
+        def work() -> None:
+            try:
+                sess.ensure_title(self.app.router, sid, msgs)  # liste tur bitince yenilenir, başlık orada görünür
+            except Exception:  # noqa: BLE001 - başlık üretilemedi: liste isteğin başını gösterir
+                pass
+
+        threading.Thread(target=work, daemon=True, name="alice-title").start()
 
     def _work(self) -> None:
         while True:
@@ -411,6 +436,10 @@ class AppState:
         self.bus = EventBus()
         self.router = Router(cfg, provider_factory=provider_factory,
                              on_event=lambda s: self.bus.publish({"type": "route", "text": s}))
+        # Menüden seçilen ana model yeniden başlatmada da kalır: önceden her güncellemede Otomatik'e dönüyordu.
+        pin = str(cfg.agent.get("pinned_brain") or "")
+        if pin.partition(":")[0] in self.router.providers_cfg and pin.partition(":")[2]:
+            self.router.role_overrides["brain"] = [pin]
         self.decider = Decider.from_config(cfg, self.router)
         self.tools = all_tools(cfg, lambda s: self.bus.publish({"type": "info", "text": s}))
         self.teams: dict[str, Any] = {}
@@ -1468,6 +1497,12 @@ class AppState:
         if chat is None:
             return False, f"arkada zaten {self.MAX_BACKGROUND} sohbet çalışıyor; biri bitince tekrar dene"
         if chat.busy:
+            if not text.startswith("/") and chat.agent.steer(text, images):
+                # Çalışan tura iletildi: iş durmadan bir sonraki adımda ALICE bunu görür. Önceden mesaj arayüzde
+                # sırada bekliyor, iş bitmeden ALICE'e hiç gitmiyordu.
+                chat.ui.publish({"type": "user", "text": text, "mi": None, "images": (images or [])[:6],
+                                 "steer": True})
+                return True, None
             return False, "ALICE şu an çalışıyor"
         prompt = text
         if text.startswith("/"):
@@ -1478,18 +1513,19 @@ class AppState:
                 prompt = builtin_prompt(text)
                 if prompt is None:
                     return False, f"bilinmeyen komut: {text.split()[0]}"
-        chat.queued = True
         images = images or []
         agent, pub = chat.agent, chat.ui.publish
+        chat.queued = True
 
         def run() -> None:
             try:
                 pub({"type": "user", "text": text, "mi": len(agent.messages), "images": images[:6]})
                 pub({"type": "busy", "value": True})
+                start = len(agent.messages)
                 agent.run_turn(prompt, images=images or None)
-                if prompt != text:  # özel komutlarda kullanıcı kendi yazdığını görsün
-                    for m in reversed(agent.messages):
-                        if m.get("role") == "user" and not m.get("_image"):
+                if prompt != text:  # özel komutlarda kullanıcı kendi yazdığını görsün (arada gelen mesajlar değil)
+                    for m in agent.messages[start:]:
+                        if m.get("role") == "user" and not m.get("_image") and not m.get("_steer"):
                             m["_display"] = text
                             break
             except Exception as e:  # noqa: BLE001 - thread içinde hata uygulamayı düşürmesin
@@ -1503,6 +1539,12 @@ class AppState:
                 self._finished(chat)
                 chat.ui.publish({"type": "busy", "value": False})
                 self.bus.publish({"type": "status", **self.status()})
+                # Tur, araya yazılan mesajı alamadan bittiyse (hata, adım sınırı) mesaj kaybolmasın: yeni tur olur.
+                # Kullanıcı Durdur'a bastıysa bekleyenler de bırakılır.
+                left = agent.take_inbox()
+                if left and not agent.cancel.is_set() and not chat.abandoned:
+                    more = [img for _, imgs in left for img in imgs][:6]
+                    self.send("\n\n".join(t for t, _ in left), more, chat.sid)
 
         chat.run(run)
         return True, None
@@ -1790,6 +1832,8 @@ def make_handler(state: AppState):
                 meta = sess.load_meta()
                 for r in rows:
                     m = meta.get(r["id"]) or {}
+                    if m.get("auto_title"):  # ilk istekten üretilen başlık; yoksa isteğin başı
+                        r["title"] = m["auto_title"]
                     if m.get("title"):
                         r["auto_title"], r["title"] = r["title"], m["title"]
                     r["pinned"] = bool(m.get("pinned"))
@@ -2173,6 +2217,22 @@ def make_handler(state: AppState):
                     ok = revert_change(state.agent.checkpoints, str(d.get("path", "")))
                     return self._json({"ok": ok, "changes": session_changes(state.agent.checkpoints, state.ctx.cwd)},
                                       200 if ok else 404)
+                if p in ("/api/git/branches", "/api/git/switch"):
+                    from alice.tools.base import ToolError
+                    from alice.tools.github import github_token, list_branches, switch_branch
+
+                    try:
+                        if p == "/api/git/branches":
+                            return self._json({"ok": True, "branches": list_branches(state.ctx.cwd)[:60]})
+                        if state.agent.busy:
+                            return self._json({"ok": False, "error": "ALICE çalışırken dal değiştirilmez; önce bitsin "
+                                               "ya da durdur"}, 409)
+                        note = switch_branch(state.ctx.cwd, str(d.get("branch", "")), bool(d.get("create")),
+                                             github_token(state.cfg))
+                    except ToolError as e:
+                        return self._json({"ok": False, "error": str(e)}, 400)
+                    state.bus.publish({"type": "status", **state.status()})
+                    return self._json({"ok": True, "note": note, **state.status()})
                 if p == "/api/session/delete":
                     sid = str(d.get("id", ""))
                     if sid in state.running():  # arkada çalışan sohbet bitince kendini yeniden kaydederdi
@@ -2223,6 +2283,15 @@ def make_handler(state: AppState):
                     else:
                         parse_ref(ref)
                         state.router.role_overrides[role] = [ref]
+                    if role == "brain":
+                        from alice.config import set_config_value
+
+                        pin = "" if ref == "reset" else ref
+                        state.cfg.data.setdefault("agent", {})["pinned_brain"] = pin
+                        try:
+                            set_config_value("agent", "pinned_brain", pin)  # sonraki açılışta da kalsın
+                        except OSError:
+                            pass
                     return self._json({"ok": True})
             except Exception as e:  # noqa: BLE001
                 log_error()

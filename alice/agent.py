@@ -10,6 +10,7 @@ import json
 import logging
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Protocol
@@ -208,6 +209,52 @@ _PROMISE_RX = re.compile(
     r"(yapaca[ğg][ıi]m|edece[ğg]im|ba[şs]l[ıi]yorum|bakaca[ğg][ıi]m|deneyece[ğg]im|ekleyece[ğg]im|d[üu]zeltece[ğg]im|"
     r"[çc]al[ıi][şs]t[ıi]raca[ğg][ıi]m|kontrol edece[ğg]im|yazaca[ğg][ıi]m|kuraca[ğg][ıi]m|indirece[ğg]im|"
     r"\blet me\b|\bi'll\b|\bi will\b|\bnext,? i\b|\bnow i\b)[^.!?]{0,60}[.:…]*\s*$", re.I)
+# "Bitince yazacağım": iş arka plana (proje, uzun komut) verilmiş, söz onun bitişine bağlı. Bu yarım kalmış iş
+# değil; 11 Kasım'da bu cevaba "yapmadan durdun" denince ALICE arka plan projesini 30 dk bekleyip kotayı yaktı.
+_DEFERRED_RX = re.compile(
+    r"\b(bitince|bitti[ğg]inde|tamamlan[ıi]nca|tamamland[ıi][ğg][ıi]nda|haz[ıi]r olunca|sonu[çc]lan[ıi]nca|"
+    r"arka planda|once (it|they)('s| is| are)? (done|finished)|when (it|they) (finish|complete)\w*)\b", re.I)
+
+
+def _valid_summary(text: str) -> bool:
+    """Özet gerçekten özet mi? Boş/çok kısa, araç çağrısı biçiminde ya da dökümün kopyası olan metin değildir."""
+    t = text.strip()
+    if len(t) < 8:
+        return False
+    low = t[:400].lower()
+    if re.match(r"\s*(<\s*(tool|function|invoke)|\{\s*\"(name|tool|function)\"|->\s*\w+\(|\[(assistant|tool|user)\])", low):
+        return False
+    echoed = len(re.findall(r"(?m)^\[(assistant|tool|user)\]|<parameter name=|<tool call|->\s*\w+\(\{", t))
+    return echoed < 4
+
+
+def _fallback_summary(old: list[dict[str, Any]]) -> str:
+    """Modelsiz özet: kullanıcının yazdıkları sırayla (kısaltılmış), dokunulan dosyalar ve son asistan cevabı."""
+    asks, files, last = [], [], ""
+    for m in old:
+        c = m.get("content")
+        if m.get("role") == "user" and not m.get("_nudge") and isinstance(c, str) and c.strip():
+            if c.startswith("[Önceki konuşmanın özeti]"):
+                asks.append("(daha eski özet) " + _clip(c[len("[Önceki konuşmanın özeti]"):].strip(), 1500))
+            else:
+                asks.append(_clip(m.get("_display") or c, 600))
+        elif m.get("role") == "assistant":
+            if isinstance(c, str) and c.strip():
+                last = c
+            for tc in m.get("tool_calls") or []:
+                if tc["function"]["name"] in ("edit_file", "write_file", "multi_edit", "apply_patch"):
+                    hit = re.search(r'"path"\s*:\s*"((?:[^"\\]|\\.)*)"', tc["function"].get("arguments") or "")
+                    if hit and hit.group(1) not in files:
+                        files.append(hit.group(1))
+    parts = ["## Kullanıcının yazdıkları (sırayla)"] + [f"{i}. {a}" for i, a in enumerate(asks[-25:], 1)]
+    if files:
+        parts += ["", "## Değiştirilen dosyalar"] + [f"- {f}" for f in files[-40:]]
+    if last:
+        parts += ["", "## Son cevabım", _clip(last, 2500)]
+    parts += ["", "(Bu özet otomatik çıkarıldı; ayrıntı gerekiyorsa dosyaları ve git durumunu araçlarla yeniden oku.)"]
+    return "\n".join(parts)
+
+
 # Sonuç bildiren cevap: kanıt kontrolü yalnız bunlarda çalışır (her cevapta ek model çağrısı olmasın)
 _CLAIM_RX = re.compile(
     r"(yapt[ıi]m|kurdum|kuruldu|indirdim|indirildi|ba[şs]latt[ıi]m|a[çc]t[ıi]m|a[çc][ıi]ld[ıi]|g[öo]nderdim|"
@@ -270,6 +317,10 @@ class Agent:
             self.hooks = Hooks([], ctx.cwd)
         self.cancel = threading.Event()
         self.busy = False
+        # Çalışırken gelen kullanıcı mesajları (steer): bir sonraki model adımından önce konuşmaya girer.
+        self._inbox: list[tuple[str, list[str]]] = []
+        self._inbox_lock = threading.Lock()
+        self._steering = False  # tur, inbox'ı alabilecek noktada mı (finally'de kapanır)
         self._call_counts: dict[str, int] = {}
         self._fail_counts: dict[str, int] = {}
         self._error_streak = 0
@@ -466,10 +517,12 @@ class Agent:
         answered = ""  # kanıt kontrolü hatırlatmasından önce verilen cevap
         self._turn_start = len(self.messages) - 1
         stop_hooks = 3  # Stop hook'u ajanı en fazla bu kadar kez geri çevirebilir (sonsuz döngü olmasın)
+        self._steering = not self.is_child
         try:
             for _ in range(steps):
                 if self.cancel.is_set():
                     raise Cancelled
+                self._drain_inbox()
                 self._maybe_compact()
                 self._prune_images()
                 self._shrink_old_outputs()
@@ -509,6 +562,8 @@ class Agent:
                 if msg.get("content"):
                     final = msg["content"]
                 if not msg.get("tool_calls"):
+                    if self._drain_inbox():
+                        continue  # cevap yazarken kullanıcı yeni bir şey söyledi: tur bitmeden onu da ele al
                     if stop_hooks and self.hooks.has("Stop") and not self.is_child:
                         from alice.hooks import feedback
 
@@ -540,8 +595,8 @@ class Agent:
                         self.on_step()
                     except Exception:  # noqa: BLE001 - kayıt hatası işi durdurmasın
                         log.debug("on_step hata verdi", exc_info=True)
-            self.ui.info(f"adım limiti ({steps}) doldu; devam etmek için yeni mesaj yaz")
-            return final
+            return self._halt(f"Adım sınırına ({steps}) ulaştım, iş yarıda kaldı. Kaldığım yerden sürdürmem için "
+                              "\"devam et\" yaz.") or final
         except (KeyboardInterrupt, Cancelled, StreamCancelled):
             sink.dead = True
             partial = "".join(sink.parts)
@@ -555,15 +610,73 @@ class Agent:
             self.ui.stream_end("", "")
             self._repair_after_interrupt()
             self.ui.info(str(e))
-            return final
+            # Önceden tur burada sessizce bitiyordu: ekranda küçük bir bilgi satırı, sohbet kaydında hiçbir şey.
+            # Kullanıcı işin durduğunu anlamayıp bekliyor, sonra "devam et" yazmak zorunda kalıyordu.
+            why = "; ".join(" ".join(x.split())[:140] for x in e.errors[:4])
+            head = ("Seçtiğin model cevap veremedi, iş yarıda kaldı (elle seçildiği için başka modele geçmedim)."
+                    if getattr(e, "pinned", False) else "Sıradaki hiçbir model cevap veremedi, iş yarıda kaldı.")
+            return self._halt(f"{head}\n\nNeden: {why}\n\nModel menüsünden başka bir model seçip ya da biraz bekleyip "
+                              "\"devam et\" yazarsan kaldığım yerden sürdürürüm.") or final
         except Exception:
             # Beklenmeyen hata: cevapsız tool_calls geçmişte kalırsa sonraki her tur sağlayıcıdan 400 alır.
             sink.dead = True
             self._repair_after_interrupt()
             raise
         finally:
+            with self._inbox_lock:
+                self._steering = False  # bundan sonra gelen mesaj yeni tur olur (take_inbox ile kalanlar alınır)
             self.busy = False
             self._release_desktop()
+
+    def steer(self, text: str, images: list[str] | None = None) -> bool:
+        """Çalışan tura mesaj ekle. Tur alabilecek durumdaysa True (mesaj bir sonraki adımda modele gider); değilse
+        False ve çağıran mesajı yeni tur olarak çalıştırmalı."""
+        with self._inbox_lock:
+            if not (self.busy and self._steering) or self.cancel.is_set():
+                return False
+            self._inbox.append((text, list(images or [])))
+            return True
+
+    def take_inbox(self) -> list[tuple[str, list[str]]]:
+        """Turun alamadığı mesajlar (tur bitti/kesildi): çağıran bunları yeni tur olarak çalıştırır."""
+        with self._inbox_lock:
+            out, self._inbox = self._inbox, []
+            return out
+
+    def _drain_inbox(self) -> bool:
+        """Bekleyen kullanıcı mesajlarını konuşmaya ekle. Yalnız araç sonuçlarından sonra çağrılır (tool_calls ile
+        sonuçları arasına mesaj girmez). Eklendiyse True."""
+        with self._inbox_lock:
+            items, self._inbox = self._inbox, []
+        for text, images in items:
+            body = f"[Sen çalışırken kullanıcı yazdı; işe bunu da katarak devam et]\n{text}"
+            content: Any = body
+            if images:
+                content = [{"type": "text", "text": body}] + [
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b}"}} for b in images]
+            msg: dict[str, Any] = {"role": "user", "content": content, "_display": text, "_steer": True}
+            if images:
+                msg["_user_images"] = len(images)
+            self.messages.append(msg)
+            self._enable_groups_for(text)
+        return bool(items)
+
+    def _halt(self, text: str) -> str:
+        """Tur cevap verilemeden bittiğinde (model yok, adım sınırı) bunu sohbete asistan mesajı olarak yaz: ekranda ve
+        kayıtta görünür, sonraki turda model de işin yarıda kaldığını bilir. Alt ajanlarda ve seste yalnız bilgi."""
+        if self.is_child or self.role == "voice":
+            self.ui.info(text)
+            return ""
+        try:
+            self.messages.append({"role": "assistant", "content": text, "_notice": True})
+            self.ui.stream_start()
+            self.ui.stream_delta(text)
+            self.ui.stream_end(text, "")
+            if self.on_step is not None:
+                self.on_step()
+        except Exception:  # noqa: BLE001 - bildirim yazılamadı diye tur hata vermesin
+            log.debug("durma bildirimi yazılamadı", exc_info=True)
+        return text
 
     def _unfinished(self, text: str) -> str:
         """Tur araçlarla iş yaparken cevap verip durduysa ve iş bitmemiş görünüyorsa modele gidecek hatırlatma (boş:
@@ -580,7 +693,7 @@ class Agent:
             return (NUDGE_PREFIX + "Todo listesinde bitmemiş adımlar var: " + "; ".join(left[:6]) + ". Kullanıcıdan bir "
                     "şey gerekmiyorsa araçlarla kaldığın yerden devam et. Gerçekten bittiyse listeyi güncelle ve "
                     "sonucu söyle; takıldıysan neden takıldığını açıkça söyle.")
-        if _PROMISE_RX.search(tail):
+        if _PROMISE_RX.search(tail) and not _DEFERRED_RX.search(tail):
             return (NUDGE_PREFIX + "Yapacağını söyledin ama yapmadan durdun. Kullanıcıdan bir şey gerekmiyorsa şimdi "
                     "araçlarla yap ve bitince sonucu bildir; gerekiyorsa açıkça sor.")
         return ""
@@ -618,10 +731,30 @@ class Agent:
             'Sadece JSON yaz: {"unsupported": ["kısa iddia", ...]}\n\n'
             f"KULLANICI İSTEĞİ:\n{ask[:1500]}\n\nARAÇ SONUÇLARI:\n" + "\n".join(evidence)[-24000:]
             + f"\n\nCEVAP:\n{text[:4000]}")
+        # Cevap ekranda dururken bu kontrol bitene kadar tur açık kalıyor, arayüz "Çalışıyor" gösteriyordu. Hızlı
+        # sıradaki takılan bir model (step-5-preview, 180 sn zaman aşımı) işi bitmiş ALICE'i dakikalarca "çalışıyor"
+        # bırakıyordu: kontrol süre sınırlı, yetişmezse cevap olduğu gibi kalır (sonucu arkada atılır).
+        box: dict[str, Any] = {}
+
+        def check() -> None:
+            try:
+                # 400 token düşünen modellerde (Cerebras qwen, step) düşünmeye gidip cevap boş dönüyordu.
+                box["res"] = self.router.chat(str(self.config.agent.get("verify_role", "fast")),
+                                              [{"role": "user", "content": prompt}], temperature=0, max_tokens=1200)
+            except Exception as e:  # noqa: BLE001
+                box["err"] = e
+
+        worker = threading.Thread(target=check, daemon=True, name="alice-verify")
+        worker.start()
+        deadline = time.monotonic() + float(self.config.agent.get("verify_seconds", 25))
+        while worker.is_alive() and time.monotonic() < deadline and not self.cancel.is_set():
+            worker.join(0.2)
+        if "res" not in box:
+            if worker.is_alive():
+                log.debug("iddia kontrolü süre sınırını aştı; cevap olduğu gibi bırakıldı")
+            return ""
         try:
-            # 400 token düşünen modellerde (Cerebras qwen, step) düşünmeye gidip cevap boş dönüyordu.
-            res = self.router.chat(str(self.config.agent.get("verify_role", "fast")),
-                                   [{"role": "user", "content": prompt}], temperature=0, max_tokens=1200)
+            res = box["res"]
             m = re.search(r"\{.*\}", res.text or "", re.S)
             bad = [str(x)[:160] for x in (json.loads(m.group(0)).get("unsupported") or [])] if m else []
         except Exception:  # noqa: BLE001 - doğrulama yapılamadıysa cevabı engelleme
@@ -1089,16 +1222,30 @@ class Agent:
         except AllProvidersFailed as e:
             self.ui.info(f"özetleme başarısız: {e}")
             return False
+        summary = (res.text or "").strip()
+        if not _valid_summary(summary):
+            # Model özet yerine araç çağrısı metni ya da dökümün kopyasını döndürdü (11 Kasım: "<tool calls>…" ve
+            # "-> git({…}) [tool] …" özet diye kabul edildi, ALICE işin ne olduğunu unuttu). Böyle bir "özet"
+            # konuşmanın yerine geçmesin: kullanıcının istekleri ve son cevap birebir korunur.
+            self.ui.info("model geçerli bir özet üretemedi; kullanıcı istekleri ve son durum birebir saklandı")
+            summary = _clip(_fallback_summary(old), summary_tokens * 3)  # dar modelin özet payına sığsın
         if self.on_compact is not None:
             try:
                 self.on_compact(old)  # arayüz eski mesajları göstermeye devam etsin (oturum arşivi)
             except Exception:  # noqa: BLE001 - arşiv yazılamadı diye özetleme durmasın
                 log.debug("on_compact hata verdi", exc_info=True)
-        head = [self.messages[0], {"role": "user", "content": f"[Önceki konuşmanın özeti]\n{res.text}"}]
+        head = [self.messages[0], {"role": "user", "content": f"[Önceki konuşmanın özeti]\n{summary}"}]
         if self.messages[cut]["role"] == "user":  # roller sırayla gitsin
             head.append({"role": "assistant", "content": "Özeti aldım, kaldığım yerden devam ediyorum."})
         self.messages = head + self.messages[cut:]
         self.checkpoints.clear()  # mesaj indeksleri değişti, eski geri sarma noktaları geçersiz
+        if self.on_step is not None:
+            # Hemen kaydet: arşive yazılan mesajlar oturum dosyasında da kalırsa (tur burada hata verir ya da ALICE
+            # yeniden başlarsa) açılışta yeniden yüklenip bir kez daha özetleniyor, arşive ikinci kez yazılıyordu.
+            try:
+                self.on_step()
+            except Exception:  # noqa: BLE001 - kayıt hatası özetlemeyi geri almasın
+                log.debug("on_step hata verdi", exc_info=True)
         return True
 
     def _roomy(self, res: ChatResult) -> bool:
