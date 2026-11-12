@@ -84,9 +84,13 @@ class _Sink:
         self.dead = False  # tur durdurulduysa arkada süren model çağrısı artık arayüze yazmasın
         self.parts: list[str] = []
 
+    first_at = 0.0  # bu model çağrısında ilk metnin geldiği an (oturum istatistiği: ilk kelime süresi)
+
     def on_delta(self, text: str) -> None:
         if self.dead:
             return
+        if not self.first_at:
+            self.first_at = time.monotonic()
         self.parts.append(text)
         self.ui.stream_delta(text)
 
@@ -97,11 +101,15 @@ class _Sink:
         self.ui.stream_reset()
 
     def on_reasoning(self, text: str) -> None:
+        if not self.first_at:
+            self.first_at = time.monotonic()
         fn = getattr(self.ui, "thinking_delta", None)
         if fn is not None and not self.dead:
             fn(text)
 
     def on_tool(self, name: str, size: int) -> None:
+        if not self.first_at:
+            self.first_at = time.monotonic()
         fn = getattr(self.ui, "tool_delta", None)
         if fn is not None and not self.dead:
             fn(name, size)
@@ -216,6 +224,18 @@ _DEFERRED_RX = re.compile(
     r"arka planda|once (it|they)('s| is| are)? (done|finished)|when (it|they) (finish|complete)\w*)\b", re.I)
 
 
+def cached_tokens(usage: dict[str, Any]) -> int:
+    """Önbellekten okunan girdi token'ı; sağlayıcılar farklı adlarla veriyor."""
+    for path in (("prompt_tokens_details", "cached_tokens"), ("input_tokens_details", "cached_tokens"),
+                 ("cached_tokens",), ("cache_read_input_tokens",), ("prompt_cache_hit_tokens",)):
+        v: Any = usage
+        for k in path:
+            v = v.get(k) if isinstance(v, dict) else None
+        if isinstance(v, (int, float)) and v:
+            return int(v)
+    return 0
+
+
 def _valid_summary(text: str) -> bool:
     """Özet gerçekten özet mi? Boş/çok kısa, araç çağrısı biçiminde ya da dökümün kopyası olan metin değildir."""
     t = text.strip()
@@ -324,6 +344,10 @@ class Agent:
         self._call_counts: dict[str, int] = {}
         self._fail_counts: dict[str, int] = {}
         self._error_streak = 0
+        # Oturum istatistiği (durum çubuğundaki paneller): tur, adım, model ve araç süresi, ilk kelime süresi, token.
+        self.stats: dict[str, float] = {"turns": 0, "steps": 0, "llm_s": 0.0, "tool_s": 0.0, "ttft_s": 0.0,
+                                        "ttft_n": 0, "gen_s": 0.0, "gen_tokens": 0, "input": 0, "cached": 0,
+                                        "output": 0}
         # Her araç adımından sonra çağrılır (oturumu kaydetmek için): tur takılır ya da çökerse iz kaybolmasın.
         self.on_step: Any = None
         self.on_compact: Any = None  # özetlemede bağlamdan çıkan mesajlar buraya verilir (uygulama arşive yazar)
@@ -516,6 +540,7 @@ class Agent:
         verified = False
         answered = ""  # kanıt kontrolü hatırlatmasından önce verilen cevap
         self._turn_start = len(self.messages) - 1
+        self.stats["turns"] += 1
         stop_hooks = 3  # Stop hook'u ajanı en fazla bu kadar kez geri çevirebilir (sonsuz döngü olmasın)
         self._steering = not self.is_child
         try:
@@ -529,6 +554,8 @@ class Agent:
                 sink.parts.clear()
                 self.ui.stream_start()
                 sent = len(self.messages)
+                sink.first_at = 0.0
+                t_call = time.monotonic()
                 try:
                     res = self._interruptible(self.router.chat, self.role, list(self.messages), tools=self._specs(),
                                               stream=sink if self.stream else None)
@@ -543,6 +570,7 @@ class Agent:
                     sent = len(self.messages)
                     res = self._interruptible(self.router.chat, self.role, list(self.messages), tools=self._specs(),
                                               stream=sink if self.stream else None)
+                self._count_call(res, t_call, sink.first_at)
                 msg = res.message
                 _sanitize_calls(msg)
                 if getattr(self, "_lean", False) and self._roomy(res):
@@ -589,7 +617,9 @@ class Agent:
                     self.messages.append({"role": "user", "content": nudge, "_nudge": True})
                     continue
                 self._turn_tools.update(c["function"]["name"] for c in msg["tool_calls"])
+                t_tools = time.monotonic()
                 self._run_tools(msg["tool_calls"])
+                self.stats["tool_s"] += time.monotonic() - t_tools
                 if self.on_step is not None:
                     try:
                         self.on_step()
@@ -627,6 +657,39 @@ class Agent:
                 self._steering = False  # bundan sonra gelen mesaj yeni tur olur (take_inbox ile kalanlar alınır)
             self.busy = False
             self._release_desktop()
+
+    def _count_call(self, res: ChatResult, started: float, first: float) -> None:
+        """Bir model çağrısını oturum istatistiğine ekle."""
+        st = self.stats
+        now = time.monotonic()
+        st["steps"] += 1
+        st["llm_s"] += now - started
+        if first:
+            st["ttft_s"] += first - started
+            st["ttft_n"] += 1
+        u = res.usage or {}
+        out = int(u.get("completion_tokens") or u.get("output_tokens") or 0)
+        st["input"] += int(u.get("prompt_tokens") or u.get("input_tokens") or 0)
+        st["cached"] += cached_tokens(u)
+        st["output"] += out
+        if first and out and now - first > 0.2:  # akış hızı: yalnız gerçekten akan cevaplarda
+            st["gen_s"] += now - first
+            st["gen_tokens"] += out
+
+    def stats_view(self) -> dict[str, Any]:
+        """Durum çubuğu panelleri: oturum istatistiği, token kullanımı ve bağlamın dağılımı."""
+        st = self.stats
+        system = estimate_tokens(self.messages[:1])
+        tools = estimate_tokens([], self._specs())
+        total = self.context_tokens()
+        return {
+            "turns": int(st["turns"]), "steps": int(st["steps"]), "llm_s": round(st["llm_s"], 1),
+            "tool_s": round(st["tool_s"], 1),
+            "ttft": round(st["ttft_s"] / st["ttft_n"], 2) if st["ttft_n"] else 0.0,
+            "tps": round(st["gen_tokens"] / st["gen_s"]) if st["gen_s"] else 0,
+            "input": int(st["input"]), "cached": int(st["cached"]), "output": int(st["output"]),
+            "ctx": {"system": system, "tools": tools, "messages": max(0, total - system - tools), "total": total},
+        }
 
     def steer(self, text: str, images: list[str] | None = None) -> bool:
         """Çalışan tura mesaj ekle. Tur alabilecek durumdaysa True (mesaj bir sonraki adımda modele gider); değilse

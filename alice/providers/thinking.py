@@ -26,6 +26,55 @@ def level_for(config_data: dict[str, Any], role: str) -> str:
     return lvl if lvl in LEVELS else "default"
 
 
+BINARY = "binary"  # yalnız açık/kapalı: arayüz "kapalı / açık" diye gösterir (off ve high)
+
+
+def levels_for(provider: str, model: str) -> tuple[list[str], str]:
+    """Bu modelin gerçekten desteklediği düşünme seviyeleri ve türü ("graded" | "binary" | "none"). Arayüz
+    yalnız bunları gösterir: önceden her modelde yedi seviyenin hepsi görünüyor, çoğu sessizce başka bir şeye
+    çevriliyordu (ör. Gemini'de xhigh = high). "default" (modele bırak) her zaman var."""
+    m = model.lower()
+    if provider == "chatgpt" or (provider == "cliproxy" and m.startswith(("gpt-", "codex", "o3", "o4"))):
+        lv = ["off", "low", "medium", "high", "xhigh"] + (["max"] if "gpt-6" in m else [])
+        return lv + ["default"], "graded"
+    if provider == "anthropic" or (provider == "cliproxy" and m.startswith("claude-")):
+        lv = ["low", "medium", "high", "max"]  # Claude düşünmeyi tamamen kapatmaz: en az "low"
+        if "haiku" not in m:
+            lv.insert(3, "xhigh")
+        return (["off"] if provider == "cliproxy" else []) + lv + ["default"], "graded"
+    if "gpt-oss" in m:
+        return ["low", "medium", "high", "default"], "graded"
+    if provider == "gemini" or (provider == "cliproxy" and m.startswith("gemini-")):
+        if "flash-lite" in m:
+            return ["default"], "none"  # isteği 400 ile reddediyor (11 Kasım günlüğü)
+        return ["off", "low", "medium", "high", "default"], "graded"
+    if provider in ("openrouter", "ollama"):
+        return ["off", "low", "medium", "high", "default"], "graded"
+    if provider == "groq" and "qwen" in m:
+        return ["off", "high", "default"], BINARY
+    if provider in ("nvidia", "sambanova", "cerebras") and any(
+            k in m for k in ("glm", "qwen3", "deepseek", "nemotron", "kimi", "magistral")):
+        return ["off", "high", "default"], BINARY
+    if provider == "cliproxy" and m.startswith("kimi-"):
+        return ["off", "high", "default"], BINARY
+    return ["default"], "none"
+
+
+def fit(level: str, levels: list[str]) -> str:
+    """Seçili seviye bu modelde yoksa en yakın desteklenen seviye (model değişince ayar sessizce boşa gitmesin)."""
+    if level in levels:
+        return level
+    order = ["off", "low", "medium", "high", "xhigh", "max"]
+    if level not in order:
+        return "default"
+    i = order.index(level)
+    for d in range(1, len(order)):
+        for j in (i - d, i + d):  # önce bir altı (daha hızlı), sonra bir üstü
+            if 0 <= j < len(order) and order[j] in levels:
+                return order[j]
+    return "default"
+
+
 def _on(level: str) -> bool:
     # Sadece açık/kapalı destekleyen modellerde "low" da kapalı: amaç kısa cevap.
     return level in ("medium", "high")

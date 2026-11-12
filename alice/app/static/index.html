@@ -176,7 +176,12 @@
       <div id="statusbar">
         <span id="stModel"></span>
         <span class="sep">·</span>
-        <span id="stCtx" title="Context doluluğu, sınırda otomatik özetlenir"><i class="meter"><i></i></i><span></span></span>
+        <span id="stStats" class="st-chip" hidden tabindex="0"><svg viewBox="0 0 24 24"><circle cx="12" cy="13" r="8"/><path d="M12 13l4-4M12 3v2"/></svg><span></span>
+          <div class="st-pop" role="tooltip"></div></span>
+        <span id="stTok" class="st-chip" hidden tabindex="0"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg><span></span>
+          <div class="st-pop" role="tooltip"></div></span>
+        <span id="stCtx" class="st-chip" tabindex="0"><i class="meter"><i></i></i><span></span>
+          <div class="st-pop" role="tooltip"></div></span>
         <span class="sep">·</span>
         <span id="stReq"></span>
         <span class="sep st-more">·</span>

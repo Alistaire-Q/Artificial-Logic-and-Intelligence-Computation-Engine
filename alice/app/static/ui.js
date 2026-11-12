@@ -59,21 +59,42 @@ const THINK = {
   low: ["az düşünür", "Kısa düşünür, sonra yapar (önerilen)"],
   medium: ["orta düşünür", "Biraz daha dikkatli, biraz daha yavaş"],
   high: ["çok düşünür", "Zor işler için; basit işte gereksiz uzun sürer"],
-  xhigh: ["daha da çok", "Extra High: sadece ChatGPT modellerinde; diğerlerinde çok düşünür gibi"],
-  max: ["en çok", "Max: sadece ChatGPT modellerinde; en zor işler için, en yavaşı"],
+  xhigh: ["daha da çok", "Extra High: çok zor işler için"],
+  max: ["en çok", "Max: en zor işler için, en yavaşı"],
   default: ["model karar verir", "Modelin kendi ayarı"],
 };
+// Yalnız açık/kapalı destekleyen modeller (Qwen, GLM, Kimi...): seviye yerine kapalı/açık gösterilir.
+const THINK_BINARY = { off: ["düşünmez", "Düşünmeden hemen cevap verir"], high: ["düşünür", "Cevaptan önce düşünür"],
+  default: ["model karar verir", "Modelin kendi ayarı"] };
+// Seçili modelin desteklediği seviyeler (sunucu modele göre verir); bilinmiyorsa hepsi.
+function thinkOptions(st) {
+  st = st || S.status;
+  const table = st.thinking_kind === "binary" ? THINK_BINARY : THINK;
+  const levels = st.thinking_levels || Object.keys(THINK);
+  return levels.filter((k) => table[k]).map((k) => [k, table[k]]);
+}
+function thinkLabel(st) {
+  st = st || S.status;
+  const k = st.thinking_effective || st.thinking;
+  const table = st.thinking_kind === "binary" ? THINK_BINARY : THINK;
+  return table[k] || THINK[k] || null;
+}
 async function setThinking(level) {
   applyStatus(await api("/api/thinking", { level }));
-  toast("Düşünme: " + THINK[level][0]);
+  toast("Düşünme: " + ((thinkLabel() || THINK[level] || [level])[0]));
 }
 
 function thinkMenu() {
   openMenu($("#thinkBtn"), (m) => {
-    m.appendChild(el("div", "menu-title", "Düşünme"));
-    for (const [k, [label, sub]] of Object.entries(THINK)) {
+    m.appendChild(el("div", "menu-title", "Düşünme · " + shortModel(S.status.model)));
+    const opts = thinkOptions();
+    if (S.status.thinking_kind === "none") {
+      m.appendChild(el("div", "menu-note", "Bu model düşünme ayarı desteklemiyor; kendi bildiği gibi çalışır."));
+    }
+    const cur = S.status.thinking_effective || S.status.thinking;
+    for (const [k, [label, sub]] of opts) {
       menuItem(m, k === "off" ? IC.bolt : IC.brain, label[0].toUpperCase() + label.slice(1), sub,
-        () => setThinking(k), S.status.thinking === k);
+        () => setThinking(k), cur === k);
     }
   }, "right");
 }
@@ -147,8 +168,8 @@ function modelsPage(pane, data) {
   }
   hero.append(hl, ha);
   const think = el("div", "mp-think");
-  think.append(el("span", "lbl", "Düşünme"), segmented(Object.entries(THINK).map(([k, [l]]) => [k, l]), S.status.thinking, (v) => setThinking(v)),
-    el("small", "", (THINK[S.status.thinking] || ["", ""])[1]));
+  think.append(el("span", "lbl", "Düşünme"), segmented(thinkOptions().map(([k, [l]]) => [k, l]),
+    S.status.thinking_effective || S.status.thinking, (v) => setThinking(v)), el("small", "", (thinkLabel() || ["", ""])[1]));
   hero.appendChild(think);
   pane.appendChild(hero);
 
@@ -656,7 +677,7 @@ function paletteItems() {
     act("Tema", k === "dark" ? IC.moon : IC.sun, `Tema: ${label}`, "", () => setPref("theme", k));
   }
   for (const [k, [label, sub, icon]] of Object.entries(MODES)) act("İzin modu", icon, `Mod: ${label}`, sub, () => setMode(k));
-  for (const [k, [label, sub]] of Object.entries(THINK)) act("Düşünme", IC.brain, `Düşünme: ${label}`, sub, () => setThinking(k));
+  for (const [k, [label, sub]] of thinkOptions()) act("Düşünme", IC.brain, `Düşünme: ${label}`, sub, () => setThinking(k));
   act("Model", IC.spark, "Model: Otomatik", "Zincirdeki ilk uygun model", () => pinModel("reset"));
   for (const ref of S.status.brain_chain || []) act("Model", IC.spark, `Model: ${shortModel(ref)}`, ref, () => pinModel(ref));
   for (const c of S.commands) {

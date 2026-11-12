@@ -685,7 +685,7 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: r
 
 #statusbar {
   max-width: var(--chat-w); margin: 7px auto 0; display: flex; justify-content: center; align-items: center; gap: 7px;
-  color: var(--faint); font-size: 11.5px; white-space: nowrap; overflow: hidden;
+  color: var(--faint); font-size: 11.5px; white-space: nowrap; overflow: visible; position: relative;
 }
 #statusbar .sep { opacity: .6; }
 /* Karar motoru, dal ve süre ancak üzerine gelince: dal zaten üst çubukta. */
@@ -1953,3 +1953,27 @@ details > summary::marker { color: var(--faint); }
 .file-card .fc-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .file-card .fc-meta b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-card .fc-meta small { color: var(--faint); font-size: 12px; }
+
+/* ------------------------------------------------------------------ durum çubuğu panelleri */
+.st-chip { position: relative; display: inline-flex; align-items: center; gap: 5px; padding: 2px 6px; border-radius: var(--r-xs);
+  cursor: default; outline: none; }
+.st-chip:hover, .st-chip:focus-visible { background: var(--hover); color: var(--text); }
+.st-chip > svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.8; }
+.st-chip[hidden] { display: none; }
+.st-pop { display: none; position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); z-index: 40;
+  min-width: 270px; padding: 12px 14px; border-radius: var(--r-md, 10px); background: var(--panel, var(--bg)); color: var(--text);
+  border: 1px solid var(--line); box-shadow: var(--shadow); font-size: 12.5px; text-align: left; white-space: nowrap; }
+.st-chip:hover .st-pop, .st-chip:focus-within .st-pop { display: block; }
+.st-pop:empty { display: none !important; }
+.sp-head { display: flex; justify-content: space-between; gap: 16px; padding-bottom: 8px; margin-bottom: 8px;
+  border-bottom: 1px solid var(--line); }
+.sp-head b { font-weight: 600; }
+.sp-row { display: flex; justify-content: space-between; gap: 24px; padding: 3px 0; color: var(--muted); }
+.sp-v { color: var(--text); font-variant-numeric: tabular-nums; }
+.sp-l { display: inline-flex; align-items: center; gap: 7px; }
+.sp-dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+.sp-bar { display: flex; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; margin: 2px 0 6px; }
+.sp-bar i { display: block; height: 100%; }
+.sp-note { display: block; color: var(--faint); font-size: 11px; margin-bottom: 6px; white-space: normal; }
+.menu-note { padding: 6px 12px 8px; color: var(--muted); font-size: 12px; max-width: 280px; }
+#thinkBtn.dim { opacity: .55; }

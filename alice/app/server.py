@@ -716,12 +716,27 @@ class AppState:
             "brain_chain": self.router.chain("brain"),
             "brain_pinned": "brain" in self.router.role_overrides,
             "thinking": self.router.thinking_level("brain"),
+            **self._thinking_options(),
+            "stats": self.agent.stats_view(),
             "user": _user_name(),
             "checkpoints": sorted(self.agent.checkpoints),
             "team": self.team_snapshot(),
             "update": self.update.as_dict() if self._update_shown() else None,
             "update_mode": self._update_mode(),
         }
+
+    def _thinking_options(self) -> dict[str, Any]:
+        """Seçili (ya da son cevap veren) ana modelin desteklediği düşünme seviyeleri: menü yalnız bunları gösterir."""
+        from alice.providers import thinking
+
+        ref = ((self.router.role_overrides.get("brain") or [None])[0] or self.router.last_ref.get("brain")
+               or self.router.first_available("brain") or "")
+        provider, _, model = ref.partition(":")
+        levels, kind = thinking.levels_for(provider, model) if ref else (list(thinking.LEVELS), "graded")
+        if ref in getattr(self.router, "no_thinking", set()):
+            levels, kind = ["default"], "none"  # model ayarı reddetti (çalışırken öğrenildi)
+        return {"thinking_levels": levels, "thinking_kind": kind,
+                "thinking_effective": thinking.fit(self.router.thinking_level("brain"), levels)}
 
     # ----------------------------------------------------------------- bağlantılar
     def connections(self) -> dict[str, Any]:

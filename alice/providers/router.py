@@ -695,7 +695,9 @@ class Router:
                 msgs = clean_messages(messages if vision else strip_images(messages),
                                       gemini=is_gemini(pc))
                 client = self.client(p)
-                think = {} if ref in self.no_thinking else thinking.params(p, model, self.thinking_level(role))
+                # Seçili seviye bu modelde yoksa en yakın desteklenen seviye (model değişince ayar boşa gitmesin).
+                level = thinking.fit(self.thinking_level(role), thinking.levels_for(p, model)[0])
+                think = {} if ref in self.no_thinking else thinking.params(p, model, level)
                 extra = {**think, **(self.config.model_extra(ref) or {})}  # elle yazılan model ayarı önce gelir
                 if gemini_extra and is_gemini(pc):  # ör. reasoning_effort: sadece Gemini'nin anladığı ayarlar
                     extra.update(gemini_extra)

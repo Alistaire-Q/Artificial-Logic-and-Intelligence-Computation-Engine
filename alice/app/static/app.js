@@ -975,10 +975,17 @@ function applyStatus(s) {
     $("#modeBtn").className = "c-btn pill m-" + st.mode;
   }
   $("#modelLabel").textContent = shortModel(st.model);
-  if (st.thinking && THINK[st.thinking]) {
-    $("#thinkLabel").textContent = THINK[st.thinking][0];
-    $("#thinkIcon").innerHTML = st.thinking === "off" ? IC.bolt : IC.brain;
-    $("#thinkBtn").title = "Düşünme: " + THINK[st.thinking][1];
+  if (st.thinking) {
+    // Seçili modelin gerçekten uyguladığı seviye (model desteklemiyorsa en yakını); destek yoksa düğme sönük.
+    const merged = { ...S.status, ...st };
+    const lab = thinkLabel(merged);
+    if (lab) {
+      $("#thinkLabel").textContent = merged.thinking_kind === "none" ? "düşünme ayarı yok" : lab[0];
+      $("#thinkIcon").innerHTML = (merged.thinking_effective || st.thinking) === "off" ? IC.bolt : IC.brain;
+      $("#thinkBtn").title = merged.thinking_kind === "none" ? "Bu model düşünme ayarı desteklemiyor"
+        : "Düşünme: " + lab[1];
+      $("#thinkBtn").classList.toggle("dim", merged.thinking_kind === "none");
+    }
   }
   // Sabitlenen model cevap veremeyip yedeğe geçildiyse düğme seçileni, çubuk gerçekten cevap vereni gösterir.
   const served = st.served_model || st.model;
@@ -986,6 +993,7 @@ function applyStatus(s) {
   $("#modelBtn").title = fellBack ? `Seçili: ${st.model} · son cevabı veren: ${st.served_model} (seçili model cevap veremedi)` : st.model || "";
   $("#stModel").textContent = served || "model yok";
   $("#stModel").classList.toggle("warn", !!fellBack);
+  if (st.stats) renderStats(st.stats, st);
   if (st.ctx_limit) {
     const win = st.ctx_window || st.ctx_limit;
     const pct = Math.min(100, (100 * st.ctx_tokens) / win);
@@ -993,8 +1001,6 @@ function applyStatus(s) {
     m.firstElementChild.style.width = pct + "%";
     m.classList.toggle("hot", pct > 75);
     $("#stCtx span").textContent = `${fmtTok(st.ctx_tokens)} / ${fmtTok(win)}`;
-    $("#stCtx").title = `Bağlam: ${st.ctx_tokens.toLocaleString("tr-TR")} / ${win.toLocaleString("tr-TR")} token. ` +
-      `${fmtTok(st.ctx_limit)} token'da eski konuşma otomatik özetlenir.`;
   }
   if (st.today_requests !== undefined) $("#stReq").textContent = `bugün ${st.today_requests} istek`;
   if (st.decider) $("#stDec").textContent = `karar: ${st.decider}`;
@@ -1257,4 +1263,66 @@ async function resendFrom(mi, text) {
   if (r.restored && r.restored.length) toast(`${r.restored.length} dosya eski haline getirildi`);
   await submit(text);
   return true;
+}
+
+/* ============================================================ durum çubuğu panelleri */
+// Oturum istatistiği, token kullanımı ve bağlam dağılımı: çubukta kısa özet, üzerine gelince ayrıntı paneli.
+function fmtDurShort(s) {
+  s = Math.round(s || 0);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60), r = s % 60;
+  return m < 60 ? `${m}m${String(r).padStart(2, "0")}s` : `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}m`;
+}
+function popRows(pop, title, total, rows, extra) {
+  pop.replaceChildren();
+  const head = el("div", "sp-head");
+  head.append(el("b", "", title), el("span", "", total));
+  pop.appendChild(head);
+  if (extra) pop.appendChild(extra);
+  for (const [label, value, dot] of rows) {
+    const r = el("div", "sp-row");
+    const l = el("span", "sp-l");
+    if (dot) { const d = el("i", "sp-dot"); d.style.background = dot; l.appendChild(d); }
+    l.appendChild(document.createTextNode(label));
+    r.append(l, el("span", "sp-v", value));
+    pop.appendChild(r);
+  }
+}
+function renderStats(s, st) {
+  const nf = (n) => Number(n || 0).toLocaleString("tr-TR");
+  const stats = $("#stStats"), tok = $("#stTok"), ctx = $("#stCtx");
+  stats.hidden = !s.turns;
+  if (s.turns) {
+    stats.querySelector("span").textContent = `${s.turns} tur ${s.steps} adım` + (s.tps ? ` · ${s.tps} tok/s` : "");
+    popRows(stats.querySelector(".st-pop"), "Oturum istatistiği", `${s.turns} tur ${s.steps} adım`, [
+      ["Model süresi", fmtDurShort(s.llm_s)], ["Araç süresi", fmtDurShort(s.tool_s)],
+      ["Ort. ilk kelime süresi (TTFT)", s.ttft ? `${s.ttft.toFixed(1)}s` : "—"],
+      ["Saniyede token (TPS)", s.tps ? `${s.tps} tok/s` : "—"]]);
+  }
+  const total = (s.input || 0) + (s.output || 0);
+  tok.hidden = !total;
+  if (total) {
+    const hit = s.input ? Math.round(100 * (s.cached || 0) / s.input) : 0;
+    tok.querySelector("span").textContent = `${fmtTok(total)} tok` + (s.cached ? ` · önbellek %${hit}` : "");
+    popRows(tok.querySelector(".st-pop"), "Token kullanımı", `${nf(total)} tok`, [
+      ["Önbellekten (cache hit)", s.cached ? `%${hit}` : "—"], ["Önbelleksiz girdi", nf((s.input || 0) - (s.cached || 0))],
+      ["Önbellekten girdi", nf(s.cached)], ["Çıktı", nf(s.output)]]);
+  }
+  const win = st.ctx_window || st.ctx_limit;
+  if (win && s.ctx) {
+    const pct = Math.min(100, Math.round(100 * (st.ctx_tokens || s.ctx.total) / win));
+    const bar = el("div", "sp-bar");
+    for (const [v, c] of [[s.ctx.system, "var(--faint)"], [s.ctx.tools, "#a78bfa"], [s.ctx.messages, "var(--accent)"]]) {
+      const i = el("i");
+      i.style.width = Math.max(0, 100 * v / win) + "%";
+      i.style.background = c;
+      bar.appendChild(i);
+    }
+    const note = el("small", "sp-note", `${fmtTok(st.ctx_limit)} token'a gelince eski konuşma otomatik özetlenir.`);
+    const box = el("div");
+    box.append(bar, note);
+    popRows(ctx.querySelector(".st-pop"), `Bağlamın %${pct}'i dolu`, `~${fmtTok(st.ctx_tokens || s.ctx.total)} / ${fmtTok(win)}`, [
+      ["Sistem talimatı", "~" + fmtTok(s.ctx.system), "var(--faint)"], ["Araç tanımları", "~" + fmtTok(s.ctx.tools), "#a78bfa"],
+      ["Mesajlar", "~" + fmtTok(s.ctx.messages), "var(--accent)"]], box);
+  }
 }
