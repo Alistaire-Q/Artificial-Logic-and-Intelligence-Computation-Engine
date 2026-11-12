@@ -124,8 +124,8 @@ def _param(name: str, raw: Any) -> Param:
     if not isinstance(raw, dict):
         raise ManifestError(f"parametre {name}: tablo olmalı")
     into = str(raw.get("into", ""))
-    if into and into not in ("query", "path", "body", "header"):
-        raise ManifestError(f"parametre {name}: into query|path|body|header olmalı")
+    if into and into not in ("query", "path", "body", "header", "template"):
+        raise ManifestError(f"parametre {name}: into query|path|body|header|template olmalı")
     return Param(name=name, type=str(raw.get("type", "string")), description=str(raw.get("description", "")),
                  required=bool(raw.get("required")), into=into,
                  enum=[str(x) for x in raw.get("enum", [])], default=raw.get("default"))

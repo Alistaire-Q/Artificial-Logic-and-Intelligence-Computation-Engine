@@ -108,6 +108,7 @@ def build(m: Manifest, act: Action, args: dict[str, Any]) -> dict[str, Any]:
     headers: dict[str, str] = {"Accept": "application/json", **act.headers}
     body: dict[str, Any] = dict(act.body)
     path_args: dict[str, str] = {}
+    template_args: dict[str, Any] = {}
     missing = [p.name for p in act.params.values() if p.required and args.get(p.name) in (None, "")]
     if missing:
         raise ConnectError(f"{m.name}.{act.name}: eksik parametre: {', '.join(missing)}")
@@ -117,7 +118,9 @@ def build(m: Manifest, act: Action, args: dict[str, Any]) -> dict[str, Any]:
             continue
         where = p.into or ("path" if "{" + p.name + "}" in act.path else
                            ("body" if act.method in ("POST", "PUT", "PATCH") else "query"))
-        if where == "path":
+        if where == "template":  # gövde şablonundaki "{ad}" yer tutucusu (iç içe gövdeler için)
+            template_args[p.name] = v
+        elif where == "path":
             path_args[p.name] = str(v)
         elif where == "header":
             headers[p.name] = str(v)
@@ -125,13 +128,37 @@ def build(m: Manifest, act: Action, args: dict[str, Any]) -> dict[str, Any]:
             body[p.name] = v
         else:
             query[p.name] = v
+    if template_args:
+        body = _fill(body, template_args)
     _apply_auth(m, headers, query)
     try:
         path = PLACEHOLDER.sub(lambda mt: _quote(path_args[mt.group(1)]), act.path)
     except KeyError as e:
         raise ConnectError(f"{m.name}.{act.name}: yol parametresi eksik: {e.args[0]}") from e
-    return {"method": act.method, "url": m.base_url + ("" if path.startswith("/") else "/") + path,
-            "params": query, "headers": headers, "json": body or None}
+    # Tam adresli yol: tek bağlantıda birden çok sunucu (ör. Google Drive, Docs ve Sheets aynı girişle).
+    url = path if path.startswith(("https://", "http://")) else m.base_url + ("" if path.startswith("/") else "/") + path
+    return {"method": act.method, "url": url, "params": query, "headers": headers, "json": body or None}
+
+
+def _fill(node: Any, args: dict[str, Any]) -> Any:
+    """Gövde şablonunda tam olarak "{ad}" olan değerleri parametreyle değiştir (türü korunur); eksik kalanları at."""
+    if isinstance(node, dict):
+        out = {}
+        for k, v in node.items():
+            f = _fill(v, args)
+            if f is not _MISSING:
+                out[k] = f
+        return out
+    if isinstance(node, list):
+        return [x for x in (_fill(v, args) for v in node) if x is not _MISSING]
+    if isinstance(node, str):
+        mt = PLACEHOLDER.fullmatch(node)
+        if mt:
+            return args.get(mt.group(1), _MISSING)
+    return node
+
+
+_MISSING = object()
 
 
 def _quote(v: str) -> str:
