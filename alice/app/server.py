@@ -356,6 +356,7 @@ class Chat:
         self.ctx.state["publish"] = app.bus.publish  # takım paneli canlı güncellensin
         self.ctx.state["teams"] = app.teams  # projeler bütün sohbetlerin
         self.ctx.state["desktop_lock"] = app.desktop_lock
+        self.ctx.state["session_id"] = self.sid  # PR takibi olayları kodu yazan bu sohbete geri getirebilsin
         attach_memory(self.agent, "uygulama")
         if messages is not None:
             self.agent.messages = self.agent.messages[:1] + messages
@@ -380,6 +381,7 @@ class Chat:
 
     def set_sid(self, sid: str) -> None:
         self.sid = self.ui.sid = sid
+        self.ctx.state["session_id"] = sid
 
     def save(self) -> None:
         if not self.abandoned:

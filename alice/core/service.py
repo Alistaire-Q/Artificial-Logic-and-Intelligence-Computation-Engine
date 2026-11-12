@@ -223,6 +223,8 @@ class Core:
         # PR takibi (alice/prwatch.py): izlenen PR'lara birkaç dakikada bir arka planda bakılır.
         self._prwatch_last = 0.0
         self._prwatch_thread: threading.Thread | None = None
+        # Çekirdekteki uygulama bağlanınca: (sohbet kimliği, mesaj) -> "" ya da neden verilemediği (alice/core/cli.py).
+        self.chat_delivery: Callable[[str, str], str] | None = None
         # Uzun yokluktan dönünce karşılama (alice/presence.py); ses başlarsa greeter.voice bağlanır.
         from alice.presence import Greeter
 
@@ -387,7 +389,7 @@ class Core:
 
         def work() -> None:
             try:
-                for line in prwatch.check_all(self.cfg, notify):
+                for line in prwatch.check_all(self.cfg, notify, deliver=self.chat_delivery):
                     self.store.add_event("info", "PR takibi", line, topic="github")
             except Exception as e:  # noqa: BLE001 - anahtar yok, ağ yok: çekirdek sürsün
                 self._step_error("PR takibi", e)

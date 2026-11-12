@@ -4,10 +4,14 @@
 Çekirdek (`alice core run`) birkaç dakikada bir izlenen PR'lara bakar (`[github] watch_every_seconds`). Bir sorun
 görünce:
 
-* Düzeltme kullanıcının çalışma kopyasında değil, ALICE'in kendi git worktree'sinde (~/.alice/worktrees) yapılır:
-  kullanıcı aynı anda başka dalda çalışıyor olabilir.
-* İş, temiz bağlamlı arka plan ajanına verilir: CI'ın hata özeti ve yorumlar istemde. Ajan düzeltir, ilgili testleri
-  koşar, commit'ler, PR dalına push eder; uyguladığı yorumlara cevap yazıp konuyu çözüldü işaretler.
+* PR bir sohbetten izlemeye alındıysa iş o sohbete mesaj olarak gider: kodu yazan ajan bağlamı ve kararları
+  bildiği için baştan araştırma yapmadan düzeltir. Sohbet o an başka işteyse bölünmez, sonraki turda yeniden denenir.
+* Sohbet yoksa (ya da iş verilemiyorsa) temiz bağlamlı arka plan ajanı, kullanıcının kopyasına dokunmadan ALICE'in
+  kendi git worktree'sinde (~/.alice/worktrees) düzeltir.
+* Ajan düzeltir, ilgili testleri koşar, commit'ler, PR dalına push eder; uyguladığı yorumlara cevap yazıp konuyu
+  çözüldü işaretler. CI'ın hata özeti ve yorumlar istemde.
+* auto_review: her yeni commit bir kez, bilerek temiz bağlamlı bağımsız bir inceleyiciye inceletilir (alice/review.py)
+  ve bulgular PR'a yazılır.
 * Yorumlar başkalarının yazdığı metindir: yalnız depo sahibi/ekip üyeleri ve Copilot inceleyicisinin yorumları
   kendiliğinden uygulanır, gerisi kullanıcıya bildirilir. İstemde "güvenilmeyen veri" olarak işaretlenir.
 * Döngü olmasın: aynı commit için en fazla MAX_ATTEMPTS deneme; ALICE'in kendi cevapları (imzası) yeni yorum
@@ -43,11 +47,14 @@ class Watch:
     auto_fix: bool = True
     address_comments: bool = True
     auto_merge: bool = False
+    auto_review: bool = True   # her yeni commit'te bağımsız inceleme yapıp PR'a yaz
+    session: str = ""          # PR'ı hazırlayan sohbet: düzeltme işi bağlamı bilen o ajana gider
     added: float = 0.0
     sha: str = ""              # son görülen PR ucu
     attempts: int = 0          # bu uçta yapılan düzeltme denemesi
     handled: list[str] = field(default_factory=list)  # "ci:<sha>", "conflict:<sha>": bir kez ele alındı
     seen: list[int] = field(default_factory=list)     # ele alınmış yorum kimlikleri
+    reviewed: list[str] = field(default_factory=list)  # bağımsız incelemesi yapılmış commit'ler
     status: str = "izleniyor"
     history: list[str] = field(default_factory=list)
 
@@ -87,16 +94,20 @@ def save(watches: list[Watch]) -> None:
 
 
 def watch(repo: str, number: int, path: str = "", auto_fix: bool = True, address_comments: bool = True,
-          auto_merge: bool = False) -> str:
+          auto_merge: bool = False, auto_review: bool = True, session: str = "") -> str:
     with _lock:
         rows = [w for w in load() if not (w.repo == repo and w.number == int(number))]
-        w = Watch(repo, int(number), path, auto_fix, address_comments, auto_merge, added=time.time())
+        w = Watch(repo, int(number), path, auto_fix, address_comments, auto_merge, auto_review, session,
+                  added=time.time())
         w.log("izlemeye alındı")
         save(rows + [w])
     what = [x for x, on in (("CI kırmızıysa düzeltir", auto_fix), ("yorumları uygular", address_comments),
+                            ("her yeni commit'i bağımsız inceler", auto_review),
                             ("yeşil olunca birleştirir", auto_merge)) if on]
-    return (f"{repo}#{number} izleniyor: " + (", ".join(what) if what else "yalnız haber verir")
-            + ". Çekirdek birkaç dakikada bir bakar (ALICE çekirdeği açık olmalı).")
+    who = (" Düzeltmeler bu sohbete gelir (kodu yazan ajan bağlamıyla düzeltir)." if session else
+           " Düzeltmeleri arka planda ayrı bir ajan yapar.")
+    return (f"{repo}#{number} izleniyor: " + (", ".join(what) if what else "yalnız haber verir") + "." + who
+            + " Çekirdek birkaç dakikada bir bakar (ALICE çekirdeği açık olmalı).")
 
 
 def unwatch(repo: str, number: int) -> str:
@@ -113,10 +124,11 @@ def describe() -> str:
         return "izlenen PR yok"
     out = []
     for w in rows:
-        flags = "".join(c for c, on in (("D", w.auto_fix), ("Y", w.address_comments), ("B", w.auto_merge)) if on)
-        out.append(f"{w.key} [{flags or '-'}] {w.status}")
+        flags = "".join(c for c, on in (("D", w.auto_fix), ("Y", w.address_comments), ("İ", w.auto_review),
+                                        ("B", w.auto_merge)) if on)
+        out.append(f"{w.key} [{flags or '-'}]{' (sohbete bağlı)' if w.session else ''} {w.status}")
         out += [f"   {h}" for h in w.history[-3:]]
-    return "\n".join(out) + "\n(D: CI'ı düzeltir, Y: yorumları uygular, B: kendisi birleştirir)"
+    return "\n".join(out) + "\n(D: CI'ı düzeltir, Y: yorumları uygular, İ: bağımsız inceler, B: kendisi birleştirir)"
 
 
 def _update(key: str, fn: Callable[[Watch], None]) -> None:
@@ -157,12 +169,13 @@ def new_comments(w: Watch, data: dict[str, list[dict[str, Any]]]) -> tuple[list[
     for t in data.get("threads", []):
         if t["resolved"] or not t["comments"]:
             continue
-        last = t["comments"][-1]
-        if ALICE_MARK in last["body"]:
+        if ALICE_MARK in t["comments"][-1]["body"]:
             continue  # son söz ALICE'te: yeni bir şey yazılmadı
-        take(t["comments"][0] if t["comments"][0]["id"] not in w.seen else last,
-             {"kind": "thread", "thread": t["id"], "path": t["path"], "line": t["line"],
-              "conversation": [f"{c['author']}: {c['body']}" for c in t["comments"]]})
+        # Konudaki en yeni, ALICE'in yazmadığı yorum: ALICE'in inceleme yorumunun altına kullanıcı cevap yazınca da
+        # görülsün (konunun ilk yorumu ALICE'inki olduğu için önceden atlanıyordu).
+        human = [c for c in t["comments"] if ALICE_MARK not in c["body"]]
+        take(human[-1], {"kind": "thread", "thread": t["id"], "path": t["path"], "line": t["line"],
+                         "conversation": [f"{c['author']}: {c['body']}" for c in t["comments"]]})
     for r in data.get("reviews", []):
         if r["state"] == "CHANGES_REQUESTED":
             take(r, {"kind": "review"})
@@ -211,13 +224,23 @@ def worktree_for(cfg: Any, w: Watch, branch: str, token: str | None) -> Path:
 
 
 # ------------------------------------------------------------------------------------------------- istem
-def fix_prompt(w: Watch, pr: dict[str, Any], p: Problems) -> str:
+def fix_prompt(w: Watch, pr: dict[str, Any], p: Problems, in_chat: bool = False) -> str:
+    """in_chat: iş PR'ı hazırlayan sohbete gidiyor (ajan kodu ve kararları biliyor, çalışma klasörü kullanıcının
+    kopyası); değilse temiz bağlamlı ajan ALICE'in kendi worktree'sinde çalışır."""
     from alice.guard import wrap
     from alice.tools.github import ALICE_MARK
 
     branch, base = pr["head"]["ref"], pr["base"]["ref"]
-    parts = [f"{w.repo} deposundaki PR #{w.number} ('{pr.get('title', '')}', {branch} -> {base}) için düzeltme işi. "
-             f"Çalışma klasörü bu PR dalının ayrı bir kopyası; dal zaten '{branch}'."]
+    if in_chat:
+        parts = [f"[PR takibi] Bu sohbette hazırladığın {w.repo} PR #{w.number} ('{pr.get('title', '')}', "
+                 f"{branch} -> {base}) için yapılacaklar geldi. Kodu ve aldığın kararları biliyorsun: baştan araştırma "
+                 "yapma, doğrudan ilgili yere git.\n"
+                 f"Önce `git status`: çalışma klasörü '{branch}' dalında değilse ya da bu işle ilgisiz commit'lenmemiş "
+                 f"değişiklik varsa onlara dokunma, `git action=worktree branch={branch}` ile ayrı kopyada çalış; "
+                 f"dal doğruysa `git pull` ile PR'ın son hâlini al."]
+    else:
+        parts = [f"{w.repo} deposundaki PR #{w.number} ('{pr.get('title', '')}', {branch} -> {base}) için düzeltme "
+                 f"işi. Çalışma klasörü bu PR dalının ayrı bir kopyası; dal zaten '{branch}'."]
     todo = []
     if p.conflict:
         todo.append(f"PR '{base}' dalıyla çakışıyor. `git fetch origin {base}` ve `git merge origin/{base}` ile "
@@ -261,9 +284,33 @@ def default_runner(cfg: Any) -> Callable[[str, Path], str]:
     return run
 
 
+def default_reviewer(cfg: Any) -> Callable[[Watch, dict[str, Any], Any, str | None], str]:
+    """Bağımsız inceleme: bilerek temiz bağlamla (yazarın varsayımlarını taşımasın). PR'ın son hâli ALICE'in
+    worktree'sinde okunur, sonuç PR'a satır yorumlarıyla yazılır."""
+
+    def run(w: Watch, pr: dict[str, Any], api: Any, token: str | None) -> str:
+        from alice import review
+        from alice.providers.router import Router
+
+        wt = worktree_for(cfg, w, pr["head"]["ref"], token)
+        title, diff, sha = review.pr_diff(api, w.repo, w.number)
+        router = Router(cfg)
+        try:
+            findings = review.review(cfg, router, wt, title, diff)
+        finally:
+            router.close()
+        url = review.post(api, w.repo, w.number, sha, findings)
+        return f"{len(findings)} bulgu" + (f": {url}" if url else "")
+
+    return run
+
+
 def check_all(cfg: Any, notify: Callable[[str, str], Any], api: Any = None,
-              run_fix: Callable[[str, Path], str] | None = None, token: str | None = None) -> list[str]:
-    """İzlenen bütün PR'lara bir kez bak. Yapılanları (kısa satırlar) döndürür."""
+              run_fix: Callable[[str, Path], str] | None = None, token: str | None = None,
+              deliver: Callable[[str, str], str] | None = None,
+              reviewer: Callable[[Watch, dict[str, Any], Any, str | None], str] | None = None) -> list[str]:
+    """İzlenen bütün PR'lara bir kez bak. Yapılanları (kısa satırlar) döndürür.
+    deliver: (sohbet, mesaj) -> "" | neden; çekirdekteki uygulama verir. Yoksa düzeltme temiz ajana gider."""
     rows = load()
     if not rows:
         return []
@@ -273,10 +320,11 @@ def check_all(cfg: Any, notify: Callable[[str, str], Any], api: Any = None,
         token = token or github_token(cfg)
         api = GitHubAPI(token)
     run_fix = run_fix or default_runner(cfg)
+    reviewer = reviewer or default_reviewer(cfg)
     done = []
     for w in rows:
         try:
-            done += check_one(cfg, w, api, notify, run_fix, getattr(api, "token", token))
+            done += check_one(cfg, w, api, notify, run_fix, getattr(api, "token", token), deliver, reviewer)
         except Exception as e:  # noqa: BLE001 - bir PR'ın hatası diğerlerini durdurmasın
             _update(w.key, lambda x, e=e: x.log(f"bakılamadı: {str(e)[:160]}"))
             done.append(f"{w.key}: hata {str(e)[:120]}")
@@ -284,7 +332,9 @@ def check_all(cfg: Any, notify: Callable[[str, str], Any], api: Any = None,
 
 
 def check_one(cfg: Any, w: Watch, api: Any, notify: Callable[[str, str], Any],
-              run_fix: Callable[[str, Path], str], token: str | None) -> list[str]:
+              run_fix: Callable[[str, Path], str], token: str | None,
+              deliver: Callable[[str, str], str] | None = None,
+              reviewer: Callable[[Watch, dict[str, Any], Any, str | None], str] | None = None) -> list[str]:
     pr = api.get(f"/repos/{w.repo}/pulls/{w.number}")
     if pr.get("merged") or pr.get("state") != "open":
         what = "birleşti" if pr.get("merged") else "kapandı"
@@ -318,6 +368,18 @@ def check_one(cfg: Any, w: Watch, api: Any, notify: Callable[[str, str], Any],
             return out + [f"{w.key}: deneme sınırı"]
         what = ", ".join(x for x, on in (("CI", fixable.ci), ("çakışma", fixable.conflict),
                                          (f"{len(fixable.comments)} yorum", fixable.comments)) if on)
+        if w.session and deliver is not None:
+            # Kodu yazan sohbetin ajanı: bağlamı biliyor, baştan araştırma yapmadan düzeltir.
+            why = deliver(w.session, fix_prompt(w, pr, fixable, in_chat=True))
+            if not why:
+                _update(w.key, lambda x: x.__setattr__("attempts", x.attempts + 1))
+                _mark(w, sha, fixable, f"{what}: PR'ı hazırlayan sohbete iletildi")
+                notify(f"{w.key}: {what}", "PR'ı hazırlayan sohbete iletildi; ALICE orada düzeltiyor.")
+                return out + [f"{w.key}: sohbete iletildi ({what})"]
+            if why == "meşgul":
+                _update(w.key, lambda x: x.log(f"{what} bekliyor: sohbet şu an başka işte"))
+                return out + [f"{w.key}: sohbet meşgul, sonra"]
+            _update(w.key, lambda x, why=why: x.log(f"sohbete iletilemedi ({why}); ayrı ajan düzeltecek"))
         _update(w.key, lambda x: (setattr(x, "attempts", x.attempts + 1), x.log(f"düzeltiliyor: {what}")))
         wt = worktree_for(cfg, w, pr["head"]["ref"], token)
         result = run_fix(fix_prompt(w, pr, fixable), wt)
@@ -329,10 +391,31 @@ def check_one(cfg: Any, w: Watch, api: Any, notify: Callable[[str, str], Any],
     if new:
         notify(f"{w.key}: {', '.join(new)}", "Kendiliğinden düzeltme bu PR için kapalı; bakman gerekiyor.")
         _mark(w, sha, p, ", ".join(new) + " bildirildi")
-        return out + [f"{w.key}: bildirildi"]
-    if w.auto_merge:
-        return out + _maybe_merge(cfg, w, api, pr, notify)
+        out.append(f"{w.key}: bildirildi")
+    if w.auto_review and sha not in w.reviewed and reviewer is not None:
+        out += _review(w, pr, api, token, reviewer, notify)
+    if w.auto_merge and not new:
+        out += _maybe_merge(cfg, w, api, pr, notify)
     return out
+
+
+def _review(w: Watch, pr: dict[str, Any], api: Any, token: str | None,
+            reviewer: Callable[[Watch, dict[str, Any], Any, str | None], str],
+            notify: Callable[[str, str], Any]) -> list[str]:
+    """Bu commit'i bir kez bağımsız incele. Düzeltme gönderildiği turda yapılmaz: commit birazdan değişecek.
+    Bulgular PR'a ALICE imzasıyla yazılır; takip bunları yeni yorum sayıp kendiliğinden uygulamaz (kullanıcı
+    bakıp karar verir)."""
+    sha = pr["head"]["sha"]
+    _update(w.key, lambda x: (setattr(x, "reviewed", (x.reviewed + [sha])[-50:]),
+                              x.log(f"{sha[:7]} bağımsız olarak inceleniyor")))
+    try:
+        result = reviewer(w, pr, api, token)
+    except Exception as e:  # noqa: BLE001 - inceleme yapılamadı diye takip durmasın
+        _update(w.key, lambda x, e=e: x.log(f"inceleme yapılamadı: {str(e)[:140]}"))
+        return [f"{w.key}: inceleme hatası"]
+    _update(w.key, lambda x: x.log(f"{sha[:7]} incelendi: {result[:160]}"))
+    notify(f"{w.key} incelendi", f"Bağımsız inceleme ({sha[:7]}): {result[:400]}")
+    return [f"{w.key}: incelendi ({result[:60]})"]
 
 
 def _mark(w: Watch, sha: str, p: Problems, text: str) -> None:

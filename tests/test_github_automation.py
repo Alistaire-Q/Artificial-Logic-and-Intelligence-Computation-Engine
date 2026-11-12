@@ -121,8 +121,14 @@ def test_reply_is_signed_so_watcher_ignores_it():
 # --------------------------------------------------------------------------------------------- PR takibi
 @pytest.fixture
 def fixer(monkeypatch, tmp_path):
-    seen = {"prompts": [], "notes": []}
+    seen = {"prompts": [], "notes": [], "reviews": []}
     monkeypatch.setattr(prwatch, "worktree_for", lambda cfg, w, branch, token: tmp_path)
+
+    def reviewer(w, pr, api, token):
+        seen["reviews"].append(pr["head"]["sha"])
+        return "1 bulgu: https://r"
+
+    monkeypatch.setattr(prwatch, "default_reviewer", lambda cfg: reviewer)  # gerçek ajan/ağ yok
 
     def run(prompt, cwd):
         seen["prompts"].append(prompt)
@@ -272,3 +278,69 @@ def test_worktree_opens_separate_copy_and_switches_cwd(tmp_path):
     assert "deneme/yeni" in gh.Git().run(ctx, "worktrees").text
     with pytest.raises(ToolError, match="create=true"):
         gh.Git().run(ToolContext(cwd=repo, config=ctx.config), "worktree", branch="olmayan")
+
+
+# ---------------------------------------------------------------------- sohbete yönlendirme ve otomatik inceleme
+def test_fix_goes_to_the_chat_that_wrote_the_code(fixer):
+    seen, run = fixer
+    prwatch.watch("o/r", 7, session="20261112-101500")
+    red = {"state": "failure", "failed": ["test"], "pending": [], "total": 1}
+    sent, answers = [], iter(["meşgul", ""])
+
+    def deliver(sid, text):
+        sent.append((sid, text))
+        return next(answers)
+
+    cfg = make_config({"brain": ["a:m"]})
+    out = prwatch.check_all(cfg, lambda t, b: None, api=FakeAPI(pr=pr(), checks=red), run_fix=run, deliver=deliver)
+    assert "meşgul" in out[0] and not prwatch.load()[0].handled  # sohbet başka işteyken bölünmez, sonra denenir
+    prwatch.check_all(cfg, lambda t, b: None, api=FakeAPI(pr=pr(), checks=red), run_fix=run, deliver=deliver)
+    sid, text = sent[-1]
+    assert sid == "20261112-101500" and text.startswith("[PR takibi]") and "baştan araştırma yapma" in text
+    assert "git action=worktree" in text  # kullanıcının commit'lenmemiş işine dokunmaz
+    assert not seen["prompts"]  # temiz bağlamlı ajana gitmedi
+    assert "ci:abc123" in prwatch.load()[0].handled
+    assert not seen["reviews"]  # düzeltme gönderilen turda inceleme yok: commit birazdan değişecek
+
+
+def test_falls_back_to_clean_agent_when_chat_unreachable(fixer):
+    seen, run = fixer
+    prwatch.watch("o/r", 7, session="20261112-101500")
+    red = {"state": "failure", "failed": ["test"], "pending": [], "total": 1}
+    prwatch.check_all(make_config({"brain": ["a:m"]}), lambda t, b: None, api=FakeAPI(pr=pr(), checks=red),
+                      run_fix=run, deliver=lambda sid, text: "arkada zaten 3 sohbet çalışıyor")
+    assert len(seen["prompts"]) == 1 and not seen["prompts"][0].startswith("[PR takibi]")
+
+
+def test_each_new_commit_is_reviewed_once(fixer):
+    seen, run = fixer
+    cfg = make_config({"brain": ["a:m"]})
+    prwatch.watch("o/r", 7)
+    notes = []
+    for _ in range(2):
+        prwatch.check_all(cfg, lambda t, b: notes.append(t), api=FakeAPI(pr=pr()), run_fix=run)
+    assert seen["reviews"] == ["abc123"] and any("incelendi" in n for n in notes)
+    prwatch.check_all(cfg, lambda t, b: None, api=FakeAPI(pr=pr(sha="def456")), run_fix=run)
+    assert seen["reviews"] == ["abc123", "def456"]
+    prwatch.watch("o/r", 8, auto_review=False)
+    before = len(seen["reviews"])
+    prwatch.check_all(cfg, lambda t, b: None, api=FakeAPI(pr={**pr(sha="x9"), "number": 8}), run_fix=run)
+    assert len(seen["reviews"]) == before + 1  # yalnız #7'nin yeni commit'i; #8'de inceleme kapalı
+
+
+def test_user_reply_under_alices_review_comment_is_seen():
+    t = thread("T9", "hayatexe", f"Bulgu: None kontrolü yok\n\n{gh.ALICE_MARK}", cid=30)
+    t["comments"]["nodes"].append({"databaseId": 31, "body": "evet bunu düzelt", "createdAt": "",
+                                   "authorAssociation": "OWNER", "author": {"login": "hayatexe"}})
+    data = gh.review_threads(FakeAPI(threads={"reviewThreads": {"nodes": [t]}, "reviews": {"nodes": []},
+                                              "comments": {"nodes": []}}), "o/r", 7)
+    good, _ = prwatch.new_comments(prwatch.Watch("o/r", 7), data)
+    assert [c["id"] for c in good] == [31]
+
+
+def test_watch_tool_records_the_chat_session():
+    ctx = ToolContext(cwd=Path("."), config=make_config({"brain": ["a:m"]}))
+    ctx.state["session_id"] = "20261112-101500"
+    ctx.state["github_api"] = FakeAPI()
+    out = gh.GitHub().run(ctx, "watch", repo="o/r", number=7)
+    assert "bu sohbete gelir" in out.text and prwatch.load()[0].session == "20261112-101500"

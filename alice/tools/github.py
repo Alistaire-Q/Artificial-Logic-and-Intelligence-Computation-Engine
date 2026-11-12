@@ -852,6 +852,8 @@ class GitHub(Tool):
                              "cevaplasın. Varsayılan true."},
         "auto_merge": {"type": "boolean", "description": "watch: CI yeşil, açık konu yokken kendisi birleştirsin. "
                        "Varsayılan false; yalnız kullanıcı açıkça isterse."},
+        "auto_review": {"type": "boolean", "description": "watch: her yeni commit'i bağımsız bir inceleyiciye inceletip "
+                        "bulguları PR'a yazsın. Varsayılan true."},
         "repo": {"type": "string", "description": "'sahip/depo'. Boşsa çalışma klasörünün origin'i."},
         "query": {"type": "string", "description": "repos: ada/açıklamaya göre süzgeç."},
         "number": {"type": "integer", "description": "PR ya da issue numarası."},
@@ -900,7 +902,7 @@ class GitHub(Tool):
             state: str = "open", method: str = "", force: bool = False, comment_id: int = 0, thread: str = "",
             workflow: str = "", inputs: dict[str, Any] | None = None, reviewers: list[str] | None = None,
             auto_fix: bool = True, address_comments: bool = True, auto_merge: bool = False,
-            minutes: int = 15) -> ToolResult:
+            auto_review: bool = True, minutes: int = 15) -> ToolResult:
         if action == "watching":
             from alice import prwatch
 
@@ -1017,7 +1019,9 @@ class GitHub(Tool):
             except ToolError:
                 local = ""
             return ToolResult(prwatch.watch(repo, self._need(number), local, auto_fix=auto_fix,
-                                            address_comments=address_comments, auto_merge=auto_merge))
+                                            address_comments=address_comments, auto_merge=auto_merge,
+                                            auto_review=auto_review,
+                                            session=str(ctx.state.get("session_id") or "")))
         raise ToolError(f"bilinmeyen action: {action}")
 
     def _wait(self, ctx: ToolContext, api: GitHubAPI, repo: str, number: int, branch: str, minutes: int) -> ToolResult:
