@@ -66,16 +66,31 @@ def archive(session_id: str, messages: list[dict[str, Any]]) -> None:
             m["content"] = m["content"][:ARCHIVE_TOOL_CHARS] + "\n…(kısaltıldı)"
         lines.append(json.dumps(m, ensure_ascii=False))
     path = archive_path(session_id)
-    try:
-        have = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        have = []
+    block = ("\n".join(lines) + "\n").encode("utf-8")
     # Aynı mesajlar ikinci kez geliyorsa (özetlemeden sonra oturum kaydedilemeden yeniden yüklendi) yazma:
     # arşivin sonu zaten bunlar. 11 Kasım'da 164 mesaj iki kez yazıldı, sohbet ekranda kendini tekrar ediyordu.
-    if len(have) >= len(lines) and have[-len(lines):] == lines:
+    # Yalnız dosyanın sonu okunur: arşiv MB'larca olabilir, her özetlemede tamamını okumak gereksiz.
+    if _ends_with(path, block):
         return
-    with open(path, "a", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
+    with open(path, "ab") as f:
+        f.write(block)
+
+
+def _ends_with(path: Path, block: bytes) -> bool:
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            if size < len(block):
+                return False
+            start = size - len(block)
+            f.seek(max(0, start - 1))
+            tail = f.read()
+    except OSError:
+        return False
+    if start == 0:
+        return tail == block
+    return tail[0:1] == b"\n" and tail[1:] == block  # satır sınırından başlamalı
 
 
 def load_archive(session_id: str) -> list[dict[str, Any]]:

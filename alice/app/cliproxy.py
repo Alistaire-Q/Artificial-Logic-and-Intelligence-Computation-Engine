@@ -332,6 +332,7 @@ def _cooldown_summary(cooldowns: Any, now: float | None = None) -> str:
     items = cooldowns if isinstance(cooldowns, list) else [cooldowns]
     now = time.time() if now is None else now
     best = 0.0
+    unknown = False  # süresi okunamayan kayıt: proxy beklemede diyor ama ne kadar bilinmiyor
     for it in items:
         if not isinstance(it, dict):
             continue
@@ -340,9 +341,12 @@ def _cooldown_summary(cooldowns: Any, now: float | None = None) -> str:
             until = it.get("retry_at") or it.get("until") or it.get("until_ts") or it.get("expires_at") or it.get("reset")
             ts = _num(until) or _iso_ts(until)
             left = ts - now if ts else None
-        if left and left > 0:
+        if left is None:
+            unknown = True
+        elif left > 0:
             best = max(best, left)
-    return _duration(best) if best > 0 else "kısa süre"
+    # Süresi geçmiş kayıtlar engel sayılmaz: proxy temizlemeden bıraksa hesap sonsuza dek "meşgul" kalıyordu.
+    return _duration(best) if best > 0 else "kısa süre" if unknown else ""
 
 
 _SIGN_IN_CODES = ("invalid_grant", "refresh_failed", "unauthorized", "invalid_token")
@@ -359,7 +363,7 @@ def _account_error(f: dict[str, Any]) -> tuple[bool, str]:
             return True, "hesap kısıtlanmış (sağlayıcı girişi reddediyor)"
         return True, "giriş süresi dolmuş"
     if str(f.get("status") or "").lower() == "error" or f.get("unavailable"):
-        if f.get("quota_blocked") or f.get("cooldowns"):
+        if f.get("quota_blocked") or _cooldown_summary(f.get("cooldowns")):
             return False, ""  # kota: ayrı gösterilir
         return False, " ".join(msg.split())[:120] or "hata"
     return False, ""
@@ -379,6 +383,7 @@ def _account(f: dict[str, Any]) -> dict[str, Any]:
     name = str(f.get("id") or f.get("name") or "")
     provider = _provider_of(name, str(f.get("provider") or ""))
     sign_in, error = _account_error(f)
+    cooldown = _cooldown_summary(f.get("cooldowns"))
     return {
         "name": name,
         "email": str(f.get("email") or f.get("account") or f.get("label") or name),
@@ -391,11 +396,11 @@ def _account(f: dict[str, Any]) -> dict[str, Any]:
         "error": error,
         "expires_at": str(f.get("access_token_expires_at") or ""),
         "quota_blocked": bool(f.get("quota_blocked")),
-        "cooldown": _cooldown_summary(f.get("cooldowns")),
+        "cooldown": cooldown,
         "quota": _quota_summary(f.get("quota")),
         "failed": int(f.get("failed") or 0),
-        "ready": not (sign_in or error or f.get("disabled") or f.get("quota_blocked") or f.get("cooldowns")
-                      or f.get("unavailable")),
+        # Ham cooldowns listesi değil, hâlâ süren bekleme: süresi geçmiş kayıt hesabı meşgul göstermez.
+        "ready": not (sign_in or error or f.get("disabled") or f.get("quota_blocked") or cooldown),
     }
 
 

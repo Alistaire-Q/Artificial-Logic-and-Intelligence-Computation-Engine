@@ -186,8 +186,11 @@ needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git yok")
 
 def _git(cwd, *args):
     env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
-           "GIT_COMMITTER_EMAIL": "t@t"}
-    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, env=env)
+           "GIT_COMMITTER_EMAIL": "t@t",
+           # Geçici klasörün sahibi farklı görünebilir (sandbox, CI): git "dubious ownership" deyip reddetmesin.
+           "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.directory", "GIT_CONFIG_VALUE_0": "*"}
+    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, env=env)
+    assert r.returncode == 0, (args, r.stdout.decode(errors="replace"), r.stderr.decode(errors="replace"))
 
 
 @needs_git
@@ -221,3 +224,68 @@ def test_switch_to_a_branch_that_only_exists_on_github(tmp_path):
         switch_branch(two, "yok-boyle-dal")
     switch_branch(two, "yeni-dal", create=True)
     assert current_branch(two) == "yeni-dal"
+
+
+def test_client_config_error_is_not_treated_as_a_dead_token(monkeypatch):
+    """unauthorized_client istemci ayar hatasıdır: jeton kilitlenmez, düzeltilince yeniden denenir."""
+    from alice.connect import oauth, store
+    from alice.connect.manifest import Auth
+
+    store.save("spotify", access_token="a", refresh_token="r1", expires_at=1.0)
+    calls = []
+
+    class Resp:
+        status_code = 400
+        text = '{"error": "unauthorized_client"}'
+
+    monkeypatch.setattr("httpx.post", lambda *a, **k: calls.append(1) or Resp())
+    for _ in range(2):
+        with pytest.raises(oauth.OAuthError, match="unauthorized_client"):
+            oauth.refresh(Auth(kind="oauth2", token_url="https://t"), "spotify", "cid")
+    assert len(calls) == 2 and not oauth.needs_sign_in("spotify")
+    assert "Google" not in oauth.dead_message("spotify") and "Google" in oauth.dead_message("google_calendar")
+    assert "--account ev" in oauth.dead_message("gmail:ev")
+
+
+def test_archive_dedupe_only_matches_whole_trailing_lines():
+    sid = sess.new_session_id()
+    sess.archive(sid, [{"role": "user", "content": "xa"}])
+    sess.archive(sid, [{"role": "user", "content": "a"}])  # "xa" satırının sonu "a" ile bitiyor ama farklı mesaj
+    assert [m["content"] for m in sess.load_archive(sid)] == ["xa", "a"]
+
+
+def test_background_chat_runs_leftover_steer_message_before_closing(monkeypatch, workdir):
+    """Arka plandaki sohbetin turu araya yazılan mesajı alamadan bittiyse mesaj aynı sohbette yeni tur olur; sohbet
+    önce kapatılıp mesaj kapanmış kuyruğa eklenmez."""
+    import threading
+
+    from alice.app.server import AppState
+
+    state = AppState(make_config({"brain": ["a:m"], "fast": ["a:m"]}), workdir, "auto",
+                     provider_factory=lambda pc: None)
+    chat = state.chat
+    done = threading.Event()
+    seen: list[str] = []
+
+    def fake_turn(prompt, images=None):
+        seen.append(prompt)
+        if len(seen) == 1:
+            chat.agent.busy = chat.agent._steering = True
+            assert chat.agent.steer("bir de bunu yap")
+            chat.agent.busy = chat.agent._steering = False  # tur mesajı almadan bitti
+        else:
+            done.set()
+        return "ok"
+
+    monkeypatch.setattr(chat.agent, "run_turn", fake_turn)
+    closed = []
+    monkeypatch.setattr(state, "_finished", lambda c: closed.append(len(seen)))
+    assert state.send("ilk iş")[0]
+    assert done.wait(10)
+    assert seen == ["ilk iş", "bir de bunu yap"]
+    for _ in range(50):
+        if closed:
+            break
+        time.sleep(0.05)
+    assert closed == [2]  # sohbet ancak ikinci tur bitince kapandı
+    state.shutdown()

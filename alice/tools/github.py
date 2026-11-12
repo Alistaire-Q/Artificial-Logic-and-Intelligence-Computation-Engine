@@ -202,9 +202,16 @@ def repo_root(cwd: Path) -> Path:
     return p
 
 
-def list_branches(cwd: Path) -> list[dict[str, Any]]:
-    """Yerel ve uzaktaki dallar (son commit'e göre, yenisi önce). Uzakta olup yerelde olmayan dal remote=True."""
+def list_branches(cwd: Path, fetch: bool = False, token: str | None = None) -> list[dict[str, Any]]:
+    """Yerel ve uzaktaki dallar (son commit'e göre, yenisi önce). Uzakta olup yerelde olmayan dal remote=True.
+    fetch: önce origin'in dallarını yenile (klondan sonra GitHub'da açılan dal da listede görünsün). Ağ yoksa ya
+    da yavaşsa eldeki liste kullanılır."""
     root = repo_root(cwd)
+    if fetch:
+        try:
+            run_git(["fetch", "--prune", "origin"], root, token, timeout=20, check=False)
+        except ToolError:  # zaman aşımı: bilinen dallarla devam
+            pass
     cur = current_branch(root)
     fmt = "%(refname)\t%(committerdate:unix)\t%(subject)"
     _, out = run_git(["for-each-ref", f"--format={fmt}", "--sort=-committerdate", "refs/heads", "refs/remotes"],

@@ -241,3 +241,14 @@ def test_groups_ready_skips_services_without_usable_accounts():
               "refresh_error": {"code": "invalid_grant"}},
              {"id": "codex-1.json", "provider": "codex", "status": "active"}]
     assert cliproxy.groups_ready(lambda: {"files": files}) == {"claude": False, "codex": True}
+
+
+def test_expired_cooldown_does_not_keep_account_busy():
+    """Proxy süresi geçmiş bekleme kaydını temizlemeden bırakırsa hesap sonsuza dek meşgul görünmemeli."""
+    now = __import__("time").time()
+    acc = cliproxy._account({"id": "claude-x.json", "provider": "claude", "status": "active",
+                             "cooldowns": [{"reason": "quota", "retry_at": now - 3600}]})
+    assert acc["cooldown"] == "" and acc["ready"]
+    unknown = cliproxy._account({"id": "claude-y.json", "provider": "claude", "status": "active",
+                                 "cooldowns": [{"reason": "quota"}]})  # süre yok: proxy bekliyor diyor
+    assert unknown["cooldown"] == "kısa süre" and not unknown["ready"]

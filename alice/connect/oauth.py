@@ -142,7 +142,9 @@ def refresh(auth: Auth, name: str, client_id: str, client_secret: str = "") -> d
     except Exception as e:  # noqa: BLE001
         raise OAuthError(f"token yenilenemedi: {e}") from e
     if r.status_code >= 400:
-        if r.status_code in (400, 401) and ("invalid_grant" in r.text or "unauthorized_client" in r.text):
+        # Yalnız invalid_grant jetonun öldüğünü söyler. unauthorized_client gibi hatalar istemci kimliği/ayar hatasıdır:
+        # kalıcı kilit konmaz, her seferinde gerçek hata gösterilir (ayar düzelince kendiliğinden geçer).
+        if r.status_code in (400, 401) and "invalid_grant" in r.text:
             why = "süresi dolmuş ya da iptal edilmiş" if "expired or revoked" in r.text else "geçersiz"
             store.save(name, refresh_dead=_fingerprint(rt), refresh_error=why, refresh_dead_at=time.time())
             raise OAuthError(dead_message(name, why))
@@ -165,12 +167,18 @@ def needs_sign_in(name: str) -> bool:
     return bool(rt) and row.get("refresh_dead") == _fingerprint(rt)
 
 
+GOOGLE_CONNECTIONS = ("google_", "gmail:")  # Google'ın OAuth istemcisini kullanan bağlantılar
+
+
 def dead_message(name: str, why: str = "") -> str:
-    return (f"{name}: giriş geçersiz, yeniden giriş gerekiyor (sağlayıcı yenileme jetonunu kabul etmiyor"
-            + (f": {why}" if why else "") + "). ALICE bunu kendisi yenileyemez. Yeniden bağlan: alice connect "
-            f"{name}. Google'da bu her hafta tekrarlıyorsa: Google Cloud'daki OAuth uygulaması 'Testing' "
-            "durumundayken Google yenileme jetonlarını 7 günde geçersiz kılar; kalıcı çözüm uygulamayı "
-            "'In production' durumuna almak.")
+    text = (f"{name}: giriş geçersiz, yeniden giriş gerekiyor (sağlayıcı yenileme jetonunu kabul etmiyor"
+            + (f": {why}" if why else "") + "). ALICE bunu kendisi yenileyemez. Yeniden bağlan: "
+            + (f"alice connect gmail --account {name[len('gmail:'):]}" if name.startswith("gmail:")
+               else f"alice connect {name}") + ".")
+    if name.startswith(GOOGLE_CONNECTIONS):
+        text += (" Bu her hafta tekrarlıyorsa: Google Cloud'daki OAuth uygulaması 'Testing' durumundayken Google "
+                 "yenileme jetonlarını 7 günde geçersiz kılar; kalıcı çözüm uygulamayı 'In production' durumuna almak.")
+    return text
 
 
 def _save(name: str, body: dict[str, Any], keep_refresh: str = "") -> dict[str, Any]:

@@ -214,7 +214,7 @@ def restore_reads(ctx: ToolContext, messages: list[dict[str, Any]], saved_at: fl
                 continue
             if p is None or not p.is_file():
                 continue
-            if _mtime(p) / 1e9 <= saved_at + 1:
+            if _mtime(p) / 1e9 <= saved_at:  # kayıttan sonra (aynı saniye içinde bile) değişen dosya okunmuş sayılmaz
                 mark_read(ctx, p)
                 n += 1
     return n

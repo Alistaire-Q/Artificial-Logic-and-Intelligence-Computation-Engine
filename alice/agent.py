@@ -735,13 +735,28 @@ class Agent:
         # sıradaki takılan bir model (step-5-preview, 180 sn zaman aşımı) işi bitmiş ALICE'i dakikalarca "çalışıyor"
         # bırakıyordu: kontrol süre sınırlı, yetişmezse cevap olduğu gibi kalır (sonucu arkada atılır).
         box: dict[str, Any] = {}
+        give_up = threading.Event()
+
+        class _Quiet:
+            """Akışı kimseye göstermeyen ama iptal edilebilen alıcı: süre dolunca sağlayıcı isteği de kesilir,
+            arkada kota ve bağlantı harcayarak sürmez (router akış sırasında ve modeller arasında buna bakar)."""
+
+            def on_delta(self, text: str) -> None:
+                pass
+
+            def on_reset(self) -> None:
+                pass
+
+            def cancelled(self) -> bool:
+                return give_up.is_set()
 
         def check() -> None:
             try:
                 # 400 token düşünen modellerde (Cerebras qwen, step) düşünmeye gidip cevap boş dönüyordu.
                 box["res"] = self.router.chat(str(self.config.agent.get("verify_role", "fast")),
-                                              [{"role": "user", "content": prompt}], temperature=0, max_tokens=1200)
-            except Exception as e:  # noqa: BLE001
+                                              [{"role": "user", "content": prompt}], temperature=0, max_tokens=1200,
+                                              stream=_Quiet())
+            except Exception as e:  # noqa: BLE001 - iptal (StreamCancelled) dahil
                 box["err"] = e
 
         worker = threading.Thread(target=check, daemon=True, name="alice-verify")
@@ -750,8 +765,9 @@ class Agent:
         while worker.is_alive() and time.monotonic() < deadline and not self.cancel.is_set():
             worker.join(0.2)
         if "res" not in box:
+            give_up.set()
             if worker.is_alive():
-                log.debug("iddia kontrolü süre sınırını aştı; cevap olduğu gibi bırakıldı")
+                log.debug("iddia kontrolü süre sınırını aştı; istek iptal edildi, cevap olduğu gibi bırakıldı")
             return ""
         try:
             res = box["res"]

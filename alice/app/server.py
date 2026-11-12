@@ -1513,7 +1513,10 @@ class AppState:
                 prompt = builtin_prompt(text)
                 if prompt is None:
                     return False, f"bilinmeyen komut: {text.split()[0]}"
-        images = images or []
+        self._start_turn(chat, text, prompt, images or [])
+        return True, None
+
+    def _start_turn(self, chat: Chat, text: str, prompt: str, images: list[str]) -> None:
         agent, pub = chat.agent, chat.ui.publish
         chat.queued = True
 
@@ -1536,18 +1539,19 @@ class AppState:
                     chat.save()
                 except OSError:
                     pass
-                self._finished(chat)
-                chat.ui.publish({"type": "busy", "value": False})
-                self.bus.publish({"type": "status", **self.status()})
-                # Tur, araya yazılan mesajı alamadan bittiyse (hata, adım sınırı) mesaj kaybolmasın: yeni tur olur.
-                # Kullanıcı Durdur'a bastıysa bekleyenler de bırakılır.
+                # Tur, araya yazılan mesajı alamadan bittiyse (hata, adım sınırı) mesaj kaybolmasın: aynı sohbette yeni
+                # tur olur. Bu karar sohbet kapatılmadan verilmeli: arka plandaki sohbet _finished'de kapanınca
+                # kuyruğuna eklenen iş hiç çalışmıyordu. Kullanıcı Durdur'a bastıysa bekleyenler bırakılır.
                 left = agent.take_inbox()
                 if left and not agent.cancel.is_set() and not chat.abandoned:
-                    more = [img for _, imgs in left for img in imgs][:6]
-                    self.send("\n\n".join(t for t, _ in left), more, chat.sid)
+                    joined = "\n\n".join(t for t, _ in left)
+                    self._start_turn(chat, joined, joined, [img for _, imgs in left for img in imgs][:6])
+                else:
+                    self._finished(chat)
+                    chat.ui.publish({"type": "busy", "value": False})
+                    self.bus.publish({"type": "status", **self.status()})
 
         chat.run(run)
-        return True, None
 
     def transcribe(self, data: bytes, filename: str) -> str:
         """Arayüzün mikrofon kaydını yazıya çevir (Whisper)."""
@@ -2223,10 +2227,12 @@ def make_handler(state: AppState):
 
                     try:
                         if p == "/api/git/branches":
-                            return self._json({"ok": True, "branches": list_branches(state.ctx.cwd)[:60]})
-                        if state.agent.busy:
-                            return self._json({"ok": False, "error": "ALICE çalışırken dal değiştirilmez; önce bitsin "
-                                               "ya da durdur"}, 409)
+                            return self._json({"ok": True, "branches": list_branches(
+                                state.ctx.cwd, fetch=True, token=github_token(state.cfg))[:60]})
+                        if state.chat.busy or state.running():
+                            # Arkada çalışan sohbetler de aynı depoyu okuyup yazıyor olabilir: dal altlarından değişmesin.
+                            return self._json({"ok": False, "error": "ALICE çalışırken dal değiştirilmez; arkadakiler "
+                                               "dahil işler bitsin ya da durdur"}, 409)
                         note = switch_branch(state.ctx.cwd, str(d.get("branch", "")), bool(d.get("create")),
                                              github_token(state.cfg))
                     except ToolError as e:
