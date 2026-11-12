@@ -165,6 +165,9 @@ class BuiltinBrowser:
         self._pages: dict[str, CDPPage] = {}
         self.target = ""  # kullanıcının panelde seçtiği sekme; boş: en son etkin olan
         self._lock = threading.Lock()
+        # Sekme bağlantıları: panelin kare istekleri, girdi uç noktası ve ajanın aracı aynı anda değiştirir.
+        # start()'ın kilidinden ayrı: page() içinde start() çağrılırken kilitlenmesin.
+        self._pages_lock = threading.Lock()
 
     # ----------------------------------------------------------------------------------------- yaşam döngüsü
     @property
@@ -242,9 +245,11 @@ class BuiltinBrowser:
         self.proc = None
 
     def stop(self) -> None:
-        for p in self._pages.values():
+        with self._pages_lock:
+            pages = list(self._pages.values())
+            self._pages.clear()
+        for p in pages:
             p.close()
-        self._pages.clear()
         if self.proc is not None and self.proc.poll() is None:
             self.proc.terminate()
             try:
@@ -280,12 +285,14 @@ class BuiltinBrowser:
     def page(self) -> tuple[CDPPage, dict[str, Any]]:
         self.start()
         tab = self.current()
-        conn = self._pages.get(tab["id"])
-        if conn is None or conn.closed:
-            conn = self._pages[tab["id"]] = CDPPage(tab["ws"])
         live = {t["id"] for t in self.tabs()}
-        for tid in [k for k in self._pages if k not in live]:
-            self._pages.pop(tid).close()
+        with self._pages_lock:
+            conn = self._pages.get(tab["id"])
+            if conn is None or conn.closed:
+                conn = self._pages[tab["id"]] = CDPPage(tab["ws"])
+            gone = [self._pages.pop(k) for k in list(self._pages) if k not in live and k != tab["id"]]
+        for old in gone:
+            old.close()
         return conn, tab
 
     def select(self, tab_id: str) -> None:

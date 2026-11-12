@@ -202,26 +202,33 @@ class Problems:
 def new_comments(w: Watch, data: dict[str, list[dict[str, Any]]]) -> tuple[list[dict], list[dict]]:
     """Ele alınmamış yorumlar: çözülmemiş konulardaki son yorumlar, değişiklik isteyen incelemeler, genel yorumlar.
     ALICE'in kendi cevapları ve daha önce görülenler atlanır. (güvenilir, dışarıdan) olarak ikiye ayrılır."""
-    from alice.tools.github import ALICE_MARK
+    from alice.tools.github import by_alice
 
     good: list[dict] = []
     outside: list[dict] = []
 
     def take(item: dict, extra: dict) -> None:
-        if item["id"] in w.seen or ALICE_MARK in item["body"] or not item["body"].strip():
+        if item["id"] in w.seen or by_alice(item["body"]) or not item["body"].strip():
             return
         (good if item["trusted"] else outside).append({**item, **extra})
 
     for t in data.get("threads", []):
         if t["resolved"] or not t["comments"]:
             continue
-        if ALICE_MARK in t["comments"][-1]["body"]:
+        if by_alice(t["comments"][-1]["body"]):
             continue  # son söz ALICE'te: yeni bir şey yazılmadı
         # Konudaki en yeni, ALICE'in yazmadığı yorum: ALICE'in inceleme yorumunun altına kullanıcı cevap yazınca da
         # görülsün (konunun ilk yorumu ALICE'inki olduğu için önceden atlanıyordu).
-        human = [c for c in t["comments"] if ALICE_MARK not in c["body"]]
-        take(human[-1], {"kind": "thread", "thread": t["id"], "path": t["path"], "line": t["line"],
-                         "conversation": [f"{c['author']}: {c['body']}" for c in t["comments"]]})
+        human = [c for c in t["comments"] if not by_alice(c["body"])]
+        last = human[-1]
+        # Düzeltici ajana yalnız ALICE'in ve güvenilir yazarların sözü gider. Konuya dışarıdan yazılanlar güvenilir
+        # bir yorumun yanında gelse bile talimat olarak gitmez: ayrıca yalnız bildirilir.
+        convo = [f"{c['author']}: {c['body']}" for c in t["comments"] if c["trusted"] or by_alice(c["body"])]
+        for c in human:
+            if not c["trusted"] and c is not last:
+                take(c, {"kind": "thread", "thread": t["id"], "path": t["path"], "line": t["line"]})
+        take(last, {"kind": "thread", "thread": t["id"], "path": t["path"], "line": t["line"],
+                    "conversation": convo})
     for r in data.get("reviews", []):
         if r["state"] == "CHANGES_REQUESTED":
             take(r, {"kind": "review"})
@@ -248,7 +255,9 @@ def inspect(w: Watch, api: Any, pr: dict[str, Any]) -> Problems:
 
 # ------------------------------------------------------------------------------------------ çalışma kopyası
 def worktree_for(cfg: Any, w: Watch, branch: str, token: str | None) -> Path:
-    """PR dalının ALICE'e ait worktree'si: varsa güncellenir, yoksa açılır. Kullanıcının kopyasına dokunulmaz."""
+    """PR dalının ALICE'e ait worktree'si: varsa güncellenir, yoksa açılır. Kullanıcının kopyasına dokunulmaz:
+    worktree ayrık HEAD ile origin/<dal> üzerinde açılır, yerel <dal> kullanılmaz (kullanıcı o daldaysa git reddederdi;
+    değilse push'lanmamış commit'leri sıfırlanırdı). Push `HEAD:<dal>` ile yapılır (git aracı ayrık HEAD'de öyle yapar)."""
     from alice.tools.github import ToolError, clone_or_update, run_git
 
     base = Path(w.path) if w.path and (Path(w.path) / ".git").exists() else clone_or_update(cfg, w.repo, "", token)[0]
@@ -256,16 +265,15 @@ def worktree_for(cfg: Any, w: Watch, branch: str, token: str | None) -> Path:
     run_git(["fetch", "--prune", "origin", branch], base, token, timeout=300)
     if (wt / ".git").exists():
         run_git(["fetch", "origin", branch], wt, token, timeout=300)
-        run_git(["checkout", "-B", branch, f"origin/{branch}"], wt)
+        run_git(["checkout", "--force", "--detach", f"origin/{branch}"], wt)
         run_git(["reset", "--hard", f"origin/{branch}"], wt)  # ALICE'in kopyası: yarım kalmış iş atılır
         run_git(["clean", "-fd"], wt)
         return wt
     wt.parent.mkdir(parents=True, exist_ok=True)
     run_git(["worktree", "prune"], base, check=False)
-    code, out = run_git(["worktree", "add", "-B", branch, str(wt), f"origin/{branch}"], base, check=False)
+    code, out = run_git(["worktree", "add", "--detach", str(wt), f"origin/{branch}"], base, check=False)
     if code != 0:
         raise ToolError(f"worktree açılamadı: {out[-300:]}")
-    run_git(["branch", f"--set-upstream-to=origin/{branch}", branch], wt, check=False)
     return wt
 
 
@@ -286,7 +294,8 @@ def fix_prompt(w: Watch, pr: dict[str, Any], p: Problems, in_chat: bool = False)
                  f"dal doğruysa `git pull` ile PR'ın son hâlini al."]
     else:
         parts = [f"{w.repo} deposundaki PR #{w.number} ('{pr.get('title', '')}', {branch} -> {base}) için düzeltme "
-                 f"işi. Çalışma klasörü bu PR dalının ayrı bir kopyası; dal zaten '{branch}'."]
+                 f"işi. Çalışma klasörü bu PR dalının ayrı bir kopyası (origin/{branch} üzerinde ayrık HEAD; dal "
+                 "değiştirme, olduğu yerde commit'le)."]
     todo = []
     if p.conflict:
         todo.append(f"PR '{base}' dalıyla çakışıyor. `git fetch origin {base}` ve `git merge origin/{base}` ile "
@@ -310,7 +319,7 @@ def fix_prompt(w: Watch, pr: dict[str, Any], p: Problems, in_chat: bool = False)
         "- Her sorunun kök nedenini düzelt; testi gevşeterek ya da atlayarak 'yeşil' yapma. Yorum yanlışsa kodu "
         "değiştirme, nedenini cevapta yaz.\n"
         "- Değişen koda ait testleri koş (test_run ya da run_command). Bütün test paketini koşma.\n"
-        f"- Bitince commit'le ve `git push origin {branch}` (git aracı action=push). Force push yapma, başka dala "
+        f"- Bitince commit'le ve git aracıyla action=push branch={branch} gönder. Force push yapma, başka dala "
         "dokunma, PR'ı birleştirme ya da kapatma.\n"
         f"- Uyguladığın ya da bilerek uygulamadığın her satır yorumuna github action=review_reply number={w.number} "
         "comment_id=<yorum> ile tek cümlelik cevap yaz (ne değişti ya da neden değişmedi), sonra uyguladıklarını "

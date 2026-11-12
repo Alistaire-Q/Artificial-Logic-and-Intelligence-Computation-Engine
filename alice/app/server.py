@@ -656,7 +656,10 @@ class AppState:
             if len(self.running()) >= self.MAX_BACKGROUND:
                 return None
             loaded = sess.load(sid)
-            chat = Chat(self, self.ctx.cwd, self.agent.permissions.mode, sid=sid,
+            # Kayıtlı sohbet kendi klasöründe açılır: kullanıcı başka projeye geçmiş olsa da PR takibinin işi
+            # o sohbetin deposunda yapılsın.
+            cwd = (sess.saved_cwd(sid) if loaded else None) or self.ctx.cwd
+            chat = Chat(self, cwd, self.agent.permissions.mode, sid=sid,
                         messages=loaded[1] if loaded else [])
             self.background[sid] = chat
             return chat

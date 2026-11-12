@@ -423,6 +423,7 @@ class GitHubAPI:
 
 # ----------------------------------------------------------------------------------- CI ve inceleme yardımcıları
 ALICE_MARK = "— ALICE"  # ALICE'in yazdığı cevapların imzası: PR takibi kendi cevaplarını yeni yorum sanmasın
+
 # Arka planda kendiliğinden uygulanabilecek yorumların yazarları. Yabancının yorumu yalnız bildirilir: PR'a yorum
 # yazan herkes ALICE'e kod değiştirtebilmesin.
 TRUSTED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
@@ -487,14 +488,26 @@ def rerun_failed(api: GitHubAPI, repo: str, sha: str) -> list[str]:
 THREADS_QUERY = """query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) { pullRequest(number: $number) {
     reviewThreads(first: 100) { nodes { id isResolved isOutdated path line originalLine
-      comments(first: 30) { nodes { databaseId body createdAt authorAssociation author { login } } } } }
-    reviews(first: 50) { nodes { databaseId state body submittedAt authorAssociation author { login } } }
-    comments(first: 50) { nodes { databaseId body createdAt authorAssociation author { login } } } } } }"""
+      comments(first: 30) { nodes { databaseId body createdAt authorAssociation author { __typename login } } } } }
+    reviews(first: 50) { nodes { databaseId state body submittedAt authorAssociation author { __typename login } } }
+    comments(first: 50) { nodes { databaseId body createdAt authorAssociation author { __typename login } } } } } }"""
 
 
-def trusted(author: str, association: str) -> bool:
+def by_alice(body: str) -> bool:
+    """Yorumu ALICE mi yazdı: imza gövdenin SONUNDA olmalı; alıntı satırları ('> ') sayılmaz. Kullanıcı ALICE'in
+    cevabını alıntılayıp altına yazınca o yorum ALICE'inki sanılıp atlanmasın."""
+    own = [ln for ln in (body or "").splitlines() if not ln.lstrip().startswith(">")]
+    return "\n".join(own).rstrip().endswith(ALICE_MARK)
+
+
+def trusted(author: str, association: str, kind: str = "") -> bool:
+    """Depoda yetkili kullanıcı ya da bilinen bot. Bot adı TAM eşleşmeli ve hesap gerçekten bot olmalı (kind:
+    GraphQL __typename; REST'te '[bot]' soneki): 'copilot-helper' gibi bir kullanıcı hesabı güvenilir sayılmasın."""
+    if association in TRUSTED_ASSOCIATIONS:
+        return True
     low = (author or "").lower()
-    return association in TRUSTED_ASSOCIATIONS or any(low.startswith(b) for b in TRUSTED_BOTS)
+    is_bot = kind == "Bot" or low.endswith("[bot]")
+    return is_bot and low.removesuffix("[bot]") in TRUSTED_BOTS
 
 
 def review_threads(api: GitHubAPI, repo: str, number: int) -> dict[str, list[dict[str, Any]]]:
@@ -505,18 +518,21 @@ def review_threads(api: GitHubAPI, repo: str, number: int) -> dict[str, list[dic
     def who(node: dict[str, Any]) -> str:
         return ((node.get("author") or {}).get("login") or "?")
 
+    def ok(node: dict[str, Any]) -> bool:
+        return trusted(who(node), node.get("authorAssociation", ""), (node.get("author") or {}).get("__typename", ""))
+
     threads = []
     for t in pr["reviewThreads"]["nodes"]:
         comments = [{"id": c["databaseId"], "author": who(c), "body": c.get("body") or "",
-                     "trusted": trusted(who(c), c.get("authorAssociation", "")), "at": c.get("createdAt", "")}
+                     "trusted": ok(c), "at": c.get("createdAt", "")}
                     for c in t["comments"]["nodes"]]
         threads.append({"id": t["id"], "resolved": t["isResolved"], "outdated": t["isOutdated"], "path": t["path"],
                         "line": t.get("line") or t.get("originalLine"), "comments": comments})
     reviews = [{"id": r["databaseId"], "state": r["state"], "author": who(r), "body": r.get("body") or "",
-                "trusted": trusted(who(r), r.get("authorAssociation", "")), "at": r.get("submittedAt", "")}
+                "trusted": ok(r), "at": r.get("submittedAt", "")}
                for r in pr["reviews"]["nodes"]]
     comments = [{"id": c["databaseId"], "author": who(c), "body": c.get("body") or "",
-                 "trusted": trusted(who(c), c.get("authorAssociation", "")), "at": c.get("createdAt", "")}
+                 "trusted": ok(c), "at": c.get("createdAt", "")}
                 for c in pr["comments"]["nodes"]]
     return {"threads": threads, "reviews": reviews, "comments": comments}
 
@@ -535,13 +551,13 @@ def format_threads(data: dict[str, list[dict[str, Any]]], only_open: bool = True
         if r["body"].strip() and r["state"] in ("CHANGES_REQUESTED", "COMMENTED"):
             rows.append(f"[inceleme #{r['id']}] {r['author']} {r['state']}: " + " ".join(r["body"].split())[:800])
     for c in data["comments"]:
-        if ALICE_MARK not in c["body"]:
+        if not by_alice(c["body"]):
             rows.append(f"[yorum #{c['id']}] {c['author']}: " + " ".join(c["body"].split())[:800])
     return "\n".join(rows) or ("açık inceleme konusu yok" if only_open else "yorum yok")
 
 
 def reply_to_comment(api: GitHubAPI, repo: str, number: int, comment_id: int, body: str) -> dict[str, Any]:
-    text = body.rstrip() + ("" if ALICE_MARK in body else f"\n\n{ALICE_MARK}")
+    text = body.rstrip() + ("" if by_alice(body) else f"\n\n{ALICE_MARK}")
     return api.post(f"/repos/{repo}/pulls/{int(number)}/comments/{int(comment_id)}/replies", {"body": text})
 
 
@@ -792,7 +808,8 @@ class Git(Tool):
         return ToolResult("\n".join(lines))
 
     def _push(self, ctx: ToolContext, root: Path, branch: str, force: bool, allow_protected: bool) -> ToolResult:
-        branch = branch or current_branch(root)
+        local = current_branch(root)
+        branch = branch or local
         if not branch:
             raise ToolError("ayrık HEAD: push için branch ver")
         default = ""
@@ -807,7 +824,9 @@ class Git(Tool):
             raise ToolError(f"'{branch}' korumalı dal (deponun ana dalı). Doğrudan push yerine yeni dal aç "
                             f"(git switch create=true), push et ve github pr_create kullan. Kullanıcı açıkça "
                             f"istediyse protected=true ile tekrar çağır; onay istenecek.")
-        args = ["push", "-u", "origin", branch] + (["--force-with-lease"] if force else [])
+        # Ayrık HEAD (ör. PR takibinin worktree'si): yerel dal yok, HEAD uzak dala gönderilir.
+        ref = branch if local else f"HEAD:refs/heads/{branch}"
+        args = ["push"] + (["-u"] if local else []) + ["origin", ref] + (["--force-with-lease"] if force else [])
         _, out = run_git(args, root, _token(ctx), timeout=300)
         return ToolResult(out or f"{branch} gönderildi")
 

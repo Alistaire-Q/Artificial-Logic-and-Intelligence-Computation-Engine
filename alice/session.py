@@ -175,6 +175,17 @@ def load(session_id: str | None = None) -> tuple[str, list[dict[str, Any]]] | No
     return None
 
 
+def saved_cwd(session_id: str) -> Path | None:
+    """Oturumun kaydedildiği çalışma klasörü (hâlâ varsa). Arka planda diskten açılan sohbet (ör. PR takibinin
+    düzeltme işi) uygulamanın o anki klasöründe değil kendi deposunda çalışsın."""
+    try:
+        data = json.loads((sessions_dir() / f"{session_id}.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    cwd = Path(data.get("cwd") or "")
+    return cwd if data.get("cwd") and cwd.is_dir() else None
+
+
 # Kullanıcının verdiği ad ve sabitleme. Oturum dosyası her adımda baştan yazıldığı için ayrı tutulur:
 # {"<id>": {"title": "...", "pinned": true}}
 def _meta_path() -> Path:

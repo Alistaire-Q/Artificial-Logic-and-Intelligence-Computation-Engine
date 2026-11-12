@@ -269,6 +269,7 @@ def post(api: Any, repo: str, number: int, sha: str, findings: list[Finding], di
         r = api.post(f"/repos/{repo}/pulls/{number}/reviews", payload)
     except ToolError:
         payload = {"commit_id": sha, "event": "COMMENT",
-                   "body": summary + "\n\n" + "\n\n".join(f.text() for f in findings)}
+                   "body": summary.removesuffix(f"\n\n{ALICE_MARK}") + "\n\n"
+                   + "\n\n".join(f.text() for f in findings) + f"\n\n{ALICE_MARK}"}
         r = api.post(f"/repos/{repo}/pulls/{number}/reviews", payload)
     return str(r.get("html_url") or "")
