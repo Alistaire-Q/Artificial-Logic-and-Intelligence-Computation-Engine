@@ -407,8 +407,11 @@ class Chat:
         self.ctx.state["sessions"] = SessionsAPI(app, self)
         self.ctx.state["builtin_browser"] = app.builtin_browser  # tarayıcı aracı ve preview bunu kullanır
         attach_memory(self.agent, "uygulama")
+        self.started = time.time()  # oturum süresi (durum çubuğu); kayıtlı sohbette ilk açılışı
+        self._ckpt_sig = (0, 0)
         if messages is not None:
             self.agent.messages = self.agent.messages[:1] + messages
+            self._restore_extra()
             try:  # yeniden açılan sohbette az önce okunan dosyalar yine "okunmuş" sayılsın
                 from alice.tools.files import restore_reads
 
@@ -434,8 +437,52 @@ class Chat:
 
     def save(self) -> None:
         if not self.abandoned:
-            sess.save(self.sid, self.agent.messages, self.ctx.cwd)
+            from alice import subagents
+
+            extra = {**self.agent.export_stats(), "started": self.started,
+                     "subagents": subagents.export(self.ctx)}
+            sess.save(self.sid, self.agent.messages, self.ctx.cwd, extra)
+            cps = self.agent.checkpoints
+            sig = (len(cps), sum(len(v) for v in cps.values()))
+            if sig != self._ckpt_sig:  # dosyaların ilk halleri yalnız değişince yazılır
+                try:
+                    sess.save_checkpoints(self.sid, cps)
+                    self._ckpt_sig = sig
+                except OSError:
+                    pass
             self._title_once()
+
+    def switch_to(self, sid: str, messages: list[dict[str, Any]] | None = None) -> None:
+        """Aynı ajanla başka bir sohbete geç (yeni ya da kayıtlı): önceki sohbetin istatistiği, kullanım dökümü,
+        geri sarma kayıtları ve alt ajanları yenisine taşınmasın."""
+        self.agent.reset()
+        self.agent.stats = {k: 0 for k in self.agent.stats}
+        self.agent.usage_models, self.agent.usage_tools = {}, {}
+        self.agent.checkpoints = {}
+        for k in ("subagents", "subagent_ids"):
+            self.ctx.state.pop(k, None)
+        self.set_sid(sid)
+        self.started = time.time()
+        self._ckpt_sig = (0, 0)
+        if messages is not None:
+            self.agent.messages = self.agent.messages[:1] + messages
+            self._restore_extra()
+
+    def _restore_extra(self) -> None:
+        """Kayıtlı sohbet açılınca: istatistik, kullanım dökümü, alt ajanlar, geri sarma kayıtları ve başlangıç."""
+        from alice import subagents
+
+        try:
+            extra = sess.load_extra(self.sid)
+            self.agent.import_stats(extra)
+            self.started = float(extra.get("started") or self.started)
+            subagents.restore(self.ctx, extra.get("subagents") or [])
+            cps = sess.load_checkpoints(self.sid)
+            if cps:
+                self.agent.checkpoints.update(cps)
+                self._ckpt_sig = (len(cps), sum(len(v) for v in cps.values()))
+        except Exception:  # noqa: BLE001 - eksik bilgi sohbeti açmayı engellemesin
+            pass
 
     def _title_once(self) -> None:
         """İlk kayıtta sohbete ilk istekten bir başlık üret (arka planda, bir kez)."""
@@ -707,8 +754,7 @@ class AppState:
                 return err
             if err is None:  # öndeki boşta: aynı ajanı (ve tarayıcı bağlantısını) kullanmaya devam et
                 self.ctx.state.pop("team", None)  # takım proje olarak çalışmaya devam eder (Projeler sayfası)
-                self.agent.reset()
-                self.chat.set_sid(sess.new_session_id())
+                self.chat.switch_to(sess.new_session_id())
                 return None
             self._swap_in(Chat(self, self.ctx.cwd, self.agent.permissions.mode), old_busy=True)
         return None
@@ -733,8 +779,7 @@ class AppState:
             if err:
                 return False
             if err is None:
-                self.chat.set_sid(sid)
-                self.agent.messages = self.agent.messages[:1] + msgs
+                self.chat.switch_to(sid, msgs)
                 return True
             self._swap_in(Chat(self, self.ctx.cwd, self.agent.permissions.mode, sid=sid, messages=msgs), old_busy=True)
             return True
@@ -838,6 +883,7 @@ class AppState:
             "branch": git_branch(self.ctx.cwd),
             "busy": a.busy or self._queued,
             "session": self.sid,
+            "started": self.chat.started,
             "running": self.running(),
             "pending": [p for ui in self.all_uis() for p in ui.pending.values()],
             "brain_chain": self.router.chain("brain"),

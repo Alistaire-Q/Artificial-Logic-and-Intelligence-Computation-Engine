@@ -45,6 +45,7 @@ class Sub:
     child: Any = None
     thread: threading.Thread | None = None
     history: list[dict[str, str]] = field(default_factory=list)  # [{"q": istek, "a": sonuç}]
+    history_messages: list[dict[str, Any]] = field(default_factory=list)  # diskten: konuşma (sistem hariç)
 
     def snapshot(self) -> dict[str, Any]:
         now = self.ended or time.time()
@@ -160,6 +161,15 @@ def resume(ctx: ToolContext, sub_id: str, text: str, background: bool = False) -
         raise ToolError(f"böyle bir alt ajan yok: {sub_id}. Bu sohbettekiler: {', '.join(registry(ctx)) or '(yok)'}")
     if sub.status == "running":
         raise ToolError(f"{sub.id} hâlâ çalışıyor; bitmesini bekle ya da durdur")
+    if sub.child is None:  # uygulama yeniden açıldı: alt ajan kayıttaki konuşmasıyla yeniden kurulur
+        parent = ctx.state.get("agent")
+        if parent is None:
+            raise ToolError("alt ajan bu bağlamda sürdürülemiyor")
+        parent_ui = getattr(parent, "ui", None)
+        ui = SubUI(sub, parent_ui, getattr(parent_ui, "publish", None))
+        sub.child, _ = build_child(parent, sub.kind, ui, child_context(ctx))
+        sub.child.messages = sub.child.messages[:1] + sub.history_messages
+        sub.history_messages = []
     sub.turns += 1
     sub.status, sub.result, sub.ended, sub.background = "running", "", 0.0, background
     sub.started = time.time()
@@ -203,6 +213,47 @@ def stop(sub: Sub) -> bool:
         return False
     sub.child.stop()
     return True
+
+
+MAX_SAVED_MESSAGES = 200
+
+
+def export(ctx: ToolContext) -> list[dict[str, Any]]:
+    """Oturum dosyasına yazılacak alt ajanlar: durum, sonuç ve konuşma (yeniden açılışta devam edilebilsin)."""
+    from alice.providers.router import strip_images
+
+    out = []
+    for s in registry(ctx).values():
+        msgs = s.child.messages[1:] if s.child is not None else s.history_messages
+        out.append({**s.snapshot(), "prompt": s.prompt, "result": s.result, "max_steps": s.max_steps,
+                    "started": s.started, "ended": s.ended, "history": s.history[-10:],
+                    "messages": strip_images(msgs[-MAX_SAVED_MESSAGES:])})
+    return out
+
+
+def restore(ctx: ToolContext, rows: list[dict[str, Any]]) -> None:
+    """Kayıtlı alt ajanları geri kur. Çalışırken kapanmış olanlar "durduruldu" sayılır; hepsine devam edilebilir
+    (konuşması, devam mesajında yeniden kurulan alt ajana yüklenir)."""
+    subs = registry(ctx)
+    top = 0
+    for d in rows:
+        if not isinstance(d, dict) or not d.get("id"):
+            continue
+        sub = Sub(id=str(d["id"]), label=str(d.get("label") or "alt ajan"), prompt=str(d.get("prompt") or ""),
+                  kind=str(d.get("kind") or ""), background=bool(d.get("background")),
+                  max_steps=int(d.get("max_steps") or 40),
+                  status=d.get("status") if d.get("status") in ("done", "failed", "stopped") else "stopped",
+                  result=str(d.get("result") or ""), steps=int(d.get("steps") or 0), last=str(d.get("last") or ""),
+                  turns=int(d.get("turns") or 1), started=float(d.get("started") or 0),
+                  ended=float(d.get("ended") or d.get("started") or 0), history=list(d.get("history") or []))
+        sub.history_messages = list(d.get("messages") or [])
+        subs[sub.id] = sub
+        try:
+            top = max(top, int(sub.id.lstrip("a")))
+        except ValueError:
+            pass
+    if top:
+        ctx.state["subagent_ids"] = itertools.count(top + 1)
 
 
 def snapshots(ctx: ToolContext) -> list[dict[str, Any]]:

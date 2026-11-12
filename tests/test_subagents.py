@@ -215,3 +215,55 @@ def test_agents_endpoint_lists_subagents_and_definitions(workdir):
     snap = subagents.snapshots(agent.ctx)
     assert snap[0]["id"] == "a1" and snap[0]["label"] == "bakıcı" and snap[0]["status"] == "done"
     assert Path(workdir).is_dir()
+
+
+# ------------------------------------------------------------------------- yeniden açılışta kaybolmayanlar
+def test_session_info_survives_restart_and_does_not_leak_into_new_chat(workdir):
+    import time
+
+    from alice.app.server import AppServer, AppState  # noqa: F401
+    from tests.conftest import FakeProvider
+
+    cfg = make_config({"brain": ["a:m"], "fast": ["a:m"], "vision": ["a:m"]})
+    state = AppState(cfg, workdir, "auto", provider_factory=lambda pc: FakeProvider("a", []))
+    chat = state.chat
+    old_sid = chat.sid
+    chat.agent.messages.append({"role": "user", "content": "selam"})
+    chat.agent.stats["turns"], chat.agent.stats["input"] = 3, 1200
+    chat.agent.usage_models["a:m"] = {"calls": 2, "input": 1200, "cached": 0, "output": 40, "seconds": 1.5}
+    chat.agent.checkpoints[1] = {str(workdir / "x.py"): b"eski", str(workdir / "yeni.py"): None}
+    chat.started = time.time() - 3600
+    sub = subagents.Sub(id="a1", label="tarama", prompt="tara", status="done", result="buldum")
+    sub.history_messages = [{"role": "user", "content": "tara"}, {"role": "assistant", "content": "buldum"}]
+    subagents.registry(chat.ctx)["a1"] = sub
+    chat.save()
+
+    assert state.new_session() is None  # yeni sohbet: öncekinin bilgileri taşınmaz
+    assert state.agent.stats["turns"] == 0 and not state.agent.checkpoints and not subagents.registry(state.ctx)
+    assert time.time() - state.chat.started < 60
+
+    assert state.resume(old_sid)  # "kapanıp açılmış" sohbete dönüş: diskten geri kurulur
+    a = state.agent
+    assert a.stats["turns"] == 3 and a.stats["input"] == 1200 and a.usage_models["a:m"]["calls"] == 2
+    assert a.checkpoints[1][str(workdir / "x.py")] == b"eski" and a.checkpoints[1][str(workdir / "yeni.py")] is None
+    assert time.time() - state.chat.started > 3000 and state.status()["started"] == state.chat.started
+    restored = subagents.registry(state.ctx)["a1"]
+    assert restored.status == "done" and restored.result == "buldum" and restored.child is None
+    assert subagents._next_id(state.ctx) == "a2"  # numaralar çakışmaz
+
+
+def test_restored_subagent_can_be_continued_with_its_old_conversation(workdir):
+    seen = []
+
+    def script(model, messages, tools, **kw):
+        seen.append(messages)
+        return "devam sonucu"
+
+    agent, _, _ = make_agent(script, workdir)
+    subagents.restore(agent.ctx, [{"id": "a3", "label": "tarama", "prompt": "tara", "status": "running",
+                                   "messages": [{"role": "user", "content": "tara"},
+                                                {"role": "assistant", "content": "ilk bulgu: Z"}]}])
+    sub = subagents.registry(agent.ctx)["a3"]
+    assert sub.status == "stopped"  # çalışırken kapanan iş durmuş sayılır
+    subagents.resume(agent.ctx, "a3", "devam et").thread.join(5)
+    assert sub.result == "devam sonucu" and any("ilk bulgu: Z" in str(m.get("content")) for m in seen[-1])

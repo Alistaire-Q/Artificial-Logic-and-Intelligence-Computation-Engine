@@ -701,6 +701,17 @@ class Agent:
             "ctx": {"system": system, "tools": tools, "messages": max(0, total - system - tools), "total": total},
         }
 
+    def export_stats(self) -> dict[str, Any]:
+        """Oturum dosyasına yazılan istatistik ve kullanım dökümü (yeniden açılışta sıfırlanmasın)."""
+        return {"stats": dict(self.stats), "usage_models": self.usage_models, "usage_tools": self.usage_tools}
+
+    def import_stats(self, data: dict[str, Any]) -> None:
+        for k, v in (data.get("stats") or {}).items():
+            if k in self.stats and isinstance(v, (int, float)):
+                self.stats[k] = v
+        self.usage_models = {str(k): dict(v) for k, v in (data.get("usage_models") or {}).items() if isinstance(v, dict)}
+        self.usage_tools = {str(k): dict(v) for k, v in (data.get("usage_tools") or {}).items() if isinstance(v, dict)}
+
     def usage_breakdown(self) -> dict[str, Any]:
         """"Tokenlarım nereye gitti": model başına çağrı/girdi/önbellek/çıktı, araç başına bağlama eklenen çıktı ve
         bağlamın şu anki dağılımı. Kullanım dökümü penceresi ve usage aracı kullanır."""
