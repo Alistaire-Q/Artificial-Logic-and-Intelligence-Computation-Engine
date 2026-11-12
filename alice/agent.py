@@ -1059,6 +1059,12 @@ class Agent:
             shown = f"[dış içerik okunduktan sonra: {guard.tainted(self.ctx)}] {summary}" if guard.tainted(self.ctx) \
                 else summary
             ans = self.ui.ask_permission(name, shown, risk)
+            try:  # hep onaylanan işler için "artık sorma" önerisi çıkarılabilsin (permissions action=suggest)
+                from alice.permissions import record_answer
+
+                record_answer(tool, args, self.ctx.cwd, risk, ans)
+            except Exception:  # noqa: BLE001 - kayıt yazılamadı diye iş durmasın
+                log.debug("izin cevabı kaydedilemedi", exc_info=True)
             if ans == "a":
                 self.permissions.always_allow.add(name)
             elif ans == "p" and risk in (DANGER, SEND):
