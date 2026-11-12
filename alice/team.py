@@ -348,6 +348,7 @@ class Team:
         # Sonuç PR olsun (alice/team_pr.py): proje kendi dalında çalışır, bitince PR açılıp takibe alınır.
         self.pr = pr
         self.pr_repo = self.pr_base = self.pr_branch = self.pr_top = self.pr_sha = self.pr_url = ""
+        self.pr_session = ""  # projeyi başlatan sohbet: PR takibinin düzeltmeleri oraya gider
         self.pr_number = 0
 
     # ---------------------------------------------------------- zaman çizelgesi
@@ -479,6 +480,7 @@ class Team:
 
     # --------------------------------------------------------------- üyeler
     def add(self, spec: dict[str, Any]) -> Member:
+        self.prepare_pr()
         name = str(spec.get("name") or "").strip().lower()
         if not NAME_RX.match(name) or name in (LEAD, "all", USER, SYSTEM, COUNCIL):
             raise ToolError(f"geçersiz ajan adı '{name}': küçük harf/rakam/-/_, en çok 24 karakter; 'alice' ve 'all' "
@@ -522,6 +524,14 @@ class Team:
         if not ok:
             raise ToolError(f"{who}: '{model}' için model yok. auto, rol adı (brain, fast...) ya da sağlayıcı:model yaz.")
 
+    def prepare_pr(self) -> None:
+        """Sonucu PR olan projede projenin dalını ve worktree'sini aç (bir kez). Ajanlar eklenmeden önce olmalı:
+        ajanın klasörü eklenirken belirlenir; sonra açılırsa ajanlar kullanıcının kopyasında çalışırdı."""
+        if self.pr and not self.pr_branch:
+            from alice import team_pr
+
+            self.mark(LEAD, "pr", team_pr.prepare(self))
+
     def _repo_top(self) -> Path:
         r = _git(self.cwd, "rev-parse", "--show-toplevel", timeout=20)
         if r.returncode != 0:
@@ -542,8 +552,9 @@ class Team:
         r = _git(top, "worktree", "add", "-b", m.branch, str(path), "HEAD")
         if r.returncode != 0:
             raise ToolError(f"{m.name}: worktree açılamadı: {(r.stderr or r.stdout).strip()[:300]}")
-        try:  # .alice-team git status'u kirletmesin
-            excl = top / ".git" / "info" / "exclude"
+        try:  # .alice-team git status'u kirletmesin (worktree'de .git bir dosya: yolu git'e sor)
+            gp = _git(top, "rev-parse", "--git-path", "info/exclude").stdout.strip()
+            excl = (top / gp) if gp and not Path(gp).is_absolute() else Path(gp or top / ".git" / "info" / "exclude")
             old = excl.read_text(encoding="utf-8", errors="replace") if excl.exists() else ""
             if excl.parent.is_dir() and ".alice-team/" not in old:
                 with excl.open("a", encoding="utf-8") as f:
@@ -556,10 +567,7 @@ class Team:
     def start(self, plan: bool = False) -> None:
         """Projeyi başlat: ajanlar başlar, yönetici izlemeye (ya da ajan yoksa planlamaya) başlar."""
         self.mark(USER if self.origin == "user" else LEAD, "start", f"proje başladı: {self.title}")
-        if self.pr and not self.pr_branch:
-            from alice import team_pr
-
-            self.mark(LEAD, "pr", team_pr.prepare(self))
+        self.prepare_pr()
         self._dirty0 = self._git_dirty()
         for m in self.members.values():
             self._launch(m)
@@ -1686,7 +1694,7 @@ Nasıl yapılır:
                 "plan_council": self.plan_council, "plan_prev_id": self.plan_prev_id,
                 "check": self.check, "lessons": self.lessons, "pr": self.pr, "pr_repo": self.pr_repo,
                 "pr_base": self.pr_base, "pr_branch": self.pr_branch, "pr_top": self.pr_top, "pr_sha": self.pr_sha,
-                "pr_url": self.pr_url, "pr_number": self.pr_number, "timeline": self.timeline[-500:], "usage": self.usage,
+                "pr_url": self.pr_url, "pr_number": self.pr_number, "pr_session": self.pr_session, "timeline": self.timeline[-500:], "usage": self.usage,
                 "log": [{"from": x.sender, "to": x.to, "text": x.text, "at": x.at} for x in self.log[-500:]]}
 
     @classmethod
@@ -1700,7 +1708,7 @@ Nasıl yapılır:
                    lead_thinking=data.get("lead_thinking", "default"),
                    cwd=Path(data["cwd"]) if data.get("cwd") else None, council=bool(data.get("council", False)),
                    pr=bool(data.get("pr")))
-        for k in ("pr_repo", "pr_base", "pr_branch", "pr_top", "pr_sha", "pr_url"):
+        for k in ("pr_repo", "pr_base", "pr_branch", "pr_top", "pr_sha", "pr_url", "pr_session"):
             setattr(team, k, str(data.get(k) or ""))
         team.pr_number = int(data.get("pr_number") or 0)
         team.councils = [c for c in data.get("councils") or [] if c.get("state") != "running"]

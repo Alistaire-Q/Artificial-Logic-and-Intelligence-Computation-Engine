@@ -3442,11 +3442,15 @@ function prCard(w) {
 /* ============================================================= Ajanlar paneli
    Bu sohbetin alt ajanları (task aracı, alice/subagents.py): canlı durum, son araç, durdurma ve biten ajana devam
    mesajı. Altında özel alt ajan tanımları (~/.alice/agents, <proje>/.alice/agents): ekle, düzenle, sil. */
-const AGP = { busy: false, editing: null, again: false };
+const AGP = { busy: false, editing: null, again: false, stale: false };
 const AG_STATUS = { running: ["Çalışıyor", "pending"], done: ["Bitti", "success"], failed: ["Hata", "failure"],
   stopped: ["Durduruldu", "none"] };
 function onSubagentEvent() {
-  if (PREFS.panel && PREFS.tab === "agents" && !AGP.editing) renderAgentsPane();
+  if (!(PREFS.panel && PREFS.tab === "agents") || AGP.editing) return;
+  // Devam kutusuna yazılırken yeniden çizme: yazılan metin ve odak kayboluyordu. Kutu boşalınca tazelenir.
+  const typing = [...document.querySelectorAll("#panelBody .agp-send")].some((i) => i.value || i === document.activeElement);
+  if (typing) { AGP.stale = true; return; }
+  renderAgentsPane();
 }
 async function agAct(path, body) {
   const r = await api(path, body);
@@ -3510,12 +3514,13 @@ function subCard(s) {
     const go = el("button", "act", "Gönder");
     const send = () => {
       const t = inp.value.trim();
-      if (!t) return;
+      if (!t || go.disabled) return;
       go.disabled = true;
       agAct("/api/subagents/send", { id: s.id, text: t });
     };
     go.addEventListener("click", send);
     inp.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
+    inp.addEventListener("blur", () => { if (!inp.value && AGP.stale) { AGP.stale = false; renderAgentsPane(); } });
     acts.append(inp, go);
   }
   c.appendChild(acts);

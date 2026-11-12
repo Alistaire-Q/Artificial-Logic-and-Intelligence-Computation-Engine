@@ -170,7 +170,12 @@ def test_project_runs_on_its_own_branch_and_ends_in_a_watched_pr(tmp_path, monke
     assert "alice/proje-p1" in note and "commit'lenmemiş" in note and team.cwd != work
     assert team_pr.open_pr(team) == "PR açılmadı: projede değişiklik yok"
     (team.cwd / "b.txt").write_text("b\n", encoding="utf-8")
+    (team.cwd / ".alice-team" / "p1-x").mkdir(parents=True)
+    (team.cwd / ".alice-team" / "p1-x" / "f.txt").write_text("ajan kopyası\n", encoding="utf-8")
     out = team_pr.open_pr(team)
+    tree = subprocess.run(["git", "ls-tree", "-r", "--name-only", "alice/proje-p1"], cwd=remote, capture_output=True,
+                          text=True).stdout
+    assert "b.txt" in tree and ".alice-team" not in tree  # ajanların kopyaları PR'a girmez
     assert out.startswith("PR #5 açıldı") and watched == [("o/r", 5, "s1")]
     assert posted[0][1]["head"] == "alice/proje-p1" and posted[0][1]["base"] == "main"
     log = subprocess.run(["git", "log", "--oneline", "alice/proje-p1"], cwd=remote, capture_output=True,
@@ -267,3 +272,96 @@ def test_restored_subagent_can_be_continued_with_its_old_conversation(workdir):
     assert sub.status == "stopped"  # çalışırken kapanan iş durmuş sayılır
     subagents.resume(agent.ctx, "a3", "devam et").thread.join(5)
     assert sub.result == "devam sonucu" and any("ilk bulgu: Z" in str(m.get("content")) for m in seen[-1])
+
+
+# ---------------------------------------------------------------------- PR #192 incelemesinin bulguları
+def test_subagent_result_goes_to_the_chat_that_started_it(workdir):
+    gate = threading.Event()
+
+    def script(model, messages, tools, **kw):
+        if _user(messages) == "uzun":
+            gate.wait(5)
+        return "bitti"
+
+    agent, _, _ = make_agent(script, workdir)
+    got = []
+    agent.ctx.state["session_id"] = "eski"
+    agent.ctx.state["deliver_to"] = lambda sid, text: got.append((sid, text))
+    sub = subagents.start(agent, agent.ctx, "uzun", background=True)
+    agent.ctx.state["session_id"] = "yeni"  # kullanıcı bu arada yeni sohbete geçti
+    gate.set()
+    sub.thread.join(5)
+    assert got and got[0][0] == "eski"
+
+
+def test_two_continue_messages_do_not_run_the_same_subagent_twice(workdir):
+    gate = threading.Event()
+
+    def script(model, messages, tools, **kw):
+        if _user(messages) == "devam":
+            gate.wait(5)
+        return "ok"
+
+    agent, _, _ = make_agent(script, workdir)
+    sub = subagents.start(agent, agent.ctx, "ilk")
+    sub.thread.join(5)
+    subagents.resume(agent.ctx, "a1", "devam")
+    with pytest.raises(ToolError, match="hâlâ çalışıyor"):
+        subagents.resume(agent.ctx, "a1", "devam")
+    gate.set()
+    sub.thread.join(5)
+
+
+def test_subagent_permission_follows_its_own_stop_and_uses_parents_lock(workdir):
+    from alice.tools.base import DesktopLock
+
+    asked = {}
+
+    class UI:
+        def ask_permission(self, name, summary, risk, cancelled=None):
+            asked.update(summary=summary, cancelled=cancelled)
+            return "y"
+
+    agent, _, _ = make_agent(["x"], workdir)
+    agent.ctx.state["desktop_lock"] = lock = DesktopLock()
+    sub = subagents.start(agent, agent.ctx, "x")
+    sub.thread.join(5)
+    sub.child.ui.parent_ui = UI()
+    assert sub.child.ui.ask_permission("run_command", "ls", "exec") == "y"
+    assert asked["summary"].startswith("[alt ajan a1") and asked["cancelled"] == sub.child.cancel.is_set
+    # Kilit ana sohbetin adına: ana sohbet tutarken alt ajan beklemez, kendisi alınca da ana sohbet adına bırakılır.
+    assert sub.child.ctx.state["lock_owner"] is agent.ctx
+    assert lock.acquire(agent.ctx, lambda: False) and lock.held_by(sub.child.ctx.state["lock_owner"])
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git yok")
+def test_pr_project_members_added_before_start_work_in_the_project_branch(tmp_path, monkeypatch):
+    from alice.team import Team
+    from alice.tools import github as gh
+
+    for k, v in {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+                 "GIT_COMMITTER_EMAIL": "t@t"}.items():
+        monkeypatch.setenv(k, v)
+    work = tmp_path / "work"
+    work.mkdir()
+    git(work, "init", "-b", "main")
+    (work / "a.txt").write_text("a\n", encoding="utf-8")
+    git(work, "add", "a.txt")
+    git(work, "commit", "-m", "ilk")
+    monkeypatch.setattr(gh, "origin_repo", lambda cwd: "o/r")
+    ctx = ToolContext(cwd=work, config=make_config({"brain": ["a:m"]}))
+    ctx.state["session_id"] = "baslatan"
+    team = Team(ctx, "hedef", pr=True, cwd=work)
+    shared = team.add({"name": "ortak", "task": "iş"})
+    wt = team.add({"name": "ayri", "task": "iş", "isolation": "worktree"})
+    assert team.pr_branch == "alice/proje-" + team.id and team.pr_session == "baslatan"
+    assert Path(team.cwd) != work and Path(shared.cwd) == Path(team.cwd)  # kullanıcının klasörü değil
+    assert str(wt.cwd).startswith(str(team.cwd)) and ".alice-team" in str(wt.cwd)
+    excl = subprocess.run(["git", "rev-parse", "--git-path", "info/exclude"], cwd=team.cwd, capture_output=True,
+                          text=True).stdout.strip()
+    excl_path = Path(excl) if Path(excl).is_absolute() else Path(team.cwd) / excl
+    assert ".alice-team/" in excl_path.read_text(encoding="utf-8")
+    branches = subprocess.run(["git", "branch", "--list"], cwd=work, capture_output=True, text=True).stdout
+    assert "alice-team/" in branches  # ajan dalı aynı depoda ama worktree'si proje kopyasının içinde
+    assert subprocess.run(["git", "status", "--porcelain"], cwd=work, capture_output=True,
+                          text=True).stdout.strip() == ""

@@ -203,9 +203,9 @@ def save_checkpoints(session_id: str, checkpoints: dict[int, dict[str, bytes | N
 
     out: dict[str, dict[str, str | None]] = {}
     total = 0
-    for idx in sorted(checkpoints):
+    for idx in sorted(list(checkpoints)):  # alt ajanlar aynı anda yazabilir: kopyalar üzerinde dolaş
         row = {}
-        for path, data in checkpoints[idx].items():
+        for path, data in list(checkpoints[idx].items()):
             if data is not None and (len(data) > CHECKPOINT_FILE_MAX or total + len(data) > CHECKPOINT_TOTAL_MAX):
                 continue
             total += len(data or b"")

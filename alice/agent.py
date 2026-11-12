@@ -1214,9 +1214,10 @@ class Agent:
         """Uygulamada aynı anda birden çok sohbet çalışabilir; ekranı/tarayıcıyı süren araç sırayla kullanılır
         (bkz. DesktopLock). Kilit yoksa (CLI, ses, çekirdek) bir şey yapmaz."""
         lock = self.ctx.state.get("desktop_lock")
-        if lock is None or getattr(tool, "risk", "") != COMPUTER or lock.held_by(self.ctx):
+        owner = self.ctx.state.get("lock_owner") or self.ctx  # alt ajan ana sohbetin adına tutar
+        if lock is None or getattr(tool, "risk", "") != COMPUTER or lock.held_by(owner):
             return True
-        return lock.acquire(self.ctx, self.cancel.is_set, on_wait=lambda: self.ui.info(
+        return lock.acquire(owner, self.cancel.is_set, on_wait=lambda: self.ui.info(
             "başka bir sohbet ekranı/tarayıcıyı kullanıyor; o turunu bitirince devam edeceğim"))
 
     def _release_desktop(self) -> None:

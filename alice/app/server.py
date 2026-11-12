@@ -134,14 +134,16 @@ class AppUI:
                           "is_error": result.is_error, "diff": result.diff, "images": result.images[:4],
                       "files": getattr(result, "files", [])[:10], "card": getattr(result, "card", {}) or {}})
 
-    def ask_permission(self, name: str, summary: str, risk: str) -> str:
+    def ask_permission(self, name: str, summary: str, risk: str, cancelled: Any = None) -> str:
+        """cancelled: soruyu kapatan durdurma (alt ajanın kendi Durdur'u); verilmezse bu sohbetin ajanınki."""
         pid = secrets.token_hex(6)
         ev = threading.Event()
         self._events[pid] = ev
         self.pending[pid] = {"type": "permission", "id": pid, "name": name, "summary": summary, "risk": risk}
         self.publish(self.pending[pid])
+        stop = cancelled or (lambda: self.agent is not None and self.agent.cancel.is_set())
         while not ev.wait(0.25):
-            if self.agent is not None and self.agent.cancel.is_set():
+            if stop():
                 self._answers[pid] = "n"
                 break
         self.pending.pop(pid, None)
@@ -404,6 +406,7 @@ class Chat:
         self.ctx.state["session_id"] = self.sid  # PR takibi olayları kodu yazan bu sohbete geri getirebilsin
         # Arka plandan bu sohbete mesaj (monitor olayları, ayrı oturumun sonucu) ve ayrı oturum başlatma.
         self.ctx.state["deliver"] = lambda text: app.deliver(self.sid, text)
+        self.ctx.state["deliver_to"] = app.deliver  # (sohbet, metin): alt ajan sonucu başlatan sohbete gitsin
         self.ctx.state["sessions"] = SessionsAPI(app, self)
         self.ctx.state["builtin_browser"] = app.builtin_browser  # tarayıcı aracı ve preview bunu kullanır
         attach_memory(self.agent, "uygulama")
@@ -1891,8 +1894,8 @@ class AppState:
 
     def rewind(self, mi: int) -> dict[str, Any]:
         text, restored = self.agent.rewind(mi)
-        try:
-            sess.save(self.sid, self.agent.messages, self.ctx.cwd)
+        try:  # istatistik, alt ajanlar ve geri sarma kayıtları da (extra'sız kayıt onları siliyordu)
+            self.chat.save()
         except OSError:
             pass
         return {"text": text, "restored": restored}

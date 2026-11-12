@@ -44,6 +44,8 @@ def prepare(team: Any) -> str:
     rel = Path(team.cwd).resolve().relative_to(top.resolve()) if Path(team.cwd).resolve() != top.resolve() else Path()
     team.pr_repo, team.pr_base, team.pr_branch, team.pr_top = repo, base, branch, str(top)
     team.pr_sha = _git(wt, "rev-parse", "HEAD").stdout.strip()
+    # Başlatan sohbet şimdi alınır: bitişte parent_ctx o an öndeki (başka) sohbeti gösterebilir.
+    team.pr_session = str(team.parent_ctx.state.get("session_id") or "")
     team.cwd = wt / rel
     dirty = _git(top, "status", "--porcelain").stdout.strip()
     return (f"proje kendi dalında çalışıyor: {branch} ({wt})"
@@ -58,7 +60,7 @@ def open_pr(team: Any) -> str:
     try:
         wt = repo_root(Path(team.cwd))
         if _git(wt, "status", "--porcelain").stdout.strip():
-            _git(wt, "add", "-A")
+            _git(wt, "add", "-A", "--", ".", ":(exclude).alice-team")  # ajanların worktree'leri PR'a girmesin
             r = _git(wt, *IDENT, "commit", "-q", "-m", f"ALICE projesi: {team.title[:60]}")
             if r.returncode != 0:
                 return f"PR açılamadı: commit başarısız ({(r.stderr or r.stdout).strip()[:200]})"
@@ -80,7 +82,7 @@ def open_pr(team: Any) -> str:
             team.pr_base = default  # başlanan dal GitHub'da yok: ana dala aç
             p = api.post(f"/repos/{team.pr_repo}/pulls", {**data, "base": default})
         team.pr_url, team.pr_number = str(p.get("html_url") or ""), int(p.get("number") or 0)
-        session = str(team.parent_ctx.state.get("session_id") or "")
+        session = str(getattr(team, "pr_session", "") or team.parent_ctx.state.get("session_id") or "")
         prwatch.watch(team.pr_repo, team.pr_number, team.pr_top, session=session)
         return f"PR #{team.pr_number} açıldı ve takibe alındı: {team.pr_url}"
     except (ToolError, OSError, subprocess.SubprocessError) as e:

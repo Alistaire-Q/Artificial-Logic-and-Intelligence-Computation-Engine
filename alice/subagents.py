@@ -25,6 +25,7 @@ from alice.tools.base import ToolContext
 KEEP = 30  # sohbet başına hatırlanan alt ajan
 LIVE_EVERY = 0.4  # sn: canlı durum en sık bu aralıkla yayınlanır
 _perm_lock = threading.Lock()  # paralel alt ajanların izin soruları üst üste binmesin
+_state_lock = threading.Lock()  # kayıt ve durum değişiklikleri (paralel task çağrıları, aynı ajana iki devam)
 
 
 @dataclass
@@ -90,8 +91,13 @@ class SubUI:
         ask = getattr(self.parent_ui, "ask_permission", None)
         if ask is None:
             return "n"
+        text = f"[alt ajan {self.sub.id} · {self.sub.label}] {summary}"
+        child = self.sub.child
         with _perm_lock:
-            ans = ask(name, f"[alt ajan {self.sub.id} · {self.sub.label}] {summary}", risk)
+            try:  # ana sohbetin Durdur'u değil alt ajanınki soruyu kapatsın (ana tur durmuşken soru reddediliyordu)
+                ans = ask(name, text, risk, cancelled=child.cancel.is_set if child is not None else None)
+            except TypeError:  # cancelled almayan arayüz (terminal, testler)
+                ans = ask(name, text, risk)
         return "y" if ans == "a" else ans  # "her zaman" ana oturuma ait kalsın
 
 
@@ -108,6 +114,9 @@ def child_context(parent_ctx: ToolContext) -> ToolContext:
     """Alt ajanın araç bağlamı: aynı klasör ve yapılandırma, durumun sığ kopyası (tarayıcı, süreçler, yayın kancaları
     paylaşılır), ama `agent` alt ajanın kendisi olur ki Durdur ikisini birbirine karıştırmasın."""
     state = dict(parent_ctx.state)
+    # Ekran/tarayıcı kilidi ana sohbetin adına: ayrı bağlam ayrı sahip sayılırsa alt ajan ana sohbeti bekleyip
+    # kilitleniyor ya da aldığı kilidi hiç bırakmıyordu (alt ajan kilidi bırakmaz).
+    state["lock_owner"] = parent_ctx.state.get("lock_owner") or parent_ctx
     # Kendi kayıtları: ön plandaki komutları (Durdur'da öldürülenler) ve tarayıcı meşguliyeti ayrı tutulur.
     for k in ("subagents", "subagent_ids", "fg_procs", "browser_busy"):
         state.pop(k, None)
@@ -138,17 +147,31 @@ def build_child(parent: Any, kind: str, ui: Any, ctx: ToolContext) -> tuple[Any,
     return child, steps
 
 
+def _make_ui(sub: Sub, parent: Any, ctx: ToolContext) -> SubUI:
+    """Canlı olaylar alt ajanı başlatan sohbete gider: ana sohbet sonra başka bir sohbete geçse de."""
+    parent_ui = getattr(parent, "ui", None)
+    bus, sid = getattr(parent_ui, "bus", None), str(ctx.state.get("session_id") or "")
+    if bus is not None and sid:
+        def publish(ev: dict[str, Any]) -> None:
+            bus.publish({**ev, "sid": sid})
+    else:
+        publish = getattr(parent_ui, "publish", None)
+    return SubUI(sub, parent_ui, publish)
+
+
 def start(parent: Any, ctx: ToolContext, prompt: str, kind: str = "", label: str = "", background: bool = False,
           max_steps: int | None = None) -> Sub:
-    subs = registry(ctx)
-    sub = Sub(id=_next_id(ctx), label=(label or kind or prompt.split("\n")[0])[:48].strip() or "alt ajan",
+    with _state_lock:
+        sub_id = _next_id(ctx)
+    sub = Sub(id=sub_id, label=(label or kind or prompt.split("\n")[0])[:48].strip() or "alt ajan",
               prompt=prompt, kind=kind, background=background)
-    ui = SubUI(sub, getattr(parent, "ui", None), getattr(getattr(parent, "ui", None), "publish", None))
-    sub.child, steps = build_child(parent, kind, ui, child_context(ctx))
+    sub.child, steps = build_child(parent, kind, _make_ui(sub, parent, ctx), child_context(ctx))
     sub.max_steps = int(max_steps or steps)
-    subs[sub.id] = sub
-    for old in [k for k, s in subs.items() if s.status != "running"][:-KEEP]:
-        subs.pop(old, None)
+    with _state_lock:
+        subs = registry(ctx)
+        subs[sub.id] = sub
+        for old in [k for k, s in list(subs.items()) if s.status != "running"][:-KEEP]:
+            subs.pop(old, None)
     _go(ctx, sub, prompt)
     return sub
 
@@ -156,22 +179,27 @@ def start(parent: Any, ctx: ToolContext, prompt: str, kind: str = "", label: str
 def resume(ctx: ToolContext, sub_id: str, text: str, background: bool = False) -> Sub:
     from alice.tools.base import ToolError
 
-    sub = registry(ctx).get(sub_id.strip())
-    if sub is None:
-        raise ToolError(f"böyle bir alt ajan yok: {sub_id}. Bu sohbettekiler: {', '.join(registry(ctx)) or '(yok)'}")
-    if sub.status == "running":
-        raise ToolError(f"{sub.id} hâlâ çalışıyor; bitmesini bekle ya da durdur")
+    with _state_lock:  # kontrol ve "çalışıyor" işareti birlikte: iki devam mesajı aynı ajanı iki kez çalıştırmasın
+        sub = registry(ctx).get(sub_id.strip())
+        if sub is None:
+            raise ToolError(f"böyle bir alt ajan yok: {sub_id}. Bu sohbettekiler: "
+                            f"{', '.join(registry(ctx)) or '(yok)'}")
+        if sub.status == "running":
+            raise ToolError(f"{sub.id} hâlâ çalışıyor; bitmesini bekle ya da durdur")
+        prev_status, sub.status = sub.status, "running"
     if sub.child is None:  # uygulama yeniden açıldı: alt ajan kayıttaki konuşmasıyla yeniden kurulur
         parent = ctx.state.get("agent")
-        if parent is None:
-            raise ToolError("alt ajan bu bağlamda sürdürülemiyor")
-        parent_ui = getattr(parent, "ui", None)
-        ui = SubUI(sub, parent_ui, getattr(parent_ui, "publish", None))
-        sub.child, _ = build_child(parent, sub.kind, ui, child_context(ctx))
+        try:
+            if parent is None:
+                raise ToolError("alt ajan bu bağlamda sürdürülemiyor")
+            sub.child, _ = build_child(parent, sub.kind, _make_ui(sub, parent, ctx), child_context(ctx))
+        except Exception:
+            sub.status = prev_status
+            raise
         sub.child.messages = sub.child.messages[:1] + sub.history_messages
         sub.history_messages = []
     sub.turns += 1
-    sub.status, sub.result, sub.ended, sub.background = "running", "", 0.0, background
+    sub.result, sub.ended, sub.background = "", 0.0, background
     sub.started = time.time()
     _go(ctx, sub, text)
     return sub
@@ -180,7 +208,10 @@ def resume(ctx: ToolContext, sub_id: str, text: str, background: bool = False) -
 def _go(ctx: ToolContext, sub: Sub, text: str) -> None:
     ui: SubUI = sub.child.ui
     ui.changed(force=True)
-    deliver = ctx.state.get("deliver")
+    sid = str(ctx.state.get("session_id") or "")
+    to_sid = ctx.state.get("deliver_to")  # (sohbet, metin): başlatan sohbete, sonra başka sohbete geçilse de
+    deliver = (lambda t: to_sid(sid, t)) if callable(to_sid) and sid else ctx.state.get("deliver")
+    parent = ctx.state.get("agent")
 
     def run() -> None:
         try:
@@ -192,6 +223,11 @@ def _go(ctx: ToolContext, sub: Sub, text: str) -> None:
         sub.ended = time.time()
         sub.history.append({"q": text, "a": sub.result})
         ui.changed(force=True)
+        # Ekran kilidini ana sohbet adına almış olabilir: ana sohbet o an çalışmıyorsa bırakılır (çalışıyorsa turu
+        # bitince kendisi bırakır).
+        lock, owner = sub.child.ctx.state.get("desktop_lock"), sub.child.ctx.state.get("lock_owner")
+        if lock is not None and owner is not None and not getattr(parent, "busy", False):
+            lock.release(owner)
         if sub.background and sub.status != "stopped" and callable(deliver):
             deliver(f"[Alt ajan {sub.id} · {sub.label} {'bitti' if sub.status == 'done' else 'başarısız'}]\n"
                     f"{sub.result[:6000]}\n\n(Devam ettirmek için: task id={sub.id} prompt=...)")
@@ -223,8 +259,8 @@ def export(ctx: ToolContext) -> list[dict[str, Any]]:
     from alice.providers.router import strip_images
 
     out = []
-    for s in registry(ctx).values():
-        msgs = s.child.messages[1:] if s.child is not None else s.history_messages
+    for s in list(registry(ctx).values()):
+        msgs = list(s.child.messages[1:]) if s.child is not None else s.history_messages
         out.append({**s.snapshot(), "prompt": s.prompt, "result": s.result, "max_steps": s.max_steps,
                     "started": s.started, "ended": s.ended, "history": s.history[-10:],
                     "messages": strip_images(msgs[-MAX_SAVED_MESSAGES:])})
