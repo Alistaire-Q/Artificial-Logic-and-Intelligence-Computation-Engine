@@ -852,6 +852,46 @@ class AppState:
             "update_mode": self._update_mode(),
         }
 
+    def subagents_view(self) -> dict[str, Any]:
+        """Ajanlar paneli: öndeki sohbetin alt ajanları ve özel alt ajan tanımları."""
+        from alice import subagents
+        from alice.skills import load_agents
+
+        home = str(alice_home() / "agents")
+        defs = [{"name": a.name, "description": a.description, "prompt": a.prompt, "tools": a.tools, "model": a.model,
+                 "max_steps": a.max_steps, "path": str(a.path or ""),
+                 "where": "user" if a.path is not None and str(a.path).startswith(home) else "project"}
+                for a in load_agents(self.ctx.cwd).values()]
+        return {"subs": subagents.snapshots(self.ctx), "defs": defs, "cwd": str(self.ctx.cwd)}
+
+    def subagents_action(self, path: str, d: dict[str, Any]) -> tuple[dict[str, Any], int]:
+        from alice import skills, subagents
+        from alice.tools.base import ToolError
+
+        try:
+            if path == "/api/subagents/stop":
+                sub = subagents.registry(self.ctx).get(str(d.get("id", "")))
+                if sub is None:
+                    return {"ok": False, "error": "böyle bir alt ajan yok"}, 404
+                return {"ok": subagents.stop(sub)}, 200
+            if path == "/api/subagents/send":
+                text = str(d.get("text", "")).strip()
+                if not text:
+                    return {"ok": False, "error": "mesaj boş"}, 400
+                sub = subagents.resume(self.ctx, str(d.get("id", "")), text, background=True)
+                return {"ok": True, "note": f"{sub.id} devam ediyor; bitince sonucu sohbete gelecek"}, 200
+            if path == "/api/agents/save":
+                a = skills.save_agent(str(d.get("name", "")), str(d.get("description", "")), str(d.get("prompt", "")),
+                                      [str(t) for t in d.get("tools") or []], str(d.get("model", "")),
+                                      int(d.get("max_steps") or 40), str(d.get("where") or "user"), self.ctx.cwd)
+                return {"ok": True, "note": f"{a.name} kaydedildi"}, 200
+            if path == "/api/agents/delete":
+                skills.delete_agent(str(d.get("name", "")), self.ctx.cwd)
+                return {"ok": True, "note": "silindi"}, 200
+        except (ToolError, ValueError, OSError) as e:
+            return {"ok": False, "error": str(e)[:300]}, 400
+        return {"ok": False, "error": "bilinmeyen işlem"}, 404
+
     def pr_panel(self, force: bool = False) -> dict[str, Any]:
         """PR paneli: izlenen PR'lar (canlı durumla) ve bulunulan dalın izlenmeyen açık PR'ı (izlemeye almak için)."""
         from alice import prwatch
@@ -1602,7 +1642,7 @@ class AppState:
         lead_thinking = str(d.get("lead_thinking") or "default")
         team = Team(self.ctx, goal, int(self.cfg.agent.get("team_max_parallel", 5)), self.bus.publish, origin="user",
                     review=d.get("review") is not False, council=d.get("council") is not False, lead_model=lead_model,
-                    check=str(d.get("check") or ""),
+                    check=str(d.get("check") or ""), pr=bool(d.get("pr")),
                     lead_thinking=lead_thinking if lead_thinking in THINKING else "default", cwd=cwd)
         team._check_model(lead_model, "yönetici")
         team.plan_council = d.get("plan_council") is not False
@@ -2079,6 +2119,8 @@ def make_handler(state: AppState):
                 return self._json(state.agent.usage_breakdown())
             if u.path == "/api/prs":
                 return self._json(state.pr_panel(force=(q.get("force") or [""])[0] == "1"))
+            if u.path == "/api/subagents":
+                return self._json(state.subagents_view())
             if u.path in ("/api/browser/frame", "/api/browser/tabs"):
                 from alice.app.builtin_browser import BrowserError
 
@@ -2447,6 +2489,8 @@ def make_handler(state: AppState):
                     ok = revert_change(state.agent.checkpoints, str(d.get("path", "")))
                     return self._json({"ok": ok, "changes": session_changes(state.agent.checkpoints, state.ctx.cwd)},
                                       200 if ok else 404)
+                if p.startswith(("/api/subagents/", "/api/agents/")):
+                    return self._json(*state.subagents_action(p, d))
                 if p.startswith("/api/prs/"):
                     # PR paneli: izlemeye al / bırak, davranış düğmeleri, başarısız CI'ı yeniden çalıştır.
                     from alice import prwatch

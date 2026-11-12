@@ -143,35 +143,125 @@ class Task(Tool):
     description = ("Kendi temiz bağlamıyla çalışan bir alt ajan başlatır; bağımsız bir işi (araştırma, büyük bir "
                    "klasörde arama, uzun bir alt görev) yapar ve sadece sonucunu döndürür. Konuşmayı çok sayıda ara "
                    "çıktıyla doldurmamak için. Alt ajan bu konuşmayı görmez: prompt'a gereken her şeyi yaz. Bir iki "
-                   "araç çağrısıyla bitecek işlerde kullanma.")
+                   "araç çağrısıyla bitecek işlerde kullanma.\n"
+                   "- Paralel: birbirinden bağımsız işler için aynı cevapta birden çok task çağır; aynı anda çalışırlar.\n"
+                   "- background=true: alt ajan arka planda çalışır, sen ve kullanıcı sohbete devam edersiniz; bitince "
+                   "sonucu '[Alt ajan aN ...]' mesajıyla gelir. Sonuca hemen ihtiyacın yoksa ya da iş uzunsa kullan. "
+                   "Sonucu gelmeden ne bulduğunu tahmin etme.\n"
+                   "- id: daha önce çalışmış alt ajana (aN) yeni mesaj; okuduklarını ve bulduklarını hatırlar, baştan "
+                   "araştırmaz. Aynı konuda ek soru için yeni alt ajan yerine bunu kullan.\n"
+                   "- Durum ve durdurma: subagents aracı (list/stop). Kullanıcı yan paneldeki Ajanlar sekmesinden izler.")
     parameters = obj({
-        "prompt": {"type": "string", "description": "Alt ajana eksiksiz görev: ne yapacak, nerede, ne döndürecek."},
+        "prompt": {"type": "string", "description": "Alt ajana eksiksiz görev: ne yapacak, nerede, ne döndürecek. "
+                   "id verildiyse: ona yazılacak yeni mesaj."},
         "agent": {"type": "string", "description": "Kullanıcının tanımladığı özel alt ajanın adı (sistem istemindeki "
                   "'Custom subagents' listesi). Boş: genel alt ajan."},
+        "name": {"type": "string", "description": "Ekranda görünecek kısa ad, ör. 'test taraması'."},
+        "background": {"type": "boolean", "description": "Arka planda çalıştır; sonuç bitince mesaj olarak gelir."},
+        "id": {"type": "string", "description": "Devam ettirilecek alt ajan (aN). Boş: yeni alt ajan."},
         "max_steps": {"type": "integer", "description": "En fazla adım. Varsayılan 40 (özel ajanda kendi sınırı)."},
     }, ["prompt"])
     risk = READ  # alt ajanın kendi araç çağrıları ayrı ayrı izin kontrolünden geçer
 
-    def run(self, ctx: ToolContext, prompt: str, max_steps: int | None = None, agent: str = "") -> ToolResult:
+    def parallel_for(self, ctx: ToolContext, args: dict[str, Any]) -> bool:
+        return True  # her alt ajan kendi bağlamında; aynı cevaptaki task'lar aynı anda çalışır
+
+    def summary(self, args: dict[str, Any]) -> str:
+        who = args.get("id") or args.get("name") or args.get("agent") or ""
+        bg = " · arka planda" if args.get("background") else ""
+        return (f"{who}: " if who else "") + str(args.get("prompt", ""))[:110].replace("\n", " ") + bg
+
+    def run(self, ctx: ToolContext, prompt: str, max_steps: int | None = None, agent: str = "", name: str = "",
+            background: bool = False, id: str = "") -> ToolResult:  # noqa: A002 - modelin gördüğü ad
+        from alice import subagents
+
         parent = ctx.state.get("agent")
         if parent is None:
             raise ToolError("alt ajan bu bağlamda kullanılamıyor")
-        if agent:
-            from alice.skills import load_agents, spawn
-
-            defs = load_agents(ctx.cwd)
-            adef = defs.get(agent.strip().lower())
-            if adef is None:
-                raise ToolError(f"'{agent}' adında alt ajan yok. Tanımlı olanlar: {', '.join(defs) or '(yok)'}")
-            sub = spawn(parent, adef)
-            steps = max_steps or adef.max_steps
+        if id:
+            sub = subagents.resume(ctx, id, prompt, background=bool(background))
         else:
-            sub = parent.spawn_child()
-            steps = max_steps or 40
-        ctx.emit(f"alt ajan başladı{f' ({agent})' if agent else ''}")
-        result = sub.run_turn(prompt, max_steps=steps)
-        ctx.emit("alt ajan bitti")
-        return ToolResult(result or "(alt ajan boş cevap döndürdü)")
+            sub = subagents.start(parent, ctx, prompt, kind=agent, label=name, background=bool(background),
+                                  max_steps=max_steps)
+        if sub.background:
+            return ToolResult(f"alt ajan {sub.id} ({sub.label}) arka planda çalışıyor. Bitince sonucu bu sohbete "
+                              "mesaj olarak gelecek; o zamana kadar ne bulacağını tahmin etme. Kullanıcı ilerlemeyi "
+                              "yan paneldeki Ajanlar sekmesinde görür.")
+        subagents.wait(sub, ctx.cancelled)
+        head = f"[alt ajan {sub.id} · {sub.label}, {sub.steps} adım{'' if sub.status == 'done' else ', ' + sub.status}]"
+        return ToolResult(f"{head}\n{sub.result}\n\n(Aynı alt ajana ek soru: task id={sub.id})",
+                          is_error=sub.status == "failed")
+
+
+class AgentDefs(Tool):
+    name = "agent_defs"
+    description = ("Özel alt ajan tanımlarını yönetir (task aracında agent=<ad> ile çağrılanlar; Claude Code'daki "
+                   ".claude/agents gibi). 'Bana bir test yazıcı ajan tanımla', 'inceleyici ajanın talimatını değiştir', "
+                   "'hangi ajanlarım var' için.\n"
+                   "- save: name, description (ne zaman kullanılacağı, tek cümle), prompt (ajanın sistem talimatı: "
+                   "rolü, nasıl çalışacağı, ne döndüreceği), tools (boş: hepsi; salt okuma ajanı için ör. read_file, "
+                   "grep, glob, list_dir, git), model (brain, fast ya da sağlayıcı:model), max_steps, where (user: her "
+                   "projede, project: yalnız bu projede).\n- list | delete (name).")
+    parameters = obj({
+        "action": {"type": "string", "enum": ["list", "save", "delete"], "description": "Yapılacak iş."},
+        "name": {"type": "string", "description": "Ajan adı: küçük harf, rakam, - ve _, ör. 'test-yazici'."},
+        "description": {"type": "string", "description": "save: ne yapar, ne zaman çağrılmalı (tek cümle)."},
+        "prompt": {"type": "string", "description": "save: ajanın sistem talimatı."},
+        "tools": {"type": "array", "items": {"type": "string"}, "description": "save: izinli araçlar; boş: hepsi."},
+        "model": {"type": "string", "description": "save: brain, fast ya da sağlayıcı:model; boş: ana ajanınki."},
+        "max_steps": {"type": "integer", "description": "save: en fazla adım (varsayılan 40)."},
+        "where": {"type": "string", "enum": ["user", "project"], "description": "save: user (varsayılan) ya da "
+                  "project."},
+    }, ["action"])
+    risk = READ
+
+    def risk_for(self, args: dict[str, Any]) -> str:
+        return WRITE if args.get("action") in ("save", "delete") else READ
+
+    def summary(self, args: dict[str, Any]) -> str:
+        return f"{args.get('action')} {args.get('name') or ''}".strip()
+
+    def run(self, ctx: ToolContext, action: str, name: str = "", description: str = "", prompt: str = "",
+            tools: list[str] | None = None, model: str = "", max_steps: int = 40, where: str = "user") -> ToolResult:
+        from alice import skills
+
+        try:
+            if action == "save":
+                a = skills.save_agent(name, description, prompt, tools, model, max_steps, where, ctx.cwd)
+                return ToolResult(f"kaydedildi: {a.path}. Artık task agent={a.name} ile çağrılabilir.")
+            if action == "delete":
+                return ToolResult(f"silindi: {skills.delete_agent(name, ctx.cwd)}")
+        except ValueError as e:
+            raise ToolError(str(e)) from e
+        defs = skills.load_agents(ctx.cwd)
+        return ToolResult("\n".join(
+            f"{a.name}: {a.description} [araçlar: {', '.join(a.tools) or 'hepsi'}; model: {a.model or 'ana ajan'}; "
+            f"{a.max_steps} adım] ({a.path})" for a in defs.values()) or "tanımlı özel alt ajan yok")
+
+
+class SubagentsTool(Tool):
+    name = "subagents"
+    description = ("Bu sohbetin alt ajanlarını (task ile başlatılanlar) listeler ya da durdurur. 'Arkadaki ajanlar ne "
+                   "durumda', 'şu ajanı durdur' için. Sonuç bekliyorsan sorma: bitince mesajı kendiliğinden gelir.")
+    parameters = obj({
+        "action": {"type": "string", "enum": ["list", "stop"], "description": "list: durumlar | stop: id'yi durdur."},
+        "id": {"type": "string", "description": "stop: alt ajan (aN)."},
+    }, ["action"])
+    risk = READ
+
+    def run(self, ctx: ToolContext, action: str, id: str = "") -> ToolResult:  # noqa: A002
+        from alice import subagents
+
+        subs = subagents.registry(ctx)
+        if action == "stop":
+            sub = subs.get(id.strip())
+            if sub is None:
+                raise ToolError(f"böyle bir alt ajan yok: {id}")
+            return ToolResult(f"{sub.id} durduruluyor" if subagents.stop(sub) else f"{sub.id} zaten çalışmıyor")
+        rows = [f"{s.id} [{s.status}] {s.label} · {s.steps} adım"
+                + (f" · son: {s.last}" if s.status == "running" and s.last else "")
+                + (f"\n   sonuç: {s.result[:200]}" if s.result else "") for s in subs.values()]
+        return ToolResult("\n".join(rows) or "bu sohbette alt ajan yok")
 
 
 class Reflex(Tool):
@@ -520,5 +610,5 @@ class ExitPlanMode(Tool):
                           "tekrar sun.")
 
 
-TOOLS = [TodoWrite(), Memory(), Task(), Reflex(), Projects(), SkillTool(), AskUser(), Feedback(), SendFile(), NextStep(),
-         ExitPlanMode()]
+TOOLS = [TodoWrite(), Memory(), Task(), SubagentsTool(), AgentDefs(), Reflex(), Projects(), SkillTool(), AskUser(),
+         Feedback(), SendFile(), NextStep(), ExitPlanMode()]

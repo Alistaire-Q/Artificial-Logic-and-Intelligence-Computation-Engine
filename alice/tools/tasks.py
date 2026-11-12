@@ -124,6 +124,10 @@ class TeamTool(Tool):
         "review": {"type": "boolean", "description": "start: biten işleri yönetici incelesin mi. Varsayılan true."},
         "council": {"type": "boolean", "description": "start: inceleme kurulu (plan, her iş ve final tartışılıp "
                     "oylanır). Varsayılan true; küçük ya da acil işte false."},
+        "pr": {"type": "boolean", "description": "start: sonuç PR olsun. Proje kullanıcının kopyasına dokunmadan "
+               "kendi dalında çalışır; bitince dal push'lanır, PR açılır ve takibe alınır (kırmızı CI ve yorumlar bu "
+               "sohbete gelir). Kod deposunda, kullanıcı PR istediyse ya da iş incelenmesi gereken büyük bir "
+               "değişiklikse kullan."},
         "project": {"type": "string", "description": "Proje kimliği. Boş: bu sohbette en son başlatılan."},
         "to": {"type": "string", "description": "send: 'alice' (yönetici), ajan adı ya da 'all'."},
         "text": {"type": "string", "description": "send: mesaj."},
@@ -143,7 +147,7 @@ class TeamTool(Tool):
 
     def run(self, ctx: ToolContext, action: str, goal: str = "", agents: list[dict[str, Any]] | None = None,
             review: bool = True, project: str = "", to: str = "", text: str = "", name: str = "",
-            timeout: int = 600, council: bool = True) -> ToolResult:
+            timeout: int = 600, council: bool = True, pr: bool = False) -> ToolResult:
         from alice.team import LEAD, Team
 
         teams = ctx.state.setdefault("teams", {})
@@ -155,7 +159,8 @@ class TeamTool(Tool):
                 raise ToolError("en çok 8 ajan")
             a = ctx.config.agent
             team = Team(ctx, goal.strip(), max_parallel=int(a.get("team_max_parallel", 5)),
-                        publish=ctx.state.get("publish"), review=review is not False, council=council is not False)
+                        publish=ctx.state.get("publish"), review=review is not False, council=council is not False,
+                        pr=bool(pr))
             for spec in specs:
                 team.add(spec)
             ctx.state["team"] = team

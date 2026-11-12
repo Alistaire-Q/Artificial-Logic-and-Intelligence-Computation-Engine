@@ -353,6 +353,20 @@ function renderProject() {
     c.appendChild(row);
     v.appendChild(c);
   }
+  if (d.pr && d.pr.on) {
+    // Sonuç PR olan proje: kendi dalında çalışır, bitince PR açılır (alice/team_pr.py).
+    const c = el("div", "pv-pr");
+    c.appendChild(svg(IC.branch));
+    if (d.pr.url) {
+      const a = el("a", "", `PR #${d.pr.number} · ${d.pr.branch} → ${d.pr.base}`);
+      a.href = d.pr.url; a.target = "_blank"; a.rel = "noopener";
+      c.append(a, el("span", "muted", "takipte: kırmızı CI ve yorumlar sohbete gelir"));
+    } else {
+      c.append(el("span", "", d.pr.branch ? `Kendi dalında: ${d.pr.branch} → ${d.pr.base || "?"}` : "Sonuç PR olacak"),
+        el("span", "muted", "bitince push'lanıp PR açılacak"));
+    }
+    v.appendChild(c);
+  }
   if (d.summary) {
     const c = el("details", "pv-summary");
     c.dataset.k = "summary";
@@ -1301,11 +1315,13 @@ function projectDialog(project) {
     const pcl = el("label", "chk sub"); pcl.append(pc, document.createTextNode(" Plan da kurula gitsin (kapalıysa Alice'in planı doğrudan başlar)"));
     rv.addEventListener("change", () => { kc.disabled = !rv.checked; if (!rv.checked) kc.checked = false; pc.disabled = !kc.checked; });
     kc.addEventListener("change", () => { pc.disabled = !kc.checked; });
+    const pr = el("input"); pr.type = "checkbox";
+    const prl = el("label", "chk"); prl.append(pr, document.createTextNode(" Sonuç PR olsun: proje kendi dalında çalışır, bitince PR açılır ve takibe alınır (klasörüne dokunulmaz)"));
     g.append(field("Klasör", cwd), field("Yönetici modeli", lm), field("Yönetici düşünmesi", lt));
     const ckf = field("Kontrol komutu", ck, "Testler/lint: her kurul öncesi otomatik çalışır, çıktısı kanıt olur.");
     ckf.classList.add("wide");
     g.appendChild(ckf);
-    opts.append(g, rvl, kcl, pcl);
+    opts.append(g, rvl, kcl, pcl, prl);
     d.append(opts, err);
     const row = el("div", "row");
     const no = el("button", "btn", "Vazgeç"); no.addEventListener("click", closeDialog);
@@ -1317,7 +1333,7 @@ function projectDialog(project) {
       if (!manual.hidden && !agents.length) { err.textContent = "En az bir ajan ekle ya da planı Alice'e bırak"; return; }
       ok.disabled = true;
       const r = await api("/api/project/create", { goal: g2, agents, cwd: cwd.value.trim(), lead_model: lm.value.trim() || "auto",
-        lead_thinking: lt.value, review: rv.checked, council: kc.checked, plan_council: pc.checked, check: ck.value.trim() });
+        lead_thinking: lt.value, review: rv.checked, council: kc.checked, plan_council: pc.checked, check: ck.value.trim(), pr: pr.checked });
       ok.disabled = false;
       if (!r.ok) { err.textContent = r.error || "Başlatılamadı"; return; }
       closeDialog();
@@ -1332,6 +1348,7 @@ function projectDialog(project) {
       goal.value = t.goal || "";
       lm.value = t.lead_model || "auto"; lt.value = t.lead_thinking || "default";
       rv.checked = t.review !== false; kc.checked = t.council !== false; pc.checked = t.plan_council !== false; pc.disabled = !kc.checked; ck.value = t.check || "";
+      pr.checked = !!t.pr; if (t.cwd) cwd.value = t.cwd;
       list.replaceChildren();
       (t.agents || []).forEach((a, i) => list.appendChild(agentCard(a, i + 1)));
       setMode((t.agents || []).length > 0);

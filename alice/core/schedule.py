@@ -146,6 +146,8 @@ class ScheduledTask:
     last_run: float | None = None
     last_result: str = ""
     pending: bool = False           # "şimdi çalıştır" istendi
+    project: str = ""               # dolu: prompt yerine bu proje şablonu otonom proje olarak başlatılır
+    cwd: str = ""                   # project: çalışma klasörü (boş: şablondaki)
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
 
     def __post_init__(self) -> None:
@@ -169,8 +171,29 @@ class ScheduledTask:
             nxt = "hiç gelmiyor"
         last = datetime.fromtimestamp(self.last_run).strftime("%d.%m %H:%M") if self.last_run else "hiç"
         kind = "tek sefer, çalışınca kendiliğinden silinir; " if self.once else ""
-        return (f"{self.id}: [{self.cron}] {Cron(self.cron).describe()} -> {self.description or self.prompt[:60]} "
+        what = f"proje şablonu '{self.project}'" if self.project else (self.description or self.prompt[:60])
+        return (f"{self.id}: [{self.cron}] {Cron(self.cron).describe()} -> {what} "
                 f"({kind}sonraki: {nxt}, son: {last})")
+
+
+def start_project(task: ScheduledTask, starter: Any) -> str:
+    """Zamanı gelen proje görevini başlat: şablondaki hedef, ayarlar ve ajanlarla otonom proje. starter: uygulamanın
+    create_project'i (proje Projeler sayfasında görünsün diye uygulamada kurulur). Sonuç satırı döndürür."""
+    from alice.team_store import list_templates
+
+    if starter is None:
+        return "proje başlatılamadı: uygulama çekirdekte açık değil"
+    tpl = next((t for t in list_templates() if str(t.get("name", "")).lower() == task.project.lower()), None)
+    if tpl is None:
+        return f"proje başlatılamadı: '{task.project}' adında şablon yok"
+    goal = str(tpl.get("goal") or "") + ("\n\n" + task.prompt if task.prompt.strip() else "")
+    try:
+        pid = starter({**tpl, "goal": goal, "cwd": task.cwd or tpl.get("cwd") or ""})
+    except Exception as e:  # noqa: BLE001 - klasör yok, PR dalı açılamadı vb.: sonuç olarak bildirilir
+        return f"proje başlatılamadı: {str(e)[:300]}"
+    if not pid:
+        return "proje başlatılamadı: uygulama hazır değil"
+    return f"'{task.project}' şablonundan proje başladı ({pid}); Projeler sayfasında izlenebilir"
 
 
 class TaskStore:

@@ -306,7 +306,7 @@ class Agent:
     ):
         self.config = config
         self.router = router
-        self.tools = {t.name: t for t in tools if not (is_child and t.name == "task")}
+        self.tools = {t.name: t for t in tools if not (is_child and t.name in ("task", "subagents"))}
         self.ctx = ctx
         self.permissions = permissions
         self.ui = ui or NullUI()

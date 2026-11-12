@@ -205,6 +205,7 @@ def _start_app(cfg, core):
         return "" if ok else (err or "gönderilemedi")
 
     core.chat_delivery = deliver
+    core.project_starter = lambda d: host.state.create_project(d) if host.state is not None else None
     return host
 
 

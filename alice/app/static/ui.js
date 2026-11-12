@@ -583,6 +583,7 @@ function renderPanel() {
   app.classList.toggle("panel-browser", PREFS.tab === "browser");
   if (PREFS.tab === "browser") { renderBrowserPane(); return; }
   if (PREFS.tab === "prs") { renderPrPane(); return; }
+  if (PREFS.tab === "agents") { renderAgentsPane(); return; }
   const body = $("#panelBody");
   const keep = body.scrollTop;
   body.replaceChildren();
@@ -3436,4 +3437,154 @@ function prCard(w) {
   for (const h of w.history || []) hist.appendChild(el("div", "", h));
   c.appendChild(hist);
   return c;
+}
+
+/* ============================================================= Ajanlar paneli
+   Bu sohbetin alt ajanları (task aracı, alice/subagents.py): canlı durum, son araç, durdurma ve biten ajana devam
+   mesajı. Altında özel alt ajan tanımları (~/.alice/agents, <proje>/.alice/agents): ekle, düzenle, sil. */
+const AGP = { busy: false, editing: null, again: false };
+const AG_STATUS = { running: ["Çalışıyor", "pending"], done: ["Bitti", "success"], failed: ["Hata", "failure"],
+  stopped: ["Durduruldu", "none"] };
+function onSubagentEvent() {
+  if (PREFS.panel && PREFS.tab === "agents" && !AGP.editing) renderAgentsPane();
+}
+async function agAct(path, body) {
+  const r = await api(path, body);
+  if (!r || !r.ok) toast((r && r.error) || "olmadı");
+  else if (r.note) toast(r.note);
+  renderAgentsPane();
+  return r && r.ok;
+}
+async function renderAgentsPane() {
+  const body = $("#panelBody");
+  if (AGP.busy) { AGP.again = true; return; }
+  AGP.busy = true;
+  let r;
+  try { r = await api("/api/subagents"); } finally { AGP.busy = false; }
+  if (AGP.again) { AGP.again = false; setTimeout(renderAgentsPane, 50); }
+  if (!(PREFS.panel && PREFS.tab === "agents") || !r) return;
+  const wrap = el("div", "prp");
+  const head = el("div", "prp-head");
+  head.append(el("b", "", "Alt ajanlar"), el("span", "grow"), iconAct(IC.reload, "Tazele", renderAgentsPane));
+  wrap.appendChild(head);
+  if (!(r.subs || []).length) {
+    wrap.appendChild(emptyState(IC.spark, "Bu sohbette alt ajan yok",
+      "ALICE bir işi alt ajana verince (\"bunu arka planda araştır\", \"üç modülü paralel incele\") burada canlı " +
+      "görünür: ne yaptığı, kaç adım attığı. Durdurabilir, biten ajana devam mesajı yazabilirsin."));
+  }
+  for (const s of r.subs || []) wrap.appendChild(subCard(s));
+  const dh = el("div", "prp-head agp-defs");
+  const add = el("button", "act", "Yeni ajan");
+  const defsBox = el("div", "prp");
+  add.addEventListener("click", () => { AGP.editing = {}; drawAgentDefs(defsBox, r.defs || []); });
+  dh.append(el("b", "", "Özel ajanlar"), el("span", "grow"), add);
+  wrap.appendChild(dh);
+  drawAgentDefs(defsBox, r.defs || []);
+  wrap.appendChild(defsBox);
+  body.replaceChildren(wrap);
+}
+function subCard(s) {
+  const c = el("div", "prp-card");
+  const [label, cls] = AG_STATUS[s.status] || [s.status, "none"];
+  const top = el("div", "prp-top");
+  const dot = el("span", "prp-dot " + cls);
+  dot.title = label;
+  top.append(dot, el("span", "prp-title", `${s.id} · ${s.label}`));
+  c.appendChild(top);
+  const bits = [label, `${s.steps} adım`, `${s.secs} sn`];
+  if (s.kind) bits.push(s.kind);
+  if (s.background) bits.push("arka planda");
+  if (s.turns > 1) bits.push(`${s.turns}. tur`);
+  c.appendChild(el("div", "prp-meta", bits.join(" · ")));
+  if (s.status === "running" && s.last) c.appendChild(el("div", "prp-status", s.last));
+  if (s.result) c.appendChild(el("div", "agp-result", s.result));
+  const acts = el("div", "prp-acts");
+  if (s.status === "running") {
+    const b = el("button", "act", "Durdur");
+    b.addEventListener("click", () => { b.disabled = true; agAct("/api/subagents/stop", { id: s.id }); });
+    acts.appendChild(b);
+  } else {
+    const inp = el("input", "agp-send");
+    inp.type = "text";
+    inp.placeholder = "Bu ajana devam mesajı…";
+    const go = el("button", "act", "Gönder");
+    const send = () => {
+      const t = inp.value.trim();
+      if (!t) return;
+      go.disabled = true;
+      agAct("/api/subagents/send", { id: s.id, text: t });
+    };
+    go.addEventListener("click", send);
+    inp.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
+    acts.append(inp, go);
+  }
+  c.appendChild(acts);
+  return c;
+}
+function drawAgentDefs(box, defs) {
+  box.replaceChildren();
+  if (AGP.editing) box.appendChild(agentForm(AGP.editing, box, defs));
+  if (!defs.length && !AGP.editing) {
+    box.appendChild(el("div", "prp-foot", "Tanımlı özel ajan yok. Bir rol (ör. salt okuyan inceleyici, test yazıcı) " +
+      "tanımlarsan ALICE işe uyunca onu çağırır. Sohbette \"bana bir test yazıcı ajan tanımla\" da diyebilirsin."));
+  }
+  for (const a of defs) {
+    const c = el("div", "prp-card");
+    const top = el("div", "prp-top");
+    top.append(el("span", "prp-title", a.name), el("span", "grow"),
+      iconAct(IC.edit, "Düzenle", () => { AGP.editing = { ...a, editing: true }; drawAgentDefs(box, defs); }),
+      iconAct(IC.trash, "Sil", async () => {
+        if (await confirmDialog("Ajanı sil", `${a.name} tanımı silinecek (${a.path}).`, "Sil")) {
+          agAct("/api/agents/delete", { name: a.name });
+        }
+      }));
+    c.append(top, el("div", "prp-status", a.description),
+      el("div", "prp-meta", [`araçlar: ${a.tools.length ? a.tools.join(", ") : "hepsi"}`,
+        `model: ${a.model || "ana ajan"}`, `${a.max_steps} adım`, a.where === "project" ? "bu projede" : "her projede"]
+        .join(" · ")));
+    box.appendChild(c);
+  }
+}
+function agentForm(a, box, defs) {
+  const f = el("div", "prp-card agp-form");
+  const field = (label, node) => { const w = el("label", "agp-field"); w.append(el("span", "", label), node); return w; };
+  const input = (v, ph) => { const i = el("input"); i.type = "text"; i.value = v || ""; i.placeholder = ph; return i; };
+  const name = input(a.name, "test-yazici");
+  if (a.editing) name.disabled = true;
+  const desc = input(a.description, "Değişen koda birim test yazar; uygulama kodunu değiştirmez");
+  const prompt = el("textarea");
+  prompt.rows = 7;
+  prompt.value = a.prompt || "";
+  prompt.placeholder = "Sen titiz bir test yazarısın. Verilen dosyaları oku, eksik durumlar için test yaz, testleri " +
+    "koş ve sonucu kısa raporla…";
+  const tools = input((a.tools || []).join(", "), "boş: hepsi · ör. read_file, grep, glob, list_dir, git");
+  const model = input(a.model, "boş: ana ajan · brain, fast ya da sağlayıcı:model");
+  const steps = el("input");
+  steps.type = "number"; steps.min = 1; steps.max = 200; steps.value = a.max_steps || 40;
+  const where = el("select");
+  for (const [v, t] of [["user", "Her projede (~/.alice/agents)"], ["project", "Yalnız bu projede (.alice/agents)"]]) {
+    const o = el("option", "", t); o.value = v; where.appendChild(o);
+  }
+  where.value = a.where || "user";
+  const err = el("div", "prp-chip bad");
+  err.hidden = true;
+  const save = el("button", "btn accent", a.editing ? "Kaydet" : "Ekle");
+  const cancel = el("button", "act", "Vazgeç");
+  cancel.addEventListener("click", () => { AGP.editing = null; drawAgentDefs(box, defs); });
+  save.addEventListener("click", async () => {
+    save.disabled = true;
+    const r = await api("/api/agents/save", { name: name.value, description: desc.value, prompt: prompt.value,
+      tools: tools.value.split(",").map((t) => t.trim()).filter(Boolean), model: model.value,
+      max_steps: Number(steps.value) || 40, where: where.value });
+    save.disabled = false;
+    if (!r || !r.ok) { err.textContent = (r && r.error) || "kaydedilemedi"; err.hidden = false; return; }
+    AGP.editing = null;
+    toast(r.note || "kaydedildi");
+    renderAgentsPane();
+  });
+  const acts = el("div", "prp-acts");
+  acts.append(save, cancel);
+  f.append(field("Ad", name), field("Ne zaman kullanılır", desc), field("Talimat", prompt), field("Araçlar", tools),
+    field("Model", model), field("En fazla adım", steps), field("Nerede", where), err, acts);
+  return f;
 }

@@ -289,7 +289,8 @@ class Team:
     def __init__(self, parent_ctx: ToolContext, goal: str, max_parallel: int = 5,
                  publish: Callable[[dict[str, Any]], None] | None = None, origin: str = "alice",
                  project_id: str = "", title: str = "", review: bool = True, lead_model: str = "auto",
-                 lead_thinking: str = "default", cwd: Path | None = None, council: bool = True, check: str = ""):
+                 lead_thinking: str = "default", cwd: Path | None = None, council: bool = True, check: str = "",
+                 pr: bool = False):
         self.parent_ctx = parent_ctx
         self.goal = goal
         self.id = project_id or time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
@@ -344,6 +345,10 @@ class Team:
         self._save_lock = threading.RLock()
         self._pub_lock = threading.RLock()
         self._dir = projects_dir()  # kayıt klasörü proje kurulurken sabitlenir
+        # Sonuç PR olsun (alice/team_pr.py): proje kendi dalında çalışır, bitince PR açılıp takibe alınır.
+        self.pr = pr
+        self.pr_repo = self.pr_base = self.pr_branch = self.pr_top = self.pr_sha = self.pr_url = ""
+        self.pr_number = 0
 
     # ---------------------------------------------------------- zaman çizelgesi
     def mark(self, who: str, kind: str, text: str) -> None:
@@ -551,6 +556,10 @@ class Team:
     def start(self, plan: bool = False) -> None:
         """Projeyi başlat: ajanlar başlar, yönetici izlemeye (ya da ajan yoksa planlamaya) başlar."""
         self.mark(USER if self.origin == "user" else LEAD, "start", f"proje başladı: {self.title}")
+        if self.pr and not self.pr_branch:
+            from alice import team_pr
+
+            self.mark(LEAD, "pr", team_pr.prepare(self))
         self._dirty0 = self._git_dirty()
         for m in self.members.values():
             self._launch(m)
@@ -1064,6 +1073,12 @@ class Team:
     def finish(self, summary: str) -> None:
         self.mark(LEAD, "finish", "proje bitti")
         self.summary = summary.strip()
+        if self.pr and self.pr_branch and not self.pr_url:
+            from alice import team_pr
+
+            note = team_pr.open_pr(self)
+            self.mark(LEAD, "pr", note)
+            self.summary += "\n\n" + note
         self.lead_state = "done"
         with self._save_lock:  # "bitti" ancak kayıt yazılınca görünsün (liste ve yeniden açılış tutarlı)
             self.finished = True
@@ -1613,6 +1628,8 @@ Nasıl yapılır:
                 "questions": self.questions[-20:], "progress": [done, len(self.members)], "council": self.council,
                 "council_busy": self.council_busy, "councils": [_council_brief(c) for c in self.councils],
                 "check": self.check, "lessons": self.lessons[-15:], "timeline_n": len(self.timeline),
+                "pr": {"on": self.pr, "branch": self.pr_branch, "base": self.pr_base, "url": self.pr_url,
+                       "number": self.pr_number},
                 "usage": {"total": self.usage_total(), "by": self.usage},
                 "members": [m.snapshot() for m in self.members.values()],
                 "log": [{"from": x.sender, "to": x.to, "text": x.text[:400], "at": x.at} for x in self.log[-40:]],
@@ -1667,7 +1684,9 @@ Nasıl yapılır:
                 "questions": self.questions, "members": members, "council": self.council,
                 "councils": self.councils[-10:], "final_runs": self.final_runs, "plan_rejects": self.plan_rejects,
                 "plan_council": self.plan_council, "plan_prev_id": self.plan_prev_id,
-                "check": self.check, "lessons": self.lessons, "timeline": self.timeline[-500:], "usage": self.usage,
+                "check": self.check, "lessons": self.lessons, "pr": self.pr, "pr_repo": self.pr_repo,
+                "pr_base": self.pr_base, "pr_branch": self.pr_branch, "pr_top": self.pr_top, "pr_sha": self.pr_sha,
+                "pr_url": self.pr_url, "pr_number": self.pr_number, "timeline": self.timeline[-500:], "usage": self.usage,
                 "log": [{"from": x.sender, "to": x.to, "text": x.text, "at": x.at} for x in self.log[-500:]]}
 
     @classmethod
@@ -1679,7 +1698,11 @@ Nasıl yapılır:
                    project_id=data.get("id") or f.stem, title=data.get("title", ""),
                    review=bool(data.get("review", True)), lead_model=data.get("lead_model", "brain"),
                    lead_thinking=data.get("lead_thinking", "default"),
-                   cwd=Path(data["cwd"]) if data.get("cwd") else None, council=bool(data.get("council", False)))
+                   cwd=Path(data["cwd"]) if data.get("cwd") else None, council=bool(data.get("council", False)),
+                   pr=bool(data.get("pr")))
+        for k in ("pr_repo", "pr_base", "pr_branch", "pr_top", "pr_sha", "pr_url"):
+            setattr(team, k, str(data.get(k) or ""))
+        team.pr_number = int(data.get("pr_number") or 0)
         team.councils = [c for c in data.get("councils") or [] if c.get("state") != "running"]
         team.check = str(data.get("check") or "")
         from alice.council import dedupe
@@ -1841,6 +1864,7 @@ Nasıl yapılır:
         tpl = {"name": name.strip()[:60], "goal": self.goal, "review": self.review, "council": self.council,
                "plan_council": self.plan_council,
                "lead_model": self.lead_model, "lead_thinking": self.lead_thinking, "check": self.check,
+               "pr": self.pr, "cwd": str(self.pr_top or self.cwd),
                "agents": [{"name": m.name, "task": m.task, "constraints": m.constraints, "scope": m.scope,
                            "model": m.model, "thinking": m.thinking, "isolation": m.isolation, "after": m.after,
                            "max_steps": m.max_steps} for m in self.members.values()]}
