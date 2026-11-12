@@ -716,26 +716,134 @@ function finishTool(t, ev, live) {
     body.appendChild(imgs);
     t.classList.add("open");
   }
-  if (ev.files && ev.files.length) body.appendChild(fileCards(ev.files)), t.classList.add("open");
+  // Dosya kartları ve özet kutusu adımların içinde değil mesaj düzeyinde: tur bitince adımlar katlanıyor, kart da
+  // onlarla birlikte gözden kayboluyordu.
+  if (ev.files && ev.files.length) placeAfter(t, fileCards(ev.files));
+  if (ev.card && ev.card.kind === "next_step") placeAfter(t, nextStepCard(ev.card, live));
+}
+function placeAfter(t, node) {
+  const step = t.closest(".tool-group") || t.closest(".steps") || t;
+  const top = step.closest("#messages > *") || step;
+  if (top.parentElement === list) top.after(node); else list.appendChild(node);
+  if (S.working) list.appendChild(S.working);
 }
 
 /* send_file: kullanıcıya gösterilen dosyalar. Aç / Klasörde göster sadece bu dosyalar için çalışır (/api/reveal). */
 function fmtSize(n) {
   return n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`;
 }
+const FILE_KIND = [
+  [/\.(png|jpe?g|gif|webp|svg|bmp)$/i, "görsel", "#22c55e"], [/\.pdf$/i, "PDF", "#ef4444"],
+  [/\.(md|markdown|txt|log)$/i, "metin", "#a3a3a3"], [/\.(csv|tsv|xlsx?)$/i, "tablo", "#10b981"],
+  [/\.(html?|css)$/i, "web", "#f97316"], [/\.(py|js|ts|json|toml|ya?ml|sh|ps1|sql|xml|ini|cfg)$/i, "kod", "#60a5fa"],
+  [/\.(zip|7z|rar|tar|gz)$/i, "arşiv", "#eab308"], [/\.(exe|msi|apk)$/i, "program", "#a78bfa"],
+  [/\.(mp3|wav|ogg|flac|mp4|mkv|webm)$/i, "medya", "#ec4899"]];
+const PREVIEWABLE = /\.(png|jpe?g|gif|webp|svg|bmp|pdf|md|markdown|txt|log|csv|tsv|json|py|js|ts|html?|css|toml|ya?ml|xml|sh|ps1|sql|ini|cfg)$/i;
+function fileKind(name) {
+  for (const [rx, label, color] of FILE_KIND) if (rx.test(name)) return [label, color];
+  return ["dosya", "var(--faint)"];
+}
 function fileCards(files) {
   const box = el("div", "file-cards");
   for (const f of files) {
+    const [kind, color] = fileKind(f.name);
     const card = el("div", "file-card");
+    const ext = el("span", "fc-ext", (f.name.split(".").pop() || "").slice(0, 4).toUpperCase());
+    ext.style.setProperty("--fc", color);
     const meta = el("span", "fc-meta");
-    meta.append(el("b", "", f.name), el("small", "", fmtSize(f.size || 0)));
-    const open = el("button", "btn", "Aç");
+    const dir = (f.path || "").replace(/[\\/][^\\/]*$/, "");
+    meta.append(el("b", "", f.name), el("small", "", `${kind} · ${fmtSize(f.size || 0)}` + (dir ? ` · ${dir}` : "")));
+    const acts = el("span", "fc-acts");
+    if (PREVIEWABLE.test(f.name)) {
+      const pv = el("button", "btn", "Önizle");
+      pv.addEventListener("click", () => previewFile(f));
+      acts.appendChild(pv);
+    }
+    const open = el("button", "btn ghost", "Aç");
     open.addEventListener("click", () => api("/api/reveal", { path: f.path }).then((r) => r && !r.ok && toast(r.error || "açılamadı")));
-    const dir = el("button", "btn ghost", "Klasörde göster");
-    dir.addEventListener("click", () => api("/api/reveal", { path: f.path, folder: true }));
+    const folder = iconAct(IC.folder, "Klasörde göster", () => api("/api/reveal", { path: f.path, folder: true }));
+    acts.append(open, folder);
     card.title = f.path;
-    card.append(meta, open, dir);
+    card.append(ext, meta, acts);
+    if (PREVIEWABLE.test(f.name)) meta.addEventListener("click", () => previewFile(f));
     box.appendChild(card);
+  }
+  return box;
+}
+// Dosyayı uygulamadan çıkmadan göster: markdown işlenir, kod renklenir, CSV tablo olur, HTML yalıtılmış çerçevede.
+async function previewFile(f) {
+  const r = await api("/api/file_preview?path=" + encodeURIComponent(f.path));
+  if (!r || !r.ok) return toast((r && r.error) || "önizlenemedi");
+  showDialog((d) => {
+    d.classList.add("preview");
+    const head = el("div", "pv-head");
+    const open = el("button", "btn ghost", "Aç");
+    open.addEventListener("click", () => api("/api/reveal", { path: f.path }));
+    head.append(el("b", "", r.name), open);
+    const body = el("div", "pv-body");
+    if (r.kind === "image") {
+      const img = el("img");
+      img.src = `data:${r.mime};base64,${r.b64}`;
+      body.appendChild(img);
+    } else if (r.kind === "pdf") {
+      const bytes = Uint8Array.from(atob(r.b64), (c) => c.charCodeAt(0));
+      const fr = el("iframe");
+      fr.src = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+      body.appendChild(fr);
+    } else if (r.kind === "markdown") {
+      const md = el("div", "md");
+      md.innerHTML = renderMd(r.text);
+      body.appendChild(md);
+    } else if (r.kind === "html") {
+      const fr = el("iframe");
+      fr.setAttribute("sandbox", "");  // betik çalışmaz, ALICE'e erişemez
+      fr.srcdoc = r.text;
+      body.appendChild(fr);
+    } else if (r.kind === "csv") {
+      const sep = /\.tsv$/i.test(r.name) ? "\t" : r.text.split("\n")[0].split(";").length > r.text.split("\n")[0].split(",").length ? ";" : ",";
+      const table = el("table", "pv-table");
+      r.text.split(/\r?\n/).filter(Boolean).slice(0, 500).forEach((line, i) => {
+        const tr = el("tr");
+        for (const cell of line.split(sep)) tr.appendChild(el(i ? "td" : "th", "", cell.replace(/^"|"$/g, "")));
+        table.appendChild(tr);
+      });
+      body.appendChild(table);
+    } else {
+      const pre = el("pre", "pv-code");
+      const code = el("code", "language-" + (r.lang || "text"));
+      code.textContent = r.text;
+      pre.appendChild(code);
+      body.appendChild(pre);
+      if (r.kind === "code" && window.AliceHL && AliceHL.langOf(r.lang)) code.innerHTML = AliceHL.highlight(r.text, r.lang);
+    }
+    if (r.truncated) body.appendChild(el("small", "pv-note", "Dosya büyük: yalnız başı gösteriliyor."));
+    d.append(head, body);
+    dialogClose(d);
+  });
+}
+
+/* Tur sonu kutusu (next_step aracı): kısa özet, varsa tek soru ve düğmeler. Düğmeye basınca metni cevap olarak
+   gider. Yalnız en sondaki kutu tıklanabilir; yeni mesaj yazılınca eskiler sönükleşir. */
+function nextStepCard(card, live) {
+  $$(".next-step").forEach((n) => n.classList.add("stale"));
+  const box = el("div", "next-step" + (live ? "" : " stale"));
+  box.appendChild(el("p", "ns-recap", card.recap || ""));
+  if (card.question) {
+    const q = el("div", "ns-q");
+    q.appendChild(el("b", "", card.question));
+    const row = el("div", "ns-acts");
+    (card.options || []).forEach((label, i) => {
+      const b = el("button", i ? "btn" : "btn accent", label);
+      b.addEventListener("click", () => {
+        if (box.classList.contains("stale")) return;
+        box.classList.add("stale", "answered");
+        b.classList.add("chosen");
+        submit(label);
+      });
+      row.appendChild(b);
+    });
+    q.appendChild(row);
+    box.appendChild(q);
   }
   return box;
 }
@@ -1032,7 +1140,8 @@ function renderHistory(items) {
     if (it.type === "user") { addUser(it.text, it.mi); remember(it.text); }
     else if (it.type === "assistant") addAiStatic(it.text);
     else if (it.type === "info") addNote(it.text);
-    else if (it.type === "tool") finishTool(toolRow(null, it.name, it.summary, false), { is_error: it.is_error, text: it.text });
+    else if (it.type === "tool") finishTool(toolRow(null, it.name, it.summary, false), { is_error: it.is_error, text: it.text,
+      files: it.files, card: it.card });
   }
   if (!items || !items.length) setEmpty(true);
   markFinals();

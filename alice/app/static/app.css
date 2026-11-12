@@ -1948,11 +1948,36 @@ details > summary::marker { color: var(--faint); }
 .pv-back:hover { background: var(--hover); color: var(--text); }
 
 /* send_file kartları */
-.file-cards { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
-.file-card { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--panel); }
-.file-card .fc-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.file-cards { display: flex; flex-direction: column; gap: 8px; margin: 10px 0 4px; max-width: 560px; }
+.file-card { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line);
+  border-radius: var(--r-md); background: var(--panel); transition: border-color .15s, background .15s; }
+.file-card:hover { border-color: var(--muted); }
+.fc-ext { flex: none; width: 40px; height: 40px; border-radius: 9px; display: grid; place-items: center; font: 600 10.5px var(--mono);
+  color: var(--fc); background: color-mix(in srgb, var(--fc) 14%, transparent); letter-spacing: .3px; }
+.file-card .fc-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; cursor: pointer; }
 .file-card .fc-meta b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.file-card .fc-meta small { color: var(--faint); font-size: 12px; }
+.file-card .fc-meta small { color: var(--faint); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fc-acts { flex: none; display: flex; align-items: center; gap: 4px; }
+.dialog.preview { width: min(980px, 92vw); max-height: 88vh; display: flex; flex-direction: column; padding: 0; }
+.pv-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px;
+  border-bottom: 1px solid var(--line); }
+.pv-body { overflow: auto; padding: 16px; min-height: 200px; }
+.pv-body img { max-width: 100%; display: block; margin: 0 auto; border-radius: var(--r-sm, 6px); }
+.pv-body iframe { width: 100%; height: 72vh; border: 0; background: #fff; border-radius: var(--r-sm, 6px); }
+.pv-code { margin: 0; font: 12.5px/1.55 var(--mono); white-space: pre; }
+.pv-table { border-collapse: collapse; font-size: 12.5px; }
+.pv-table th, .pv-table td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; white-space: nowrap; }
+.pv-table th { background: var(--hover); font-weight: 600; position: sticky; top: -16px; }
+.pv-note { display: block; color: var(--faint); margin-top: 8px; }
+/* tur sonu kutusu */
+.next-step { margin: 12px 0 4px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-md);
+  background: var(--panel); max-width: 640px; }
+.ns-recap { margin: 0; color: var(--muted); font-size: 13.5px; line-height: 1.5; }
+.ns-q { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.ns-q b { display: block; font-weight: 500; margin-bottom: 8px; }
+.ns-acts { display: flex; flex-wrap: wrap; gap: 6px; }
+.next-step.stale .ns-acts .btn { opacity: .45; pointer-events: none; }
+.next-step.answered .btn.chosen { opacity: 1; }
 
 /* ------------------------------------------------------------------ durum çubuğu panelleri */
 .st-chip { position: relative; display: inline-flex; align-items: center; gap: 5px; padding: 2px 6px; border-radius: var(--r-xs);

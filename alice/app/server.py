@@ -132,7 +132,7 @@ class AppUI:
     def tool_end(self, call_id: str, name: str, result: ToolResult) -> None:
         self.publish({"type": "tool_end", "id": call_id, "name": name, "text": result.text[:20000],
                           "is_error": result.is_error, "diff": result.diff, "images": result.images[:4],
-                      "files": getattr(result, "files", [])[:10]})
+                      "files": getattr(result, "files", [])[:10], "card": getattr(result, "card", {}) or {}})
 
     def ask_permission(self, name: str, summary: str, risk: str) -> str:
         pid = secrets.token_hex(6)
@@ -220,6 +220,12 @@ def display_history(messages: list[dict[str, Any]], tools: dict[str, Any] | None
     if archive:
         items = [{k: v for k, v in it.items() if k != "mi"} for it in display_history([{"role": "system"}, *archive], tools)]
     results = {m.get("tool_call_id"): m.get("content", "") for m in messages if m.get("role") == "tool"}
+    extras = {m.get("tool_call_id"): m for m in messages if m.get("role") == "tool" and (m.get("_files") or m.get("_card"))}
+    if extras:  # yeniden açılan sohbette gösterilen dosyalar yine açılabilsin / önizlenebilsin
+        from alice.tools.meta import SENT_FILES
+
+        for m in extras.values():
+            SENT_FILES.update(str(f.get("path")) for f in m.get("_files") or [] if f.get("path"))
     for i, m in enumerate(messages):
         role = m.get("role")
         content = m.get("content")
@@ -244,8 +250,47 @@ def display_history(messages: list[dict[str, Any]], tools: dict[str, Any] | None
                 args = tc["function"].get("arguments", "")
                 items.append({"type": "tool", "id": tc["id"], "name": tc["function"]["name"],
                               "summary": _summary(tools or {}, tc["function"]["name"], args),
-                              "text": res, "is_error": res.startswith("HATA:")})
+                              "text": res, "is_error": res.startswith("HATA:"),
+                              "files": (extras.get(tc["id"]) or {}).get("_files") or [],
+                              "card": (extras.get(tc["id"]) or {}).get("_card") or {}})
     return items
+
+
+PREVIEW_TEXT = {".md": "markdown", ".markdown": "markdown", ".txt": "text", ".log": "text", ".csv": "csv",
+                ".tsv": "csv", ".json": "code", ".py": "code", ".js": "code", ".ts": "code", ".html": "html",
+                ".htm": "html", ".css": "code", ".toml": "code", ".yaml": "code", ".yml": "code", ".xml": "code",
+                ".sh": "code", ".ps1": "code", ".sql": "code", ".ini": "code", ".cfg": "code"}
+PREVIEW_IMAGE = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+                 ".webp": "image/webp", ".svg": "image/svg+xml", ".bmp": "image/bmp"}
+PREVIEW_MAX = 400_000  # bayt: daha büyük metin dosyasının başı gösterilir
+
+
+def file_preview(path: str, allowed: set[str]) -> dict[str, Any]:
+    """Kullanıcıya gösterilmiş bir dosyanın önizlemesi: metin (markdown/kod/csv/html) ya da görsel/PDF (base64)."""
+    import base64
+
+    p = Path(path)
+    if path not in allowed or not p.is_file():
+        return {"ok": False, "error": "dosya bulunamadı"}
+    ext = p.suffix.lower()
+    size = p.stat().st_size
+    if ext in PREVIEW_IMAGE or ext == ".pdf":
+        if size > 15_000_000:
+            return {"ok": False, "error": "dosya önizleme için çok büyük"}
+        return {"ok": True, "kind": "pdf" if ext == ".pdf" else "image", "name": p.name,
+                "mime": "application/pdf" if ext == ".pdf" else PREVIEW_IMAGE[ext],
+                "b64": base64.b64encode(p.read_bytes()).decode()}
+    kind = PREVIEW_TEXT.get(ext)
+    if kind is None:
+        with open(p, "rb") as f:
+            head = f.read(4096)
+        if b"\0" in head:
+            return {"ok": False, "error": "bu dosya türü önizlenemiyor; Aç ile aç"}
+        kind = "text"
+    with open(p, "rb") as f:
+        data = f.read(PREVIEW_MAX)
+    return {"ok": True, "kind": kind, "name": p.name, "lang": ext.lstrip("."), "truncated": size > PREVIEW_MAX,
+            "text": data.decode("utf-8", errors="replace")}
 
 
 def git_branch(cwd: Path) -> str:
@@ -1888,6 +1933,11 @@ def make_handler(state: AppState):
                     return self._json(state.project_detail((q.get("id") or [""])[0], (q.get("member") or [""])[0]))
                 except ToolError as e:
                     return self._json({"ok": False, "error": str(e)}, 404)
+            if u.path == "/api/file_preview":
+                # send_file kartındaki "Önizle": yalnız ALICE'in kullanıcıya gösterdiği dosyalar (rastgele yol değil).
+                from alice.tools.meta import SENT_FILES
+
+                return self._json(file_preview(str((q.get("path") or [""])[0]), SENT_FILES))
             if u.path == "/api/files":
                 from alice.mentions import complete_paths
 

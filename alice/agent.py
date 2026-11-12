@@ -932,7 +932,12 @@ class Agent:
                     pending_images.append((name, result.images))
                 else:
                     text += "\n\n[görüntü açıklaması - vision modeli]\n" + self._describe_images(result.images)
-            self.messages.append({"role": "tool", "tool_call_id": call["id"], "name": name, "content": text})
+            tool_msg: dict[str, Any] = {"role": "tool", "tool_call_id": call["id"], "name": name, "content": text}
+            if result.files:  # arayüz için (modele gitmez): sohbet yeniden açılınca dosya kartı yine görünsün
+                tool_msg["_files"] = result.files[:10]
+            if result.card:
+                tool_msg["_card"] = result.card
+            self.messages.append(tool_msg)
         for name, images in pending_images:
             parts: list[dict[str, Any]] = [{"type": "text", "text": f"[{name} aracının döndürdüğü görüntü]"}]
             parts += [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b}"}} for b in images]

@@ -22,13 +22,13 @@ CORE = {"read_file", "write_file", "edit_file", "list_dir", "glob", "grep", "run
 
 # grup -> (araçlar, kısa açıklama, anahtar kelime regex'i)
 GROUPS: dict[str, tuple[set[str], str, str]] = {
-    "files": ({"file_ops", "multi_edit", "apply_patch", "notebook_edit", "find_files", "send_file"},
+    "files": ({"file_ops", "multi_edit", "apply_patch", "notebook_edit", "find_files", "send_file", "next_step"},
               "dosya taşıma/kopyalama/silme, kişisel dosya bulma (indirilenler, son açılanlar), bir dosyada çok "
               "değişiklik, çok dosyaya yama, Jupyter defteri, kullanıcıya dosya gösterme",
               r"taşı|kopyala|\bsil(in|e|er misin)?\b|yeniden adlandır|adını değiştir|çöp|düzenle|değiştir|düzelt|refactor|"
               r"yama|patch|notebook|ipynb|jupyter|\bkod|code|script|fonksiyon|\.py\b|\.js\b|\.ts\b|bug|klasör|"
               r"indirdiğim|indirilen|açtığım|nerede(ydi)?\b|\bpdf|excel|word dosya|belge(yi|si|m)|toparla"),
-    "plan": ({"todo_write", "run_plan", "task_control", "task", "process_output", "process_stop", "process_wait",
+    "plan": ({"todo_write", "next_step", "run_plan", "task_control", "task", "process_output", "process_stop", "process_wait",
               "skill", "exit_plan_mode"},
              "çok adımlı iş planı ve yapılacaklar listesi, alt ajan, arka plandaki komutun çıktısı/bekleme/durdurma, "
              "beceriler, plan onayı",

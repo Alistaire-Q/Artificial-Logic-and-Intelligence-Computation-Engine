@@ -24,6 +24,7 @@ class ToolResult:
     is_error: bool = False
     diff: str = ""  # arayüzde gösterilecek unified diff (modele gitmez)
     files: list[dict[str, Any]] = field(default_factory=list)  # kullanıcıya kart olarak gösterilecek dosyalar (send_file)
+    card: dict[str, Any] = field(default_factory=dict)  # arayüze özel kart (ör. next_step: özet, soru, düğmeler)
 
 
 class ToolError(Exception):

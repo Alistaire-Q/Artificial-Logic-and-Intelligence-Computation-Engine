@@ -450,6 +450,34 @@ class SendFile(Tool):
         return ToolResult(text, images=images, files=files)
 
 
+class NextStep(Tool):
+    """Claude Code'daki tur sonu kutusu: kısa özet, varsa tek soru ve cevap düğmeleri. Turu bekletmez."""
+
+    name = "next_step"
+    parallel_safe = True
+    description = ("Birkaç adımlık bir işi bitirince, son cevabından HEMEN ÖNCE çağır: sohbetin altında kısa bir özet "
+                   "kutusu çıkar; kullanıcının vermesi gereken bir karar ya da yapması gereken bir adım varsa tek bir "
+                   "soru ve 1-3 düğme ekle (düğmeye basınca o metin kullanıcının cevabı olarak gelir). ask_user gibi "
+                   "beklemez, tur biter.\n"
+                   "- Kısa sorulara, sohbete, tek adımlık işlere çağırma.\n"
+                   "- recap: şu an ne durumda, ne yapılmadı/doğrulanmadı (2-3 kısa cümle).\n"
+                   "- question yalnız gerçekten kullanıcıya kalan bir karar varsa; önerdiğin seçenek ilk düğme.")
+    parameters = obj({
+        "recap": {"type": "string", "description": "2-3 kısa cümle: ne değişti, ne durumda, ne eksik/doğrulanmadı."},
+        "question": {"type": "string", "description": "Kullanıcıya kalan tek karar (en fazla 100 karakter). Yoksa boş."},
+        "options": {"type": "array", "items": {"type": "string", "description": "Düğme metni (1-4 kelime)."},
+                    "description": "question'ın cevapları; önerilen ilk sırada. En fazla 3."},
+    }, ["recap"])
+    risk = READ
+
+    def run(self, ctx: ToolContext, recap: str, question: str = "", options: list[str] | None = None) -> ToolResult:
+        recap = " ".join(str(recap).split())[:400]
+        question = " ".join(str(question or "").split())[:140]
+        opts = [" ".join(str(o).split())[:40] for o in (options or []) if str(o).strip()][:3] if question else []
+        return ToolResult("Özet kutusu gösterildi. Son cevabında özeti tekrarlama; soruyu tekrar sorma.",
+                          card={"kind": "next_step", "recap": recap, "question": question, "options": opts})
+
+
 class ExitPlanMode(Tool):
     """Claude Code'daki ExitPlanMode karşılığı: plan modunda hazırlanan planı onaya sunar."""
 
@@ -492,5 +520,5 @@ class ExitPlanMode(Tool):
                           "tekrar sun.")
 
 
-TOOLS = [TodoWrite(), Memory(), Task(), Reflex(), Projects(), SkillTool(), AskUser(), Feedback(), SendFile(),
+TOOLS = [TodoWrite(), Memory(), Task(), Reflex(), Projects(), SkillTool(), AskUser(), Feedback(), SendFile(), NextStep(),
          ExitPlanMode()]
