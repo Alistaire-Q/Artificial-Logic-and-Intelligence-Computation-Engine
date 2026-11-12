@@ -1429,6 +1429,45 @@ function autoPane(pane) {
         iconAct(IC.trash, "Görevi sil", () => call("task_rm", { id: t.id }).then(after("görev silindi")), "danger"));
       body.appendChild(row);
     }
+    // Hook'lar
+    body.appendChild(el("div", "sec", `Hook'lar (${(d.hooks || []).length})`));
+    const hk = el("div", "auto-new hook-new");
+    const ev = el("select");
+    for (const e of d.hook_events || []) { const o = el("option", "", e); o.value = e; ev.appendChild(o); }
+    ev.value = "PostToolUse";
+    const mt = el("input"); mt.type = "text"; mt.placeholder = "araç (regex) ör. edit_file|write_file|multi_edit";
+    const cmd = el("input"); cmd.type = "text"; cmd.placeholder = "komut ör. ruff format \"$ALICE_TOOL_PATH\"";
+    const addH = small("Ekle", async () => {
+      if (!cmd.value.trim()) return toast("komut boş");
+      const ok = await confirmDialog("Hook eklensin mi?",
+        `${ev.value}${mt.value ? " [" + mt.value + "]" : ""} olayında her seferinde şu komut çalışacak:\n${cmd.value}`, "Ekle");
+      if (ok) call("hook_add", { event: ev.value, matcher: mt.value, command: cmd.value }).then(after("hook eklendi"));
+    }, true);
+    const hrow = el("div", "key-edit");
+    hrow.append(ev, mt);
+    const hrow2 = el("div", "key-edit");
+    hrow2.append(cmd, addH);
+    hk.append(hrow, hrow2, el("small", "enroll-note", "PostToolUse: araçtan sonra (çıkış 2 = hata ALICE'e gider) · "
+      + "PreToolUse: önce (2 = engelle) · Stop: cevap bitince (2 = devam et) · UserPromptSubmit / SessionStart: çıktı "
+      + "bağlama eklenir. Dosya: " + (d.hooks_path || "")));
+    body.appendChild(hk);
+    for (const h of d.hooks || []) {
+      const row = el("div", "list-row");
+      const l = el("span", "l");
+      l.append(el("b", "", h.command), el("small", "", h.event + (h.matcher ? " · " + h.matcher : " · her araç")
+        + ` · ${h.timeout} sn` + (h.fixed ? " · config.toml'da" : "")));
+      const out = el("div", "auto-verdicts");
+      l.appendChild(out);
+      row.appendChild(l);
+      if (!h.fixed) {
+        row.append(small("Dene", () => call("hook_test", { index: h.index }).then((r) => {
+          out.replaceChildren();
+          if (!r || !r.ok) return toast((r && r.error) || "olmadı");
+          out.appendChild(el("small", "", `çıkış ${r.code}` + (r.stdout ? " · " + r.stdout : "") + (r.stderr ? " · " + r.stderr : "")));
+        })), iconAct(IC.trash, "Hook'u sil", () => call("hook_rm", { index: h.index }).then(after("hook silindi")), "danger"));
+      }
+      body.appendChild(row);
+    }
     // Akışlar
     body.appendChild(el("div", "sec", `Akışlar (${d.feeds.length})`));
     const fh = el("div", "list-row");

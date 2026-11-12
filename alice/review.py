@@ -209,15 +209,61 @@ def report(findings: list[Finding]) -> str:
     return f"{len(findings)} bulgu (önem sırasıyla):\n\n" + "\n\n".join(f.text() for f in findings)
 
 
-def post(api: Any, repo: str, number: int, sha: str, findings: list[Finding]) -> str:
-    """Bulguları PR'a satır yorumlarıyla tek bir inceleme olarak yaz. Satır farkta yoksa GitHub reddeder: o zaman
-    bulgular inceleme metnine konur."""
+def diff_lines(diff: str) -> dict[str, set[int]]:
+    """Farkta yorum yazılabilen satırlar (yeni dosyadaki satır numaraları: eklenen ve bağlam satırları). GitHub satır
+    yorumunu yalnız bunlara kabul eder; birinin dışında olması bütün incelemeyi reddettirir."""
+    out: dict[str, set[int]] = {}
+    cur: set[int] | None = None
+    line = 0
+    for raw in diff.splitlines():
+        if raw.startswith("+++ "):
+            path = raw[4:].strip()
+            cur = None if path == "/dev/null" else out.setdefault(path[2:] if path.startswith("b/") else path, set())
+            continue
+        if raw.startswith("--- ") or raw.startswith("diff --git"):
+            continue
+        m = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", raw)
+        if m:
+            line = int(m.group(1))
+            continue
+        if cur is None or raw.startswith("\\"):
+            continue
+        if raw.startswith("-"):
+            continue
+        if raw.startswith("+") or raw.startswith(" ") or raw == "":
+            cur.add(line)
+            line += 1
+    return out
+
+
+def _anchor(f: Finding, lines: dict[str, set[int]]) -> int:
+    """Bulgunun yazılacağı satır: tam satır farktaysa o, değilse aynı dosyada 3 satır içindeki en yakın fark satırı;
+    hiçbiri yoksa 0 (bulgu inceleme metnine gider)."""
+    ok = lines.get(f.file) or set()
+    if f.line in ok:
+        return f.line
+    near = [n for n in ok if abs(n - f.line) <= 3]
+    return min(near, key=lambda n: abs(n - f.line)) if near and f.line > 0 else 0
+
+
+def post(api: Any, repo: str, number: int, sha: str, findings: list[Finding], diff: str = "") -> str:
+    """Bulguları PR'a satır yorumlarıyla tek bir inceleme olarak yaz. Farktaki satıra düşen bulgu o satıra yorum olur;
+    farkın dışında kalanlar (değişmemiş bir yerdeki sorun) inceleme metnine konur. GitHub yine reddederse hepsi
+    metne gider."""
     from alice.tools.github import ALICE_MARK, ToolError
 
-    summary = (f"Bağımsız inceleme: {len(findings)} bulgu." if findings else "Bağımsız inceleme: doğrulanmış sorun "
-               "bulunmadı.") + f"\n\n{ALICE_MARK}"
-    comments = [{"path": f.file, "line": f.line, "side": "RIGHT", "body": f.text() + f"\n\n{ALICE_MARK}"}
-                for f in findings if f.line > 0]
+    lines = diff_lines(diff) if diff else {}
+    inline, outside = [], []
+    for f in findings:
+        at = _anchor(f, lines) if diff else f.line
+        (inline if at > 0 else outside).append((f, at))
+    comments = [{"path": f.file, "line": at, "side": "RIGHT", "body": f.text() + f"\n\n{ALICE_MARK}"}
+                for f, at in inline]
+    summary = (f"Bağımsız inceleme: {len(findings)} bulgu" + (f" ({len(comments)} satır yorumu)" if comments else "")
+               + "." if findings else "Bağımsız inceleme: doğrulanmış sorun bulunmadı.")
+    if outside:
+        summary += "\n\nFarkın dışında kalan bulgular:\n\n" + "\n\n".join(f.text() for f, _ in outside)
+    summary += f"\n\n{ALICE_MARK}"
     payload = {"commit_id": sha, "event": "COMMENT", "body": summary, "comments": comments}
     try:
         r = api.post(f"/repos/{repo}/pulls/{number}/reviews", payload)

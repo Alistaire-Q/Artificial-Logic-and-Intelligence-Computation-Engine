@@ -61,7 +61,7 @@ class CodeReview(Tool):
         findings = review.review(ctx.config, ctx.router, ctx.cwd, title, diff, focus, verify)
         text = review.report(findings)
         if post:
-            url = review.post(_api(ctx), repo, int(number), sha, findings)
+            url = review.post(_api(ctx), repo, int(number), sha, findings, diff)
             text += f"\n\nPR'a inceleme olarak yazıldı: {url}"
         ctx.emit("bağımsız inceleme bitti")
         return ToolResult(text)

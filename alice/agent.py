@@ -348,6 +348,9 @@ class Agent:
         self.stats: dict[str, float] = {"turns": 0, "steps": 0, "llm_s": 0.0, "tool_s": 0.0, "ttft_s": 0.0,
                                         "ttft_n": 0, "gen_s": 0.0, "gen_tokens": 0, "input": 0, "cached": 0,
                                         "output": 0}
+        # Kullanım dökümü: tokenlar hangi modele, bağlam hangi araçların çıktısına gitti
+        self.usage_models: dict[str, dict[str, float]] = {}
+        self.usage_tools: dict[str, dict[str, float]] = {}
         # Her araç adımından sonra çağrılır (oturumu kaydetmek için): tur takılır ya da çökerse iz kaybolmasın.
         self.on_step: Any = None
         self.on_compact: Any = None  # özetlemede bağlamdan çıkan mesajlar buraya verilir (uygulama arşive yazar)
@@ -675,6 +678,13 @@ class Agent:
         if first and out and now - first > 0.2:  # akış hızı: yalnız gerçekten akan cevaplarda
             st["gen_s"] += now - first
             st["gen_tokens"] += out
+        m = self.usage_models.setdefault(f"{res.provider}:{res.model}", {"calls": 0, "input": 0, "cached": 0,
+                                                                          "output": 0, "seconds": 0.0})
+        m["calls"] += 1
+        m["input"] += int(u.get("prompt_tokens") or u.get("input_tokens") or 0)
+        m["cached"] += cached_tokens(u)
+        m["output"] += out
+        m["seconds"] += now - started
 
     def stats_view(self) -> dict[str, Any]:
         """Durum çubuğu panelleri: oturum istatistiği, token kullanımı ve bağlamın dağılımı."""
@@ -690,6 +700,14 @@ class Agent:
             "input": int(st["input"]), "cached": int(st["cached"]), "output": int(st["output"]),
             "ctx": {"system": system, "tools": tools, "messages": max(0, total - system - tools), "total": total},
         }
+
+    def usage_breakdown(self) -> dict[str, Any]:
+        """"Tokenlarım nereye gitti": model başına çağrı/girdi/önbellek/çıktı, araç başına bağlama eklenen çıktı ve
+        bağlamın şu anki dağılımı. Kullanım dökümü penceresi ve usage aracı kullanır."""
+        models = sorted(({"model": k, **{x: (round(y, 1) if isinstance(y, float) else y) for x, y in v.items()}}
+                         for k, v in self.usage_models.items()), key=lambda r: -(r["input"] + r["output"]))
+        tools = sorted(({"tool": k, **v} for k, v in self.usage_tools.items()), key=lambda r: -r["tokens"])
+        return {**self.stats_view(), "models": models, "tools": tools}
 
     def steer(self, text: str, images: list[str] | None = None) -> bool:
         """Çalışan tura mesaj ekle. Tur alabilecek durumdaysa True (mesaj bir sonraki adımda modele gider); değilse
@@ -933,6 +951,10 @@ class Agent:
                 else:
                     text += "\n\n[görüntü açıklaması - vision modeli]\n" + self._describe_images(result.images)
             tool_msg: dict[str, Any] = {"role": "tool", "tool_call_id": call["id"], "name": name, "content": text}
+            tu = self.usage_tools.setdefault(name, {"calls": 0, "tokens": 0, "errors": 0})
+            tu["calls"] += 1
+            tu["tokens"] += max(1, len(text) // 4)  # sonucun bağlama eklediği yaklaşık token
+            tu["errors"] += 1 if result.is_error else 0
             if result.files:  # arayüz için (modele gitmez): sohbet yeniden açılınca dosya kartı yine görünsün
                 tool_msg["_files"] = result.files[:10]
             if result.card:

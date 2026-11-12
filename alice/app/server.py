@@ -2072,6 +2072,8 @@ def make_handler(state: AppState):
                     return self._json(state.project_detail((q.get("id") or [""])[0], (q.get("member") or [""])[0]))
                 except ToolError as e:
                     return self._json({"ok": False, "error": str(e)}, 404)
+            if u.path == "/api/usage":
+                return self._json(state.agent.usage_breakdown())
             if u.path == "/api/prs":
                 return self._json(state.pr_panel(force=(q.get("force") or [""])[0] == "1"))
             if u.path in ("/api/browser/frame", "/api/browser/tabs"):

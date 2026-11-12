@@ -723,6 +723,11 @@ function finishTool(t, ev, live) {
   // onlarla birlikte gözden kayboluyordu.
   if (ev.files && ev.files.length) placeAfter(t, fileCards(ev.files));
   if (ev.card && ev.card.kind === "next_step") placeAfter(t, nextStepCard(ev.card, live));
+  if (ev.card && ev.card.kind === "usage") {
+    const card = el("div", "usage-card");
+    card.appendChild(renderUsage(ev.card));
+    placeAfter(t, card);
+  }
 }
 function placeAfter(t, node) {
   const step = t.closest(".tool-group") || t.closest(".steps") || t;
@@ -1416,9 +1421,12 @@ function renderStats(s, st) {
   if (total) {
     const hit = s.input ? Math.round(100 * (s.cached || 0) / s.input) : 0;
     tok.querySelector("span").textContent = `${fmtTok(total)} tok` + (s.cached ? ` · önbellek %${hit}` : "");
+    const more = el("button", "act sp-more", "Döküm: tokenlar nereye gitti →");
+    more.addEventListener("click", (e) => { e.stopPropagation(); showTokenUsage(); });
     popRows(tok.querySelector(".st-pop"), "Token kullanımı", `${nf(total)} tok`, [
       ["Önbellekten (cache hit)", s.cached ? `%${hit}` : "—"], ["Önbelleksiz girdi", nf((s.input || 0) - (s.cached || 0))],
       ["Önbellekten girdi", nf(s.cached)], ["Çıktı", nf(s.output)]]);
+    tok.querySelector(".st-pop").appendChild(more);
   }
   const win = st.ctx_window || st.ctx_limit;
   if (win && s.ctx) {
@@ -1437,4 +1445,66 @@ function renderStats(s, st) {
       ["Sistem talimatı", "~" + fmtTok(s.ctx.system), "var(--faint)"], ["Araç tanımları", "~" + fmtTok(s.ctx.tools), "#a78bfa"],
       ["Mesajlar", "~" + fmtTok(s.ctx.messages), "var(--accent)"]], box);
   }
+}
+
+/* Kullanım dökümü: bu oturumda tokenlar hangi modele, bağlam hangi araç çıktılarına gitti. Durum çubuğundaki token
+   balonundan ya da usage aracının kartından açılır. */
+function usageBars(rows, label, value, sub, color) {
+  const box = el("div", "us-list");
+  const max = Math.max(1, ...rows.map(value));
+  for (const r of rows) {
+    const row = el("div", "us-row");
+    const head = el("div", "us-head");
+    head.append(el("span", "us-name", label(r)), el("span", "us-v", fmtTok(value(r))));
+    const bar = el("div", "us-bar");
+    const fill = el("i");
+    fill.style.width = (100 * value(r) / max) + "%";
+    fill.style.background = color;
+    bar.appendChild(fill);
+    row.append(head, bar, el("small", "", sub(r)));
+    box.appendChild(row);
+  }
+  return box;
+}
+function renderUsage(u) {
+  const box = el("div", "usage");
+  const nf = (n) => Number(n || 0).toLocaleString("tr-TR");
+  const hit = u.input ? Math.round(100 * (u.cached || 0) / u.input) : 0;
+  box.appendChild(el("div", "us-sum", `${u.turns} tur · ${u.steps} model çağrısı · girdi ${fmtTok(u.input)} ` +
+    `(önbellek %${hit}) · çıktı ${fmtTok(u.output)}`));
+  box.appendChild(el("div", "sec", "Modeller (girdi + çıktı)"));
+  if (u.models && u.models.length) {
+    box.appendChild(usageBars(u.models, (m) => m.model, (m) => m.input + m.output,
+      (m) => `${m.calls} çağrı · girdi ${nf(m.input)} (önbellekten ${nf(m.cached)}) · çıktı ${nf(m.output)} · ${fmtDurShort(m.seconds)}`,
+      "var(--accent)"));
+  } else box.appendChild(el("div", "note", "Henüz model çağrısı yok."));
+  box.appendChild(el("div", "sec", "Araç çıktıları (bağlama eklenen)"));
+  if (u.tools && u.tools.length) {
+    box.appendChild(usageBars(u.tools.slice(0, 12), (t) => t.tool, (t) => t.tokens,
+      (t) => `${t.calls} kez` + (t.errors ? ` · ${t.errors} hata` : ""), "#a78bfa"));
+  } else box.appendChild(el("div", "note", "Araç kullanılmadı."));
+  const c = u.ctx || {};
+  box.appendChild(el("div", "sec", `Bağlam şu an ~${fmtTok(c.total || 0)}`));
+  box.appendChild(usageBars([{ n: "Sistem talimatı", v: c.system || 0 }, { n: "Araç tanımları", v: c.tools || 0 },
+    { n: "Mesajlar", v: c.messages || 0 }], (r) => r.n, (r) => r.v, () => "", "var(--faint)"));
+  const tip = [];
+  if (u.input && hit < 30 && u.steps > 4) tip.push("Önbellek oranı düşük: model sık değişiyorsa her geçişte bağlam baştan ödenir.");
+  const big = (u.tools || [])[0];
+  if (big && c.total && big.tokens > c.total * 0.3) tip.push(`${big.tool} çıktıları bağlamın büyük kısmını tutuyor; daha dar sorgular ya da /compact yardımcı olur.`);
+  if (u.steps && c.tools && c.total && c.tools > c.total * 0.35) tip.push("Araç tanımları bağlamın üçte birinden fazla: gereksiz bağlantıları kapatmak yer açar.");
+  for (const t of tip) box.appendChild(el("div", "us-tip", t));
+  return box;
+}
+async function showTokenUsage() {
+  const u = await api("/api/usage");
+  if (!u || u.ok === false) return toast((u && u.error) || "istatistik alınamadı");
+  showDialog((d) => {
+    d.classList.add("usage-dialog");
+    d.append(el("h3", "", "Kullanım dökümü"), renderUsage(u));
+    const row = el("div", "row");
+    const ok = el("button", "btn primary", "Kapat");
+    ok.addEventListener("click", closeDialog);
+    row.appendChild(ok);
+    d.appendChild(row);
+  });
 }

@@ -57,7 +57,8 @@ def test_session_load_latest_or_by_id():
 
 def test_new_session_id_format():
     sid = session.new_session_id()
-    assert len(sid) == 15 and sid[8] == "-" and sid.replace("-", "").isdigit()
+    base = sid[:15]  # aynı saniyede başka sohbet açıldıysa sonuna -2, -3 eklenir
+    assert base[8] == "-" and base.replace("-", "").isdigit() and (sid == base or sid[15] == "-")
 
 
 def test_session_load_skips_corrupt_latest_file():

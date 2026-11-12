@@ -345,7 +345,7 @@ def default_reviewer(cfg: Any) -> Callable[[Watch, dict[str, Any], Any, str | No
             findings = review.review(cfg, router, wt, title, diff)
         finally:
             router.close()
-        url = review.post(api, w.repo, w.number, sha, findings)
+        url = review.post(api, w.repo, w.number, sha, findings, diff)
         return f"{len(findings)} bulgu" + (f": {url}" if url else "")
 
     return run
