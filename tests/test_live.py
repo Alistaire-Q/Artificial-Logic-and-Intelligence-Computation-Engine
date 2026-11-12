@@ -300,6 +300,9 @@ def test_stuck_tool_does_not_lock_conversation(monkeypatch):
     t0 = time.monotonic()
     s._run_call(ws, {"id": "1", "name": "ui_elements", "args": {}})
     assert time.monotonic() - t0 < 2 and "browser" not in state
+    # İkinci araç takılmıyor: ona gerçekçi süre ver. 0,2 sn yavaş CI makinesinde (Windows) iş parçacığının
+    # başlamasına bile yetmeyip "bitmedi" dönüyordu; sınanan şey yeni iş parçacığında çalışabilmesi.
+    s.TOOL_TIMEOUT = 5
     s._run_call(ws, {"id": "2", "name": "windows", "args": {}})  # yeni iş parçacığında hemen çalışır
     results = [m["toolResponse"]["functionResponses"][0]["response"]["result"] for m in sent]
     assert "YAPILMADI" in results[0] and results[1] == "ok"

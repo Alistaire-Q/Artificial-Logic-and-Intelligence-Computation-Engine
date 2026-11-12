@@ -186,9 +186,19 @@ def _mtime(p: Path) -> int:
         return 0
 
 
+def _stamp(p: Path) -> tuple[int, int]:
+    """Dosyanın hâli: (değişme zamanı, boyut). Yalnız zamana bakılınca Windows'ta art arda iki yazma aynı zamanı
+    alabiliyor, arada değişen dosya "değişmedi" sayılıyordu; boyut da karşılaştırılır."""
+    try:
+        st = p.stat()
+        return st.st_mtime_ns, st.st_size
+    except OSError:
+        return 0, -1
+
+
 def mark_read(ctx: ToolContext, p: Path) -> None:
     """Bu oturumda okundu: düzenleme araçları dosyanın hangi hâline göre yazıldığını bilsin."""
-    ctx.state.setdefault("read_files", {})[str(p)] = _mtime(p)
+    ctx.state.setdefault("read_files", {})[str(p)] = _stamp(p)
 
 
 _READS = ("read_file", "write_file", "edit_file", "multi_edit", "notebook_edit")
@@ -231,7 +241,7 @@ def require_read(ctx: ToolContext, p: Path) -> None:
     if key not in seen:
         raise ToolError(f"'{p.name}' ({p}) bu oturumda okunmadı. Önce read_file ile oku, sonra düzenle "
                         f"(içerik tahmin edilmesin).") 
-    if seen[key] != _mtime(p):
+    if seen[key] != _stamp(p):
         raise ToolError(f"'{p.name}' ({p}) okunduktan sonra diskte değişti: read_file'dan bu yana dosyaya yazıldığı için "
                         f"eski içerik göreli düzenlenemez. Güncel hâlini read_file ile oku, sonra düzenle.")
 
