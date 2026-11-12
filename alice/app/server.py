@@ -405,6 +405,7 @@ class Chat:
         # Arka plandan bu sohbete mesaj (monitor olayları, ayrı oturumun sonucu) ve ayrı oturum başlatma.
         self.ctx.state["deliver"] = lambda text: app.deliver(self.sid, text)
         self.ctx.state["sessions"] = SessionsAPI(app, self)
+        self.ctx.state["builtin_browser"] = app.builtin_browser  # tarayıcı aracı ve preview bunu kullanır
         attach_memory(self.agent, "uygulama")
         if messages is not None:
             self.agent.messages = self.agent.messages[:1] + messages
@@ -786,7 +787,24 @@ class AppState:
         self.bus.publish({"type": "busy", "value": False, "sid": chat.sid})
         self.bus.publish({"type": "status", **self.status()})
 
+    _builtin: Any = None
+    _builtin_lock = threading.Lock()
+
+    def builtin_browser(self) -> Any:
+        """Yerleşik tarayıcı (tek örnek, ilk kullanımda açılır): ajan da panel de aynısına bağlanır."""
+        with self._builtin_lock:
+            if self._builtin is None:
+                from alice.app.builtin_browser import BuiltinBrowser
+
+                self._builtin = BuiltinBrowser()
+            return self._builtin
+
     def shutdown(self) -> None:
+        if self._builtin is not None:
+            try:
+                self._builtin.stop()
+            except Exception:  # noqa: BLE001 - kapanışta hata önemsiz
+                pass
         self._update_stop.set()
         with self._chats_lock:
             chats = [self.chat, *self.background.values()]
@@ -2019,6 +2037,19 @@ def make_handler(state: AppState):
                     return self._json(state.project_detail((q.get("id") or [""])[0], (q.get("member") or [""])[0]))
                 except ToolError as e:
                     return self._json({"ok": False, "error": str(e)}, 404)
+            if u.path in ("/api/browser/frame", "/api/browser/tabs"):
+                from alice.app.builtin_browser import BrowserError
+
+                bb = state.builtin_browser()
+                if not bb.running():
+                    return self._json({"ok": False, "idle": True, "error": "yerleşik tarayıcı kapalı"})
+                try:
+                    if u.path == "/api/browser/tabs":
+                        return self._json({"ok": True, "tabs": [{k: t[k] for k in ("id", "title", "url")}
+                                                                for t in bb.tabs()], "current": bb.current()["id"]})
+                    return self._json(bb.frame(int((q.get("q") or ["60"])[0])))
+                except (BrowserError, OSError) as e:
+                    return self._json({"ok": False, "error": str(e)[:200]})
             if u.path == "/api/file_preview":
                 # send_file kartındaki "Önizle": yalnız ALICE'in kullanıcıya gösterdiği dosyalar (rastgele yol değil).
                 from alice.tools.meta import SENT_FILES
@@ -2374,6 +2405,38 @@ def make_handler(state: AppState):
                     ok = revert_change(state.agent.checkpoints, str(d.get("path", "")))
                     return self._json({"ok": ok, "changes": session_changes(state.agent.checkpoints, state.ctx.cwd)},
                                       200 if ok else 404)
+                if p == "/api/browser/input":
+                    # Paneldeki yerleşik tarayıcı: kullanıcı görüntüye tıklayıp yazarak kontrolü devralır.
+                    from alice.app.builtin_browser import BrowserError
+
+                    bb = state.builtin_browser()
+                    kind = str(d.get("type", ""))
+                    try:
+                        if kind == "start":
+                            bb.start()
+                        elif kind == "click":
+                            bb.click(float(d["x"]), float(d["y"]), str(d.get("button") or "left"), int(d.get("count") or 1))
+                        elif kind == "scroll":
+                            bb.scroll(float(d.get("x", 0)), float(d.get("y", 0)), float(d.get("dy", 0)))
+                        elif kind == "text":
+                            bb.type_text(str(d.get("text", ""))[:5000])
+                        elif kind == "key":
+                            bb.key(str(d.get("key", "")), int(d.get("modifiers") or 0))
+                        elif kind == "navigate":
+                            bb.navigate(str(d.get("url", "")))
+                        elif kind in ("back", "forward", "reload"):
+                            bb.history(kind)
+                        elif kind == "tab":
+                            bb.select(str(d.get("id", "")))
+                        elif kind == "new_tab":
+                            bb.new_tab(str(d.get("url") or "about:blank"))
+                        elif kind == "close_tab":
+                            bb.close_tab(str(d.get("id", "")))
+                        else:
+                            return self._json({"ok": False, "error": "bilinmeyen işlem"}, 400)
+                    except (BrowserError, OSError, KeyError, ValueError) as e:
+                        return self._json({"ok": False, "error": str(e)[:200]})
+                    return self._json({"ok": True})
                 if p in ("/api/git/branches", "/api/git/switch"):
                     from alice.tools.base import ToolError
                     from alice.tools.github import github_token, list_branches, switch_branch

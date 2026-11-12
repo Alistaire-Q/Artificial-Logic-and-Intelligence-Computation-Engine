@@ -563,6 +563,7 @@ function openPanel(tab) {
   app.classList.add("panel-open");
   renderPanel();
   if (PREFS.tab === "changes") refreshChanges();
+  browserLoop();
 }
 function closePanel() { PREFS.panel = false; savePrefs(); app.classList.remove("panel-open"); }
 function togglePanel() { if (PREFS.panel) closePanel(); else openPanel(); }
@@ -579,6 +580,8 @@ function emptyState(icon, title, text) {
 function renderPanel() {
   if (!PREFS.panel) return;
   $$("#panel .tab").forEach((b) => b.classList.toggle("on", b.dataset.tab === PREFS.tab));
+  app.classList.toggle("panel-browser", PREFS.tab === "browser");
+  if (PREFS.tab === "browser") { renderBrowserPane(); return; }
   const body = $("#panelBody");
   const keep = body.scrollTop;
   body.replaceChildren();
@@ -3156,3 +3159,120 @@ list.addEventListener("click", (e) => {
   const a = e.target.closest("a[href]");
   if (a) { e.preventDefault(); api("/api/open", { url: a.href }); }
 });
+
+/* ============================================================= yerleşik tarayıcı paneli
+   ALICE'in kendi tarayıcısı (alice/app/builtin_browser.py): ajan sayfayı sürerken burada canlı görünür. Görüntüye
+   tıklamak, yazmak, kaydırmak kontrolü devralır; adres çubuğu, geri/ileri/yenile ve sekmeler. */
+const BB = { timer: null, busy: false, frame: null, tabs: [], cur: "" };
+function renderBrowserPane() {
+  const body = $("#panelBody");
+  if (body.querySelector(".bb")) return;  // zaten çizili: yalnız kare güncellenir
+  body.replaceChildren();
+  const wrap = el("div", "bb");
+  const bar = el("div", "bb-bar");
+  const mk = (icon, title, fn) => { const b = iconAct(icon, title, fn); b.classList.add("bb-btn"); return b; };
+  bar.append(mk(IC.back, "Geri", () => bbSend({ type: "back" })),
+    mk(IC.fwd, "İleri", () => bbSend({ type: "forward" })),
+    mk(IC.reload, "Yenile", () => bbSend({ type: "reload" })));
+  const url = el("input", "bb-url");
+  url.placeholder = "Adres ya da arama";
+  url.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { bbSend({ type: "navigate", url: url.value }); url.blur(); }
+  });
+  url.addEventListener("focus", () => url.select());
+  bar.appendChild(url);
+  const tabsBtn = mk(IC.list, "Sekmeler", () => bbTabsMenu(tabsBtn));
+  bar.appendChild(tabsBtn);
+  const view = el("div", "bb-view");
+  view.tabIndex = 0;
+  const img = el("img", "bb-img");
+  img.alt = "";
+  img.draggable = false;
+  const idle = el("div", "bb-idle");
+  const start = el("button", "btn accent", "Tarayıcıyı başlat");
+  start.addEventListener("click", async () => {
+    start.disabled = true; start.textContent = "Açılıyor…";
+    const r = await api("/api/browser/input", { type: "start" });
+    if (!r.ok) { toast(r.error || "açılamadı"); start.disabled = false; start.textContent = "Tarayıcıyı başlat"; }
+  });
+  idle.append(el("b", "", "ALICE'in tarayıcısı"),
+    el("p", "", "ALICE web'de bir iş yapınca burada canlı görürsün; istediğin an tıklayıp yazarak devralabilirsin. " +
+      "Giriş yaptığın siteler sonraki seferde de açık kalır."), start);
+  view.append(img, idle);
+  const pos = (e) => {
+    const f = BB.frame, r = img.getBoundingClientRect();
+    return f ? { x: ((e.clientX - r.left) / r.width) * f.w, y: ((e.clientY - r.top) / r.height) * f.h } : null;
+  };
+  img.addEventListener("click", (e) => { const p = pos(e); if (p) { view.focus(); bbSend({ type: "click", ...p }); } });
+  img.addEventListener("dblclick", (e) => { const p = pos(e); if (p) bbSend({ type: "click", ...p, count: 2 }); });
+  img.addEventListener("contextmenu", (e) => { e.preventDefault(); const p = pos(e); if (p) bbSend({ type: "click", ...p, button: "right" }); });
+  view.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const p = pos(e) || { x: 0, y: 0 };
+    bbSend({ type: "scroll", ...p, dy: e.deltaY });
+  }, { passive: false });
+  const SPECIAL = new Set(["Enter", "Backspace", "Tab", "Escape", "Delete", "ArrowLeft", "ArrowUp", "ArrowRight",
+    "ArrowDown", "Home", "End", "PageUp", "PageDown"]);
+  view.addEventListener("keydown", (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;  // kısayollar uygulamada kalsın (yapıştırma paste olayıyla gelir)
+    if (SPECIAL.has(e.key)) { e.preventDefault(); bbSend({ type: "key", key: e.key }); }
+    else if (e.key.length === 1) { e.preventDefault(); bbSend({ type: "text", text: e.key }); }
+  });
+  view.addEventListener("paste", (e) => {
+    const t = e.clipboardData && e.clipboardData.getData("text");
+    if (t) { e.preventDefault(); bbSend({ type: "text", text: t }); }
+  });
+  const foot = el("div", "bb-foot");
+  wrap.append(bar, view, foot);
+  body.appendChild(wrap);
+  BB.url = url; BB.img = img; BB.idle = idle; BB.foot = foot;
+  browserLoop();
+}
+async function bbSend(cmd) {
+  const r = await api("/api/browser/input", cmd);
+  if (r && !r.ok && r.error) toast(r.error);
+  bbTick(true);
+}
+async function bbTabsMenu(anchor) {
+  const r = await api("/api/browser/tabs");
+  if (!r || !r.ok) return toast((r && r.error) || "tarayıcı kapalı");
+  openMenu(anchor, (m) => {
+    m.appendChild(el("div", "menu-title", "Sekmeler"));
+    for (const t of r.tabs) {
+      menuItem(m, IC.globe || IC.file, (t.title || t.url || "yeni sekme").slice(0, 60), t.url.slice(0, 80),
+        () => bbSend({ type: "tab", id: t.id }), t.id === r.current);
+    }
+    menuItem(m, IC.plus, "Yeni sekme", "", () => bbSend({ type: "new_tab" }));
+    if (r.tabs.length > 1) menuItem(m, IC.x, "Bu sekmeyi kapat", "", () => bbSend({ type: "close_tab", id: r.current }));
+  }, "right", true);
+}
+async function bbTick(force) {
+  if (BB.busy || !BB.img || !BB.img.isConnected) return;
+  if (!force && document.hidden) return;
+  BB.busy = true;
+  try {
+    const f = await api("/api/browser/frame?q=55");
+    if (f && f.ok) {
+      BB.frame = f;
+      BB.img.src = "data:image/jpeg;base64," + f.b64;
+      BB.img.hidden = false;
+      BB.idle.hidden = true;
+      if (document.activeElement !== BB.url) BB.url.value = f.url === "about:blank" ? "" : f.url;
+      BB.foot.textContent = f.title || "";
+    } else {
+      BB.img.hidden = true;
+      BB.idle.hidden = false;
+      BB.foot.textContent = f && !f.idle ? (f.error || "") : "";
+    }
+  } finally { BB.busy = false; }
+}
+// Panel açık ve Tarayıcı sekmesindeyken saniyede ~3 kare; değilse durur.
+function browserLoop() {
+  clearInterval(BB.timer);
+  if (!(PREFS.panel && PREFS.tab === "browser")) return;
+  bbTick(true);
+  BB.timer = setInterval(() => {
+    if (!(PREFS.panel && PREFS.tab === "browser")) { clearInterval(BB.timer); return; }
+    bbTick(false);
+  }, 330);
+}

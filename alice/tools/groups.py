@@ -45,9 +45,11 @@ GROUPS: dict[str, tuple[set[str], str, str]] = {
                 r"yapıştır|clipboard|oyun|ayarlar|uygulamada|arayüz|simge|ikon|whatsapp|instagram|insta\b|"
                 r"tiktok|dm at|mesaj at|uygulama|\baç|kapat|başlat|küçült|sekme|sıra tabanlı|strateji oyunu|"
                 r"tur(u|unu)? (oyna|bitir|geç)"),
-    "browser": ({"browser"}, "kullanıcının tarayıcısında web sayfası okuma, tıklama, form doldurma",
+    "browser": ({"browser", "preview"}, "web sayfası okuma, tıklama, form doldurma (ALICE'in yerleşik "
+                "tarayıcısında, kullanıcı panelde canlı görür); geliştirdiğin web arayüzünü açıp hatalarını doğrulama",
                 r"site|tarayıcı|browser|chrome|edge|firefox|opera|google|sayfa|link|https?://|www\.|\.com|"
-                r"giriş yap|login|online|internetten|instagram|twitter|github|e-?posta|mail"),
+                r"giriş yap|login|online|internetten|instagram|twitter|github|e-?posta|mail|localhost|dev server|"
+                r"önizle|preview|arayüz(ü|de)? (dene|kontrol|doğrula)|sayfayı aç"),
     "github": ({"git", "github", "code_review"},
                "git (commit, dal, push), GitHub (PR açma/birleştirme, CI durumu/logları/yeniden çalıştırma, inceleme "
                "yorumlarına cevap, PR'ı arka planda izleyip düzeltme) ve bağımsız kod incelemesi",

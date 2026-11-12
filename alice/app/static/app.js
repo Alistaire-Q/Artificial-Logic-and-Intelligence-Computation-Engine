@@ -72,6 +72,9 @@ function svg(paths, cls) {
   return s;
 }
 const IC = {
+  back: '<path d="M15 6l-6 6 6 6"/>',
+  fwd: '<path d="M9 6l6 6-6 6"/>',
+  reload: '<path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v4h-4"/>',
   ext: '<path d="M14 5h5v5M19 5l-8 8M18 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h4"/>',
   home: '<path d="M4 11l8-7 8 7v8a1 1 0 0 1-1 1h-4v-6h-6v6H5a1 1 0 0 1-1-1z"/>',
   disk: '<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 14h.01M11 14h6"/>',

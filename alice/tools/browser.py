@@ -610,6 +610,18 @@ def get_browser(ctx: ToolContext, separate: bool = False) -> BrowserSession:
     if b is not None and not b.alive():  # bağlantı ölmüş: her araç çağrısı "browser has been closed" demesin
         drop_browser(ctx)
         b = None
+    builtin = ctx.state.get("builtin_browser")
+    if (callable(builtin) and not separate
+            and str(ctx.config.agent.get("browser", "builtin") or "builtin").lower() == "builtin"):
+        # Uygulamanın yerleşik tarayıcısı: ekranı panelde canlı görünür, kullanıcı istediği an devralır.
+        if b is None or not getattr(b, "builtin", False):
+            drop_browser(ctx)
+            b = BrowserSession(cdp=builtin().endpoint, allow_launch=False)
+            b.builtin = True
+            b.headless = True  # ekranda pencere yok: HUD'da çerçeveleme yapılmaz
+            ctx.state["browser"] = b
+        b.ensure_page()
+        return b
     from alice.tools import browser_ext
 
     hub = None if separate else browser_ext.hub()
