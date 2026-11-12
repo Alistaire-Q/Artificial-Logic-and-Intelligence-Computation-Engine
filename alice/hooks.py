@@ -79,28 +79,106 @@ def _read_hooks_file() -> dict[str, Any]:
     return data.get("hooks", data) if isinstance(data, dict) else {}
 
 
+def hooks_path() -> Path:
+    from alice.config import alice_home
+
+    return alice_home() / "hooks.toml"
+
+
+def _stamp() -> tuple[float, int]:
+    try:
+        st = hooks_path().stat()
+        return st.st_mtime, st.st_size
+    except OSError:
+        return 0.0, 0
+
+
+def _parse(data: dict[str, Any]) -> list[Hook]:
+    hooks = []
+    for event in EVENTS:
+        for h in data.get(event, []) or []:
+            if isinstance(h, dict) and str(h.get("command", "")).strip():
+                hooks.append(Hook(event, str(h["command"]), str(h.get("matcher", "") or ""),
+                                  float(h.get("timeout", 30))))
+    return hooks
+
+
+def file_hooks() -> list[Hook]:
+    """Yalnız ~/.alice/hooks.toml'daki hook'lar (arayüzden/sohbetten eklenip silinebilenler)."""
+    return _parse(_read_hooks_file())
+
+
+def _q(s: str) -> str:
+    return json.dumps(s, ensure_ascii=False)  # TOML temel dizgisi JSON kaçışlarıyla uyumlu
+
+
+def _save(hooks: list[Hook]) -> None:
+    lines = ["# ALICE hook'ları (Otomasyon sayfasından ya da sohbetten yönetilir). Biçim: alice/hooks.py", ""]
+    for h in hooks:
+        lines += [f"[[hooks.{h.event}]]", f"command = {_q(h.command)}"]
+        if h.matcher:
+            lines.append(f"matcher = {_q(h.matcher)}")
+        lines += [f"timeout = {h.timeout:g}", ""]
+    p = hooks_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".toml.tmp")
+    tmp.write_text("\n".join(lines), encoding="utf-8")
+    tmp.replace(p)
+
+
+def add_hook(event: str, command: str, matcher: str = "", timeout: float = 30.0) -> Hook:
+    if event not in EVENTS:
+        raise ValueError(f"bilinmeyen olay: {event} (olaylar: {', '.join(EVENTS)})")
+    if not command.strip():
+        raise ValueError("komut boş")
+    if matcher:
+        try:
+            re.compile(matcher)
+        except re.error as e:
+            raise ValueError(f"matcher geçerli bir regex değil: {e}") from e
+    h = Hook(event, command.strip(), matcher.strip(), max(1.0, min(float(timeout), 600.0)))
+    _save(file_hooks() + [h])
+    return h
+
+
+def remove_hook(index: int) -> Hook:
+    rows = file_hooks()
+    if not 0 <= index < len(rows):
+        raise ValueError(f"böyle bir hook yok: {index}")
+    gone = rows.pop(index)
+    _save(rows)
+    return gone
+
+
 class Hooks:
     def __init__(self, hooks: list[Hook], cwd: Path | None = None):
         self.hooks = hooks
         self.cwd = cwd
+        self._cfg_hooks: list[Hook] | None = None  # from_config ile kurulduysa: hooks.toml değişince yenilenir
+        self._stamp = (0.0, 0)
 
     @classmethod
     def from_config(cls, cfg, cwd: Path | None = None) -> "Hooks":
-        data = dict(((getattr(cfg, "data", None) or {}).get("hooks")) or {})
-        for event, items in _read_hooks_file().items():
-            data[event] = list(data.get(event, []) or []) + list(items or [])
-        hooks = []
-        for event in EVENTS:
-            for h in data.get(event, []) or []:
-                if isinstance(h, dict) and str(h.get("command", "")).strip():
-                    hooks.append(Hook(event, str(h["command"]), str(h.get("matcher", "") or ""),
-                                      float(h.get("timeout", 30))))
-        return cls(hooks, cwd)
+        self = cls([], cwd)
+        self._cfg_hooks = _parse(dict(((getattr(cfg, "data", None) or {}).get("hooks")) or {}))
+        self._reload()
+        return self
+
+    def _reload(self) -> None:
+        if self._cfg_hooks is None:
+            return
+        stamp = _stamp()
+        if stamp == self._stamp and self.hooks:
+            return
+        self._stamp = stamp
+        self.hooks = self._cfg_hooks + file_hooks()
 
     def has(self, event: str) -> bool:
+        self._reload()  # arayüzden ya da sohbetten eklenen hook açık sohbette de hemen geçerli olsun
         return any(h.event == event for h in self.hooks)
 
     def run(self, event: str, payload: dict[str, Any], tool: str = "") -> list[HookResult]:
+        self._reload()
         out = []
         for h in self.hooks:
             if h.event != event or (tool and not h.matches(tool)):

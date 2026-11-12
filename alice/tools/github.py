@@ -393,6 +393,22 @@ class GitHubAPI:
                for r in rows if not q or q in r["full_name"].lower() or q in (r.get("description") or "").lower()]
         return out[:limit]
 
+    def graphql(self, query: str, **variables: Any) -> dict[str, Any]:
+        data = self.call("POST", "/graphql", json={"query": query, "variables": variables})
+        if data.get("errors"):
+            raise ToolError("GitHub GraphQL: " + "; ".join(str(e.get("message") or e) for e in data["errors"])[:400])
+        return data.get("data") or {}
+
+    def text(self, path: str) -> str:
+        """Düz metin uç (iş logları): GitHub geçici bir indirme adresine yönlendirir."""
+        try:
+            r = self.client.get(path, follow_redirects=True)
+        except Exception as e:  # noqa: BLE001
+            raise ToolError(f"GitHub'a ulaşılamadı: {e}") from e
+        if r.status_code >= 400:
+            raise ToolError(f"GitHub {r.status_code}: log alınamadı")
+        return r.text
+
     def checks(self, repo: str, ref: str) -> dict[str, Any]:
         """CI özeti: state = success | failure | pending | none."""
         runs = self.get(f"/repos/{repo}/commits/{ref}/check-runs", per_page=100).get("check_runs", [])
@@ -403,6 +419,152 @@ class GitHubAPI:
         waiting = [n for n, s in items if s in ("queued", "in_progress", "pending", "waiting", "requested")]
         state = "none" if not items else "failure" if bad else "pending" if waiting else "success"
         return {"state": state, "failed": bad, "pending": waiting, "total": len(items)}
+
+
+# ----------------------------------------------------------------------------------- CI ve inceleme yardımcıları
+ALICE_MARK = "— ALICE"  # ALICE'in yazdığı cevapların imzası: PR takibi kendi cevaplarını yeni yorum sanmasın
+
+# Arka planda kendiliğinden uygulanabilecek yorumların yazarları. Yabancının yorumu yalnız bildirilir: PR'a yorum
+# yazan herkes ALICE'e kod değiştirtebilmesin.
+TRUSTED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
+TRUSTED_BOTS = ("copilot-pull-request-reviewer", "copilot", "github-actions")
+_LOG_HIT = re.compile(r"(?i)(^|\s)(FAILED|ERROR|error[:\[]|E\s{2,}|Traceback|AssertionError|Exception:|"
+                      r"##\[error\]|exit code [1-9]|npm ERR!|✗|FAIL\b)")
+_LOG_STAMP = re.compile(r"^\d{4}-\d\d-\d\dT[\d:.]+Z\s?")
+
+
+def excerpt_log(text: str, limit: int = 4000) -> str:
+    """Uzun CI logundan işe yarayan kısım: hata satırları (bağlamıyla) ve son satırlar. Zaman damgaları atılır."""
+    lines = [_LOG_STAMP.sub("", ln) for ln in text.splitlines()]
+    keep: list[int] = []
+    for i, ln in enumerate(lines):
+        if _LOG_HIT.search(ln):
+            keep += range(max(0, i - 2), min(len(lines), i + 3))
+    keep += range(max(0, len(lines) - 25), len(lines))
+    out, last = [], -2
+    for i in sorted(set(keep)):
+        if i != last + 1:
+            out.append("…")
+        out.append(lines[i][:400])
+        last = i
+    body = "\n".join(out)
+    return body if len(body) <= limit else "…\n" + body[-limit:]
+
+
+def failed_jobs(api: GitHubAPI, repo: str, sha: str, with_logs: bool = True) -> list[dict[str, Any]]:
+    """Bu commit'te başarısız olan GitHub Actions işleri: ad, adres, çalıştırma kimliği ve logdan hata özeti."""
+    runs = api.get(f"/repos/{repo}/actions/runs", head_sha=sha, per_page=30).get("workflow_runs", [])
+    out: list[dict[str, Any]] = []
+    for run in runs:
+        if run.get("conclusion") not in ("failure", "timed_out", "cancelled", "startup_failure"):
+            continue
+        jobs = api.get(f"/repos/{repo}/actions/runs/{run['id']}/jobs", per_page=50).get("jobs", [])
+        for job in jobs:
+            if job.get("conclusion") not in ("failure", "timed_out", "cancelled"):
+                continue
+            row = {"name": job.get("name", ""), "workflow": run.get("name", ""), "run_id": run["id"],
+                   "job_id": job["id"], "url": job.get("html_url", ""), "conclusion": job.get("conclusion"),
+                   "log": ""}
+            if with_logs:
+                try:
+                    row["log"] = excerpt_log(api.text(f"/repos/{repo}/actions/jobs/{job['id']}/logs"))
+                except ToolError as e:
+                    row["log"] = f"(log alınamadı: {e})"
+            out.append(row)
+    return out
+
+
+def rerun_failed(api: GitHubAPI, repo: str, sha: str) -> list[str]:
+    """Başarısız işleri yeniden çalıştır (yalnız başarısız olanlar). Yeniden başlatılan iş akışlarının adları."""
+    runs = api.get(f"/repos/{repo}/actions/runs", head_sha=sha, per_page=30).get("workflow_runs", [])
+    done = []
+    for run in runs:
+        if run.get("status") == "completed" and run.get("conclusion") not in ("success", "skipped", "neutral"):
+            api.call("POST", f"/repos/{repo}/actions/runs/{run['id']}/rerun-failed-jobs")
+            done.append(run.get("name") or str(run["id"]))
+    return done
+
+
+THREADS_QUERY = """query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) { pullRequest(number: $number) {
+    reviewThreads(first: 100) { nodes { id isResolved isOutdated path line originalLine
+      comments(first: 30) { nodes { databaseId body createdAt authorAssociation author { __typename login } } } } }
+    reviews(first: 50) { nodes { databaseId state body submittedAt authorAssociation author { __typename login } } }
+    comments(first: 50) { nodes { databaseId body createdAt authorAssociation author { __typename login } } } } } }"""
+
+
+def by_alice(body: str) -> bool:
+    """Yorumu ALICE mi yazdı: imza gövdenin SONUNDA olmalı; alıntı satırları ('> ') sayılmaz. Kullanıcı ALICE'in
+    cevabını alıntılayıp altına yazınca o yorum ALICE'inki sanılıp atlanmasın."""
+    own = [ln for ln in (body or "").splitlines() if not ln.lstrip().startswith(">")]
+    return "\n".join(own).rstrip().endswith(ALICE_MARK)
+
+
+def trusted(author: str, association: str, kind: str = "") -> bool:
+    """Depoda yetkili kullanıcı ya da bilinen bot. Bot adı TAM eşleşmeli ve hesap gerçekten bot olmalı (kind:
+    GraphQL __typename; REST'te '[bot]' soneki): 'copilot-helper' gibi bir kullanıcı hesabı güvenilir sayılmasın."""
+    if association in TRUSTED_ASSOCIATIONS:
+        return True
+    low = (author or "").lower()
+    is_bot = kind == "Bot" or low.endswith("[bot]")
+    return is_bot and low.removesuffix("[bot]") in TRUSTED_BOTS
+
+
+def review_threads(api: GitHubAPI, repo: str, number: int) -> dict[str, list[dict[str, Any]]]:
+    """PR'daki inceleme konuşmaları (satır yorumları, çözüldü mü), inceleme özetleri ve genel yorumlar."""
+    owner, name = repo.split("/", 1)
+    pr = api.graphql(THREADS_QUERY, owner=owner, name=name, number=int(number))["repository"]["pullRequest"]
+
+    def who(node: dict[str, Any]) -> str:
+        return ((node.get("author") or {}).get("login") or "?")
+
+    def ok(node: dict[str, Any]) -> bool:
+        return trusted(who(node), node.get("authorAssociation", ""), (node.get("author") or {}).get("__typename", ""))
+
+    threads = []
+    for t in pr["reviewThreads"]["nodes"]:
+        comments = [{"id": c["databaseId"], "author": who(c), "body": c.get("body") or "",
+                     "trusted": ok(c), "at": c.get("createdAt", "")}
+                    for c in t["comments"]["nodes"]]
+        threads.append({"id": t["id"], "resolved": t["isResolved"], "outdated": t["isOutdated"], "path": t["path"],
+                        "line": t.get("line") or t.get("originalLine"), "comments": comments})
+    reviews = [{"id": r["databaseId"], "state": r["state"], "author": who(r), "body": r.get("body") or "",
+                "trusted": ok(r), "at": r.get("submittedAt", "")}
+               for r in pr["reviews"]["nodes"]]
+    comments = [{"id": c["databaseId"], "author": who(c), "body": c.get("body") or "",
+                 "trusted": ok(c), "at": c.get("createdAt", "")}
+                for c in pr["comments"]["nodes"]]
+    return {"threads": threads, "reviews": reviews, "comments": comments}
+
+
+def format_threads(data: dict[str, list[dict[str, Any]]], only_open: bool = True) -> str:
+    rows = []
+    for t in data["threads"]:
+        if only_open and t["resolved"]:
+            continue
+        rows.append(f"[konu {t['id']}] {t['path']}:{t['line'] or '?'}{' (eskimiş)' if t['outdated'] else ''}"
+                    f"{' (çözüldü)' if t['resolved'] else ''}")
+        for c in t["comments"]:
+            rows.append(f"  #{c['id']} {c['author']}{'' if c['trusted'] else ' (dışarıdan)'}: "
+                        + " ".join(c["body"].split())[:1200])
+    for r in data["reviews"]:
+        if r["body"].strip() and r["state"] in ("CHANGES_REQUESTED", "COMMENTED"):
+            rows.append(f"[inceleme #{r['id']}] {r['author']} {r['state']}: " + " ".join(r["body"].split())[:800])
+    for c in data["comments"]:
+        if not by_alice(c["body"]):
+            rows.append(f"[yorum #{c['id']}] {c['author']}: " + " ".join(c["body"].split())[:800])
+    return "\n".join(rows) or ("açık inceleme konusu yok" if only_open else "yorum yok")
+
+
+def reply_to_comment(api: GitHubAPI, repo: str, number: int, comment_id: int, body: str) -> dict[str, Any]:
+    text = body.rstrip() + ("" if by_alice(body) else f"\n\n{ALICE_MARK}")
+    return api.post(f"/repos/{repo}/pulls/{int(number)}/comments/{int(comment_id)}/replies", {"body": text})
+
+
+def resolve_thread(api: GitHubAPI, thread_id: str) -> bool:
+    data = api.graphql("mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }",
+                       id=thread_id)
+    return bool(((data.get("resolveReviewThread") or {}).get("thread") or {}).get("isResolved"))
 
 
 def _api(ctx: ToolContext) -> GitHubAPI:
@@ -419,7 +581,7 @@ def _token(ctx: ToolContext) -> str | None:
 
 
 # --------------------------------------------------------------------------------------------- git aracı
-GIT_READ = {"status", "diff", "log", "branches", "audit"}
+GIT_READ = {"status", "diff", "log", "branches", "audit", "worktrees"}
 
 
 class Git(Tool):
@@ -429,10 +591,14 @@ class Git(Tool):
         "status/diff/log/branches/audit: okuma. switch: dala geç (create=true yeni dal açar). "
         "commit: files ya da all=true ile ekleyip commit'ler (.env ve anahtar içeren değişiklikler reddedilir). "
         "pull. push: dalı origin'e gönderir; main/master gibi korumalı dala ya da force ile push onay ister.\n"
-        "Kural: korumalı dalda çalışma; önce switch create=true ile dal aç, commit, push, sonra github pr_create."
+        "Kural: korumalı dalda çalışma; önce switch create=true ile dal aç, commit, push, sonra github pr_create.\n"
+        "worktree: aynı depoda ayrı bir çalışma kopyası aç (branch; yoksa create=true ile açılır) ve oraya geç: "
+        "mevcut değişikliklere dokunmadan başka bir dalda iş yapmak için. worktrees: listele. worktree_remove: path'teki "
+        "kopyayı kaldır (commit'lenmemiş değişiklik varsa reddeder)."
     )
     parameters = obj({
-        "action": {"type": "string", "enum": ["status", "diff", "log", "branches", "switch", "commit", "pull", "push", "audit"],
+        "action": {"type": "string", "enum": ["status", "diff", "log", "branches", "switch", "commit", "pull", "push",
+                                              "audit", "worktree", "worktrees", "worktree_remove"],
                    "description": "Yapılacak iş."},
         "branch": {"type": "string", "description": "switch/push için dal adı. push'ta boşsa şu anki dal."},
         "create": {"type": "boolean", "description": "switch: dal yoksa oluştur. Varsayılan false."},
@@ -441,7 +607,8 @@ class Git(Tool):
                   "description": "commit: eklenecek dosyalar. Boşsa ve all=false ise yalnızca zaten eklenmişler."},
         "all": {"type": "boolean", "description": "commit: tüm değişiklikleri (yeni dosyalar dahil) ekle."},
         "staged": {"type": "boolean", "description": "diff: yalnızca commit'e eklenmiş değişiklikler."},
-        "path": {"type": "string", "description": "diff/log: yalnızca bu dosya ya da klasör."},
+        "path": {"type": "string", "description": "diff/log: yalnızca bu dosya ya da klasör. worktree_remove: "
+                 "kaldırılacak çalışma kopyası."},
         "count": {"type": "integer", "description": "log: kaç commit. Varsayılan 15."},
         "force": {"type": "boolean", "description": "push: --force-with-lease. Her zaman onay ister."},
         "protected": {"type": "boolean", "description": "push: korumalı dala (main/master/ana dal) doğrudan push; "
@@ -484,6 +651,21 @@ class Git(Tool):
             return ToolResult(out)
         if action == "audit":
             return self._audit(ctx, root)
+        if action == "worktrees":
+            _, out = run_git(["worktree", "list"], root)
+            return ToolResult(out)
+        if action == "worktree":
+            return self._worktree(ctx, root, branch, create)
+        if action == "worktree_remove":
+            if not path:
+                raise ToolError("worktree_remove için path gerekli")
+            target = ctx.resolve(path)
+            if target == root:
+                raise ToolError("ana çalışma kopyası kaldırılamaz")
+            code, out = run_git(["worktree", "remove", str(target)], root, check=False)
+            if code != 0:
+                raise ToolError(f"kaldırılamadı (commit'lenmemiş değişiklik olabilir):\n{out}")
+            return ToolResult(f"kaldırıldı: {target}")
         if action == "switch":
             if not branch:
                 raise ToolError("switch için branch gerekli")
@@ -496,6 +678,39 @@ class Git(Tool):
         if action == "push":
             return self._push(ctx, root, branch, force, protected)
         raise ToolError(f"bilinmeyen action: {action}")
+
+    @staticmethod
+    def _worktree(ctx: ToolContext, root: Path, branch: str, create: bool) -> ToolResult:
+        """Ayrı çalışma kopyası: ~/.alice/worktrees/<depo>-<dal>. Açılınca çalışma klasörü oraya geçer."""
+        from alice.config import alice_home
+
+        branch = branch.strip()
+        if not branch or branch.startswith("-") or ".." in branch:
+            raise ToolError("worktree için geçerli bir branch gerekli")
+        target = alice_home() / "worktrees" / f"{root.name}-{re.sub(r'[^A-Za-z0-9_.-]+', '-', branch)}"
+        if not (target / ".git").exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            have = run_git(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], root, check=False)[0] == 0
+            remote = run_git(["rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}"], root,
+                             check=False)[0] == 0
+            if have:
+                args = ["worktree", "add", str(target), branch]
+            elif remote:
+                args = ["worktree", "add", "--track", "-b", branch, str(target), f"origin/{branch}"]
+            elif create:
+                args = ["worktree", "add", "-b", branch, str(target)]
+            else:
+                raise ToolError(f"'{branch}' dalı yok; yeni dal için create=true")
+            code, out = run_git(args, root, check=False)
+            if code != 0:
+                raise ToolError(f"çalışma kopyası açılamadı:\n{out}")
+        switch = ctx.state.get("set_cwd")
+        if callable(switch):
+            switch(target)
+        else:
+            ctx.cwd = target
+        return ToolResult(f"'{branch}' dalının ayrı çalışma kopyası: {target}\nÇalışma klasörü artık bu; ana kopyadaki "
+                          f"değişikliklere dokunulmaz. Bitince worktree_remove ile kaldırabilirsin.")
 
     @staticmethod
     def _commit(root: Path, message: str, files: list[str], add_all: bool) -> ToolResult:
@@ -593,7 +808,8 @@ class Git(Tool):
         return ToolResult("\n".join(lines))
 
     def _push(self, ctx: ToolContext, root: Path, branch: str, force: bool, allow_protected: bool) -> ToolResult:
-        branch = branch or current_branch(root)
+        local = current_branch(root)
+        branch = branch or local
         if not branch:
             raise ToolError("ayrık HEAD: push için branch ver")
         default = ""
@@ -608,30 +824,55 @@ class Git(Tool):
             raise ToolError(f"'{branch}' korumalı dal (deponun ana dalı). Doğrudan push yerine yeni dal aç "
                             f"(git switch create=true), push et ve github pr_create kullan. Kullanıcı açıkça "
                             f"istediyse protected=true ile tekrar çağır; onay istenecek.")
-        args = ["push", "-u", "origin", branch] + (["--force-with-lease"] if force else [])
+        # Ayrık HEAD (ör. PR takibinin worktree'si): yerel dal yok, HEAD uzak dala gönderilir.
+        ref = branch if local else f"HEAD:refs/heads/{branch}"
+        args = ["push"] + (["-u"] if local else []) + ["origin", ref] + (["--force-with-lease"] if force else [])
         _, out = run_git(args, root, _token(ctx), timeout=300)
         return ToolResult(out or f"{branch} gönderildi")
 
 
 # --------------------------------------------------------------------------------------------- github aracı
-GH_READ = {"repos", "prs", "pr_view", "issues", "checks"}
+GH_READ = {"repos", "prs", "pr_view", "issues", "checks", "ci_wait", "ci_logs", "reviews", "watching"}
+WAIT_POLL = 15.0  # sn: ci_wait'in CI'a bakma aralığı
 GH_DANGER = {"pr_merge", "pr_close"}
 
 
 class GitHub(Tool):
     name = "github"
     description = (
-        "GitHub: depoları listele, klonla, PR aç/incele/birleştir, issue, CI durumu. Kullanıcının kendi anahtarıyla.\n"
-        "repo boşsa çalışma klasörünün origin deposu kullanılır.\n"
-        "repos: kullanıcının depoları (query ile süz). clone: depoyu ~/GitHub altına klonlar (varsa günceller) ve "
-        "çalışma klasörünü oraya alır. prs, pr_view, checks, issues: okuma. pr_create: şu anki dalı push edip PR açar "
-        "(korumalı daldan açılmaz). pr_comment, issue_create. pr_merge/pr_close: her zaman onay ister; CI kırmızı ya "
-        "da sürüyorsa birleştirme reddedilir."
+        "GitHub, kullanıcının anahtarıyla; repo boşsa çalışma klasörünün origin'i.\n"
+        "repos, clone (~/GitHub'a klonlar, oraya geçer), prs, pr_view, checks, issues. pr_create: dalı push edip PR "
+        "açar (korumalı daldan değil). pr_comment, issue_create. pr_merge/pr_close: onay ister; CI kırmızı/sürüyorsa "
+        "birleştirmez.\n"
+        "CI: ci_wait (bitene kadar bekle; push'tan sonra), ci_logs (başarısız işlerin hata özeti; 'CI neden kırmızı' "
+        "için önce bu), ci_rerun (başarısızları yeniden çalıştır), ci_run (workflow tetikle; boşsa listeler).\n"
+        "İnceleme: reviews (açık konular, kimlikleriyle), review_reply, review_resolve, request_review. "
+        "update_branch: PR dalını hedef dalla günceller.\n"
+        "watch/unwatch/watching: PR'ı arka planda izle; CI kırmızı, yorum ya da çakışma olunca ayrı çalışma "
+        "kopyasında kendisi düzeltir, istenirse yeşil olunca birleştirir (auto_merge)."
     )
     parameters = obj({
         "action": {"type": "string", "enum": ["repos", "clone", "prs", "pr_view", "checks", "issues", "pr_create",
-                                              "pr_comment", "pr_merge", "pr_close", "issue_create"],
+                                              "pr_comment", "pr_merge", "pr_close", "issue_create", "ci_wait", "ci_logs",
+                                              "ci_rerun", "ci_run", "reviews", "review_reply", "review_resolve",
+                                              "request_review", "update_branch", "watch", "unwatch", "watching"],
                    "description": "Yapılacak iş."},
+        "comment_id": {"type": "integer", "description": "review_reply: cevaplanacak satır yorumunun kimliği "
+                       "(reviews çıktısındaki #sayı)."},
+        "thread": {"type": "string", "description": "review_resolve: konu kimliği (reviews çıktısındaki 'konu ...')."},
+        "workflow": {"type": "string", "description": "ci_run: workflow dosya adı ya da kimliği (ör. ci.yml)."},
+        "minutes": {"type": "integer", "description": "ci_wait: en fazla kaç dakika beklensin. Varsayılan 15, en çok 45."},
+        "inputs": {"type": "object", "description": "ci_run: workflow_dispatch girdileri."},
+        "reviewers": {"type": "array", "items": {"type": "string", "description": "GitHub kullanıcı adı."},
+                      "description": "request_review: inceleyiciler."},
+        "auto_fix": {"type": "boolean", "description": "watch: CI kırmızı ya da çakışma olunca kendisi düzeltsin. "
+                     "Varsayılan true."},
+        "address_comments": {"type": "boolean", "description": "watch: güvenilir inceleme yorumlarını uygulayıp "
+                             "cevaplasın. Varsayılan true."},
+        "auto_merge": {"type": "boolean", "description": "watch: CI yeşil, açık konu yokken kendisi birleştirsin. "
+                       "Varsayılan false; yalnız kullanıcı açıkça isterse."},
+        "auto_review": {"type": "boolean", "description": "watch: her yeni commit'i bağımsız bir inceleyiciye inceletip "
+                        "bulguları PR'a yazsın. Varsayılan true."},
         "repo": {"type": "string", "description": "'sahip/depo'. Boşsa çalışma klasörünün origin'i."},
         "query": {"type": "string", "description": "repos: ada/açıklamaya göre süzgeç."},
         "number": {"type": "integer", "description": "PR ya da issue numarası."},
@@ -653,8 +894,8 @@ class GitHub(Tool):
         a = args.get("action")
         if a in GH_READ:
             return READ
-        if a in GH_DANGER:
-            return DANGER
+        if a in GH_DANGER or (a == "watch" and args.get("auto_merge")):
+            return DANGER  # ileride sormadan birleştirecek: kullanıcı onaylasın
         return WRITE
 
     def summary(self, args: dict[str, Any]) -> str:
@@ -677,7 +918,14 @@ class GitHub(Tool):
 
     def run(self, ctx: ToolContext, action: str, repo: str = "", query: str = "", number: int = 0, title: str = "",
             body: str = "", base: str = "", head: str = "", branch: str = "", draft: bool = False,
-            state: str = "open", method: str = "", force: bool = False) -> ToolResult:
+            state: str = "open", method: str = "", force: bool = False, comment_id: int = 0, thread: str = "",
+            workflow: str = "", inputs: dict[str, Any] | None = None, reviewers: list[str] | None = None,
+            auto_fix: bool = True, address_comments: bool = True, auto_merge: bool = False,
+            auto_review: bool = True, minutes: int = 15) -> ToolResult:
+        if action == "watching":
+            from alice import prwatch
+
+            return ToolResult(prwatch.describe())
         api = _api(ctx)
         if action == "repos":
             rows = api.user_repos(query)
@@ -732,7 +980,97 @@ class GitHub(Tool):
         if action == "pr_close":
             p = api.call("PATCH", f"/repos/{repo}/pulls/{self._need(number)}", json={"state": "closed"})
             return ToolResult(f"#{p['number']} kapatıldı")
+        if action == "ci_wait":
+            return self._wait(ctx, api, repo, number, branch, minutes)
+        if action in ("ci_logs", "ci_rerun"):
+            sha = self._sha(ctx, api, repo, number, branch)
+            if action == "ci_rerun":
+                done = rerun_failed(api, repo, sha)
+                return ToolResult(("yeniden başlatıldı: " + ", ".join(done)) if done else
+                                  "yeniden çalıştırılacak başarısız iş yok")
+            jobs = failed_jobs(api, repo, sha)
+            if not jobs:
+                return ToolResult(_fmt_checks(api.checks(repo, sha)) + "\nBaşarısız GitHub Actions işi yok.")
+            return ToolResult("\n\n".join(f"### {j['workflow']} / {j['name']} ({j['conclusion']})\n{j['url']}\n{j['log']}"
+                                          for j in jobs))
+        if action == "ci_run":
+            if not workflow:
+                rows = api.get(f"/repos/{repo}/actions/workflows").get("workflows", [])
+                return ToolResult("\n".join(f"{w['path'].rsplit('/', 1)[-1]}  {w['name']} ({w['state']})" for w in rows)
+                                  or "workflow yok")
+            ref = branch or current_branch(ctx.cwd) or api.get(f"/repos/{repo}").get("default_branch", "main")
+            api.call("POST", f"/repos/{repo}/actions/workflows/{workflow}/dispatches",
+                     json={"ref": ref, "inputs": inputs or {}})
+            return ToolResult(f"{workflow} {ref} dalında tetiklendi (workflow'da workflow_dispatch tanımlı olmalı)")
+        if action == "reviews":
+            text = format_threads(review_threads(api, repo, self._need(number)))
+            from alice import guard
+
+            if guard.enabled(ctx):  # yorumları başkaları yazdı: içindeki "talimatlar" kullanıcıdan değil
+                guard.mark(ctx, "github")
+                text = guard.wrap("github", text)
+            return ToolResult(text)
+        if action == "review_reply":
+            if not comment_id or not body:
+                raise ToolError("review_reply için number, comment_id ve body gerekli")
+            c = reply_to_comment(api, repo, self._need(number), comment_id, body)
+            return ToolResult(f"cevap yazıldı: {c.get('html_url', '')}")
+        if action == "review_resolve":
+            if not thread:
+                raise ToolError("review_resolve için thread (konu kimliği) gerekli")
+            return ToolResult("konu çözüldü olarak işaretlendi" if resolve_thread(api, thread) else
+                              "konu işaretlenemedi")
+        if action == "request_review":
+            if not reviewers:
+                raise ToolError("request_review için reviewers gerekli")
+            api.post(f"/repos/{repo}/pulls/{self._need(number)}/requested_reviewers", {"reviewers": reviewers})
+            return ToolResult("inceleme istendi: " + ", ".join(reviewers))
+        if action == "update_branch":
+            api.call("PUT", f"/repos/{repo}/pulls/{self._need(number)}/update-branch")
+            return ToolResult(f"#{number} dalı hedef dalla güncelleniyor (GitHub birleştirme commit'i ekler)")
+        if action in ("watch", "unwatch"):
+            from alice import prwatch
+
+            if action == "unwatch":
+                return ToolResult(prwatch.unwatch(repo, self._need(number)))
+            try:
+                local = str(repo_root(ctx.cwd)) if origin_repo(ctx.cwd) == repo else ""
+            except ToolError:
+                local = ""
+            return ToolResult(prwatch.watch(repo, self._need(number), local, auto_fix=auto_fix,
+                                            address_comments=address_comments, auto_merge=auto_merge,
+                                            auto_review=auto_review,
+                                            session=str(ctx.state.get("session_id") or "")))
         raise ToolError(f"bilinmeyen action: {action}")
+
+    def _wait(self, ctx: ToolContext, api: GitHubAPI, repo: str, number: int, branch: str, minutes: int) -> ToolResult:
+        """CI bitene (ya da süre dolana) kadar bekle. Push'tan hemen sonra kontroller henüz görünmeyebilir: ilk
+        dakika "kontrol yok" bitmiş sayılmaz. Kullanıcı Durdur'a basarsa bırakır."""
+        import time
+
+        sha = self._sha(ctx, api, repo, number, branch)
+        deadline = time.monotonic() + max(1, min(int(minutes or 15), 45)) * 60
+        grace = time.monotonic() + 60
+        ch = api.checks(repo, sha)
+        while time.monotonic() < deadline and not ctx.cancelled():
+            if ch["state"] in ("success", "failure") or (ch["state"] == "none" and time.monotonic() > grace):
+                break
+            time.sleep(WAIT_POLL)
+            ch = api.checks(repo, sha)
+        text = _fmt_checks(ch)
+        if ch["state"] == "pending":
+            text += "\nSüre doldu, CI hâlâ sürüyor."
+        elif ch["state"] == "failure":
+            text += "\nNedeni için: action=ci_logs."
+        return ToolResult(f"{sha[:7]} için {text}")
+
+    def _sha(self, ctx: ToolContext, api: GitHubAPI, repo: str, number: int, branch: str) -> str:
+        if number:
+            return api.get(f"/repos/{repo}/pulls/{number}")["head"]["sha"]
+        ref = branch or current_branch(ctx.cwd)
+        if not ref:
+            raise ToolError("PR numarası (number) ya da branch ver")
+        return api.get(f"/repos/{repo}/commits/{ref}")["sha"]
 
     @staticmethod
     def _need(number: int) -> int:

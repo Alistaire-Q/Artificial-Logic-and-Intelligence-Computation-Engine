@@ -146,6 +146,54 @@ def persist_allow(cwd: Path, rule: str) -> Path:
     return path
 
 
+HISTORY_MAX = 2000  # satır: izin cevapları kaydı bu kadarla sınırlı
+
+
+def history_path() -> Path:
+    from alice.config import alice_home
+
+    return alice_home() / "permission-history.jsonl"
+
+
+def record_answer(tool: Tool, args: dict[str, Any], cwd: Path | None, risk: str, answer: str) -> None:
+    """Sorulan izni ve cevabı kaydet: hep onaylanan işler için "artık sorma" önerisi bundan çıkar."""
+    import json
+    import time
+
+    row = {"ts": round(time.time()), "tool": tool.name, "rule": suggest_rule(tool, args, cwd), "risk": risk,
+           "answer": answer, "cwd": str(cwd or "")}
+    p = history_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        lines = p.read_text(encoding="utf-8").splitlines()[-(HISTORY_MAX - 1):]
+    except OSError:
+        lines = []
+    p.write_text("\n".join(lines + [json.dumps(row, ensure_ascii=False)]) + "\n", encoding="utf-8")
+
+
+def suggestions(cwd: Path | None = None, min_yes: int = 3) -> list[dict[str, Any]]:
+    """Kayıttan öneriler: en az min_yes kez onaylanmış, hiç reddedilmemiş, tehlikeli ya da başkasına giden olmayan,
+    henüz izinli olmayan kurallar. cwd verilirse yalnız o projede sorulanlar."""
+    import json
+
+    try:
+        rows = [json.loads(ln) for ln in history_path().read_text(encoding="utf-8").splitlines() if ln.strip()]
+    except (OSError, ValueError):
+        return []
+    stats: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        if cwd is not None and r.get("cwd") and Path(r["cwd"]) != Path(cwd):
+            continue
+        s = stats.setdefault(r["rule"], {"rule": r["rule"], "tool": r["tool"], "yes": 0, "no": 0, "risky": False,
+                                         "last": 0})
+        s["yes" if r.get("answer") in ("y", "a", "p") else "no"] += 1
+        s["risky"] = s["risky"] or r.get("risk") in (DANGER, SEND)
+        s["last"] = max(s["last"], int(r.get("ts") or 0))
+    have = set(project_rules(cwd).get("allow", [])) if cwd is not None else set()
+    out = [s for s in stats.values() if s["yes"] >= min_yes and not s["no"] and not s["risky"] and s["rule"] not in have]
+    return sorted(out, key=lambda s: (-s["yes"], -s["last"]))
+
+
 def remove_project_rule(cwd: Path, kind: str, rule: str) -> bool:
     """Projedeki .alice/permissions.toml'dan bir kuralı sil (uygulamadaki Asistan sekmesi)."""
     rules = dict(project_rules(cwd))

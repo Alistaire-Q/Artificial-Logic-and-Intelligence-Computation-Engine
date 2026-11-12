@@ -59,21 +59,42 @@ const THINK = {
   low: ["az düşünür", "Kısa düşünür, sonra yapar (önerilen)"],
   medium: ["orta düşünür", "Biraz daha dikkatli, biraz daha yavaş"],
   high: ["çok düşünür", "Zor işler için; basit işte gereksiz uzun sürer"],
-  xhigh: ["daha da çok", "Extra High: sadece ChatGPT modellerinde; diğerlerinde çok düşünür gibi"],
-  max: ["en çok", "Max: sadece ChatGPT modellerinde; en zor işler için, en yavaşı"],
+  xhigh: ["daha da çok", "Extra High: çok zor işler için"],
+  max: ["en çok", "Max: en zor işler için, en yavaşı"],
   default: ["model karar verir", "Modelin kendi ayarı"],
 };
+// Yalnız açık/kapalı destekleyen modeller (Qwen, GLM, Kimi...): seviye yerine kapalı/açık gösterilir.
+const THINK_BINARY = { off: ["düşünmez", "Düşünmeden hemen cevap verir"], high: ["düşünür", "Cevaptan önce düşünür"],
+  default: ["model karar verir", "Modelin kendi ayarı"] };
+// Seçili modelin desteklediği seviyeler (sunucu modele göre verir); bilinmiyorsa hepsi.
+function thinkOptions(st) {
+  st = st || S.status;
+  const table = st.thinking_kind === "binary" ? THINK_BINARY : THINK;
+  const levels = st.thinking_levels || Object.keys(THINK);
+  return levels.filter((k) => table[k]).map((k) => [k, table[k]]);
+}
+function thinkLabel(st) {
+  st = st || S.status;
+  const k = st.thinking_effective || st.thinking;
+  const table = st.thinking_kind === "binary" ? THINK_BINARY : THINK;
+  return table[k] || THINK[k] || null;
+}
 async function setThinking(level) {
   applyStatus(await api("/api/thinking", { level }));
-  toast("Düşünme: " + THINK[level][0]);
+  toast("Düşünme: " + ((thinkLabel() || THINK[level] || [level])[0]));
 }
 
 function thinkMenu() {
   openMenu($("#thinkBtn"), (m) => {
-    m.appendChild(el("div", "menu-title", "Düşünme"));
-    for (const [k, [label, sub]] of Object.entries(THINK)) {
+    m.appendChild(el("div", "menu-title", "Düşünme · " + shortModel(S.status.model)));
+    const opts = thinkOptions();
+    if (S.status.thinking_kind === "none") {
+      m.appendChild(el("div", "menu-note", "Bu model düşünme ayarı desteklemiyor; kendi bildiği gibi çalışır."));
+    }
+    const cur = S.status.thinking_effective || S.status.thinking;
+    for (const [k, [label, sub]] of opts) {
       menuItem(m, k === "off" ? IC.bolt : IC.brain, label[0].toUpperCase() + label.slice(1), sub,
-        () => setThinking(k), S.status.thinking === k);
+        () => setThinking(k), cur === k);
     }
   }, "right");
 }
@@ -147,8 +168,8 @@ function modelsPage(pane, data) {
   }
   hero.append(hl, ha);
   const think = el("div", "mp-think");
-  think.append(el("span", "lbl", "Düşünme"), segmented(Object.entries(THINK).map(([k, [l]]) => [k, l]), S.status.thinking, (v) => setThinking(v)),
-    el("small", "", (THINK[S.status.thinking] || ["", ""])[1]));
+  think.append(el("span", "lbl", "Düşünme"), segmented(thinkOptions().map(([k, [l]]) => [k, l]),
+    S.status.thinking_effective || S.status.thinking, (v) => setThinking(v)), el("small", "", (thinkLabel() || ["", ""])[1]));
   hero.appendChild(think);
   pane.appendChild(hero);
 
@@ -542,6 +563,7 @@ function openPanel(tab) {
   app.classList.add("panel-open");
   renderPanel();
   if (PREFS.tab === "changes") refreshChanges();
+  browserLoop();
 }
 function closePanel() { PREFS.panel = false; savePrefs(); app.classList.remove("panel-open"); }
 function togglePanel() { if (PREFS.panel) closePanel(); else openPanel(); }
@@ -558,6 +580,9 @@ function emptyState(icon, title, text) {
 function renderPanel() {
   if (!PREFS.panel) return;
   $$("#panel .tab").forEach((b) => b.classList.toggle("on", b.dataset.tab === PREFS.tab));
+  app.classList.toggle("panel-browser", PREFS.tab === "browser");
+  if (PREFS.tab === "browser") { renderBrowserPane(); return; }
+  if (PREFS.tab === "prs") { renderPrPane(); return; }
   const body = $("#panelBody");
   const keep = body.scrollTop;
   body.replaceChildren();
@@ -656,7 +681,7 @@ function paletteItems() {
     act("Tema", k === "dark" ? IC.moon : IC.sun, `Tema: ${label}`, "", () => setPref("theme", k));
   }
   for (const [k, [label, sub, icon]] of Object.entries(MODES)) act("İzin modu", icon, `Mod: ${label}`, sub, () => setMode(k));
-  for (const [k, [label, sub]] of Object.entries(THINK)) act("Düşünme", IC.brain, `Düşünme: ${label}`, sub, () => setThinking(k));
+  for (const [k, [label, sub]] of thinkOptions()) act("Düşünme", IC.brain, `Düşünme: ${label}`, sub, () => setThinking(k));
   act("Model", IC.spark, "Model: Otomatik", "Zincirdeki ilk uygun model", () => pinModel("reset"));
   for (const ref of S.status.brain_chain || []) act("Model", IC.spark, `Model: ${shortModel(ref)}`, ref, () => pinModel(ref));
   for (const c of S.commands) {
@@ -1402,6 +1427,45 @@ function autoPane(pane) {
       row.append(l, small("Şimdi çalıştır", () => call("task_run", { id: t.id }).then(after(d.core_running ? "bir sonraki çekirdek turunda çalışacak" : "çekirdek açılınca çalışacak"))),
         switchEl(t.enabled, t.enabled ? "Görevi kapat" : "Görevi aç", (on) => call("task_enable", { id: t.id, on }).then(after())),
         iconAct(IC.trash, "Görevi sil", () => call("task_rm", { id: t.id }).then(after("görev silindi")), "danger"));
+      body.appendChild(row);
+    }
+    // Hook'lar
+    body.appendChild(el("div", "sec", `Hook'lar (${(d.hooks || []).length})`));
+    const hk = el("div", "auto-new hook-new");
+    const ev = el("select");
+    for (const e of d.hook_events || []) { const o = el("option", "", e); o.value = e; ev.appendChild(o); }
+    ev.value = "PostToolUse";
+    const mt = el("input"); mt.type = "text"; mt.placeholder = "araç (regex) ör. edit_file|write_file|multi_edit";
+    const cmd = el("input"); cmd.type = "text"; cmd.placeholder = "komut ör. ruff format \"$ALICE_TOOL_PATH\"";
+    const addH = small("Ekle", async () => {
+      if (!cmd.value.trim()) return toast("komut boş");
+      const ok = await confirmDialog("Hook eklensin mi?",
+        `${ev.value}${mt.value ? " [" + mt.value + "]" : ""} olayında her seferinde şu komut çalışacak:\n${cmd.value}`, "Ekle");
+      if (ok) call("hook_add", { event: ev.value, matcher: mt.value, command: cmd.value }).then(after("hook eklendi"));
+    }, true);
+    const hrow = el("div", "key-edit");
+    hrow.append(ev, mt);
+    const hrow2 = el("div", "key-edit");
+    hrow2.append(cmd, addH);
+    hk.append(hrow, hrow2, el("small", "enroll-note", "PostToolUse: araçtan sonra (çıkış 2 = hata ALICE'e gider) · "
+      + "PreToolUse: önce (2 = engelle) · Stop: cevap bitince (2 = devam et) · UserPromptSubmit / SessionStart: çıktı "
+      + "bağlama eklenir. Dosya: " + (d.hooks_path || "")));
+    body.appendChild(hk);
+    for (const h of d.hooks || []) {
+      const row = el("div", "list-row");
+      const l = el("span", "l");
+      l.append(el("b", "", h.command), el("small", "", h.event + (h.matcher ? " · " + h.matcher : " · her araç")
+        + ` · ${h.timeout} sn` + (h.fixed ? " · config.toml'da" : "")));
+      const out = el("div", "auto-verdicts");
+      l.appendChild(out);
+      row.appendChild(l);
+      if (!h.fixed) {
+        row.append(small("Dene", () => call("hook_test", { index: h.index }).then((r) => {
+          out.replaceChildren();
+          if (!r || !r.ok) return toast((r && r.error) || "olmadı");
+          out.appendChild(el("small", "", `çıkış ${r.code}` + (r.stdout ? " · " + r.stdout : "") + (r.stderr ? " · " + r.stderr : "")));
+        })), iconAct(IC.trash, "Hook'u sil", () => call("hook_rm", { index: h.index }).then(after("hook silindi")), "danger"));
+      }
       body.appendChild(row);
     }
     // Akışlar
@@ -3135,3 +3199,241 @@ list.addEventListener("click", (e) => {
   const a = e.target.closest("a[href]");
   if (a) { e.preventDefault(); api("/api/open", { url: a.href }); }
 });
+
+/* ============================================================= yerleşik tarayıcı paneli
+   ALICE'in kendi tarayıcısı (alice/app/builtin_browser.py): ajan sayfayı sürerken burada canlı görünür. Görüntüye
+   tıklamak, yazmak, kaydırmak kontrolü devralır; adres çubuğu, geri/ileri/yenile ve sekmeler. */
+const BB = { timer: null, busy: false, frame: null, tabs: [], cur: "" };
+function renderBrowserPane() {
+  const body = $("#panelBody");
+  if (body.querySelector(".bb")) return;  // zaten çizili: yalnız kare güncellenir
+  body.replaceChildren();
+  const wrap = el("div", "bb");
+  const bar = el("div", "bb-bar");
+  const mk = (icon, title, fn) => { const b = iconAct(icon, title, fn); b.classList.add("bb-btn"); return b; };
+  bar.append(mk(IC.back, "Geri", () => bbSend({ type: "back" })),
+    mk(IC.fwd, "İleri", () => bbSend({ type: "forward" })),
+    mk(IC.reload, "Yenile", () => bbSend({ type: "reload" })));
+  const url = el("input", "bb-url");
+  url.placeholder = "Adres ya da arama";
+  url.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { bbSend({ type: "navigate", url: url.value }); url.blur(); }
+  });
+  url.addEventListener("focus", () => url.select());
+  bar.appendChild(url);
+  const tabsBtn = mk(IC.list, "Sekmeler", () => bbTabsMenu(tabsBtn));
+  bar.appendChild(tabsBtn);
+  const view = el("div", "bb-view");
+  view.tabIndex = 0;
+  const img = el("img", "bb-img");
+  img.alt = "";
+  img.draggable = false;
+  const idle = el("div", "bb-idle");
+  const start = el("button", "btn accent", "Tarayıcıyı başlat");
+  start.addEventListener("click", async () => {
+    start.disabled = true; start.textContent = "Açılıyor…";
+    const r = await api("/api/browser/input", { type: "start" });
+    if (!r.ok) { toast(r.error || "açılamadı"); start.disabled = false; start.textContent = "Tarayıcıyı başlat"; }
+  });
+  idle.append(el("b", "", "ALICE'in tarayıcısı"),
+    el("p", "", "ALICE web'de bir iş yapınca burada canlı görürsün; istediğin an tıklayıp yazarak devralabilirsin. " +
+      "Giriş yaptığın siteler sonraki seferde de açık kalır."), start);
+  view.append(img, idle);
+  const pos = (e) => {
+    const f = BB.frame, r = img.getBoundingClientRect();
+    return f ? { x: ((e.clientX - r.left) / r.width) * f.w, y: ((e.clientY - r.top) / r.height) * f.h } : null;
+  };
+  img.addEventListener("click", (e) => { const p = pos(e); if (p) { view.focus(); bbSend({ type: "click", ...p }); } });
+  img.addEventListener("dblclick", (e) => { const p = pos(e); if (p) bbSend({ type: "click", ...p, count: 2 }); });
+  img.addEventListener("contextmenu", (e) => { e.preventDefault(); const p = pos(e); if (p) bbSend({ type: "click", ...p, button: "right" }); });
+  view.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const p = pos(e) || { x: 0, y: 0 };
+    bbSend({ type: "scroll", ...p, dy: e.deltaY });
+  }, { passive: false });
+  const SPECIAL = new Set(["Enter", "Backspace", "Tab", "Escape", "Delete", "ArrowLeft", "ArrowUp", "ArrowRight",
+    "ArrowDown", "Home", "End", "PageUp", "PageDown"]);
+  view.addEventListener("keydown", (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;  // kısayollar uygulamada kalsın (yapıştırma paste olayıyla gelir)
+    if (SPECIAL.has(e.key)) { e.preventDefault(); bbSend({ type: "key", key: e.key }); }
+    else if (e.key.length === 1) { e.preventDefault(); bbSend({ type: "text", text: e.key }); }
+  });
+  view.addEventListener("paste", (e) => {
+    const t = e.clipboardData && e.clipboardData.getData("text");
+    if (t) { e.preventDefault(); bbSend({ type: "text", text: t }); }
+  });
+  const foot = el("div", "bb-foot");
+  wrap.append(bar, view, foot);
+  body.appendChild(wrap);
+  BB.url = url; BB.img = img; BB.idle = idle; BB.foot = foot;
+  browserLoop();
+}
+async function bbSend(cmd) {
+  const r = await api("/api/browser/input", cmd);
+  if (r && !r.ok && r.error) toast(r.error);
+  bbTick(true);
+}
+async function bbTabsMenu(anchor) {
+  const r = await api("/api/browser/tabs");
+  if (!r || !r.ok) return toast((r && r.error) || "tarayıcı kapalı");
+  openMenu(anchor, (m) => {
+    m.appendChild(el("div", "menu-title", "Sekmeler"));
+    for (const t of r.tabs) {
+      menuItem(m, IC.globe || IC.file, (t.title || t.url || "yeni sekme").slice(0, 60), t.url.slice(0, 80),
+        () => bbSend({ type: "tab", id: t.id }), t.id === r.current);
+    }
+    menuItem(m, IC.plus, "Yeni sekme", "", () => bbSend({ type: "new_tab" }));
+    if (r.tabs.length > 1) menuItem(m, IC.x, "Bu sekmeyi kapat", "", () => bbSend({ type: "close_tab", id: r.current }));
+  }, "right", true);
+}
+async function bbTick(force) {
+  if (BB.busy || !BB.img || !BB.img.isConnected) return;
+  if (!force && document.hidden) return;
+  BB.busy = true;
+  try {
+    const f = await api("/api/browser/frame?q=55");
+    if (f && f.ok) {
+      BB.frame = f;
+      BB.img.src = "data:image/jpeg;base64," + f.b64;
+      BB.img.hidden = false;
+      BB.idle.hidden = true;
+      if (document.activeElement !== BB.url) BB.url.value = f.url === "about:blank" ? "" : f.url;
+      BB.foot.textContent = f.title || "";
+    } else {
+      BB.img.hidden = true;
+      BB.idle.hidden = false;
+      BB.foot.textContent = f && !f.idle ? (f.error || "") : "";
+    }
+  } finally { BB.busy = false; }
+}
+// Panel açık ve Tarayıcı sekmesindeyken saniyede ~3 kare; değilse durur.
+function browserLoop() {
+  clearInterval(BB.timer);
+  if (!(PREFS.panel && PREFS.tab === "browser")) return;
+  bbTick(true);
+  BB.timer = setInterval(() => {
+    if (!(PREFS.panel && PREFS.tab === "browser")) { clearInterval(BB.timer); return; }
+    bbTick(false);
+  }, 330);
+}
+
+/* ============================================================= PR paneli
+   İzlenen PR'lar (alice/prwatch.py): CI durumu, açık inceleme konuları, çakışma ve davranış düğmeleri. Bulunulan dalın
+   açık PR'ı izlenmiyorsa tek tıkla izlemeye alınır. Sekme açıkken 30 sn'de bir tazelenir. */
+const PRP = { timer: null, busy: false };
+const PR_FLAGS = [
+  ["auto_fix", "CI kırmızıysa düzelt"],
+  ["address_comments", "İnceleme yorumlarını uygula"],
+  ["auto_review", "Her commit'i bağımsız incele"],
+  ["auto_merge", "Hepsi yeşilken birleştir"],
+];
+async function prAct(path, body) {
+  const r = await api("/api/prs/" + path, body);
+  if (!r || !r.ok) toast((r && r.error) || "olmadı");
+  else if (r.note && path !== "flag") toast(r.note);
+  renderPrPane(true);
+}
+async function renderPrPane(force) {
+  const body = $("#panelBody");
+  clearInterval(PRP.timer);
+  PRP.timer = setInterval(() => {
+    if (!(PREFS.panel && PREFS.tab === "prs")) { clearInterval(PRP.timer); return; }
+    if (!document.hidden) renderPrPane(false);
+  }, 30000);
+  if (PRP.busy) return;
+  if (!body.querySelector(".prp")) body.replaceChildren(el("div", "prp note", "PR'lar yükleniyor…"));
+  PRP.busy = true;
+  let r;
+  try { r = await api("/api/prs" + (force ? "?force=1" : "")); } finally { PRP.busy = false; }
+  if (!(PREFS.panel && PREFS.tab === "prs")) return;
+  const wrap = el("div", "prp");
+  const head = el("div", "prp-head");
+  head.append(el("b", "", "İzlenen PR'lar"), el("span", "grow"),
+    iconAct(IC.rewind, "Tazele", () => renderPrPane(true)));
+  wrap.appendChild(head);
+  if (!r || (!r.ok && !r.watching.length)) {
+    wrap.appendChild(el("div", "note", (r && r.error) || "GitHub'a ulaşılamadı"));
+  }
+  if (r && r.suggest) {
+    const s = r.suggest, card = el("div", "prp-suggest");
+    card.append(el("div", "", `Bu dalın (${s.head}) açık PR'ı izlenmiyor:`),
+      el("b", "", `#${s.number} ${s.title}`));
+    const b = el("button", "btn accent", "İzlemeye al");
+    b.addEventListener("click", () => { b.disabled = true; prAct("watch", { repo: s.repo, number: s.number }); });
+    card.appendChild(b);
+    wrap.appendChild(card);
+  }
+  const rows = (r && r.watching) || [];
+  if (!rows.length && !(r && r.suggest)) {
+    wrap.appendChild(emptyState(IC.branch, "İzlenen PR yok",
+      "ALICE bir PR açınca ya da sohbette \"bu PR'ı takip et\" deyince burada görünür: CI kırmızıya dönünce, " +
+      "inceleme yorumu ya da çakışma gelince kendisi düzeltir."));
+  }
+  for (const w of rows) wrap.appendChild(prCard(w));
+  if (rows.length) wrap.appendChild(el("div", "prp-foot",
+    "Kontrolleri ALICE çekirdeği birkaç dakikada bir yapar; düzeltmeler PR'ı açan sohbete gelir."));
+  body.replaceChildren(wrap);
+}
+function prCard(w) {
+  const c = el("div", "prp-card");
+  const top = el("div", "prp-top");
+  const ci = w.state === "merged" ? "merged" : w.state === "closed" ? "closed" : (w.ci || "none");
+  const dot = el("span", "prp-dot " + ci);
+  dot.title = { success: "CI yeşil", failure: "CI kırmızı", pending: "CI sürüyor", none: "CI yok",
+    merged: "birleşti", closed: "kapandı" }[ci] || ci;
+  const title = el("a", "prp-title", `#${w.number} ${w.title || ""}`);
+  if (w.url) { title.href = w.url; title.target = "_blank"; title.rel = "noopener"; }
+  top.append(dot, title);
+  c.appendChild(top);
+  const meta = el("div", "prp-meta");
+  const bits = [w.repo];
+  if (w.head) bits.push(`${w.head} → ${w.base}`);
+  if (w.sha) bits.push(w.sha);
+  if (w.draft) bits.push("taslak");
+  meta.textContent = bits.join(" · ");
+  c.appendChild(meta);
+  const chips = el("div", "prp-chips");
+  const chip = (cls, text) => chips.appendChild(el("span", "prp-chip " + cls, text));
+  if (w.error) chip("bad", w.error);
+  if (ci === "failure") chip("bad", `${w.failed.length} iş kırmızı: ${w.failed.slice(0, 3).join(", ")}`);
+  else if (ci === "pending") chip("wait", `${w.pending.length} iş sürüyor`);
+  else if (ci === "success") chip("ok", `${w.checks} kontrol yeşil`);
+  if (w.open_threads > 0) chip("wait", `${w.open_threads} açık yorum`);
+  if (w.mergeable === false) chip("bad", "çakışma var");
+  if (chips.childNodes.length) c.appendChild(chips);
+  if (w.status) c.appendChild(el("div", "prp-status", w.status));
+  const flags = el("div", "prp-flags");
+  for (const [k, label] of PR_FLAGS) {
+    const row = el("div", "prp-flag");
+    row.append(el("span", "", label), switchEl(!!w[k], label, async (v) => {
+      let confirmed = false;
+      if (k === "auto_merge" && v) {
+        confirmed = await confirmDialog("Otomatik birleştirme",
+          `#${w.number}: CI yeşil, açık yorum ve çakışma yokken ALICE PR'ı kendisi birleştirecek.`, "Aç");
+        if (!confirmed) return;
+      }
+      prAct("flag", { repo: w.repo, number: w.number, flag: k, value: v, confirmed });
+    }));
+    flags.appendChild(row);
+  }
+  c.appendChild(flags);
+  const acts = el("div", "prp-acts");
+  if (ci === "failure") {
+    const b = el("button", "act", "Başarısızları yeniden çalıştır");
+    b.addEventListener("click", () => { b.disabled = true; prAct("rerun", { repo: w.repo, number: w.number }); });
+    acts.appendChild(b);
+  }
+  if (w.history && w.history.length) {
+    const b = el("button", "act", "Geçmiş");
+    b.addEventListener("click", () => c.classList.toggle("open"));
+    acts.appendChild(b);
+  }
+  const un = el("button", "act", "İzlemeyi bırak");
+  un.addEventListener("click", () => prAct("unwatch", { repo: w.repo, number: w.number }));
+  acts.append(el("span", "grow"), un);
+  c.appendChild(acts);
+  const hist = el("div", "prp-hist");
+  for (const h of w.history || []) hist.appendChild(el("div", "", h));
+  c.appendChild(hist);
+  return c;
+}

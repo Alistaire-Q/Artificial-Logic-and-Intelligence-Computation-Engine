@@ -91,7 +91,8 @@ def test_stream_text_tool_call_usage_and_headers():
                       extra={"reasoning_effort": "low"}, on_first=lambda: first.append(1))
     assert r.text == "Merhaba" and "".join(parts) == "Merhaba" and first == [1]
     assert r.message["tool_calls"][0]["function"]["name"] == "weather" and r.usage == {"prompt_tokens": 50,
-                                                                                       "completion_tokens": 7}
+                                                                                       "completion_tokens": 7,
+                                                                                       "cached_tokens": 0}
     assert seen["url"].endswith("/backend-api/codex/responses")
     assert seen["headers"]["chatgpt-account-id"] == "acc1" and seen["headers"]["authorization"].startswith("Bearer ")
     b = seen["body"]

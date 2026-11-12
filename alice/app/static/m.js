@@ -315,8 +315,19 @@ const verb = (name) => VERBS[name] || name.replace(/^mcp__/, "").replace(/__/g, 
 const MODES = { plan: ["Plan", "Sadece okur, plan yazar"], ask: ["Sor", "Her işlemde izin ister"],
   auto: ["Otomatik", "Sadece tehlikeli işlemde sorar"], yolo: ["Tam erişim", "Hiçbir şey sormaz"] };
 const THINK = { off: ["düşünmez", "En hızlı"], low: ["az düşünür", "Önerilen"], medium: ["orta düşünür", ""],
-  high: ["çok düşünür", "Zor işler için"], xhigh: ["daha da çok", "ChatGPT modellerinde"], max: ["en çok", "ChatGPT modellerinde"],
+  high: ["çok düşünür", "Zor işler için"], xhigh: ["daha da çok", "Çok zor işler"], max: ["en çok", "En zor işler"],
   default: ["model karar verir", ""] };
+const THINK_BINARY = { off: ["düşünmez", "Hemen cevap verir"], high: ["düşünür", "Önce düşünür"], default: ["model karar verir", ""] };
+// Seçili modelin desteklediği seviyeler (sunucu modele göre verir).
+function thinkOpts() {
+  const table = S.status.thinking_kind === "binary" ? THINK_BINARY : THINK;
+  return (S.status.thinking_levels || Object.keys(THINK)).filter((k) => table[k]).map((k) => [k, ...table[k]]);
+}
+function thinkText() {
+  const table = S.status.thinking_kind === "binary" ? THINK_BINARY : THINK;
+  if (S.status.thinking_kind === "none") return "düşünme yok";
+  return ((table[S.status.thinking_effective || S.status.thinking] || ["düşünme"])[0]);
+}
 
 function buildChat() {
   const v = $("#v-chat");
@@ -403,7 +414,7 @@ function drawChips() {
   const m = MODES[S.status.mode] || ["mod", ""];
   const mode = btn("chip" + (S.status.mode === "yolo" ? " warn" : ""), m[0], modeSheet, "shield");
   const model = btn("chip", shortModel(S.status.model), modelSheet, "bolt");
-  const think = btn("chip", (THINK[S.status.thinking] || ["düşünme"])[0], thinkSheet, "brain");
+  const think = btn("chip", thinkText(), thinkSheet, "brain");
   c.append(mode, model, think);
 }
 async function modeSheet() {
@@ -412,7 +423,8 @@ async function modeSheet() {
   if (v) applyStatus(await api("/api/mode", { mode: v }));
 }
 async function thinkSheet() {
-  const v = await pickSheet("Düşünme", "", Object.entries(THINK).map(([k, [l, h]]) => [k, l, h]), S.status.thinking);
+  const note = S.status.thinking_kind === "none" ? "Bu model düşünme ayarı desteklemiyor." : "";
+  const v = await pickSheet("Düşünme", note, thinkOpts(), S.status.thinking_effective || S.status.thinking);
   if (v) applyStatus(await api("/api/thinking", { level: v }));
 }
 async function modelSheet() {

@@ -220,6 +220,11 @@ class Core:
         self._last_memory = time.monotonic()
         self._memory_thread: threading.Thread | None = None
         self._router: Any = None
+        # PR takibi (alice/prwatch.py): izlenen PR'lara birkaç dakikada bir arka planda bakılır.
+        self._prwatch_last = 0.0
+        self._prwatch_thread: threading.Thread | None = None
+        # Çekirdekteki uygulama bağlanınca: (sohbet kimliği, mesaj) -> "" ya da neden verilemediği (alice/core/cli.py).
+        self.chat_delivery: Callable[[str, str], str] | None = None
         # Uzun yokluktan dönünce karşılama (alice/presence.py); ses başlarsa greeter.voice bağlanır.
         from alice.presence import Greeter
 
@@ -254,6 +259,7 @@ class Core:
         self._run_due(now)
         self._maybe_update(now)
         self._maybe_memory()
+        self._maybe_prwatch(now)
         try:
             self.greeter.tick()
         except Exception as e:  # noqa: BLE001 - karşılama çekirdeği durdurmasın
@@ -364,6 +370,32 @@ class Core:
                 fn()
             except Exception as e:  # noqa: BLE001 - bir adım diğerlerini durdurmasın
                 self._step_error(name, e)
+
+    def _maybe_prwatch(self, now: float) -> None:
+        """İzlenen PR varsa ve vakti geldiyse arka planda bak. Düzeltme dakikalar sürebilir: tur beklemez, aynı anda
+        tek bakma çalışır."""
+        from alice import prwatch
+
+        if self._prwatch_thread is not None and self._prwatch_thread.is_alive():
+            return
+        if now - self._prwatch_last < prwatch.interval(self.cfg) or not prwatch.store_path().exists():
+            return
+        self._prwatch_last = now
+        if not prwatch.load():
+            return
+
+        def notify(title: str, body: str) -> None:
+            self.notifier.send(Notification(title, body, "info", "github", kind="info"))
+
+        def work() -> None:
+            try:
+                for line in prwatch.check_all(self.cfg, notify, deliver=self.chat_delivery):
+                    self.store.add_event("info", "PR takibi", line, topic="github")
+            except Exception as e:  # noqa: BLE001 - anahtar yok, ağ yok: çekirdek sürsün
+                self._step_error("PR takibi", e)
+
+        self._prwatch_thread = threading.Thread(target=work, daemon=True, name="alice-prwatch")
+        self._prwatch_thread.start()
 
     def _send_reminders(self, mem) -> None:
         sent = set(json.loads(mem._meta("reminded") or "[]"))

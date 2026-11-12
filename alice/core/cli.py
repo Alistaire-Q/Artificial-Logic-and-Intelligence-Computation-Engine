@@ -191,6 +191,20 @@ def _start_app(cfg, core):
     # beklemeden kuruyordu; açılış süresi aynı).
     host = AppHost(cfg, restart=core.restart).start(background=False)
     core.busy_hook = lambda: host.busy  # sohbet sürerken güncelleme için yeniden başlama
+
+    def deliver(sid: str, text: str) -> str:
+        """PR takibinin işini kodu yazan sohbete mesaj olarak ver. Boş: verildi; değilse neden verilemediği.
+        Sohbet o an başka işle meşgulse bölünmez ("meşgul"): takip bir sonraki turda yeniden dener."""
+        st = host.state
+        if st is None:
+            return "uygulama hazır değil"
+        chat = st.find_chat(sid)
+        if chat is not None and chat.busy:
+            return "meşgul"
+        ok, err = st.send(text, sid=sid)
+        return "" if ok else (err or "gönderilemedi")
+
+    core.chat_delivery = deliver
     return host
 
 

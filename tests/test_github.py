@@ -409,3 +409,32 @@ def test_app_lists_and_opens_github_repos(monkeypatch, tmp_path, workdir):
         assert not r["ok"] and "GITHUB_TOKEN" in r["error"]
     finally:
         srv.stop()
+
+
+@needs_git
+def test_pr_worktree_is_detached_and_leaves_users_branch_alone(repo, tmp_path, monkeypatch):
+    """PR takibinin worktree'si kullanıcının yerel dalını kullanmaz: kullanıcı o daldayken de açılır, push'lanmamış
+    commit'lere dokunmaz; ayrık HEAD'den push uzak dala gider."""
+    from alice import prwatch
+
+    work, remote = repo
+    git(work, "switch", "-c", "ozellik")
+    (work / "b.txt").write_text("b\n", encoding="utf-8")
+    git(work, "add", "b.txt")
+    git(work, "commit", "-m", "b")
+    git(work, "push", "-u", "origin", "ozellik")
+    (work / "c.txt").write_text("c\n", encoding="utf-8")
+    git(work, "add", "c.txt")
+    git(work, "commit", "-m", "yerel")  # push'lanmamış
+    local_head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=work, capture_output=True, text=True).stdout
+    monkeypatch.setattr(prwatch, "alice_home", lambda: tmp_path / "home")
+    w = prwatch.Watch("o/r", 3, path=str(work))
+    wt = prwatch.worktree_for(None, w, "ozellik", None)
+    assert prwatch.worktree_for(None, w, "ozellik", None) == wt  # ikinci kez: güncellenir
+    assert subprocess.run(["git", "rev-parse", "HEAD"], cwd=work, capture_output=True, text=True).stdout == local_head
+    (wt / "d.txt").write_text("d\n", encoding="utf-8")
+    ctx = ctx_for(wt)
+    Git().run(ctx, action="commit", message="d", all=True)
+    Git().run(ctx, action="push", branch="ozellik")
+    log = subprocess.run(["git", "log", "--oneline", "ozellik"], cwd=remote, capture_output=True, text=True).stdout
+    assert " d" in log and "yerel" not in log

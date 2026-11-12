@@ -22,18 +22,23 @@ CORE = {"read_file", "write_file", "edit_file", "list_dir", "glob", "grep", "run
 
 # grup -> (araçlar, kısa açıklama, anahtar kelime regex'i)
 GROUPS: dict[str, tuple[set[str], str, str]] = {
-    "files": ({"file_ops", "multi_edit", "apply_patch", "notebook_edit", "find_files", "send_file"},
+    "files": ({"file_ops", "multi_edit", "apply_patch", "notebook_edit", "find_files", "send_file", "next_step",
+               "share", "permissions", "hooks", "usage"},
               "dosya taşıma/kopyalama/silme, kişisel dosya bulma (indirilenler, son açılanlar), bir dosyada çok "
               "değişiklik, çok dosyaya yama, Jupyter defteri, kullanıcıya dosya gösterme",
               r"taşı|kopyala|\bsil(in|e|er misin)?\b|yeniden adlandır|adını değiştir|çöp|düzenle|değiştir|düzelt|refactor|"
               r"yama|patch|notebook|ipynb|jupyter|\bkod|code|script|fonksiyon|\.py\b|\.js\b|\.ts\b|bug|klasör|"
-              r"indirdiğim|indirilen|açtığım|nerede(ydi)?\b|\bpdf|excel|word dosya|belge(yi|si|m)|toparla"),
-    "plan": ({"todo_write", "run_plan", "task_control", "task", "process_output", "process_stop", "process_wait",
-              "skill", "exit_plan_mode"},
-             "çok adımlı iş planı ve yapılacaklar listesi, alt ajan, arka plandaki komutun çıktısı/bekleme/durdurma, "
+              r"indirdiğim|indirilen|açtığım|nerede(ydi)?\b|\bpdf|excel|word dosya|belge(yi|si|m)|toparla|"
+              r"paylaş|bağlantı(sını)? ver|link(ini)? ver|izin(ler)?|artık sorma|sormadan|\bhook|her (dosya )?düzenleme|"
+              r"token|kullanım|nereye gitti|harcadı"),
+    "plan": ({"todo_write", "next_step", "monitor", "session", "run_plan", "task_control", "task", "process_output",
+              "process_stop", "process_wait", "skill", "exit_plan_mode"},
+             "çok adımlı iş planı ve yapılacaklar listesi, tur sonu özet kutusu, alt ajan, ayrı sohbet başlatma/"
+             "devretme, arka planda izleyip olay olunca dönme, arka plandaki komutun çıktısı/bekleme/durdurma, "
              "beceriler, plan onayı",
              r"önce .* sonra|ardından|sonra da|adım adım|planla|alt ajan|arka planda|background|sunucu(yu)? başlat|"
-             r"dev server|npm run|\bwatch\b|beceri|skill"),
+             r"dev server|npm run|\bwatch\b|beceri|skill|bitince|bitti(ğ|g)inde|haber ver|izle|ayrı (sohbet|oturum)|"
+             r"paralel|devret"),
     "desktop": ({"computer", "computer_task", "ui_elements", "ui_act", "clipboard", "reflex", "app", "windows", "game"},
                 "uygulama/pencere açma-kapama, ekran görüntüsü, fare/klavye, masaüstü uygulamalarında tıklama, pano, "
                 "oyun oturumu (turlar, notlar)",
@@ -41,12 +46,16 @@ GROUPS: dict[str, tuple[set[str], str, str]] = {
                 r"yapıştır|clipboard|oyun|ayarlar|uygulamada|arayüz|simge|ikon|whatsapp|instagram|insta\b|"
                 r"tiktok|dm at|mesaj at|uygulama|\baç|kapat|başlat|küçült|sekme|sıra tabanlı|strateji oyunu|"
                 r"tur(u|unu)? (oyna|bitir|geç)"),
-    "browser": ({"browser"}, "kullanıcının tarayıcısında web sayfası okuma, tıklama, form doldurma",
+    "browser": ({"browser", "preview"}, "web sayfası okuma, tıklama, form doldurma (ALICE'in yerleşik "
+                "tarayıcısında, kullanıcı panelde canlı görür); geliştirdiğin web arayüzünü açıp hatalarını doğrulama",
                 r"site|tarayıcı|browser|chrome|edge|firefox|opera|google|sayfa|link|https?://|www\.|\.com|"
-                r"giriş yap|login|online|internetten|instagram|twitter|github|e-?posta|mail"),
-    "github": ({"git", "github"}, "git (commit, dal, push) ve GitHub (depo klonlama, PR açma/birleştirme, CI durumu)",
+                r"giriş yap|login|online|internetten|instagram|twitter|github|e-?posta|mail|localhost|dev server|"
+                r"önizle|preview|arayüz(ü|de)? (dene|kontrol|doğrula)|sayfayı aç"),
+    "github": ({"git", "github", "code_review"},
+               "git (commit, dal, push), GitHub (PR açma/birleştirme, CI durumu/logları/yeniden çalıştırma, inceleme "
+               "yorumlarına cevap, PR'ı arka planda izleyip düzeltme) ve bağımsız kod incelemesi",
                r"git\b|git ?hub|\brepo|depo|commit|push|pull|pull request|\bpr\b|merge|birleştir|branch|\bdal\b|"
-               r"issue|klonla|clone|\bci\b"),
+               r"issue|klonla|clone|\bci\b|review|incele|gözden geçir|kod kontrol|yorum(lar)?a? (bak|cevap)"),
     "system": ({"system_info", "process_list", "process_kill", "metrics"},
                "CPU/RAM/GPU/disk durumu, çalışan işlemler, geçmiş ölçümler",
                r"cpu|ram|gpu|işlemci|ekran kartı|sıcaklık|derece|bellek|disk|pil|batarya|performans|işlem|süreç|"

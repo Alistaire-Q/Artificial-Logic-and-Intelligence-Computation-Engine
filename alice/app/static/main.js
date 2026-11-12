@@ -17,7 +17,12 @@ const handlers = {
   delta: (ev) => onDelta(ev.text),
   stream_reset: () => { if (S.cur) { S.cur.text = ""; S.cur.prose.replaceChildren(); } },
   stream_end: (ev) => { onStreamEnd(ev.text, ev.source); if (S.busy) showWorking("Çalışıyor"); },
-  tool_start: (ev) => toolRow(ev.id, ev.name, ev.summary, true),
+  tool_start: (ev) => {
+    toolRow(ev.id, ev.name, ev.summary, true);
+    // Ajan web'de iş yaparken yerleşik tarayıcı paneli kendiliğinden açılır (Ayarlar'dan kapatılabilir).
+    if ((ev.name === "browser" || ev.name === "preview") && PREFS.autoBrowser !== false
+        && !(PREFS.panel && PREFS.tab === "browser")) openPanel("browser");
+  },
   tool_end: (ev) => {
     const t = S.tools.get(ev.id) || toolRow(ev.id, ev.name, "", true);
     // Sonuç (diff, plan kartı) eklenmeden önce alttaysak, eklendikten sonra da altta kal.

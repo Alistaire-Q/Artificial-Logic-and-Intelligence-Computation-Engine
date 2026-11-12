@@ -774,7 +774,8 @@ class ChatGPTProvider(OpenAICompatProvider):
                         resp = ev.get("response") or {}
                         served = resp.get("model") or served
                         u = resp.get("usage") or {}
-                        usage = {"prompt_tokens": u.get("input_tokens", 0), "completion_tokens": u.get("output_tokens", 0)}
+                        usage = {"prompt_tokens": u.get("input_tokens", 0), "completion_tokens": u.get("output_tokens", 0),
+                                 "cached_tokens": (u.get("input_tokens_details") or {}).get("cached_tokens", 0)}
                     elif kind in ("response.failed", "error"):
                         err = (ev.get("response") or {}).get("error") or ev.get("error") or ev
                         msg = err.get("message") if isinstance(err, dict) else str(err)

@@ -72,6 +72,9 @@ function svg(paths, cls) {
   return s;
 }
 const IC = {
+  back: '<path d="M15 6l-6 6 6 6"/>',
+  fwd: '<path d="M9 6l6 6-6 6"/>',
+  reload: '<path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v4h-4"/>',
   ext: '<path d="M14 5h5v5M19 5l-8 8M18 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h4"/>',
   home: '<path d="M4 11l8-7 8 7v8a1 1 0 0 1-1 1h-4v-6h-6v6H5a1 1 0 0 1-1-1z"/>',
   disk: '<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 14h.01M11 14h6"/>',
@@ -716,26 +719,139 @@ function finishTool(t, ev, live) {
     body.appendChild(imgs);
     t.classList.add("open");
   }
-  if (ev.files && ev.files.length) body.appendChild(fileCards(ev.files)), t.classList.add("open");
+  // Dosya kartları ve özet kutusu adımların içinde değil mesaj düzeyinde: tur bitince adımlar katlanıyor, kart da
+  // onlarla birlikte gözden kayboluyordu.
+  if (ev.files && ev.files.length) placeAfter(t, fileCards(ev.files));
+  if (ev.card && ev.card.kind === "next_step") placeAfter(t, nextStepCard(ev.card, live));
+  if (ev.card && ev.card.kind === "usage") {
+    const card = el("div", "usage-card");
+    card.appendChild(renderUsage(ev.card));
+    placeAfter(t, card);
+  }
+}
+function placeAfter(t, node) {
+  const step = t.closest(".tool-group") || t.closest(".steps") || t;
+  const top = step.closest("#messages > *") || step;
+  if (top.parentElement === list) top.after(node); else list.appendChild(node);
+  if (S.working) list.appendChild(S.working);
 }
 
 /* send_file: kullanıcıya gösterilen dosyalar. Aç / Klasörde göster sadece bu dosyalar için çalışır (/api/reveal). */
 function fmtSize(n) {
   return n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`;
 }
+const FILE_KIND = [
+  [/\.(png|jpe?g|gif|webp|svg|bmp)$/i, "görsel", "#22c55e"], [/\.pdf$/i, "PDF", "#ef4444"],
+  [/\.(md|markdown|txt|log)$/i, "metin", "#a3a3a3"], [/\.(csv|tsv|xlsx?)$/i, "tablo", "#10b981"],
+  [/\.(html?|css)$/i, "web", "#f97316"], [/\.(py|js|ts|json|toml|ya?ml|sh|ps1|sql|xml|ini|cfg)$/i, "kod", "#60a5fa"],
+  [/\.(zip|7z|rar|tar|gz)$/i, "arşiv", "#eab308"], [/\.(exe|msi|apk)$/i, "program", "#a78bfa"],
+  [/\.(mp3|wav|ogg|flac|mp4|mkv|webm)$/i, "medya", "#ec4899"]];
+const PREVIEWABLE = /\.(png|jpe?g|gif|webp|svg|bmp|pdf|md|markdown|txt|log|csv|tsv|json|py|js|ts|html?|css|toml|ya?ml|xml|sh|ps1|sql|ini|cfg)$/i;
+function fileKind(name) {
+  for (const [rx, label, color] of FILE_KIND) if (rx.test(name)) return [label, color];
+  return ["dosya", "var(--faint)"];
+}
 function fileCards(files) {
   const box = el("div", "file-cards");
   for (const f of files) {
+    const [kind, color] = fileKind(f.name);
     const card = el("div", "file-card");
+    const ext = el("span", "fc-ext", (f.name.split(".").pop() || "").slice(0, 4).toUpperCase());
+    ext.style.setProperty("--fc", color);
     const meta = el("span", "fc-meta");
-    meta.append(el("b", "", f.name), el("small", "", fmtSize(f.size || 0)));
-    const open = el("button", "btn", "Aç");
+    const dir = (f.path || "").replace(/[\\/][^\\/]*$/, "");
+    meta.append(el("b", "", f.name), el("small", "", `${kind} · ${fmtSize(f.size || 0)}` + (dir ? ` · ${dir}` : "")));
+    const acts = el("span", "fc-acts");
+    if (PREVIEWABLE.test(f.name)) {
+      const pv = el("button", "btn", "Önizle");
+      pv.addEventListener("click", () => previewFile(f));
+      acts.appendChild(pv);
+    }
+    const open = el("button", "btn ghost", "Aç");
     open.addEventListener("click", () => api("/api/reveal", { path: f.path }).then((r) => r && !r.ok && toast(r.error || "açılamadı")));
-    const dir = el("button", "btn ghost", "Klasörde göster");
-    dir.addEventListener("click", () => api("/api/reveal", { path: f.path, folder: true }));
+    const folder = iconAct(IC.folder, "Klasörde göster", () => api("/api/reveal", { path: f.path, folder: true }));
+    acts.append(open, folder);
     card.title = f.path;
-    card.append(meta, open, dir);
+    card.append(ext, meta, acts);
+    if (PREVIEWABLE.test(f.name)) meta.addEventListener("click", () => previewFile(f));
     box.appendChild(card);
+  }
+  return box;
+}
+// Dosyayı uygulamadan çıkmadan göster: markdown işlenir, kod renklenir, CSV tablo olur, HTML yalıtılmış çerçevede.
+async function previewFile(f) {
+  const r = await api("/api/file_preview?path=" + encodeURIComponent(f.path));
+  if (!r || !r.ok) return toast((r && r.error) || "önizlenemedi");
+  showDialog((d) => {
+    d.classList.add("preview");
+    const head = el("div", "pv-head");
+    const open = el("button", "btn ghost", "Aç");
+    open.addEventListener("click", () => api("/api/reveal", { path: f.path }));
+    head.append(el("b", "", r.name), open);
+    const body = el("div", "pv-body");
+    if (r.kind === "image") {
+      const img = el("img");
+      img.src = `data:${r.mime};base64,${r.b64}`;
+      body.appendChild(img);
+    } else if (r.kind === "pdf") {
+      const bytes = Uint8Array.from(atob(r.b64), (c) => c.charCodeAt(0));
+      const fr = el("iframe");
+      fr.src = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+      body.appendChild(fr);
+    } else if (r.kind === "markdown") {
+      const md = el("div", "md");
+      md.innerHTML = renderMd(r.text);
+      body.appendChild(md);
+    } else if (r.kind === "html") {
+      const fr = el("iframe");
+      fr.setAttribute("sandbox", "");  // betik çalışmaz, ALICE'e erişemez
+      fr.srcdoc = r.text;
+      body.appendChild(fr);
+    } else if (r.kind === "csv") {
+      const sep = /\.tsv$/i.test(r.name) ? "\t" : r.text.split("\n")[0].split(";").length > r.text.split("\n")[0].split(",").length ? ";" : ",";
+      const table = el("table", "pv-table");
+      r.text.split(/\r?\n/).filter(Boolean).slice(0, 500).forEach((line, i) => {
+        const tr = el("tr");
+        for (const cell of line.split(sep)) tr.appendChild(el(i ? "td" : "th", "", cell.replace(/^"|"$/g, "")));
+        table.appendChild(tr);
+      });
+      body.appendChild(table);
+    } else {
+      const pre = el("pre", "pv-code");
+      const code = el("code", "language-" + (r.lang || "text"));
+      code.textContent = r.text;
+      pre.appendChild(code);
+      body.appendChild(pre);
+      if (r.kind === "code" && window.AliceHL && AliceHL.langOf(r.lang)) code.innerHTML = AliceHL.highlight(r.text, r.lang);
+    }
+    if (r.truncated) body.appendChild(el("small", "pv-note", "Dosya büyük: yalnız başı gösteriliyor."));
+    d.append(head, body);
+    dialogClose(d);
+  });
+}
+
+/* Tur sonu kutusu (next_step aracı): kısa özet, varsa tek soru ve düğmeler. Düğmeye basınca metni cevap olarak
+   gider. Yalnız en sondaki kutu tıklanabilir; yeni mesaj yazılınca eskiler sönükleşir. */
+function nextStepCard(card, live) {
+  $$(".next-step").forEach((n) => n.classList.add("stale"));
+  const box = el("div", "next-step" + (live ? "" : " stale"));
+  box.appendChild(el("p", "ns-recap", card.recap || ""));
+  if (card.question) {
+    const q = el("div", "ns-q");
+    q.appendChild(el("b", "", card.question));
+    const row = el("div", "ns-acts");
+    (card.options || []).forEach((label, i) => {
+      const b = el("button", i ? "btn" : "btn accent", label);
+      b.addEventListener("click", () => {
+        if (box.classList.contains("stale")) return;
+        box.classList.add("stale", "answered");
+        b.classList.add("chosen");
+        submit(label);
+      });
+      row.appendChild(b);
+    });
+    q.appendChild(row);
+    box.appendChild(q);
   }
   return box;
 }
@@ -975,10 +1091,17 @@ function applyStatus(s) {
     $("#modeBtn").className = "c-btn pill m-" + st.mode;
   }
   $("#modelLabel").textContent = shortModel(st.model);
-  if (st.thinking && THINK[st.thinking]) {
-    $("#thinkLabel").textContent = THINK[st.thinking][0];
-    $("#thinkIcon").innerHTML = st.thinking === "off" ? IC.bolt : IC.brain;
-    $("#thinkBtn").title = "Düşünme: " + THINK[st.thinking][1];
+  if (st.thinking) {
+    // Seçili modelin gerçekten uyguladığı seviye (model desteklemiyorsa en yakını); destek yoksa düğme sönük.
+    const merged = { ...S.status, ...st };
+    const lab = thinkLabel(merged);
+    if (lab) {
+      $("#thinkLabel").textContent = merged.thinking_kind === "none" ? "düşünme ayarı yok" : lab[0];
+      $("#thinkIcon").innerHTML = (merged.thinking_effective || st.thinking) === "off" ? IC.bolt : IC.brain;
+      $("#thinkBtn").title = merged.thinking_kind === "none" ? "Bu model düşünme ayarı desteklemiyor"
+        : "Düşünme: " + lab[1];
+      $("#thinkBtn").classList.toggle("dim", merged.thinking_kind === "none");
+    }
   }
   // Sabitlenen model cevap veremeyip yedeğe geçildiyse düğme seçileni, çubuk gerçekten cevap vereni gösterir.
   const served = st.served_model || st.model;
@@ -986,6 +1109,7 @@ function applyStatus(s) {
   $("#modelBtn").title = fellBack ? `Seçili: ${st.model} · son cevabı veren: ${st.served_model} (seçili model cevap veremedi)` : st.model || "";
   $("#stModel").textContent = served || "model yok";
   $("#stModel").classList.toggle("warn", !!fellBack);
+  if (st.stats) renderStats(st.stats, st);
   if (st.ctx_limit) {
     const win = st.ctx_window || st.ctx_limit;
     const pct = Math.min(100, (100 * st.ctx_tokens) / win);
@@ -993,8 +1117,6 @@ function applyStatus(s) {
     m.firstElementChild.style.width = pct + "%";
     m.classList.toggle("hot", pct > 75);
     $("#stCtx span").textContent = `${fmtTok(st.ctx_tokens)} / ${fmtTok(win)}`;
-    $("#stCtx").title = `Bağlam: ${st.ctx_tokens.toLocaleString("tr-TR")} / ${win.toLocaleString("tr-TR")} token. ` +
-      `${fmtTok(st.ctx_limit)} token'da eski konuşma otomatik özetlenir.`;
   }
   if (st.today_requests !== undefined) $("#stReq").textContent = `bugün ${st.today_requests} istek`;
   if (st.decider) $("#stDec").textContent = `karar: ${st.decider}`;
@@ -1026,7 +1148,8 @@ function renderHistory(items) {
     if (it.type === "user") { addUser(it.text, it.mi); remember(it.text); }
     else if (it.type === "assistant") addAiStatic(it.text);
     else if (it.type === "info") addNote(it.text);
-    else if (it.type === "tool") finishTool(toolRow(null, it.name, it.summary, false), { is_error: it.is_error, text: it.text });
+    else if (it.type === "tool") finishTool(toolRow(null, it.name, it.summary, false), { is_error: it.is_error, text: it.text,
+      files: it.files, card: it.card });
   }
   if (!items || !items.length) setEmpty(true);
   markFinals();
@@ -1257,4 +1380,131 @@ async function resendFrom(mi, text) {
   if (r.restored && r.restored.length) toast(`${r.restored.length} dosya eski haline getirildi`);
   await submit(text);
   return true;
+}
+
+/* ============================================================ durum çubuğu panelleri */
+// Oturum istatistiği, token kullanımı ve bağlam dağılımı: çubukta kısa özet, üzerine gelince ayrıntı paneli.
+function fmtDurShort(s) {
+  s = Math.round(s || 0);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60), r = s % 60;
+  return m < 60 ? `${m}m${String(r).padStart(2, "0")}s` : `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}m`;
+}
+function popRows(pop, title, total, rows, extra) {
+  pop.replaceChildren();
+  const head = el("div", "sp-head");
+  head.append(el("b", "", title), el("span", "", total));
+  pop.appendChild(head);
+  if (extra) pop.appendChild(extra);
+  for (const [label, value, dot] of rows) {
+    const r = el("div", "sp-row");
+    const l = el("span", "sp-l");
+    if (dot) { const d = el("i", "sp-dot"); d.style.background = dot; l.appendChild(d); }
+    l.appendChild(document.createTextNode(label));
+    r.append(l, el("span", "sp-v", value));
+    pop.appendChild(r);
+  }
+}
+function renderStats(s, st) {
+  const nf = (n) => Number(n || 0).toLocaleString("tr-TR");
+  const stats = $("#stStats"), tok = $("#stTok"), ctx = $("#stCtx");
+  stats.hidden = !s.turns;
+  if (s.turns) {
+    stats.querySelector("span").textContent = `${s.turns} tur ${s.steps} adım` + (s.tps ? ` · ${s.tps} tok/s` : "");
+    popRows(stats.querySelector(".st-pop"), "Oturum istatistiği", `${s.turns} tur ${s.steps} adım`, [
+      ["Model süresi", fmtDurShort(s.llm_s)], ["Araç süresi", fmtDurShort(s.tool_s)],
+      ["Ort. ilk kelime süresi (TTFT)", s.ttft ? `${s.ttft.toFixed(1)}s` : "—"],
+      ["Saniyede token (TPS)", s.tps ? `${s.tps} tok/s` : "—"]]);
+  }
+  const total = (s.input || 0) + (s.output || 0);
+  tok.hidden = !total;
+  if (total) {
+    const hit = s.input ? Math.round(100 * (s.cached || 0) / s.input) : 0;
+    tok.querySelector("span").textContent = `${fmtTok(total)} tok` + (s.cached ? ` · önbellek %${hit}` : "");
+    const more = el("button", "act sp-more", "Döküm: tokenlar nereye gitti →");
+    more.addEventListener("click", (e) => { e.stopPropagation(); showTokenUsage(); });
+    popRows(tok.querySelector(".st-pop"), "Token kullanımı", `${nf(total)} tok`, [
+      ["Önbellekten (cache hit)", s.cached ? `%${hit}` : "—"], ["Önbelleksiz girdi", nf((s.input || 0) - (s.cached || 0))],
+      ["Önbellekten girdi", nf(s.cached)], ["Çıktı", nf(s.output)]]);
+    tok.querySelector(".st-pop").appendChild(more);
+  }
+  const win = st.ctx_window || st.ctx_limit;
+  if (win && s.ctx) {
+    const pct = Math.min(100, Math.round(100 * (st.ctx_tokens || s.ctx.total) / win));
+    const bar = el("div", "sp-bar");
+    for (const [v, c] of [[s.ctx.system, "var(--faint)"], [s.ctx.tools, "#a78bfa"], [s.ctx.messages, "var(--accent)"]]) {
+      const i = el("i");
+      i.style.width = Math.max(0, 100 * v / win) + "%";
+      i.style.background = c;
+      bar.appendChild(i);
+    }
+    const note = el("small", "sp-note", `${fmtTok(st.ctx_limit)} token'a gelince eski konuşma otomatik özetlenir.`);
+    const box = el("div");
+    box.append(bar, note);
+    popRows(ctx.querySelector(".st-pop"), `Bağlamın %${pct}'i dolu`, `~${fmtTok(st.ctx_tokens || s.ctx.total)} / ${fmtTok(win)}`, [
+      ["Sistem talimatı", "~" + fmtTok(s.ctx.system), "var(--faint)"], ["Araç tanımları", "~" + fmtTok(s.ctx.tools), "#a78bfa"],
+      ["Mesajlar", "~" + fmtTok(s.ctx.messages), "var(--accent)"]], box);
+  }
+}
+
+/* Kullanım dökümü: bu oturumda tokenlar hangi modele, bağlam hangi araç çıktılarına gitti. Durum çubuğundaki token
+   balonundan ya da usage aracının kartından açılır. */
+function usageBars(rows, label, value, sub, color) {
+  const box = el("div", "us-list");
+  const max = Math.max(1, ...rows.map(value));
+  for (const r of rows) {
+    const row = el("div", "us-row");
+    const head = el("div", "us-head");
+    head.append(el("span", "us-name", label(r)), el("span", "us-v", fmtTok(value(r))));
+    const bar = el("div", "us-bar");
+    const fill = el("i");
+    fill.style.width = (100 * value(r) / max) + "%";
+    fill.style.background = color;
+    bar.appendChild(fill);
+    row.append(head, bar, el("small", "", sub(r)));
+    box.appendChild(row);
+  }
+  return box;
+}
+function renderUsage(u) {
+  const box = el("div", "usage");
+  const nf = (n) => Number(n || 0).toLocaleString("tr-TR");
+  const hit = u.input ? Math.round(100 * (u.cached || 0) / u.input) : 0;
+  box.appendChild(el("div", "us-sum", `${u.turns} tur · ${u.steps} model çağrısı · girdi ${fmtTok(u.input)} ` +
+    `(önbellek %${hit}) · çıktı ${fmtTok(u.output)}`));
+  box.appendChild(el("div", "sec", "Modeller (girdi + çıktı)"));
+  if (u.models && u.models.length) {
+    box.appendChild(usageBars(u.models, (m) => m.model, (m) => m.input + m.output,
+      (m) => `${m.calls} çağrı · girdi ${nf(m.input)} (önbellekten ${nf(m.cached)}) · çıktı ${nf(m.output)} · ${fmtDurShort(m.seconds)}`,
+      "var(--accent)"));
+  } else box.appendChild(el("div", "note", "Henüz model çağrısı yok."));
+  box.appendChild(el("div", "sec", "Araç çıktıları (bağlama eklenen)"));
+  if (u.tools && u.tools.length) {
+    box.appendChild(usageBars(u.tools.slice(0, 12), (t) => t.tool, (t) => t.tokens,
+      (t) => `${t.calls} kez` + (t.errors ? ` · ${t.errors} hata` : ""), "#a78bfa"));
+  } else box.appendChild(el("div", "note", "Araç kullanılmadı."));
+  const c = u.ctx || {};
+  box.appendChild(el("div", "sec", `Bağlam şu an ~${fmtTok(c.total || 0)}`));
+  box.appendChild(usageBars([{ n: "Sistem talimatı", v: c.system || 0 }, { n: "Araç tanımları", v: c.tools || 0 },
+    { n: "Mesajlar", v: c.messages || 0 }], (r) => r.n, (r) => r.v, () => "", "var(--faint)"));
+  const tip = [];
+  if (u.input && hit < 30 && u.steps > 4) tip.push("Önbellek oranı düşük: model sık değişiyorsa her geçişte bağlam baştan ödenir.");
+  const big = (u.tools || [])[0];
+  if (big && c.total && big.tokens > c.total * 0.3) tip.push(`${big.tool} çıktıları bağlamın büyük kısmını tutuyor; daha dar sorgular ya da /compact yardımcı olur.`);
+  if (u.steps && c.tools && c.total && c.tools > c.total * 0.35) tip.push("Araç tanımları bağlamın üçte birinden fazla: gereksiz bağlantıları kapatmak yer açar.");
+  for (const t of tip) box.appendChild(el("div", "us-tip", t));
+  return box;
+}
+async function showTokenUsage() {
+  const u = await api("/api/usage");
+  if (!u || u.ok === false) return toast((u && u.error) || "istatistik alınamadı");
+  showDialog((d) => {
+    d.classList.add("usage-dialog");
+    d.append(el("h3", "", "Kullanım dökümü"), renderUsage(u));
+    const row = el("div", "row");
+    const ok = el("button", "btn primary", "Kapat");
+    ok.addEventListener("click", closeDialog);
+    row.appendChild(ok);
+    d.appendChild(row);
+  });
 }

@@ -132,7 +132,7 @@ class AppUI:
     def tool_end(self, call_id: str, name: str, result: ToolResult) -> None:
         self.publish({"type": "tool_end", "id": call_id, "name": name, "text": result.text[:20000],
                           "is_error": result.is_error, "diff": result.diff, "images": result.images[:4],
-                      "files": getattr(result, "files", [])[:10]})
+                      "files": getattr(result, "files", [])[:10], "card": getattr(result, "card", {}) or {}})
 
     def ask_permission(self, name: str, summary: str, risk: str) -> str:
         pid = secrets.token_hex(6)
@@ -220,6 +220,12 @@ def display_history(messages: list[dict[str, Any]], tools: dict[str, Any] | None
     if archive:
         items = [{k: v for k, v in it.items() if k != "mi"} for it in display_history([{"role": "system"}, *archive], tools)]
     results = {m.get("tool_call_id"): m.get("content", "") for m in messages if m.get("role") == "tool"}
+    extras = {m.get("tool_call_id"): m for m in messages if m.get("role") == "tool" and (m.get("_files") or m.get("_card"))}
+    if extras:  # yeniden açılan sohbette gösterilen dosyalar yine açılabilsin / önizlenebilsin
+        from alice.tools.meta import SENT_FILES
+
+        for m in extras.values():
+            SENT_FILES.update(str(f.get("path")) for f in m.get("_files") or [] if f.get("path"))
     for i, m in enumerate(messages):
         role = m.get("role")
         content = m.get("content")
@@ -244,8 +250,47 @@ def display_history(messages: list[dict[str, Any]], tools: dict[str, Any] | None
                 args = tc["function"].get("arguments", "")
                 items.append({"type": "tool", "id": tc["id"], "name": tc["function"]["name"],
                               "summary": _summary(tools or {}, tc["function"]["name"], args),
-                              "text": res, "is_error": res.startswith("HATA:")})
+                              "text": res, "is_error": res.startswith("HATA:"),
+                              "files": (extras.get(tc["id"]) or {}).get("_files") or [],
+                              "card": (extras.get(tc["id"]) or {}).get("_card") or {}})
     return items
+
+
+PREVIEW_TEXT = {".md": "markdown", ".markdown": "markdown", ".txt": "text", ".log": "text", ".csv": "csv",
+                ".tsv": "csv", ".json": "code", ".py": "code", ".js": "code", ".ts": "code", ".html": "html",
+                ".htm": "html", ".css": "code", ".toml": "code", ".yaml": "code", ".yml": "code", ".xml": "code",
+                ".sh": "code", ".ps1": "code", ".sql": "code", ".ini": "code", ".cfg": "code"}
+PREVIEW_IMAGE = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+                 ".webp": "image/webp", ".svg": "image/svg+xml", ".bmp": "image/bmp"}
+PREVIEW_MAX = 400_000  # bayt: daha büyük metin dosyasının başı gösterilir
+
+
+def file_preview(path: str, allowed: set[str]) -> dict[str, Any]:
+    """Kullanıcıya gösterilmiş bir dosyanın önizlemesi: metin (markdown/kod/csv/html) ya da görsel/PDF (base64)."""
+    import base64
+
+    p = Path(path)
+    if path not in allowed or not p.is_file():
+        return {"ok": False, "error": "dosya bulunamadı"}
+    ext = p.suffix.lower()
+    size = p.stat().st_size
+    if ext in PREVIEW_IMAGE or ext == ".pdf":
+        if size > 15_000_000:
+            return {"ok": False, "error": "dosya önizleme için çok büyük"}
+        return {"ok": True, "kind": "pdf" if ext == ".pdf" else "image", "name": p.name,
+                "mime": "application/pdf" if ext == ".pdf" else PREVIEW_IMAGE[ext],
+                "b64": base64.b64encode(p.read_bytes()).decode()}
+    kind = PREVIEW_TEXT.get(ext)
+    if kind is None:
+        with open(p, "rb") as f:
+            head = f.read(4096)
+        if b"\0" in head:
+            return {"ok": False, "error": "bu dosya türü önizlenemiyor; Aç ile aç"}
+        kind = "text"
+    with open(p, "rb") as f:
+        data = f.read(PREVIEW_MAX)
+    return {"ok": True, "kind": kind, "name": p.name, "lang": ext.lstrip("."), "truncated": size > PREVIEW_MAX,
+            "text": data.decode("utf-8", errors="replace")}
 
 
 def git_branch(cwd: Path) -> str:
@@ -356,6 +401,11 @@ class Chat:
         self.ctx.state["publish"] = app.bus.publish  # takım paneli canlı güncellensin
         self.ctx.state["teams"] = app.teams  # projeler bütün sohbetlerin
         self.ctx.state["desktop_lock"] = app.desktop_lock
+        self.ctx.state["session_id"] = self.sid  # PR takibi olayları kodu yazan bu sohbete geri getirebilsin
+        # Arka plandan bu sohbete mesaj (monitor olayları, ayrı oturumun sonucu) ve ayrı oturum başlatma.
+        self.ctx.state["deliver"] = lambda text: app.deliver(self.sid, text)
+        self.ctx.state["sessions"] = SessionsAPI(app, self)
+        self.ctx.state["builtin_browser"] = app.builtin_browser  # tarayıcı aracı ve preview bunu kullanır
         attach_memory(self.agent, "uygulama")
         if messages is not None:
             self.agent.messages = self.agent.messages[:1] + messages
@@ -380,6 +430,7 @@ class Chat:
 
     def set_sid(self, sid: str) -> None:
         self.sid = self.ui.sid = sid
+        self.ctx.state["session_id"] = sid
 
     def save(self) -> None:
         if not self.abandoned:
@@ -425,6 +476,64 @@ class Chat:
         """Araçların bıraktıklarını (tarayıcı bağlantısı, arka plan komutları) kendi thread'inde temizle, thread'i bitir."""
         self.run(lambda: cleanup(self.ctx), wait=wait)
         self._jobs.put(None)
+
+
+def fork_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Ayrı oturuma verilecek geçmiş: sistem mesajı hariç, sonda cevabı gelmemiş araç çağrısı varsa (oturumu
+    başlatan çağrının kendisi) ondan öncesi. Cevapsız tool_calls sağlayıcıya giderse istek 400 ile reddedilir."""
+    rows = [dict(m) for m in messages[1:]]
+    answered = {m.get("tool_call_id") for m in rows if m.get("role") == "tool"}
+    for i in range(len(rows) - 1, -1, -1):
+        m = rows[i]
+        if m.get("role") == "assistant" and m.get("tool_calls") and \
+                any(tc.get("id") not in answered for tc in m["tool_calls"]):
+            rows = rows[:i]
+            break
+    return rows
+
+
+class SessionsAPI:
+    """Bir sohbetin başlattığı ayrı oturumlar (session aracı)."""
+
+    def __init__(self, app: "AppState", chat: "Chat"):
+        self.app, self.chat = app, chat
+
+    def start(self, prompt: str, title: str, fork: bool) -> tuple[str, str]:
+        app, parent = self.app, self.chat
+        with app._chats_lock:
+            if len(app.running()) >= app.MAX_BACKGROUND:
+                return "", f"arkada zaten {app.MAX_BACKGROUND} sohbet çalışıyor; biri bitince tekrar dene"
+            sid = sess.new_session_id()
+            msgs = fork_messages(parent.agent.messages) if fork else None
+            chat = Chat(app, parent.ctx.cwd, parent.agent.permissions.mode, sid=sid, messages=msgs)
+            chat.ctx.state["report_to"] = parent.sid
+            chat.ctx.state["report_title"] = title
+            app.background[sid] = chat
+        try:
+            sess.set_meta(sid, title=title)
+        except OSError:
+            pass
+        parent.ctx.state.setdefault("linked_sessions", []).append(sid)
+        ok, err = app.send(prompt, sid=sid)
+        if not ok:
+            return "", err or "oturum başlatılamadı"
+        app.bus.publish({"type": "sessions"})
+        return sid, ""
+
+    def linked(self) -> list[dict[str, str]]:
+        meta = sess.load_meta()
+        rows = []
+        for sid in self.chat.ctx.state.get("linked_sessions", []):
+            live = self.app.find_chat(sid)
+            state = "çalışıyor" if live is not None and live.busy else "bitti/boşta"
+            rows.append({"id": sid, "title": str((meta.get(sid) or {}).get("title") or ""), "state": state})
+        return rows
+
+    def message(self, sid: str, text: str) -> str:
+        if sid not in self.chat.ctx.state.get("linked_sessions", []):
+            return "bu sohbetten başlatılmış böyle bir oturum yok"
+        ok, err = self.app.send(text, sid=sid)
+        return "" if ok else (err or "gönderilemedi")
 
 
 class AppState:
@@ -547,7 +656,10 @@ class AppState:
             if len(self.running()) >= self.MAX_BACKGROUND:
                 return None
             loaded = sess.load(sid)
-            chat = Chat(self, self.ctx.cwd, self.agent.permissions.mode, sid=sid,
+            # Kayıtlı sohbet kendi klasöründe açılır: kullanıcı başka projeye geçmiş olsa da PR takibinin işi
+            # o sohbetin deposunda yapılsın.
+            cwd = (sess.saved_cwd(sid) if loaded else None) or self.ctx.cwd
+            chat = Chat(self, cwd, self.agent.permissions.mode, sid=sid,
                         messages=loaded[1] if loaded else [])
             self.background[sid] = chat
             return chat
@@ -678,7 +790,24 @@ class AppState:
         self.bus.publish({"type": "busy", "value": False, "sid": chat.sid})
         self.bus.publish({"type": "status", **self.status()})
 
+    _builtin: Any = None
+    _builtin_lock = threading.Lock()
+
+    def builtin_browser(self) -> Any:
+        """Yerleşik tarayıcı (tek örnek, ilk kullanımda açılır): ajan da panel de aynısına bağlanır."""
+        with self._builtin_lock:
+            if self._builtin is None:
+                from alice.app.builtin_browser import BuiltinBrowser
+
+                self._builtin = BuiltinBrowser()
+            return self._builtin
+
     def shutdown(self) -> None:
+        if self._builtin is not None:
+            try:
+                self._builtin.stop()
+            except Exception:  # noqa: BLE001 - kapanışta hata önemsiz
+                pass
         self._update_stop.set()
         with self._chats_lock:
             chats = [self.chat, *self.background.values()]
@@ -714,12 +843,62 @@ class AppState:
             "brain_chain": self.router.chain("brain"),
             "brain_pinned": "brain" in self.router.role_overrides,
             "thinking": self.router.thinking_level("brain"),
+            **self._thinking_options(),
+            "stats": self.agent.stats_view(),
             "user": _user_name(),
             "checkpoints": sorted(self.agent.checkpoints),
             "team": self.team_snapshot(),
             "update": self.update.as_dict() if self._update_shown() else None,
             "update_mode": self._update_mode(),
         }
+
+    def pr_panel(self, force: bool = False) -> dict[str, Any]:
+        """PR paneli: izlenen PR'lar (canlı durumla) ve bulunulan dalın izlenmeyen açık PR'ı (izlemeye almak için)."""
+        from alice import prwatch
+        from alice.tools.base import ToolError
+        from alice.tools.github import GitHubAPI, current_branch, github_token, origin_repo
+
+        watches = prwatch.load()
+        out: dict[str, Any] = {"ok": True, "watching": [], "suggest": None, "error": ""}
+        try:
+            api = GitHubAPI(github_token(self.cfg))
+        except ToolError as e:
+            out.update(ok=False, error=str(e)[:200])
+            api = None
+        for w in watches:
+            row = {"repo": w.repo, "number": w.number, "status": w.status, "history": w.history[-5:],
+                   "session": w.session, **{f: getattr(w, f) for f in prwatch.FLAGS}}
+            if api is not None:
+                try:
+                    row.update(prwatch.live_status(api, w.repo, w.number, cache=not force))
+                except Exception as e:  # noqa: BLE001 - bir PR'ın hatası paneli düşürmesin
+                    row["error"] = str(e)[:160]
+            out["watching"].append(row)
+        if api is not None:
+            try:
+                repo, branch = origin_repo(self.ctx.cwd), current_branch(self.ctx.cwd)
+                if repo and branch:
+                    owner = repo.split("/")[0]
+                    prs = api.get(f"/repos/{repo}/pulls", head=f"{owner}:{branch}", state="open")
+                    if prs and not any(w.repo == repo and w.number == prs[0]["number"] for w in watches):
+                        out["suggest"] = {"repo": repo, "number": prs[0]["number"], "title": prs[0]["title"],
+                                          "url": prs[0]["html_url"], "head": branch}
+            except Exception:  # noqa: BLE001 - git deposu değil, ağ yok
+                pass
+        return out
+
+    def _thinking_options(self) -> dict[str, Any]:
+        """Seçili (ya da son cevap veren) ana modelin desteklediği düşünme seviyeleri: menü yalnız bunları gösterir."""
+        from alice.providers import thinking
+
+        ref = ((self.router.role_overrides.get("brain") or [None])[0] or self.router.last_ref.get("brain")
+               or self.router.first_available("brain") or "")
+        provider, _, model = ref.partition(":")
+        levels, kind = thinking.levels_for(provider, model) if ref else (list(thinking.LEVELS), "graded")
+        if ref in getattr(self.router, "no_thinking", set()):
+            levels, kind = ["default"], "none"  # model ayarı reddetti (çalışırken öğrenildi)
+        return {"thinking_levels": levels, "thinking_kind": kind,
+                "thinking_effective": thinking.fit(self.router.thinking_level("brain"), levels)}
 
     # ----------------------------------------------------------------- bağlantılar
     def connections(self) -> dict[str, Any]:
@@ -1516,6 +1695,30 @@ class AppState:
         self._start_turn(chat, text, prompt, images or [])
         return True, None
 
+    def deliver(self, sid: str, text: str, tries: int = 30) -> str:
+        """Arka plandan bir sohbete mesaj (izleme olayı, ayrı oturumun sonucu): sohbet çalışıyorsa işe iletilir,
+        boştaysa yeni tur başlar. Tam o an tur bitiyorsa birkaç kez yeniden denenir. Boş: iletildi."""
+        err = ""
+        for _ in range(max(1, tries)):
+            ok, err = self.send(text, sid=sid)
+            if ok:
+                return ""
+            if "çalışıyor" not in (err or ""):
+                break
+            time.sleep(1.0)
+        return err or "iletilemedi"
+
+    def _report_to_parent(self, chat: Chat) -> None:
+        """Ayrı oturumun turu bittiyse sonucu onu başlatan sohbete bildir (kullanıcı durdurduysa bildirme)."""
+        parent = chat.ctx.state.get("report_to")
+        if not parent or chat.agent.cancel.is_set() or chat.abandoned:
+            return
+        final = next((m.get("content") for m in reversed(chat.agent.messages)
+                      if m.get("role") == "assistant" and isinstance(m.get("content"), str) and m["content"].strip()), "")
+        title = chat.ctx.state.get("report_title") or chat.sid
+        text = f"[Oturum bitti] '{title}' ({chat.sid}):\n{(final or '(cevap yok)')[:3000]}"
+        threading.Thread(target=self.deliver, args=(parent, text), daemon=True, name="alice-report").start()
+
     def _start_turn(self, chat: Chat, text: str, prompt: str, images: list[str]) -> None:
         agent, pub = chat.agent, chat.ui.publish
         chat.queued = True
@@ -1547,6 +1750,7 @@ class AppState:
                     joined = "\n\n".join(t for t, _ in left)
                     self._start_turn(chat, joined, joined, [img for _, imgs in left for img in imgs][:6])
                 else:
+                    self._report_to_parent(chat)
                     self._finished(chat)
                     chat.ui.publish({"type": "busy", "value": False})
                     self.bus.publish({"type": "status", **self.status()})
@@ -1871,6 +2075,28 @@ def make_handler(state: AppState):
                     return self._json(state.project_detail((q.get("id") or [""])[0], (q.get("member") or [""])[0]))
                 except ToolError as e:
                     return self._json({"ok": False, "error": str(e)}, 404)
+            if u.path == "/api/usage":
+                return self._json(state.agent.usage_breakdown())
+            if u.path == "/api/prs":
+                return self._json(state.pr_panel(force=(q.get("force") or [""])[0] == "1"))
+            if u.path in ("/api/browser/frame", "/api/browser/tabs"):
+                from alice.app.builtin_browser import BrowserError
+
+                bb = state.builtin_browser()
+                if not bb.running():
+                    return self._json({"ok": False, "idle": True, "error": "yerleşik tarayıcı kapalı"})
+                try:
+                    if u.path == "/api/browser/tabs":
+                        return self._json({"ok": True, "tabs": [{k: t[k] for k in ("id", "title", "url")}
+                                                                for t in bb.tabs()], "current": bb.current()["id"]})
+                    return self._json(bb.frame(int((q.get("q") or ["60"])[0])))
+                except (BrowserError, OSError) as e:
+                    return self._json({"ok": False, "error": str(e)[:200]})
+            if u.path == "/api/file_preview":
+                # send_file kartındaki "Önizle": yalnız ALICE'in kullanıcıya gösterdiği dosyalar (rastgele yol değil).
+                from alice.tools.meta import SENT_FILES
+
+                return self._json(file_preview(str((q.get("path") or [""])[0]), SENT_FILES))
             if u.path == "/api/files":
                 from alice.mentions import complete_paths
 
@@ -2221,6 +2447,78 @@ def make_handler(state: AppState):
                     ok = revert_change(state.agent.checkpoints, str(d.get("path", "")))
                     return self._json({"ok": ok, "changes": session_changes(state.agent.checkpoints, state.ctx.cwd)},
                                       200 if ok else 404)
+                if p.startswith("/api/prs/"):
+                    # PR paneli: izlemeye al / bırak, davranış düğmeleri, başarısız CI'ı yeniden çalıştır.
+                    from alice import prwatch
+                    from alice.tools.base import ToolError
+
+                    repo, number = str(d.get("repo", "")), int(d.get("number") or 0)
+                    if not repo or not number:
+                        return self._json({"ok": False, "error": "repo ve number gerekli"}, 400)
+                    try:
+                        if p == "/api/prs/watch":
+                            local = ""
+                            try:
+                                from alice.tools.github import origin_repo, repo_root
+
+                                if origin_repo(state.ctx.cwd) == repo:
+                                    local = str(repo_root(state.ctx.cwd))
+                            except ToolError:
+                                pass
+                            note = prwatch.watch(repo, number, local, session=state.sid)
+                        elif p == "/api/prs/unwatch":
+                            note = prwatch.unwatch(repo, number)
+                        elif p == "/api/prs/flag":
+                            if str(d.get("flag")) == "auto_merge" and d.get("value") and not d.get("confirmed"):
+                                return self._json({"ok": False, "error": "otomatik birleştirme onay ister"}, 400)
+                            if not prwatch.set_flag(repo, number, str(d.get("flag", "")), bool(d.get("value"))):
+                                return self._json({"ok": False, "error": "izlenmiyor ya da bilinmeyen ayar"}, 404)
+                            note = "kaydedildi"
+                        elif p == "/api/prs/rerun":
+                            from alice.tools.github import GitHubAPI, github_token, rerun_failed
+
+                            api = GitHubAPI(github_token(state.cfg))
+                            sha = api.get(f"/repos/{repo}/pulls/{number}")["head"]["sha"]
+                            done = rerun_failed(api, repo, sha)
+                            note = ("yeniden başlatıldı: " + ", ".join(done)) if done else "başarısız iş yok"
+                        else:
+                            return self._json({"ok": False, "error": "bilinmeyen işlem"}, 404)
+                    except ToolError as e:
+                        return self._json({"ok": False, "error": str(e)[:200]})
+                    prwatch._live_cache.pop(f"{repo}#{number}", None)
+                    return self._json({"ok": True, "note": note})
+                if p == "/api/browser/input":
+                    # Paneldeki yerleşik tarayıcı: kullanıcı görüntüye tıklayıp yazarak kontrolü devralır.
+                    from alice.app.builtin_browser import BrowserError
+
+                    bb = state.builtin_browser()
+                    kind = str(d.get("type", ""))
+                    try:
+                        if kind == "start":
+                            bb.start()
+                        elif kind == "click":
+                            bb.click(float(d["x"]), float(d["y"]), str(d.get("button") or "left"), int(d.get("count") or 1))
+                        elif kind == "scroll":
+                            bb.scroll(float(d.get("x", 0)), float(d.get("y", 0)), float(d.get("dy", 0)))
+                        elif kind == "text":
+                            bb.type_text(str(d.get("text", ""))[:5000])
+                        elif kind == "key":
+                            bb.key(str(d.get("key", "")), int(d.get("modifiers") or 0))
+                        elif kind == "navigate":
+                            bb.navigate(str(d.get("url", "")))
+                        elif kind in ("back", "forward", "reload"):
+                            bb.history(kind)
+                        elif kind == "tab":
+                            bb.select(str(d.get("id", "")))
+                        elif kind == "new_tab":
+                            bb.new_tab(str(d.get("url") or "about:blank"))
+                        elif kind == "close_tab":
+                            bb.close_tab(str(d.get("id", "")))
+                        else:
+                            return self._json({"ok": False, "error": "bilinmeyen işlem"}, 400)
+                    except (BrowserError, OSError, KeyError, ValueError) as e:
+                        return self._json({"ok": False, "error": str(e)[:200]})
+                    return self._json({"ok": True})
                 if p in ("/api/git/branches", "/api/git/switch"):
                     from alice.tools.base import ToolError
                     from alice.tools.github import github_token, list_branches, switch_branch

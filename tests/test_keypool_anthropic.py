@@ -204,7 +204,7 @@ def test_chat_sends_adaptive_thinking_effort_and_fallback():
     assert sent["output_config"] == {"effort": "high"} and sent["fallbacks"] == "default"
     assert "temperature" not in sent and sent["max_tokens"] == 16000
     assert res.text == "Merhaba" and json.loads(res.tool_calls[0]["function"]["arguments"]) == {"q": "ş"}
-    assert res.usage == {"prompt_tokens": 100, "completion_tokens": 5}
+    assert res.usage == {"prompt_tokens": 100, "completion_tokens": 5, "cached_tokens": 90}
 
 
 def test_haiku_gets_no_server_fallback_and_json_schema_maps_to_output_format():

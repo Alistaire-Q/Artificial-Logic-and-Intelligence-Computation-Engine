@@ -65,7 +65,41 @@ class Automations:
                 "feeds": [{"name": f.name, "describe": f.describe(), "enabled": f.enabled, "agent": f.agent}
                           for f in feeds],
                 "feed_errors": errors, "feeds_path": str(feeds_path()), "feeds_file": feeds_path().exists(),
-                "core_running": bool(read_state().get("running"))}
+                "core_running": bool(read_state().get("running")), **self._hooks_view()}
+
+    # ------------------------------------------------------------------ hook'lar
+    def _hooks_view(self) -> dict[str, Any]:
+        from alice import hooks as hk
+
+        cfg_rows = hk._parse(dict(((getattr(self.cfg, "data", None) or {}).get("hooks")) or {}))
+        row = lambda h, i: {"index": i, "event": h.event, "matcher": h.matcher, "command": h.command,  # noqa: E731
+                            "timeout": h.timeout, "fixed": i < 0}
+        return {"hooks": [row(h, i) for i, h in enumerate(hk.file_hooks())] + [row(h, -1) for h in cfg_rows],
+                "hook_events": list(hk.EVENTS), "hooks_path": str(hk.hooks_path())}
+
+    def _hook_add(self, d: dict[str, Any]) -> dict[str, Any]:
+        from alice import hooks as hk
+
+        hk.add_hook(str(d.get("event", "")), str(d.get("command", "")), str(d.get("matcher", "")),
+                    float(d.get("timeout") or 30))
+        return {"ok": True}
+
+    def _hook_rm(self, d: dict[str, Any]) -> dict[str, Any]:
+        from alice import hooks as hk
+
+        hk.remove_hook(int(d.get("index", -1)))
+        return {"ok": True}
+
+    def _hook_test(self, d: dict[str, Any]) -> dict[str, Any]:
+        from alice import hooks as hk
+
+        rows = hk.file_hooks()
+        i = int(d.get("index", -1))
+        if not 0 <= i < len(rows):
+            raise ValueError("böyle bir hook yok")
+        h = rows[i]
+        r = hk.Hooks([h])._run_one(h, {"args": {"path": "ornek.py"}, "result": "", "prompt": "deneme"}, "edit_file")
+        return {"ok": True, "code": r.code, "stdout": r.stdout, "stderr": r.stderr}
 
     def action(self, action: str, d: dict[str, Any]) -> dict[str, Any]:
         fn = getattr(self, "_" + action, None) if action.isidentifier() else None

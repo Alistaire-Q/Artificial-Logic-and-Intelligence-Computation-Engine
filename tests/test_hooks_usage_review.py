@@ -1,0 +1,110 @@
+"""Hook yönetimi (dosyaya ekle/sil, açık sohbette canlı yenileme), kullanım dökümü ve PR satır yorumlarının farka
+oturtulması."""
+
+from __future__ import annotations
+
+import pytest
+
+from alice import hooks as hk
+from alice import review
+from alice.tools.base import DANGER, ToolContext, ToolError
+from alice.tools.hooks_usage import HooksTool, Usage
+from tests.conftest import make_config
+
+
+@pytest.fixture
+def home(tmp_path, monkeypatch):
+    monkeypatch.setattr("alice.config.alice_home", lambda: tmp_path)
+    return tmp_path
+
+
+def test_add_remove_hooks_roundtrip_and_live_reload(home):
+    h = hk.Hooks.from_config(make_config({"brain": ["a:m"]}), home)
+    assert not h.has("PostToolUse")
+    hk.add_hook("PostToolUse", 'ruff format "$ALICE_TOOL_PATH"', "edit_file|write_file", 20)
+    hk.add_hook("Stop", "pytest -q")
+    assert h.has("PostToolUse") and h.has("Stop")  # açık sohbet dosya değişince yeniden okur
+    rows = hk.file_hooks()
+    assert rows[0].command == 'ruff format "$ALICE_TOOL_PATH"' and rows[0].matcher == "edit_file|write_file"
+    assert rows[0].timeout == 20
+    hk.remove_hook(0)
+    assert [r.event for r in hk.file_hooks()] == ["Stop"]
+    with pytest.raises(ValueError):
+        hk.add_hook("Nope", "x")
+    with pytest.raises(ValueError):
+        hk.add_hook("PreToolUse", "x", "(")
+
+
+def test_hooks_tool_asks_before_adding_and_runs_test(home, workdir):
+    t = HooksTool()
+    assert t.risk_for({"action": "add"}) == DANGER and t.risk_for({"action": "list"}) == "read"
+    ctx = ToolContext(cwd=workdir, config=make_config({"brain": ["a:m"]}))
+    out = t.run(ctx, "add", event="PostToolUse", command="echo tamam", matcher="edit_file")
+    assert "eklendi" in out.text
+    assert "0. PostToolUse [edit_file] echo tamam" in t.run(ctx, "list").text
+    assert "çıkış kodu 0" in t.run(ctx, "test", index=0).text and "tamam" in t.run(ctx, "test", index=0).text
+    with pytest.raises(ToolError):
+        t.run(ctx, "remove", index=5)
+
+
+def test_usage_breakdown_by_model_and_tool(workdir):
+    from alice.providers.openai_compat import ChatResult
+
+    agent = type("A", (), {})()
+    from alice.agent import Agent
+
+    a = Agent.__new__(Agent)
+    a.stats = {k: 0 for k in ("turns", "steps", "llm_s", "tool_s", "ttft_s", "ttft_n", "gen_s", "gen_tokens", "input",
+                              "cached", "output")}
+    a.usage_models, a.usage_tools, a.messages = {}, {}, [{"role": "system", "content": "x"}]
+    a._specs = lambda: []
+    a.context_tokens = lambda: 100
+    a._count_call(ChatResult({}, "chatgpt", "gpt-6", {"prompt_tokens": 1000, "completion_tokens": 50,
+                                                        "cached_tokens": 800}), 0.0, 0.0)
+    a._count_call(ChatResult({}, "chatgpt", "gpt-6", {"prompt_tokens": 500, "completion_tokens": 10}), 0.0, 0.0)
+    a.usage_tools["read_file"] = {"calls": 3, "tokens": 900, "errors": 0}
+    u = a.usage_breakdown()
+    m = u["models"][0]
+    assert m["model"] == "chatgpt:gpt-6" and m["calls"] == 2 and m["input"] == 1500 and m["cached"] == 800
+    assert u["tools"][0]["tool"] == "read_file"
+    ctx = ToolContext(cwd=workdir, config=make_config({"brain": ["a:m"]}))
+    ctx.state["agent"] = a
+    out = Usage().run(ctx)
+    assert "chatgpt:gpt-6: 2 çağrı" in out.text and out.card["kind"] == "usage"
+    del agent
+
+
+DIFF = """diff --git a/a.py b/a.py
+--- a/a.py
++++ b/a.py
+@@ -10,4 +10,5 @@ def f():
+ x = 1
+-y = 2
++y = 3
++z = 4
+ return x
+"""
+
+
+def test_diff_lines_and_finding_anchoring():
+    lines = review.diff_lines(DIFF)
+    assert lines["a.py"] == {10, 11, 12, 13}
+    f = review.Finding("a.py", 15, "high", "t", "d")
+    assert review._anchor(f, lines) == 13  # 3 satır içindeki en yakın fark satırı
+    assert review._anchor(review.Finding("a.py", 40, "high", "t", "d"), lines) == 0
+    assert review._anchor(review.Finding("b.py", 11, "high", "t", "d"), lines) == 0
+
+
+def test_post_puts_inline_and_outside_findings_correctly():
+    sent = []
+
+    class API:
+        def post(self, path, body):
+            sent.append(body)
+            return {"html_url": "u"}
+
+    fs = [review.Finding("a.py", 11, "high", "satırda", "d"), review.Finding("c.py", 3, "low", "dışarıda", "d")]
+    assert review.post(API(), "o/r", 1, "sha", fs, DIFF) == "u"
+    body = sent[0]
+    assert [c["path"] for c in body["comments"]] == ["a.py"] and body["comments"][0]["line"] == 11
+    assert "Farkın dışında kalan" in body["body"] and "dışarıda" in body["body"] and "1 satır yorumu" in body["body"]
