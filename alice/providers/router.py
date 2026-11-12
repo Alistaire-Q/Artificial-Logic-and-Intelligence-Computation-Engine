@@ -503,9 +503,12 @@ class Router:
             if pc.auth == "chatgpt":
                 from alice.providers.chatgpt import limit_note, models_error, models_state
 
+                # Önce durum, sonra hata okunur: arka plandaki liste isteği iki okuma arasında biterse (önceden hata
+                # önce okunuyordu) ikisi de boş görünüp menü ne yüklendiğini ne de hatayı gösteriyordu.
+                state = models_state() if pc.enabled and not rows else ""
                 entry.update(key="ChatGPT girişi", note=limit_note() if pc.enabled else "",
                              error=models_error() if pc.enabled and not rows else "",
-                             loading=pc.enabled and not rows and models_state() == "loading")
+                             loading=state == "loading")
             out.append(entry)
         return self._split_proxy(out, hidden)
 
