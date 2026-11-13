@@ -387,7 +387,13 @@ class Agent:
             return [t.spec() for t in self.tools.values()]
         from alice.tools.groups import visible_tools
 
-        return [t.spec() for t in visible_tools(self.tools, self.ctx.state.setdefault("tool_groups", set()))]
+        tools = visible_tools(self.tools, self.ctx.state.setdefault("tool_groups", set()))
+        # Sıra sabit: önce gönderilenler aynı yerde kalır, yeni açılan grubun araçları sona eklenir. Araç listesi
+        # isteğin başında; ortasına araç girince prompt önbelleği listenin oradan sonrası için boşa çıkıyordu.
+        order: list[str] = self.__dict__.setdefault("_spec_order", [])
+        by = {t.name: t for t in tools}
+        order.extend(n for n in by if n not in order)
+        return [by[n].spec() for n in order if n in by]
 
     def _enable_groups_for(self, text: str = "", tool_names: tuple[str, ...] = ()) -> None:
         from alice.tools.groups import group_of, groups_for_text
@@ -412,7 +418,10 @@ class Agent:
             from alice import projects
 
             scanned = projects.load()[0] if projects.enabled(self.config) else 0.0
-            version = (mem.version, scanned, str(self.ctx.cwd), mem.notes_stamp(self.ctx.cwd))
+            # Sistem istemi isteğin en başında: değişirse prompt önbelleği baştan kurulur. Eskiden her tur kaydedilince
+            # (mem.version) profil yeniden yazılıyor, her yeni mesajda önbellek sıfırlanıyordu. Artık yalnız notlar,
+            # klasör ya da gün değişince yenilenir; önceki turlar zaten hatırlama (recall) ile gelir.
+            version = (scanned, str(self.ctx.cwd), mem.notes_stamp(self.ctx.cwd), time.strftime("%Y-%m-%d"))
             if force or version != self._memory_version:
                 from alice.prompts import with_memory
 
@@ -451,7 +460,8 @@ class Agent:
 
         from alice import buddy
 
-        if not buddy.settings(self.config).get("enabled", True) or self.is_child or self.role == "voice"                 or self.memory_channel in ("ses", "telefon", "voice", "call"):
+        quiet = self.is_child or self.role == "voice" or self.memory_channel in ("ses", "telefon", "voice", "call")
+        if not buddy.settings(self.config).get("enabled", True) or quiet:
             return  # sesli konuşmada ve alt ajanlarda arkadaş yorum yapmaz (gereksiz model çağrısı)
 
         def work() -> None:

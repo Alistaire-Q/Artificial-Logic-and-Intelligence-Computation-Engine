@@ -118,9 +118,11 @@ management:
   allow-remote: false
   secret-key: "{keys['management_key']}"
 
-# Birden çok hesap: istekler hesaplar arasında sırayla paylaştırılır; biri limite takılınca sıradakine geçilir.
+# Birden çok hesap: konuşmalar hesaplar arasında sırayla paylaştırılır; biri limite takılınca sıradakine geçilir.
+# session-affinity: aynı konuşma aynı hesapta kalır (her hesabın prompt önbelleği ayrı; yoksa önbellek hep soğuk).
 routing:
   strategy: "round-robin"
+  session-affinity: true
 
 access:
   api-keys:

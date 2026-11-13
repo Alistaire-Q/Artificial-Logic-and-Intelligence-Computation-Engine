@@ -384,3 +384,22 @@ def test_allowed_call_resets_denial_streak(workdir):
            tool_call("write_file", {"path": "c.txt", "content": "a"}, "w3"), "tamam"]
     agent, provs, _ = make_agent(seq, workdir, mode="plan")
     assert agent.run_turn("dene") == "tamam"
+
+
+def test_request_prefix_stays_identical_for_prompt_cache(workdir):
+    """Önbellek isteğin başından itibaren eşleşir: sistem istemi ve araç listesi turlar boyunca aynı kalmalı."""
+    from alice.memory import LongMemory
+
+    agent, provs, _ = make_agent(["bir", tool_call("windows", {"action": "list"}), "iki", "üç"], workdir)
+    agent.memory = LongMemory(":memory:", {})
+    agent.run_turn("selam")
+    system1 = agent.messages[0]["content"]
+    names1 = [s["function"]["name"] for s in provs["a"].calls[-1]["tools"]]
+    agent.run_turn("pencereleri listele")  # masaüstü grubu açılır: yeni araçlar sona eklenmeli
+    agent.run_turn("teşekkürler")
+    assert agent.messages[0]["content"] == system1  # konuşma kaydı sistem istemini değiştirmez
+    names3 = [s["function"]["name"] for s in provs["a"].calls[-1]["tools"]]
+    assert names3[:len(names1)] == names1 and len(names3) > len(names1)
+    agent.memory.remember("Kullanıcı kısa cevap sever.", "preference")
+    agent.refresh_memory()
+    assert agent.messages[0]["content"] != system1  # not değişince yenilenir

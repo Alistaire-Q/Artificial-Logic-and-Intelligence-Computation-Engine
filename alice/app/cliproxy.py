@@ -179,6 +179,28 @@ def running() -> bool:
         return False
 
 
+def ensure_affinity(path: Any) -> bool:
+    """Eski kurulumların config.yaml'ına routing.session-affinity ekle: aynı konuşma aynı hesapta kalsın. Hesaplar
+    sırayla dağıtılınca her istek başka hesaba (başka önbelleğe) gidiyor, Gemini'de önbellek isabeti %40'ta
+    kalıyordu. Kullanıcı açıkça false yazdıysa dokunulmaz. Değiştiyse True."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if "session-affinity" in text:
+        return False
+    m = re.search(r"(?m)^routing:[ \t]*\n", text)
+    if m:
+        new = text[:m.end()] + "  session-affinity: true\n" + text[m.end():]
+    else:
+        new = text.rstrip("\n") + "\nrouting:\n  session-affinity: true\n"
+    try:
+        path.write_text(new, encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
 def start(wait_seconds: float = 8.0) -> dict[str, Any]:
     """Proxy kapalıysa arka planda (ALICE'den bağımsız) başlat ve uç cevap verene kadar bekle."""
     global _last_start
@@ -197,6 +219,7 @@ def start(wait_seconds: float = 8.0) -> dict[str, Any]:
         exe = s["dir"] / binary_name()
         if not exe.exists():
             return {"ok": False, "error": f"{binary_name()} bulunamadı"}
+        ensure_affinity(s["dir"] / "config.yaml")
         try:
             log = open(s["dir"] / "server.out.log", "ab")  # noqa: SIM115 - çocuk süreç yazacak
         except OSError:
