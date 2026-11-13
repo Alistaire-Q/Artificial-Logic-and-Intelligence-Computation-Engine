@@ -177,6 +177,10 @@ class Schedule(Tool):
                  "true ver, cron'a tam dakika/saat/gün/ay yaz. Çalışınca kendiliğinden silinir; tekrarlanan işlerde "
                  "false (varsayılan)."},
         "notify": {"type": "boolean", "description": "Bitince sonucu bildir. Varsayılan true."},
+        "project": {"type": "string", "description": "add: o saatte prompt yerine bu proje şablonunu otonom proje "
+                    "olarak başlat ('her pazartesi bağımlılık güncelleme projesini çalıştır'). Şablonlar Projeler "
+                    "sayfasında kaydedilir. prompt verilirse hedefe ek not olur."},
+        "cwd": {"type": "string", "description": "project: çalışma klasörü; boş: şablondaki."},
     }, ["action"])
     risk = DANGER
 
@@ -196,18 +200,26 @@ class Schedule(Tool):
 
     def run(self, ctx: ToolContext, action: str, id: str | None = None, cron: str | None = None,
             prompt: str | None = None, description: str = "", catch_up: bool = True, notify: bool = True,
-            once: bool = False) -> ToolResult:
+            once: bool = False, project: str = "", cwd: str = "") -> ToolResult:
         from alice.core.schedule import ScheduledTask, TaskStore
 
         ts = TaskStore()
         if action == "list":
             return ToolResult("\n".join(t.summary() for t in ts.tasks) or "zamanlanmış görev yok")
         if action == "add":
-            if not cron or not prompt:
-                raise ToolError("add için cron ve prompt gerekli")
+            if not cron or not (prompt or project):
+                raise ToolError("add için cron ve prompt (ya da project) gerekli")
+            if project:
+                from alice.team_store import list_templates
+
+                names = [str(t.get("name", "")) for t in list_templates()]
+                if project.lower() not in [n.lower() for n in names]:
+                    raise ToolError(f"'{project}' adında proje şablonu yok. Var olanlar: {', '.join(names) or '(yok)'}"
+                                    ". Şablon, Projeler sayfasında bir projenin menüsünden kaydedilir.")
             try:
-                task = ScheduledTask(cron=cron, prompt=prompt, description=description, catch_up=catch_up,
-                                     notify=notify, once=bool(once), created=time.time())
+                task = ScheduledTask(cron=cron, prompt=prompt or "", description=description, catch_up=catch_up,
+                                     notify=notify, once=bool(once), created=time.time(), project=project or "",
+                                     cwd=str(ctx.resolve(cwd)) if cwd else "")
             except ValueError as e:
                 raise ToolError(str(e)) from e
             ts.add(task)

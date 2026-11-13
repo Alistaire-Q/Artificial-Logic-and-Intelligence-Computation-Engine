@@ -28,6 +28,7 @@ Yerler (sonra gelen öncekini ezer): ~/.alice/..., <proje>/.claude/..., <proje>/
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -135,6 +136,49 @@ def load_agents(cwd: Path | None = None) -> dict[str, AgentDef]:
     return out
 
 
+_AGENT_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
+
+
+def save_agent(name: str, description: str, prompt: str, tools: list[str] | None = None, model: str = "",
+               max_steps: int = 40, where: str = "user", cwd: Path | None = None) -> AgentDef:
+    """Özel alt ajan tanımını yaz (varsa günceller). where=user: ~/.alice/agents (her projede);
+    where=project: <proje>/.alice/agents (yalnız o projede; repoyla paylaşılabilir)."""
+    name = (name or "").strip().lower().replace(" ", "-")
+    if not _AGENT_NAME.match(name):
+        raise ValueError("ad küçük harf, rakam, - ve _ olmalı (en çok 40), ör. 'test-yazici'")
+    if not (description or "").strip() or not (prompt or "").strip():
+        raise ValueError("açıklama ve talimat (prompt) gerekli")
+    existing = load_agents(cwd).get(name)
+    if where == "project":
+        if cwd is None:
+            raise ValueError("proje klasörü yok")
+        folder = Path(cwd) / ".alice" / "agents"
+    else:
+        folder = alice_home() / "agents"
+    path = existing.path if existing and existing.path and existing.path.parent == folder else folder / f"{name}.md"
+    folder.mkdir(parents=True, exist_ok=True)
+    clean_tools = [t.strip() for t in tools or [] if t and t.strip()]
+    steps = max(1, min(int(max_steps or 40), 200))
+    lines = ["---", f"name: {name}", f"description: {' '.join(description.split())}"]
+    if clean_tools:
+        lines.append(f"tools: {', '.join(clean_tools)}")
+    if model.strip():
+        lines.append(f"model: {model.strip()}")
+    lines += [f"max_steps: {steps}", "---", "", prompt.strip(), ""]
+    tmp = path.with_suffix(".md.tmp")
+    tmp.write_text("\n".join(lines), encoding="utf-8")
+    tmp.replace(path)
+    return AgentDef(name, " ".join(description.split()), prompt.strip(), clean_tools, model.strip(), steps, path)
+
+
+def delete_agent(name: str, cwd: Path | None = None) -> Path:
+    adef = load_agents(cwd).get((name or "").strip().lower())
+    if adef is None or adef.path is None:
+        raise ValueError(f"böyle bir alt ajan yok: {name}")
+    adef.path.unlink()
+    return adef.path
+
+
 def agents_note(cwd: Path | None = None) -> str:
     agents = load_agents(cwd)
     if not agents:
@@ -143,8 +187,9 @@ def agents_note(cwd: Path | None = None) -> str:
             + "; ".join(f"{a.name}: {a.description}" for a in list(agents.values())[:20]))
 
 
-def spawn(parent, adef: AgentDef):
-    """Ana ajandan, tanımdaki istem/araç/modelle bir alt ajan üret."""
+def spawn(parent, adef: AgentDef, ctx=None, ui=None):
+    """Ana ajandan, tanımdaki istem/araç/modelle bir alt ajan üret. ctx/ui: alt ajanın kendi bağlamı ve arayüzü
+    (alice/subagents.py); verilmezse ana ajanınkiler."""
     from alice.agent import Agent
 
     tools = list(parent.tools.values())
@@ -154,7 +199,7 @@ def spawn(parent, adef: AgentDef):
                                                               if w.endswith("*"))]
     system = (f"{adef.prompt}\n\n# Environment\n- Working directory: {parent.ctx.cwd}\n"
               "You are a subagent: do the task you are given and reply with the result; the parent agent reads it.")
-    child = Agent(parent.config, parent.router, tools, parent.ctx, parent.permissions, parent.ui,
+    child = Agent(parent.config, parent.router, tools, ctx or parent.ctx, parent.permissions, ui or parent.ui,
                   getattr(parent, "decider", None), system_prompt=system, is_child=True)
     if adef.tools:
         child.tool_specs = lambda: [t.spec() for t in tools]  # seçilen araçlar grup filtresinden bağımsız görünsün

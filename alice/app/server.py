@@ -134,14 +134,16 @@ class AppUI:
                           "is_error": result.is_error, "diff": result.diff, "images": result.images[:4],
                       "files": getattr(result, "files", [])[:10], "card": getattr(result, "card", {}) or {}})
 
-    def ask_permission(self, name: str, summary: str, risk: str) -> str:
+    def ask_permission(self, name: str, summary: str, risk: str, cancelled: Any = None) -> str:
+        """cancelled: soruyu kapatan durdurma (alt ajanın kendi Durdur'u); verilmezse bu sohbetin ajanınki."""
         pid = secrets.token_hex(6)
         ev = threading.Event()
         self._events[pid] = ev
         self.pending[pid] = {"type": "permission", "id": pid, "name": name, "summary": summary, "risk": risk}
         self.publish(self.pending[pid])
+        stop = cancelled or (lambda: self.agent is not None and self.agent.cancel.is_set())
         while not ev.wait(0.25):
-            if self.agent is not None and self.agent.cancel.is_set():
+            if stop():
                 self._answers[pid] = "n"
                 break
         self.pending.pop(pid, None)
@@ -404,11 +406,15 @@ class Chat:
         self.ctx.state["session_id"] = self.sid  # PR takibi olayları kodu yazan bu sohbete geri getirebilsin
         # Arka plandan bu sohbete mesaj (monitor olayları, ayrı oturumun sonucu) ve ayrı oturum başlatma.
         self.ctx.state["deliver"] = lambda text: app.deliver(self.sid, text)
+        self.ctx.state["deliver_to"] = app.deliver  # (sohbet, metin): alt ajan sonucu başlatan sohbete gitsin
         self.ctx.state["sessions"] = SessionsAPI(app, self)
         self.ctx.state["builtin_browser"] = app.builtin_browser  # tarayıcı aracı ve preview bunu kullanır
         attach_memory(self.agent, "uygulama")
+        self.started = time.time()  # oturum süresi (durum çubuğu); kayıtlı sohbette ilk açılışı
+        self._ckpt_sig = (0, 0)
         if messages is not None:
             self.agent.messages = self.agent.messages[:1] + messages
+            self._restore_extra()
             try:  # yeniden açılan sohbette az önce okunan dosyalar yine "okunmuş" sayılsın
                 from alice.tools.files import restore_reads
 
@@ -434,8 +440,52 @@ class Chat:
 
     def save(self) -> None:
         if not self.abandoned:
-            sess.save(self.sid, self.agent.messages, self.ctx.cwd)
+            from alice import subagents
+
+            extra = {**self.agent.export_stats(), "started": self.started,
+                     "subagents": subagents.export(self.ctx)}
+            sess.save(self.sid, self.agent.messages, self.ctx.cwd, extra)
+            cps = self.agent.checkpoints
+            sig = (len(cps), sum(len(v) for v in cps.values()))
+            if sig != self._ckpt_sig:  # dosyaların ilk halleri yalnız değişince yazılır
+                try:
+                    sess.save_checkpoints(self.sid, cps)
+                    self._ckpt_sig = sig
+                except OSError:
+                    pass
             self._title_once()
+
+    def switch_to(self, sid: str, messages: list[dict[str, Any]] | None = None) -> None:
+        """Aynı ajanla başka bir sohbete geç (yeni ya da kayıtlı): önceki sohbetin istatistiği, kullanım dökümü,
+        geri sarma kayıtları ve alt ajanları yenisine taşınmasın."""
+        self.agent.reset()
+        self.agent.stats = {k: 0 for k in self.agent.stats}
+        self.agent.usage_models, self.agent.usage_tools = {}, {}
+        self.agent.checkpoints = {}
+        for k in ("subagents", "subagent_ids"):
+            self.ctx.state.pop(k, None)
+        self.set_sid(sid)
+        self.started = time.time()
+        self._ckpt_sig = (0, 0)
+        if messages is not None:
+            self.agent.messages = self.agent.messages[:1] + messages
+            self._restore_extra()
+
+    def _restore_extra(self) -> None:
+        """Kayıtlı sohbet açılınca: istatistik, kullanım dökümü, alt ajanlar, geri sarma kayıtları ve başlangıç."""
+        from alice import subagents
+
+        try:
+            extra = sess.load_extra(self.sid)
+            self.agent.import_stats(extra)
+            self.started = float(extra.get("started") or self.started)
+            subagents.restore(self.ctx, extra.get("subagents") or [])
+            cps = sess.load_checkpoints(self.sid)
+            if cps:
+                self.agent.checkpoints.update(cps)
+                self._ckpt_sig = (len(cps), sum(len(v) for v in cps.values()))
+        except Exception:  # noqa: BLE001 - eksik bilgi sohbeti açmayı engellemesin
+            pass
 
     def _title_once(self) -> None:
         """İlk kayıtta sohbete ilk istekten bir başlık üret (arka planda, bir kez)."""
@@ -707,8 +757,7 @@ class AppState:
                 return err
             if err is None:  # öndeki boşta: aynı ajanı (ve tarayıcı bağlantısını) kullanmaya devam et
                 self.ctx.state.pop("team", None)  # takım proje olarak çalışmaya devam eder (Projeler sayfası)
-                self.agent.reset()
-                self.chat.set_sid(sess.new_session_id())
+                self.chat.switch_to(sess.new_session_id())
                 return None
             self._swap_in(Chat(self, self.ctx.cwd, self.agent.permissions.mode), old_busy=True)
         return None
@@ -733,8 +782,7 @@ class AppState:
             if err:
                 return False
             if err is None:
-                self.chat.set_sid(sid)
-                self.agent.messages = self.agent.messages[:1] + msgs
+                self.chat.switch_to(sid, msgs)
                 return True
             self._swap_in(Chat(self, self.ctx.cwd, self.agent.permissions.mode, sid=sid, messages=msgs), old_busy=True)
             return True
@@ -838,6 +886,7 @@ class AppState:
             "branch": git_branch(self.ctx.cwd),
             "busy": a.busy or self._queued,
             "session": self.sid,
+            "started": self.chat.started,
             "running": self.running(),
             "pending": [p for ui in self.all_uis() for p in ui.pending.values()],
             "brain_chain": self.router.chain("brain"),
@@ -851,6 +900,46 @@ class AppState:
             "update": self.update.as_dict() if self._update_shown() else None,
             "update_mode": self._update_mode(),
         }
+
+    def subagents_view(self) -> dict[str, Any]:
+        """Ajanlar paneli: öndeki sohbetin alt ajanları ve özel alt ajan tanımları."""
+        from alice import subagents
+        from alice.skills import load_agents
+
+        home = str(alice_home() / "agents")
+        defs = [{"name": a.name, "description": a.description, "prompt": a.prompt, "tools": a.tools, "model": a.model,
+                 "max_steps": a.max_steps, "path": str(a.path or ""),
+                 "where": "user" if a.path is not None and str(a.path).startswith(home) else "project"}
+                for a in load_agents(self.ctx.cwd).values()]
+        return {"subs": subagents.snapshots(self.ctx), "defs": defs, "cwd": str(self.ctx.cwd)}
+
+    def subagents_action(self, path: str, d: dict[str, Any]) -> tuple[dict[str, Any], int]:
+        from alice import skills, subagents
+        from alice.tools.base import ToolError
+
+        try:
+            if path == "/api/subagents/stop":
+                sub = subagents.registry(self.ctx).get(str(d.get("id", "")))
+                if sub is None:
+                    return {"ok": False, "error": "böyle bir alt ajan yok"}, 404
+                return {"ok": subagents.stop(sub)}, 200
+            if path == "/api/subagents/send":
+                text = str(d.get("text", "")).strip()
+                if not text:
+                    return {"ok": False, "error": "mesaj boş"}, 400
+                sub = subagents.resume(self.ctx, str(d.get("id", "")), text, background=True)
+                return {"ok": True, "note": f"{sub.id} devam ediyor; bitince sonucu sohbete gelecek"}, 200
+            if path == "/api/agents/save":
+                a = skills.save_agent(str(d.get("name", "")), str(d.get("description", "")), str(d.get("prompt", "")),
+                                      [str(t) for t in d.get("tools") or []], str(d.get("model", "")),
+                                      int(d.get("max_steps") or 40), str(d.get("where") or "user"), self.ctx.cwd)
+                return {"ok": True, "note": f"{a.name} kaydedildi"}, 200
+            if path == "/api/agents/delete":
+                skills.delete_agent(str(d.get("name", "")), self.ctx.cwd)
+                return {"ok": True, "note": "silindi"}, 200
+        except (ToolError, ValueError, OSError) as e:
+            return {"ok": False, "error": str(e)[:300]}, 400
+        return {"ok": False, "error": "bilinmeyen işlem"}, 404
 
     def pr_panel(self, force: bool = False) -> dict[str, Any]:
         """PR paneli: izlenen PR'lar (canlı durumla) ve bulunulan dalın izlenmeyen açık PR'ı (izlemeye almak için)."""
@@ -1602,7 +1691,7 @@ class AppState:
         lead_thinking = str(d.get("lead_thinking") or "default")
         team = Team(self.ctx, goal, int(self.cfg.agent.get("team_max_parallel", 5)), self.bus.publish, origin="user",
                     review=d.get("review") is not False, council=d.get("council") is not False, lead_model=lead_model,
-                    check=str(d.get("check") or ""),
+                    check=str(d.get("check") or ""), pr=bool(d.get("pr")),
                     lead_thinking=lead_thinking if lead_thinking in THINKING else "default", cwd=cwd)
         team._check_model(lead_model, "yönetici")
         team.plan_council = d.get("plan_council") is not False
@@ -1805,8 +1894,8 @@ class AppState:
 
     def rewind(self, mi: int) -> dict[str, Any]:
         text, restored = self.agent.rewind(mi)
-        try:
-            sess.save(self.sid, self.agent.messages, self.ctx.cwd)
+        try:  # istatistik, alt ajanlar ve geri sarma kayıtları da (extra'sız kayıt onları siliyordu)
+            self.chat.save()
         except OSError:
             pass
         return {"text": text, "restored": restored}
@@ -2079,6 +2168,8 @@ def make_handler(state: AppState):
                 return self._json(state.agent.usage_breakdown())
             if u.path == "/api/prs":
                 return self._json(state.pr_panel(force=(q.get("force") or [""])[0] == "1"))
+            if u.path == "/api/subagents":
+                return self._json(state.subagents_view())
             if u.path in ("/api/browser/frame", "/api/browser/tabs"):
                 from alice.app.builtin_browser import BrowserError
 
@@ -2447,6 +2538,8 @@ def make_handler(state: AppState):
                     ok = revert_change(state.agent.checkpoints, str(d.get("path", "")))
                     return self._json({"ok": ok, "changes": session_changes(state.agent.checkpoints, state.ctx.cwd)},
                                       200 if ok else 404)
+                if p.startswith(("/api/subagents/", "/api/agents/")):
+                    return self._json(*state.subagents_action(p, d))
                 if p.startswith("/api/prs/"):
                     # PR paneli: izlemeye al / bırak, davranış düğmeleri, başarısız CI'ı yeniden çalıştır.
                     from alice import prwatch

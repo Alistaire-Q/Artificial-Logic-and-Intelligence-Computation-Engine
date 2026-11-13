@@ -31,12 +31,13 @@ GROUPS: dict[str, tuple[set[str], str, str]] = {
               r"indirdiğim|indirilen|açtığım|nerede(ydi)?\b|\bpdf|excel|word dosya|belge(yi|si|m)|toparla|"
               r"paylaş|bağlantı(sını)? ver|link(ini)? ver|izin(ler)?|artık sorma|sormadan|\bhook|her (dosya )?düzenleme|"
               r"token|kullanım|nereye gitti|harcadı"),
-    "plan": ({"todo_write", "next_step", "monitor", "session", "run_plan", "task_control", "task", "process_output",
-              "process_stop", "process_wait", "skill", "exit_plan_mode"},
+    "plan": ({"todo_write", "next_step", "monitor", "session", "run_plan", "task_control", "task", "subagents",
+              "agent_defs", "process_output", "process_stop", "process_wait", "skill", "exit_plan_mode"},
              "çok adımlı iş planı ve yapılacaklar listesi, tur sonu özet kutusu, alt ajan, ayrı sohbet başlatma/"
              "devretme, arka planda izleyip olay olunca dönme, arka plandaki komutun çıktısı/bekleme/durdurma, "
              "beceriler, plan onayı",
-             r"önce .* sonra|ardından|sonra da|adım adım|planla|alt ajan|arka planda|background|sunucu(yu)? başlat|"
+             r"önce .* sonra|ardından|sonra da|adım adım|planla|alt ajan|ajan tanımla|ajanlar(ım)?\b|arka planda|"
+             r"background|sunucu(yu)? başlat|"
              r"dev server|npm run|\bwatch\b|beceri|skill|bitince|bitti(ğ|g)inde|haber ver|izle|ayrı (sohbet|oturum)|"
              r"paralel|devret"),
     "desktop": ({"computer", "computer_task", "ui_elements", "ui_act", "clipboard", "reflex", "app", "windows", "game"},

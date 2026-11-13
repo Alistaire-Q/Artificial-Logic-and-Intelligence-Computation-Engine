@@ -225,6 +225,7 @@ class Core:
         self._prwatch_thread: threading.Thread | None = None
         # Çekirdekteki uygulama bağlanınca: (sohbet kimliği, mesaj) -> "" ya da neden verilemediği (alice/core/cli.py).
         self.chat_delivery: Callable[[str, str], str] | None = None
+        self.project_starter: Callable[[dict[str, Any]], str] | None = None  # zamanlanmış proje (uygulama verir)
         # Uzun yokluktan dönünce karşılama (alice/presence.py); ses başlarsa greeter.voice bağlanır.
         from alice.presence import Greeter
 
@@ -586,8 +587,13 @@ class Core:
     def _run_task(self, task: ScheduledTask, late: bool) -> None:
         try:
             try:
-                result = self.run_agent(task.prompt)  # type: ignore[misc]
-                sev = "info"
+                if task.project:
+                    from alice.core.schedule import start_project
+
+                    result = start_project(task, self.project_starter)
+                else:
+                    result = self.run_agent(task.prompt)  # type: ignore[misc]
+                sev = "warn" if result.startswith("proje başlatılamadı") else "info"
             except Exception as e:
                 result, sev = f"görev başarısız: {e}", "warn"
             with self._lock:

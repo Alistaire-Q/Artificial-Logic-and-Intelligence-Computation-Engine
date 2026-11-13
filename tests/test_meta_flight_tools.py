@@ -65,20 +65,37 @@ def test_memory_add_requires_note(ctx, note):
 
 class FakeChild:
     def __init__(self, answer):
+        import threading
+
         self.answer = answer
         self.calls = []
+        self.cancel = threading.Event()
+        self.messages = [{"role": "system", "content": "sys"}]
+        self.ui = None
 
     def run_turn(self, prompt, max_steps=None):
         self.calls.append((prompt, max_steps))
         return self.answer
+
+    def stop(self):
+        self.cancel.set()
 
 
 class FakeParent:
     def __init__(self, answer):
         self.child = FakeChild(answer)
 
-    def spawn_child(self):
-        return self.child
+
+@pytest.fixture
+def fake_child(monkeypatch):
+    """Alt ajan kurulumu (alice/subagents.py) sahte çocukla: Task aracının kendi akışı sınanır."""
+    from alice import subagents
+
+    def build(parent, kind, ui, ctx):
+        parent.child.ui = ui
+        return parent.child, 40
+
+    monkeypatch.setattr(subagents, "build_child", build)
 
 
 def test_task_requires_parent_agent(ctx):
@@ -86,20 +103,17 @@ def test_task_requires_parent_agent(ctx):
         meta.Task().run(ctx, prompt="x")
 
 
-def test_task_runs_child_and_emits(ctx):
-    events = []
+def test_task_runs_child_and_reports(ctx, fake_child):
     parent = FakeParent("sonuç")
     ctx.state["agent"] = parent
-    ctx.emit = events.append
     r = meta.Task().run(ctx, prompt="ara", max_steps=7)
-    assert r.text == "sonuç"
+    assert r.text.startswith("[alt ajan a1") and "sonuç" in r.text and "task id=a1" in r.text
     assert parent.child.calls == [("ara", 7)]
-    assert events == ["alt ajan başladı", "alt ajan bitti"]
 
 
-def test_task_empty_answer(ctx):
+def test_task_empty_answer(ctx, fake_child):
     ctx.state["agent"] = FakeParent("")
-    assert meta.Task().run(ctx, prompt="x").text == "(alt ajan boş cevap döndürdü)"
+    assert "(alt ajan boş cevap döndürdü)" in meta.Task().run(ctx, prompt="x").text
 
 
 # ================================================================== meta: Reflex

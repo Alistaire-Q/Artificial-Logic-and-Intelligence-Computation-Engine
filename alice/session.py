@@ -33,11 +33,15 @@ def new_session_id() -> str:
     return sid
 
 
-def save(session_id: str, messages: list[dict[str, Any]], cwd: Path) -> Path:
+def save(session_id: str, messages: list[dict[str, Any]], cwd: Path, extra: dict[str, Any] | None = None) -> Path:
+    """extra: mesajlar dışında yeniden açılışta geri kurulacak sohbet bilgisi (istatistik, kullanım dökümü, alt
+    ajanlar, oturumun başlangıcı). Uygulama kapanıp açılınca bunlar sıfırlanıyordu."""
     path = sessions_dir() / f"{session_id}.json"
     # Görüntüler diske yazılmaz, oturum dosyaları küçük kalsın.
     body = {"cwd": str(cwd), "saved": datetime.now().isoformat(timespec="seconds"),
             "messages": strip_images(messages[1:])}
+    if extra:
+        body["extra"] = extra
     # Önce geçici dosyaya yaz: her adımda kaydederken yarıda kalan bir yazma oturumu bozmasın.
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(body, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -173,6 +177,61 @@ def load(session_id: str | None = None) -> tuple[str, list[dict[str, Any]]] | No
             continue
         return f.stem, data.get("messages", [])
     return None
+
+
+def load_extra(session_id: str) -> dict[str, Any]:
+    try:
+        data = json.loads((sessions_dir() / f"{session_id}.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    extra = data.get("extra")
+    return extra if isinstance(extra, dict) else {}
+
+
+# Geri sarma ve Değişiklikler sekmesi için dosyaların ilk halleri. Oturum dosyasından ayrı tutulur: büyük olabilir ve
+# her adımda değil yalnız değişince yazılır. Sonek .json değil: oturumları listeleyen "*.json" taramasına girmesin.
+CHECKPOINT_FILE_MAX = 2_000_000  # bundan büyük dosyanın ilk hali saklanmaz (o dosya yeniden açılışta geri alınamaz)
+CHECKPOINT_TOTAL_MAX = 40_000_000
+
+
+def checkpoints_path(session_id: str) -> Path:
+    return sessions_dir() / f"{session_id}.checkpoints"
+
+
+def save_checkpoints(session_id: str, checkpoints: dict[int, dict[str, bytes | None]]) -> None:
+    import base64
+
+    out: dict[str, dict[str, str | None]] = {}
+    total = 0
+    for idx in sorted(list(checkpoints)):  # alt ajanlar aynı anda yazabilir: kopyalar üzerinde dolaş
+        row = {}
+        for path, data in list(checkpoints[idx].items()):
+            if data is not None and (len(data) > CHECKPOINT_FILE_MAX or total + len(data) > CHECKPOINT_TOTAL_MAX):
+                continue
+            total += len(data or b"")
+            row[path] = None if data is None else base64.b64encode(data).decode("ascii")
+        if row:
+            out[str(idx)] = row
+    p = checkpoints_path(session_id)
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(out), encoding="utf-8")
+    tmp.replace(p)
+
+
+def load_checkpoints(session_id: str) -> dict[int, dict[str, bytes | None]]:
+    import base64
+
+    try:
+        raw = json.loads(checkpoints_path(session_id).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    out: dict[int, dict[str, bytes | None]] = {}
+    for k, row in raw.items():
+        try:
+            out[int(k)] = {p: (None if v is None else base64.b64decode(v)) for p, v in row.items()}
+        except (ValueError, TypeError):
+            continue
+    return out
 
 
 def saved_cwd(session_id: str) -> Path | None:

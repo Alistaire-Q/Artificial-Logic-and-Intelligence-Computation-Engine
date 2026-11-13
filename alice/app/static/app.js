@@ -1075,6 +1075,8 @@ async function checkUpdate() {
 function applyStatus(s) {
   Object.assign(S.status, s);
   const st = S.status;
+  // Oturum süresi sohbetin ilk açılışından sayılır (sayfa yenilenince ya da uygulama yeniden açılınca sıfırlanmasın).
+  if (s.started) S.started = s.started * 1000;
   if ("team" in s) renderTeam(s.team);
   if (st.cwd !== undefined) {
     // Üst çubukta sadece klasörün adı; tam yol üzerine gelince.

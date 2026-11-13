@@ -10,6 +10,7 @@ const handlers = {
   team: onTeamEvent,
   team_live: onTeamLive,
   project_note: onProjectNote,
+  subagent: onSubagentEvent,
   user: (ev) => addUser(ev.text, ev.mi, ev.images),
   busy: (ev) => { S.status.busy = ev.value; setBusy(ev.value); if (!ev.value) loadSessions(); },
   stream_start: () => { if (!S.cur) showWorking("Düşünüyor"); },

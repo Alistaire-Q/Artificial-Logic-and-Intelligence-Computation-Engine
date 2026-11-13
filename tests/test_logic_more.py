@@ -475,7 +475,7 @@ def test_task_control(tmp_path):
 
 
 class _Team:
-    def __init__(self, ctx, goal, max_parallel, publish, review, council):
+    def __init__(self, ctx, goal, max_parallel, publish, review, council, pr=False):
         self.id = f"p{len(_Team.made) + 1}"
         self.kw = dict(goal=goal, max_parallel=max_parallel, review=review, council=council)
         self.specs: list[dict] = []
