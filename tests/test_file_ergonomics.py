@@ -182,3 +182,15 @@ def test_read_file_description_documents_symbol():
 def test_symbol_param_documented_in_schema():
     props = ReadFile().parameters["properties"]
     assert "symbol" in props and len(props["symbol"]["description"]) >= 8
+
+
+def test_utf16_text_file_reads_and_edit_keeps_encoding(ctx, workdir):
+    # PowerShell `>` UTF-16 yazar: binary sanılmamalı, düzenleme kodlamayı korumalı.
+    f = workdir / "out.txt"
+    f.write_bytes("ışık açık\r\nikinci satır\r\n".encode("utf-16"))
+    out = ReadFile().run(ctx, path="out.txt").text
+    assert "ışık açık" in out and "ikinci satır" in out
+    EditFile().run(ctx, path="out.txt", old_string="ikinci", new_string="2.")
+    raw = f.read_bytes()
+    assert raw[:2] in (b"\xff\xfe", b"\xfe\xff")
+    assert raw.decode("utf-16") == "ışık açık\r\n2. satır\r\n"

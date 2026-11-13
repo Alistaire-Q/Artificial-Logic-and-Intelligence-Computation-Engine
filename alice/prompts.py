@@ -105,7 +105,10 @@ def build_system_prompt(cwd: Path, personality: bool = True) -> str:
         os_name = f"Windows {platform.version()} ({platform.machine()})"
     shell = shell_name()
     if shell == "powershell":
-        shell += " (Windows PowerShell 5.1: no `&&`/`||`; separate commands with `;`, use `if ($?) { ... }`)"
+        shell += (" (Windows PowerShell 5.1: no `&&`/`||`; separate commands with `;`, use `if ($?) { ... }`. "
+                  "A pipeline stage can't start with a `[Type]::Method(...)` expression — put it in a variable "
+                  "first: `$x = gh api ...; [Convert]::FromBase64String($x)`. `python` is often not on PATH; use "
+                  "`py` or the full path.)")
     from alice.guard import PROMPT_RULE
 
     text = SYSTEM_PROMPT.format(os=os_name, shell=shell, cwd=cwd, date=datetime.now().strftime("%Y-%m-%d %A %H:%M"),
