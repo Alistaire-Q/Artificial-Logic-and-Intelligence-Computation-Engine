@@ -84,26 +84,25 @@ def test_embedder_posts_and_backs_off():
 
 def test_semantic_search_finds_without_common_words():
     m = LongMemory(":memory:", {}, embedder=FakeEmbedder())
-    m.remember("Kullanıcı Unity'de bir FPS yapıyor.", "fact")
-    m.remember("Kullanıcı kahveyi şekersiz içer.", "preference")
+    now = time.time()
+    m.add_summary(now - 600, now - 500, "Kullanıcı Unity'de bir FPS yapıyor.")
+    m.add_summary(now - 400, now - 300, "Kullanıcı kahveyi şekersiz içer.")
     m.index_pending()
     assert m.db.execute("SELECT COUNT(*) FROM vectors").fetchone()[0] == 2
     hits = m.search("geliştirdiğim şey neydi")
     assert hits and "FPS" in hits[0].item.text
     plain = LongMemory(":memory:", {})
-    plain.remember("Kullanıcı Unity'de bir FPS yapıyor.", "fact")
+    plain.add_summary(now - 600, now - 500, "Kullanıcı Unity'de bir FPS yapıyor.")
     assert plain.search("geliştirdiğim şey neydi") == []  # kelime aramasıyla bulunamıyordu
 
 
-def test_vectors_follow_updates_and_deletes():
-    emb = FakeEmbedder()
-    m = LongMemory(":memory:", {}, embedder=emb)
-    fid, _ = m.remember("Kullanıcı kahve sever.", "preference")
-    m.index_pending()
-    m.update(fid, "Kullanıcı Unity projesiyle uğraşıyor.")
+def test_vectors_follow_deletes():
+    m = LongMemory(":memory:", {}, embedder=FakeEmbedder())
+    now = time.time()
+    sid = m.add_summary(now - 600, now - 500, "Kullanıcı Unity projesiyle uğraşıyor.")
     m.index_pending()
     assert "Unity" in m.search("geliştirdiğim proje")[0].item.text
-    m.forget(fid)
+    m.forget_summary(sid)
     assert m.db.execute("SELECT COUNT(*) FROM vectors").fetchone()[0] == 0
 
 
@@ -133,7 +132,7 @@ def test_digest_summarizes_and_creates_followups():
     assert m.digest() == 1
     assert "matematik" in seen[0] and "FPS" in seen[0]
     assert m.summaries()[0].text.startswith("Matematik sınavına")
-    assert any("FPS" in f.text for f in m.facts())
+    assert m.notes.scan() == []  # özet not yazmaz: kalıcı notlar tur sonu çıkarımından ve Dream'den
     prof = m.profile()
     assert "Earlier conversations" in prof and "Silah sistemine" in prof
     assert "Matematik sınavının" not in prof  # günü gelmedi

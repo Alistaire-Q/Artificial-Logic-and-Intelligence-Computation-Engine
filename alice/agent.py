@@ -357,6 +357,7 @@ class Agent:
         self.on_usage: Any = None  # her model cevabının kullanım bilgisi (token, varsa ücret) buraya da bildirilir
         # Uzun süreli hafıza (alice.memory.LongMemory): oturum kuranlar bağlar; testler ve gözetimsiz görevlerde None.
         self.memory: Any = None
+        self._memory_surfaced: set[str] = set()  # bu sohbette mesaja eklenmiş notlar (tekrar eklenmesin)
         self.memory_channel = ""
         self._memory_version: Any = -1
         # Geri sarma için: kullanıcı mesajının indeksi -> o turda ilk değişen dosyaların eski hali.
@@ -396,11 +397,12 @@ class Agent:
             from alice import projects
 
             scanned = projects.load()[0] if projects.enabled(self.config) else 0.0
-            version = (mem.version, scanned)
+            version = (mem.version, scanned, str(self.ctx.cwd), mem.notes_stamp(self.ctx.cwd))
             if force or version != self._memory_version:
                 from alice.prompts import with_memory
 
-                profile = "\n\n".join(b for b in (mem.profile(), projects.brief(self.config)) if b)
+                profile = "\n\n".join(b for b in (mem.profile(cwd=self.ctx.cwd), projects.brief(self.config))
+                                       if b)
                 self.messages[0]["content"] = with_memory(self.messages[0]["content"], profile)
                 self._memory_version = version
         except Exception:  # noqa: BLE001 - hafıza hatası konuşmayı durdurmasın
@@ -410,7 +412,9 @@ class Agent:
         if self.memory is None or self.is_child:
             return ""
         try:
-            return self.memory.recall(user_text)
+            voice = str(getattr(self, "memory_channel", "") or "").startswith(("ses", "voice", "live"))
+            return self.memory.recall(user_text, cwd=self.ctx.cwd, surfaced=self._memory_surfaced,
+                                      use_model=False if voice or self.role == "voice" else None)
         except Exception:  # noqa: BLE001
             log.debug("hafızadan hatırlama başarısız", exc_info=True)
             return ""
@@ -419,8 +423,9 @@ class Agent:
         if self.memory is None or self.is_child:
             return
         try:
+            wrote = bool(self.ctx.state.pop("memory_wrote", False))
             self.memory.record(user_text, reply, self.memory_channel)
-            self.memory.learn(user_text, reply)
+            self.memory.learn(user_text, reply, cwd=self.ctx.cwd, wrote=wrote)
         except Exception:  # noqa: BLE001
             log.debug("tur hafızaya yazılamadı", exc_info=True)
 

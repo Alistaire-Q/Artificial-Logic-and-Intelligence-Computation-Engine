@@ -1243,19 +1243,36 @@ class AppState:
 
     # ------------------------------------------------------------------ Hafıza sekmesi
     def memory_view(self) -> dict[str, Any]:
-        """Hafızadaki bilgiler (tek tek silinebilir), açık takipler ve eski rolden kalan izler."""
-        from alice.memory import KINDS, OLD_ROLE_RX
+        """Hafızadaki notlar (kapsama göre; açılıp düzenlenebilir, silinebilir), açık takipler, son Dream ve eski
+        rolden kalan izler."""
+        from alice.memdir import TYPE_TR, age_text
+        from alice.memory import OLD_ROLE_RX
 
         mem = self.agent.memory
         if mem is None:
-            return {"enabled": False, "facts": [], "followups": [], "old_role": {}, "text": ""}
+            return {"enabled": False, "books": [], "followups": [], "old_role": {}, "text": ""}
         old = mem.old_role()
+        cwd = getattr(self.agent.ctx, "cwd", None)
+        roots = {b.root for b in mem.books(cwd)}
+        books = mem.all_books() + [b for b in mem.books(cwd) if b.root not in {x.root for x in mem.all_books()}]
+        out = []
+        for b in books:
+            notes = b.scan()
+            out.append({
+                "scope": b.scope, "root": str(b.root), "current": b.root in roots,
+                "label": "Genel" if b.scope == "genel" else b.root.parent.name,
+                "notes": [{"key": n.key, "name": n.name, "title": n.title, "type": n.type,
+                           "type_tr": TYPE_TR.get(n.type, n.type or "?"), "description": n.description,
+                           "body": n.body, "age": age_text(n.modified), "source": n.source,
+                           "old": bool(OLD_ROLE_RX.search(f"{n.description}\n{n.body}"))} for n in notes],
+                "backups": b.backups()[:5], "last_dream": b.last_dream(),
+            })
         return {
             "enabled": True,
-            "facts": [{"id": f.id, "kind": KINDS.get(f.kind, f.kind), "text": f.text,
-                       "old": bool(OLD_ROLE_RX.search(f.text))} for f in mem.facts()],
+            "books": out,
             "followups": [{"id": f.id, "text": f.line()} for f in mem.followups()],
-            "portrait": mem._meta("portrait") or "",
+            "dream": {"summary": mem._meta("dream_summary") or "", "at": float(mem._meta("dream_at") or 0),
+                      "enabled": mem.dream_enabled, "hours": mem.dream_hours, "sessions": mem.dream_sessions},
             "old_role": {"facts": len(old["facts"]), "summaries": len(old["summaries"]),
                          "episodes": len(old["episodes"]),
                          "examples": [e.reply[:140] for e in old["episodes"][-3:]] + [s.text[:140] for s in old["summaries"][-2:]]},
@@ -1266,18 +1283,39 @@ class AppState:
         mem = self.agent.memory
         if mem is None:
             return {"ok": False, "error": "hafıza kapalı"}
-        if action == "tidy":  # Ayarlar → Hafıza → Toparla: günlük toparlamayı şimdi çalıştır
+        cwd = getattr(self.agent.ctx, "cwd", None)
+        if action in ("tidy", "dream"):  # Ayarlar → Hafıza → Dream: toparlamayı şimdi çalıştır
             try:
-                done = mem.consolidate()
+                done = mem.dream(force=True, cwd=cwd)
             except Exception as e:  # noqa: BLE001 - model yok/kota
                 return {"ok": False, "error": f"toparlanamadı: {e}"}
             return {"ok": True, "done": done}
         if action == "forget":
-            try:
-                gone = mem.forget(int(d.get("id", -1)))
-            except (TypeError, ValueError):
-                gone = None
+            gone = mem.delete_note(str(d.get("key") or d.get("id") or ""), cwd)
             return {"ok": gone is not None}
+        if action == "save":
+            from alice.memdir import MemoryFull
+
+            key = str(d.get("key") or "")
+            b, n = mem.find_note(key, cwd) if key else (None, None)
+            if n is None:
+                return {"ok": False, "error": "not bulunamadı"}
+            try:
+                b.save(n.name, str(d.get("description") or n.description), str(d.get("type") or n.type),
+                       str(d.get("body") or ""), title=n.title, source="kullanıcı")
+            except (MemoryFull, ValueError) as e:
+                return {"ok": False, "error": str(e)}
+            mem._bump()
+            return {"ok": True}
+        if action == "restore":
+            b, _ = (mem.notes, None)
+            for x in mem.all_books():
+                if str(x.root) == str(d.get("root") or ""):
+                    b = x
+            try:
+                return {"ok": True, "count": b.restore(str(d.get("backup") or ""))}
+            except ValueError as e:
+                return {"ok": False, "error": str(e)}
         if action == "done":
             try:
                 return {"ok": mem.done_followup(int(d.get("id", -1))) is not None}

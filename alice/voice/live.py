@@ -1690,7 +1690,7 @@ class LiveSession:
     def _recall(self, text: str) -> str:
         mem = self._memory()
         try:
-            return mem.recall(text) if mem is not None else ""
+            return mem.recall(text, use_model=False) if mem is not None else ""  # sesli: gecikme olmasın
         except Exception:  # noqa: BLE001
             return ""
 

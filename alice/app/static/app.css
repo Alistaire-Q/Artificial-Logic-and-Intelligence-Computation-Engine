@@ -1628,6 +1628,12 @@ details.cc[open] > summary.cc-head::after { transform: rotate(45deg); }
 .mem-portrait { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--panel); padding: var(--s3) var(--s4); font-size: 13.5px; line-height: 1.6; }
 .mem-portrait > :first-child { margin-top: 0; } .mem-portrait > :last-child { margin-bottom: 0; }
 .mem-portrait p { color: var(--text); }
+.mem-note .l { min-width: 0; }
+.mem-note .mem-meta { color: var(--muted); }
+.mem-body { display: flex; flex-direction: column; gap: var(--s2); margin-top: var(--s2); }
+.mem-body[hidden] { display: none; }
+.mem-body textarea { width: 100%; font-family: var(--mono); font-size: 12.5px; line-height: 1.5; resize: vertical; }
+.mem-body .btn { align-self: flex-start; }
 .tool-row .meta .dur { color: var(--faint); }
 
 /* ------------------------------------------------- tarayıcı kontrolleri */

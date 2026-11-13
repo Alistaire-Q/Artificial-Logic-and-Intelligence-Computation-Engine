@@ -47,10 +47,10 @@ def test_memory_read_empty_then_add_and_read(ctx):
     assert m.risk_for({"action": "add"}) == READ  # hafıza yazımı onaysız
     assert m.risk_for({"action": "forget"}) == WRITE
     assert m.run(ctx, action="read").text == "(hafıza boş)"
-    assert m.run(ctx, action="add", note="  kullanıcı Türkçe konuşur \n").text.startswith("kaydedildi #")
+    assert m.run(ctx, action="add", note="  kullanıcı Türkçe konuşur \n").text.startswith("kaydedildi: ")
     m.run(ctx, action="add", note="en sevdiği uçak F-16")
     text = m.run(ctx, action="read").text
-    assert text.startswith("# Bilgiler") and "kullanıcı Türkçe konuşur" in text and "F-16" in text
+    assert text.startswith("# Notlar") and "kullanıcı Türkçe konuşur" in text and "F-16" in text
 
 
 @pytest.mark.parametrize("note", [None, ""])

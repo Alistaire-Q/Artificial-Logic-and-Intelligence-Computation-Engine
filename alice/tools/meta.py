@@ -35,32 +35,39 @@ class TodoWrite(Tool):
 
 class Memory(Tool):
     name = "memory"
-    description = ("Oturumlar arası kalıcı hafıza. Kullanıcı hakkında ileride işe yarayacak kalıcı bilgiyi kaydet: "
-                   "tercihleri, kişisel bilgileri, çevresindeki kişiler, alışkanlıkları, ALICE'ten nasıl davranmasını "
-                   "istediği ('bunu hatırla', 'bundan sonra hep...').\n"
-                   "- Bilgi değişince yenisini eklemek yerine eskisini update ile güncelle; yanlışsa forget.\n"
-                   "- Geçmiş konuşmalar her mesaja eklenmez; kullanıcı geçmişe değinince ('geçen sefer', 'dün "
-                   "konuştuğumuz', 'hani şu proje') cevaplamadan önce bak: konuya göre search_chats (query), zamana "
-                   "göre recent_chats (n, after/before: YYYY-MM-DD; 'dün ne yaptık' = after dün, before bugün). "
-                   "Bulamazsan uydurma, bulamadığını söyle. Kalıcı bilgilerde arama: search.\n"
-                   "- Takip: ileride sorulacak/hatırlatılacak bir şey için followup (ör. sınav yarın: due=sınavdan sonraki "
-                   "gün, 'Sınavın nasıl geçtiğini sor'); profilde 'Follow-ups due' altındakini sorunca done.\n"
-                   "- Profil zaten sistem isteminde; sadece okumak için çağırma. Geçici şeyleri (o anki iş) kaydetme; "
-                   "not için notes aracı.")
+    description = ("Kalıcı hafıza: kullanıcıya ve işlerine dair NOTLAR (her biri ayrı dosya; kurallar ve MEMORY.md "
+                   "dizini sistem isteminde) ve geçmiş konuşmalar.\n"
+                   "- save: not yaz ya da aynı adla güncelle (name, type, description, content; scope=proje yalnız bu "
+                   "depoya özgü olanlar). Benzer not varsa onu güncelle. 'Hatırla' denince hemen save, 'unut' "
+                   "denince delete.\n"
+                   "- read: name ile notun tamamı (dizindeki bir not işe yarayacaksa oku); name yoksa hepsi.\n"
+                   "- Kullanıcı geçmişe değinince ('geçen sefer', 'dün konuştuğumuz') önce bak: search_chats (konu), "
+                   "recent_chats (zaman, after/before). Bulamazsan uydurma.\n"
+                   "- log: uzun işte not etmeye değeri bugünün günlüğüne ekle. dream: hafızayı şimdi toparla. "
+                   "restore: Dream yedeğine dön.\n"
+                   "- followup: ileride sorulacak/hatırlatılacak şey (due); sorunca done.")
     parameters = obj({
-        "action": {"type": "string", "enum": ["read", "add", "update", "forget", "search", "search_chats",
-                                              "recent_chats", "followup", "followups", "done"],
-                   "description": "read: hepsini listele | add: note'u kaydet | update: id'li bilgiyi note ile değiştir "
-                   "| forget: id'li ya da query'ye uyan bilgiyi sil | search: query ile ara | search_chats: geçmiş "
-                   "konuşmalarda query ile ara | recent_chats: son n konuşma (after/before ile aralık) | followup: note'u takip "
-                   "olarak ekle (due, kind) | followups: açık takipleri listele | done: id'li takibi kapat."},
-        "note": {"type": "string", "description": "add/update için tek, kısa Türkçe cümle, ör. 'Kullanıcı kahveyi "
-                 "şekersiz içer.'"},
-        "kind": {"type": "string", "enum": ["preference", "fact", "person", "routine", "note"],
-                 "description": "add için tür: preference tercih, fact bilgi, person kişi, routine alışkanlık. "
-                 "Varsayılan fact."},
-        "id": {"type": "integer", "description": "update/forget için bilginin numarası (read/search çıktısındaki #)."},
-        "query": {"type": "string", "description": "search ya da forget için arama ifadesi."},
+        "action": {"type": "string", "enum": ["save", "read", "delete", "list", "search", "log", "dream", "restore",
+                                              "search_chats", "recent_chats", "followup", "followups", "done",
+                                              "add", "update", "forget"],
+                   "description": "save | read | delete | list (notlar) | search (notlarda ara) | log (günlüğe ekle) | "
+                   "dream (toparla) | restore (yedeğe dön; backup boşsa yedekleri listeler) | search_chats | "
+                   "recent_chats | followup | followups | done. add/update/forget eski adlar (save/delete)."},
+        "name": {"type": "string", "description": "Notun kısa adı (kebab-case, ör. 'feedback-testler'); read/delete/"
+                 "save için. Başka kapsamdaki not: 'proje:ad'."},
+        "type": {"type": "string", "enum": ["user", "feedback", "project", "reference"], "description": "save: tür."},
+        "description": {"type": "string", "description": "save: tek satır, belirgin açıklama (hatırlamada bu satıra "
+                        "bakılarak seçilir)."},
+        "content": {"type": "string", "description": "save: notun gövdesi (markdown). feedback/project için: kural ya "
+                    "da bilgi, sonra '**Neden:**' ve '**Nasıl uygulanır:**' satırları. Göreli tarihleri mutlak yaz."},
+        "title": {"type": "string", "description": "save: dizinde görünecek kısa başlık (boşsa ad)."},
+        "scope": {"type": "string", "enum": ["genel", "proje"], "description": "save: genel (varsayılan) ya da "
+                  "proje (yalnız şu anki git deposunda geçerli)."},
+        "note": {"type": "string", "description": "log/followup için metin; add için tek cümle."},
+        "kind": {"type": "string", "description": "add için eski tür adı (preference, fact, person...)."},
+        "id": {"type": "integer", "description": "done için takibin numarası."},
+        "query": {"type": "string", "description": "search, search_chats ya da forget için arama ifadesi."},
+        "backup": {"type": "string", "description": "restore: dönülecek yedek (YYYYMMDD-HHMMSS)."},
         "due": {"type": "string", "description": "followup için gün, YYYY-MM-DD. kind=open ise boş."},
         "followup_kind": {"type": "string", "enum": ["ask", "remind", "open"],
                           "description": "followup türü: ask sonra sor | remind o gün hatırlat | open yarım kalan iş."},
@@ -71,69 +78,120 @@ class Memory(Tool):
     risk = WRITE
 
     def risk_for(self, args: dict[str, Any]) -> str:
-        return WRITE if args.get("action") == "forget" else READ
+        # Not yazmak hafızanın olağan işi (Claude Code'da da sorulmaz); silmek ve yedeğe dönmek geri alınabilir ama
+        # kullanıcının bilgisi kaybolabilir: sorulur.
+        return WRITE if args.get("action") in ("delete", "forget", "restore") else READ
 
     def summary(self, args: dict[str, Any]) -> str:
-        return f"{args.get('action')} {args.get('note') or args.get('query') or args.get('id') or ''}".strip()
+        return f"{args.get('action')} {args.get('name') or args.get('note') or args.get('query') or args.get('id') or ''}".strip()
 
-    def run(self, ctx: ToolContext, action: str, note: str | None = None, kind: str | None = None,
-            id: int | None = None, query: str | None = None, text: str | None = None, due: str | None = None,
+    def run(self, ctx: ToolContext, action: str, name: str | None = None, type: str | None = None,  # noqa: A002
+            description: str | None = None, content: str | None = None, title: str | None = None,
+            scope: str | None = None, note: str | None = None, kind: str | None = None, id: int | str | None = None,  # noqa: A002
+            query: str | None = None, backup: str | None = None, text: str | None = None, due: str | None = None,
             followup_kind: str | None = None, n: int | None = None, after: str | None = None,
             before: str | None = None) -> ToolResult:
-        from alice.memory import Fact, _day_start, _parse_day, shared_memory
+        from alice.memdir import MemoryFull
+        from alice.memory import _day_start, _parse_day, shared_memory
 
         mem = ctx.state.get("memory") or shared_memory(ctx.config, ctx.router)
         if mem is None:
             raise ToolError("hafıza kapalı (config.toml [memory] enabled = false)")
         note = note or text
+        cwd = ctx.cwd
+        if action in ("save", "add", "update"):
+            ctx.state["memory_wrote"] = True
+            try:
+                if action == "save" or content:
+                    if not (content or description):
+                        raise ToolError("save için content (ve description) gerekli")
+                    if not type:
+                        raise ToolError("save için type gerekli: user, feedback, project ya da reference")
+                    rec, new = mem.save_note(name or title or description or "", description or "", type,
+                                             content or description or "", title=title or "", source="araç",
+                                             scope=scope or "genel", cwd=cwd)
+                    return ToolResult(f"{'kaydedildi' if new else 'güncellendi'}: {rec.key} ({rec.path})")
+                if action == "update" and (name or id is not None):
+                    return ToolResult("güncellendi" if mem.update(str(name or id), note or "", cwd) else "not yok")
+                if not note:
+                    raise ToolError("add için note gerekli")
+                key, new = mem.remember(note, kind or "fact", source="araç", cwd=cwd, scope=scope or "genel")
+                return ToolResult(f"kaydedildi: {key}" if new else f"benzer not güncellendi: {key}")
+            except MemoryFull as e:
+                raise ToolError(str(e)) from None
+            except ValueError as e:
+                raise ToolError(str(e)) from None
+        if action in ("delete", "forget"):
+            ctx.state["memory_wrote"] = True
+            if name or (id is not None and not str(id).isdigit()):
+                gone = mem.delete_note(str(name or id), cwd)
+                return ToolResult(f"silindi (çöpe): {gone.key}" if gone else f"not yok: {name or id}")
+            if not (query or note):
+                raise ToolError("delete için name ya da query gerekli")
+            gone, hits = mem.forget_matching(query or note or "", cwd)
+            if gone:
+                return ToolResult(f"silindi (çöpe): {gone[0].key}")
+            return ToolResult("emin olamadım, hiçbirini silmedim. Adaylar (name ile sil):\n"
+                              + "\n".join(h.manifest_line() for h in hits) if hits else "eşleşen not yok")
         if action == "read":
-            return ToolResult(mem.export_markdown())
+            if name:
+                _, rec = mem.find_note(name, cwd)
+                if rec is None:
+                    raise ToolError(f"not yok: {name} (memory action=list ile bak)")
+                return ToolResult(f"{rec.render(limit=8000)}\n\n(dosya: {rec.path})")
+            return ToolResult(mem.export_markdown(cwd))
+        if action == "list":
+            lines = []
+            for b in mem.books(cwd):
+                notes = b.scan()
+                lines.append(f"## {b.scope} ({b.root}) — {len(notes)} not")
+                lines += [x.manifest_line() for x in notes] or ["(boş)"]
+            return ToolResult("\n".join(lines))
         if action == "search":
             if not (query or note):
                 raise ToolError("search için query gerekli")
-            hits = mem.search(query or note or "", limit=8, min_score=0.2)
-            return ToolResult("\n".join(h.line() for h in hits) or "hafızada ilgili bir şey yok")
+            hits = mem.search_notes(query or note or "", cwd)
+            return ToolResult("\n".join(h.manifest_line() for h in hits) or "notlarda ilgili bir şey yok "
+                              "(geçmiş konuşmalar için search_chats)")
+        if action == "log":
+            if not note:
+                raise ToolError("log için note gerekli")
+            p = mem.book(scope or "genel", cwd).append_log(note)
+            return ToolResult(f"günlüğe eklendi: {p}")
+        if action == "dream":
+            done = mem.dream(force=True, cwd=cwd)
+            ctx.state["memory_wrote"] = True
+            return ToolResult("Dream bitti:\n" + ("\n".join(f"- {x}" for x in done) or "- değişiklik yok"))
+        if action == "restore":
+            b = mem.book(scope or "genel", cwd)
+            if not backup:
+                return ToolResult("yedekler (yeniden eskiye): " + (", ".join(b.backups()) or "yok"))
+            try:
+                count = b.restore(backup)
+            except ValueError as e:
+                raise ToolError(str(e)) from None
+            mem._bump()
+            return ToolResult(f"{backup} yedeğine dönüldü ({count} not); dönmeden önceki hâl de yedeklendi")
         if action == "search_chats":
             if not (query or note):
                 raise ToolError("search_chats için query gerekli")
             return ToolResult(mem.search_chats(query or note or "", after=_day_start(after), before=_day_start(before)))
         if action == "recent_chats":
             return ToolResult(mem.recent_chats(n or 5, after=_day_start(after), before=_day_start(before)))
-        if action == "add":
-            if not note:
-                raise ToolError("add için note gerekli")
-            fid, new = mem.remember(note, kind or "fact", source="araç")
-            return ToolResult(f"kaydedildi #{fid}" if new else f"benzer bilgi güncellendi #{fid}")
-        if action == "update":
-            if id is None or not note:
-                raise ToolError("update için id ve note gerekli")
-            return ToolResult(f"güncellendi #{id}" if mem.update(id, note) else f"#{id} bulunamadı")
-        if action == "forget":
-            if id is not None:
-                gone = mem.forget(id)
-                return ToolResult(f"silindi: {gone.text}" if gone else f"#{id} bulunamadı")
-            if not (query or note):
-                raise ToolError("forget için id ya da query gerekli")
-            gone, hits = mem.forget_matching(query or note or "")
-            if gone:
-                return ToolResult(f"silindi: {gone[0].text}")
-            cands = [h.item.line() for h in hits if isinstance(h.item, Fact)]
-            return ToolResult("emin olamadım, hiçbirini silmedim. Adaylar (id ile sil):\n" + "\n".join(cands)
-                              if cands else "eşleşen bilgi yok")
         if action == "followup":
             if not note:
                 raise ToolError("followup için note gerekli")
-            kind = followup_kind or ("open" if not due else "ask")
+            fk = followup_kind or ("open" if not due else "ask")
             day = _parse_day(due)
-            if kind != "open" and day is None:
+            if fk != "open" and day is None:
                 raise ToolError("followup için due (YYYY-MM-DD) gerekli; yarım kalan iş ise followup_kind=open")
-            return ToolResult(f"takip eklendi #{mem.add_followup(note, day, kind)}")
+            return ToolResult(f"takip eklendi #{mem.add_followup(note, day, fk)}")
         if action == "followups":
             return ToolResult("\n".join(f.line() for f in mem.followups()) or "açık takip yok")
         if action == "done":
             if id is None:
                 raise ToolError("done için id gerekli")
-            f = mem.done_followup(id)
+            f = mem.done_followup(int(id))
             return ToolResult(f"kapatıldı: {f.text}" if f else f"#{id} bulunamadı")
         raise ToolError(f"bilinmeyen action: {action}")
 

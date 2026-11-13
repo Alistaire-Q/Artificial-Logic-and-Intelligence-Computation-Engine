@@ -66,6 +66,10 @@ def desktop_notify(n: Notification) -> bool:
     return False
 
 
+# Bu süreçte çalışan çekirdeğin bildiricisi (uygulama çekirdeğin içinde çalışır): notify aracı buradan gönderir.
+ACTIVE: "Notifier | None" = None
+
+
 class Notifier:
     def __init__(self, store: Store, policy: Callable[[], Policy], desktop: bool = True):
         self.store = store
@@ -75,6 +79,8 @@ class Notifier:
         self._muted: dict[str, float] = {}
         if desktop:
             self.channels.append(self._desktop)
+        global ACTIVE
+        ACTIVE = self
 
     TOAST_REPEAT = 600.0  # sn: aynı bildirim balonu bu süre içinde tekrar gösterilmez
     MUTED_REPEAT = 1800.0  # sn: susturulan aynı bildirim bu süre içinde tekrar kaydedilmez

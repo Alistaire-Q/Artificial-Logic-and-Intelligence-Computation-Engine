@@ -86,7 +86,8 @@ def check_memory(cfg) -> Check:
     with mem._lock:
         vecs = mem.db.execute("SELECT COUNT(*) FROM vectors").fetchone()[0]
     sums = len(mem.summaries(1000))
-    return Check(name, "ok", f"{len(mem.facts())} bilgi, {sums} konuşma özeti, {len(mem.followups())} açık takip, "
+    notes = sum(len(b.scan()) for b in mem.all_books())
+    return Check(name, "ok", f"{notes} not, {sums} konuşma özeti, {len(mem.followups())} açık takip, "
                  f"{vecs} vektör")
 
 

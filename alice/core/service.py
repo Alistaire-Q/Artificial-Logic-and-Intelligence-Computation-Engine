@@ -355,7 +355,7 @@ class Core:
         steps: list[tuple[str, Callable[[], Any]]] = [
             ("hatırlatmalar", lambda: self._send_reminders(mem)),  # en önemlisi önce
             ("konuşma özeti", mem.digest),
-            ("hafıza toparlama", mem.maybe_consolidate),  # günde bir: tekrarlar birleşir
+            ("hafıza Dream", mem.maybe_dream),  # günde bir, yeterince konuşma birikince: notlar toparlanır
             ("takvim takibi", lambda: calendar_followups(mem, self.cfg)),
             ("sesli mod gecikme raporu", self._latency_report),
             ("önemli e-postalar", self._important_mail),
