@@ -428,6 +428,24 @@ class Agent:
             self.memory.learn(user_text, reply, cwd=self.ctx.cwd, wrote=wrote)
         except Exception:  # noqa: BLE001
             log.debug("tur hafızaya yazılamadı", exc_info=True)
+        self._feed_buddy(user_text, reply)
+
+    def _feed_buddy(self, user_text: str, reply: str) -> None:
+        """BUDDY konuşmayla doyar; ara sıra kısa bir yorum yapar (arka planda, turu bekletmez)."""
+        import threading
+
+        from alice import buddy
+
+        if not buddy.settings(self.config).get("enabled", True):
+            return
+
+        def work() -> None:
+            try:
+                buddy.on_turn(self.config, self.router, user_text, reply)
+            except Exception:  # noqa: BLE001
+                log.debug("buddy güncellenemedi", exc_info=True)
+
+        threading.Thread(target=work, daemon=True, name="alice-buddy").start()
 
     def sync_catalog(self) -> None:
         """Sistem talimatının sonundaki 'Yüklenebilir araçlar' listesini güncel araçlarla yenile (MCP ve eklenti

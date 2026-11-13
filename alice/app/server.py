@@ -37,7 +37,7 @@ from alice.tools import ToolContext, all_tools, attach_mcp, cleanup
 from alice.tools.base import DesktopLock, ToolResult
 
 STATIC = Path(__file__).parent / "static"
-STATIC_FILES = {"app.js": "text/javascript", "projects.js": "text/javascript", "ui.js": "text/javascript",
+STATIC_FILES = {"app.js": "text/javascript", "projects.js": "text/javascript", "ui.js": "text/javascript", "buddy.js": "text/javascript",
                 "main.js": "text/javascript", "app.css": "text/css", "marked.min.js": "text/javascript",
                 "purify.min.js": "text/javascript", "highlight.js": "text/javascript", "icon.svg": "image/svg+xml", "alice.png": "image/png", "quick.js": "text/javascript",
                 "quick.css": "text/css", "m.css": "text/css", "m.js": "text/javascript",
@@ -1068,6 +1068,8 @@ class AppState:
         ("greeting", "away_minutes"): (60, 90, 120, 180),
         ("memory", "digest"): (True, False),
         ("gmail", "notify"): (True, False),
+        ("buddy", "enabled"): (True, False),
+        ("buddy", "chatter"): (True, False),
     }
 
     def assistant(self) -> dict[str, Any]:
@@ -1095,6 +1097,40 @@ class AppState:
             "agents": [{"name": a.name, "description": a.description, "path": str(a.path)}
                        for a in load_agents(self.ctx.cwd).values()],
         }
+
+    # ------------------------------------------------------------------ BUDDY ve KAIROS
+    def buddy_view(self) -> dict[str, Any]:
+        from alice import buddy
+
+        try:
+            router = self.agent.router
+        except AttributeError:
+            router = None
+        return buddy.view(self.cfg, router=router)
+
+    def buddy_action(self, action: str, value: str = "") -> dict[str, Any]:
+        from alice import buddy
+
+        if action not in ("pet", "feed", "rename"):
+            return {"ok": False, "error": "bilinmeyen işlem"}
+        return {"ok": True, "text": buddy.act(action, value), "buddy": buddy.view(self.cfg)}
+
+    def kairos_view(self) -> dict[str, Any]:
+        from alice import kairos
+
+        return {**kairos.view(), "enabled": kairos.is_enabled(self.cfg)}
+
+    def kairos_action(self, action: str) -> dict[str, Any]:
+        from alice import kairos
+
+        if action == "wake":
+            kairos.request_wake()
+        elif action in ("on", "off"):
+            kairos.set_enabled(self.cfg, action == "on")
+            self.cfg.data.setdefault("kairos", {})["enabled"] = action == "on"
+        else:
+            return {"ok": False, "error": "bilinmeyen işlem"}
+        return {"ok": True, **self.kairos_view()}
 
     def assistant_set(self, section: str, key: str, value: Any) -> bool:
         from alice.config import set_config_value
@@ -2286,6 +2322,10 @@ def make_handler(state: AppState):
                                    for t in state.agent.tools.values()])
             if u.path == "/api/memory":
                 return self._json(state.memory_view())
+            if u.path == "/api/buddy":
+                return self._json(state.buddy_view())
+            if u.path == "/api/kairos":
+                return self._json(state.kairos_view())
             if u.path == "/api/models/all":
                 return self._json({"providers": state.router.catalog_view(),
                                    "brain": state.router.chain("brain"),
@@ -2403,6 +2443,10 @@ def make_handler(state: AppState):
                 if p == "/api/voice/set":
                     r = state.set_voice(str(d.get("voice", "")))
                     return self._json(r, 200 if r.get("ok") else 400)
+                if p == "/api/buddy":
+                    return self._json(state.buddy_action(str(d.get("action", "")), str(d.get("value", ""))))
+                if p == "/api/kairos":
+                    return self._json(state.kairos_action(str(d.get("action", ""))))
                 if p == "/api/memory/action":
                     r = state.memory_action(str(d.get("action", "")), d)
                     return self._json(r, 200 if r.get("ok") else 400)

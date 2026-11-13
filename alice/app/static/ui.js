@@ -932,6 +932,40 @@ function healthPane(pane, data) {
   }
   poll();
 }
+/* KAIROS: arka plan nöbeti. Aç/kapa, sıradaki uyanış, şimdi uyandır ve son uyanışların özeti. */
+function kairosBlock(pane) {
+  const box = el("div");
+  pane.append(el("div", "sec", "KAIROS · arka plan nöbeti"), box);
+  const when = (ts) => new Date(ts * 1000).toLocaleString("tr-TR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  const draw = (k) => {
+    if (!k) { box.replaceChildren(el("p", "", "Durum okunamadı.")); return; }
+    const wake = el("button", "btn", "Şimdi uyandır");
+    wake.disabled = !k.enabled;
+    wake.addEventListener("click", () => api("/api/kairos", { action: "wake" }).then((r) => {
+      if (r && r.ok) { toast("KAIROS çekirdeğin bir sonraki turunda uyanacak"); draw(r); }
+    }));
+    const sub = k.enabled
+      ? (k.next ? "Sıradaki uyanış " + when(k.next) : "İlk uyanış birkaç dakika içinde") + ` · bugün ${k.wakes || 0} uyanış` +
+        (k.skipped ? ` · son erteleme: ${k.skipped}` : "")
+      : "Kapalıyken ALICE yalnız sen sorunca çalışır";
+    box.replaceChildren(
+      setRow("Nöbet", "ALICE kendi seçtiği aralıklarla uyanır, durumu kollar; yalnız gerçekten faydalı bir şey varsa haber verir. Yalnız okur, değişiklik yapmaz.",
+        segmented([["1", "Açık"], ["0", "Kapalı"]], k.enabled ? "1" : "0",
+          (x) => api("/api/kairos", { action: x === "1" ? "on" : "off" }).then((r) => { if (r && r.ok) { toast("KAIROS " + (x === "1" ? "açıldı" : "kapatıldı")); draw(r); } }))),
+      setRow("Durum", sub, wake));
+    const hist = el("div", "kairos-hist");
+    for (const h of k.history || []) {
+      const row = el("div", "list-row");
+      const l = el("span", "l");
+      l.append(el("b", "", when(h.ts)), el("small", "", (h.summary || "") + (h.sleep ? ` · ${h.sleep} dk sonra uyanmayı seçti` : "")));
+      row.appendChild(l);
+      hist.appendChild(row);
+    }
+    if ((k.history || []).length) box.appendChild(hist);
+  };
+  api("/api/kairos").then(draw).catch(() => draw(null));
+}
+
 function assistantPane(pane, data) {
   const d = data || {};
   const v = d.settings || {};
@@ -958,7 +992,15 @@ function assistantPane(pane, data) {
     setRow("Konuşma özetleri", "Biten konuşma özetlenir, takipler çıkarılır",
       onOff("memory", "digest", "Özetler")),
     setRow("E-posta bildirimi", "Yeni önemli e-posta gelince haber ver", onOff("gmail", "notify", "E-posta bildirimi")),
+    setRow("BUDDY", "Sohbet kutusunun yanındaki küçük arkadaş; konuştukça doyar, okşanınca keyiflenir",
+      segmented([["1", "Açık"], ["0", "Kapalı"]], v["buddy.enabled"] === false ? "0" : "1", (x) => {
+        set("buddy", "enabled", x === "1", "BUDDY");
+        if (x === "1" && window.buddyShow) window.buddyShow();
+        else if (window.buddyRefresh) setTimeout(window.buddyRefresh, 300);
+      })),
+    setRow("BUDDY yorumları", "Konuşmalara ara sıra kısa bir yan yorum yapsın", onOff("buddy", "chatter", "Yorumlar")),
   );
+  kairosBlock(pane);
   pane.appendChild(el("div", "sec", "İzin kuralları"));
   const rules = d.rules || [];
   if (!rules.length) pane.appendChild(el("p", "", "Kural yok. Onay kartında \"Bu projede hep izin ver\" deyince buraya eklenir."));

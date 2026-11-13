@@ -42,6 +42,11 @@ GROUPS: dict[str, tuple[set[str], str, str]] = {
              r"background|sunucu(yu)? başlat|"
              r"dev server|npm run|\bwatch\b|beceri|skill|bitince|bitti(ğ|g)inde|haber ver|izle|ayrı (sohbet|oturum)|"
              r"paralel|devret"),
+    "companions": ({"buddy", "kairos"},
+                   "BUDDY (küçük arkadaş: hâli, okşa, besle, ad koy) ve KAIROS (arka plan nöbeti: durum, aç/kapa, "
+                   "şimdi uyandır)",
+                   r"\bbuddy|bad[iı]\b|tamagotchi|evcil|minik arkadaş|kairos|nöbet|arka plan(da)? (bak|kolla)|"
+                   r"kendi kendine uyan"),
     "desktop": ({"computer", "computer_task", "ui_elements", "ui_act", "clipboard", "reflex", "app", "windows", "game"},
                 "uygulama/pencere açma-kapama, ekran görüntüsü, fare/klavye, masaüstü uygulamalarında tıklama, pano, "
                 "oyun oturumu (turlar, notlar)",

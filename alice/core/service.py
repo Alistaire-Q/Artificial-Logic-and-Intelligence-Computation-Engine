@@ -230,6 +230,10 @@ class Core:
         from alice.presence import Greeter
 
         self.greeter = Greeter(cfg, self.notifier.send, memory=self._memory, router=self.router)
+        # Arka plan nöbeti (alice/kairos.py): kendi seçtiği aralıklarla uyanıp durumu kollar.
+        from alice.kairos import Kairos
+
+        self.kairos = Kairos(cfg, self.store, memory=self._memory, policy=lambda: self.modes.policy)
 
     # ------------------------------------------------------------------ tur
     def tick(self, now: float | None = None) -> None:
@@ -265,6 +269,10 @@ class Core:
             self.greeter.tick()
         except Exception as e:  # noqa: BLE001 - karşılama çekirdeği durdurmasın
             self.store.add_event("error", "karşılama hata verdi", repr(e)[:300], topic="core")
+        try:
+            self.kairos.tick()
+        except Exception as e:  # noqa: BLE001 - nöbet çekirdeği durdurmasın
+            self.store.add_event("error", "KAIROS hata verdi", repr(e)[:300], topic="core")
         if now - self._last_prune > 3600:
             self._last_prune = now
             self.store.prune(self.retention_days, now)
