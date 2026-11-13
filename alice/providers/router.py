@@ -159,6 +159,24 @@ def is_gemini(pc: ProviderConfig) -> bool:
     return "generativelanguage.googleapis.com" in pc.base_url or pc.name == "gemini"
 
 
+_ACCEPTS: dict[tuple[Any, str], bool] = {}
+
+
+def _accepts(fn: Any, name: str) -> bool:
+    """fn bu anahtar kelime argümanını alıyor mu (ya da **kw ile her şeyi). Sahte/eski istemcilere bilmediği argüman
+    gönderilmesin."""
+    key = (getattr(fn, "__func__", fn), name)
+    if key not in _ACCEPTS:
+        import inspect
+
+        try:
+            params = inspect.signature(fn).parameters
+            _ACCEPTS[key] = name in params or any(p.kind is p.VAR_KEYWORD for p in params.values())
+        except (TypeError, ValueError):
+            _ACCEPTS[key] = False
+    return _ACCEPTS[key]
+
+
 def clean_messages(messages: list[dict[str, Any]], gemini: bool = False) -> list[dict[str, Any]]:
     """ALICE'in iç işaretlerini ("_" ile başlayan anahtarlar) sağlayıcıya göndermeden önce temizle.
     Gemini'ye giderken her tool_call'a thought_signature eklenir (yoksa Gemini 3 isteği 400 ile reddediyor)."""
@@ -725,6 +743,8 @@ class Router:
                         extra_kw = {"on_tool": stream.on_tool} if hasattr(stream, "on_tool") else {}
                         if isinstance(client, OpenAICompatProvider):
                             extra_kw["on_first"] = on_first
+                        if hasattr(stream, "on_call") and _accepts(client.chat_stream, "on_call"):
+                            extra_kw["on_call"] = stream.on_call  # tamamlanan araç çağrısı cevap bitmeden bildirilir
                         r = client.chat_stream(model, msgs, on_delta, cancel=stream.cancelled,
                                                on_reasoning=getattr(stream, "on_reasoning", None), **extra_kw, **kw)
                         if not r.usage:

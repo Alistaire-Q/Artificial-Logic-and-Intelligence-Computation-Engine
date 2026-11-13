@@ -94,11 +94,20 @@ class _Sink:
         self.parts.append(text)
         self.ui.stream_delta(text)
 
+    early: Any = None  # tamamlanan araç çağrısını cevap bitmeden başlatan ajan fonksiyonu
+    early_reset: Any = None
+
     def on_reset(self) -> None:
+        if self.early_reset is not None:
+            self.early_reset()  # model akışın ortasında değişti: erken başlatılanların sonucu kullanılmaz
         if self.dead:
             return
         self.parts.clear()
         self.ui.stream_reset()
+
+    def on_call(self, call: dict[str, Any]) -> None:
+        if self.early is not None and not self.dead and not self.cancel.is_set():
+            self.early(call)
 
     def on_reasoning(self, text: str) -> None:
         if not self.first_at:
@@ -599,6 +608,7 @@ class Agent:
         self._fail_counts.clear()
         self._error_streak = 0
         sink = _Sink(self.ui, self.cancel)
+        sink.early, sink.early_reset = self._early_start, self._early_clear
         self._turn_tools: set[str] = set()
         nudges = 0
         verified = False
@@ -614,6 +624,7 @@ class Agent:
                 if self.cancel.is_set():
                     raise Cancelled
                 self._drain_inbox()
+                self._early_clear()
                 self._maybe_compact()
                 self._prune_images()
                 self._shrink_old_outputs()
@@ -1080,6 +1091,18 @@ class Agent:
                 results[i] = ToolResult("durduruldu (kullanıcı kesti)", is_error=True)
                 i += 1
                 continue
+            early = self._take_early(calls[i])
+            if early is not None:  # cevap akarken başlatılmıştı: sonucu hazır (ya da az kaldı)
+                tool, summary, fut = early
+                self.ui.tool_start(calls[i]["id"], tool.name, summary)
+                try:
+                    res = fut.result()
+                except Exception as e:  # noqa: BLE001
+                    res = ToolResult(f"{type(e).__name__}: {e}", is_error=True)
+                self.ui.tool_end(calls[i]["id"], tool.name, res)
+                results[i] = self._fence(tool, res)
+                i += 1
+                continue
             prep = self._prepare(calls[i])
             if isinstance(prep, ToolResult):
                 results[i] = prep
@@ -1112,6 +1135,41 @@ class Agent:
                         results[idx] = self._fence(tool, results[idx])
             i = j
         return [r if r is not None else ToolResult("çalıştırılmadı", is_error=True) for r in results]
+
+    def _early_start(self, call: dict[str, Any]) -> None:
+        """Akış sürerken tamamlanan araç çağrısı: paralel güvenliyse (salt okuma, izin gerekmez, hook yok, ekranı
+        kullanmaz) hemen arka planda başlat. Yüzlerce araç çağrısı olan işlerde modelin yazmayı bitirmesini beklemek
+        dakikalar kaybettiriyordu. Sonuç, cevap bitince aynı çağrı gelirse kullanılır."""
+        try:
+            prep = self._prepare(call, quiet=True)
+            if isinstance(prep, ToolResult) or not self._parallel_ok(prep):
+                return
+            tool, args, summary = prep
+            if getattr(tool, "risk", "") == COMPUTER:
+                return
+            pool = self.__dict__.get("_early_pool")
+            if pool is None:
+                pool = self._early_pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="alice-early")
+            fut = pool.submit(self._run_tool, tool, args)
+            self.__dict__.setdefault("_early", {})[call["id"]] = (args, tool, summary, fut)
+        except Exception:  # noqa: BLE001 - erken başlatma yalnız hızlandırır; olmazsa normal yol çalışır
+            log.debug("araç erken başlatılamadı", exc_info=True)
+
+    def _early_clear(self) -> None:
+        self.__dict__["_early"] = {}
+
+    def _take_early(self, call: dict[str, Any]) -> tuple[Tool, str, Any] | None:
+        e = self.__dict__.get("_early", {}).pop(call.get("id"), None)
+        if e is None:
+            return None
+        args, tool, summary, fut = e
+        try:
+            final = parse_args(call["function"].get("arguments"))
+        except (json.JSONDecodeError, KeyError, TypeError):
+            return None
+        if final != args or call["function"].get("name") != tool.name:
+            return None  # son hâli farklı: normal yoldan yeniden çalışır
+        return tool, summary, fut
 
     def _parallel_ok(self, prep: tuple[Tool, dict[str, Any], str]) -> bool:
         tool, args, _ = prep

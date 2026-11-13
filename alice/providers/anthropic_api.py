@@ -281,7 +281,8 @@ class AnthropicProvider:
                     max_tokens: int | None = None, response_format: dict[str, Any] | None = None,
                     extra: dict[str, Any] | None = None, cancel: Callable[[], bool] | None = None,
                     on_reasoning: Callable[[str], None] | None = None, on_first: Callable[[], None] | None = None,
-                    on_tool: Callable[[str, int], None] | None = None) -> ChatResult:
+                    on_tool: Callable[[str, int], None] | None = None,
+                    on_call: Callable[[dict[str, Any]], None] | None = None) -> ChatResult:
         kw = self._params(model, messages, tools, max_tokens, response_format, extra, stream=True)
         t0 = time.monotonic()
         tool_name, tool_len = "", 0
@@ -305,6 +306,14 @@ class AnthropicProvider:
                         elif d.type == "input_json_delta" and on_tool is not None:
                             tool_len += len(d.partial_json or "")
                             on_tool(tool_name, tool_len)
+                    elif ev.type == "content_block_stop" and on_call is not None:
+                        block = getattr(ev, "content_block", None)
+                        if getattr(block, "type", "") == "tool_use":
+                            try:  # araç bloğu bitti: ajan güvenli aracı cevap bitmeden başlatabilir
+                                on_call({"id": block.id, "type": "function", "function": {
+                                    "name": block.name, "arguments": json.dumps(block.input or {}, ensure_ascii=False)}})
+                            except Exception:  # noqa: BLE001
+                                pass
                 msg = stream.get_final_message()
         except (ProviderError, StreamCancelled):
             raise
