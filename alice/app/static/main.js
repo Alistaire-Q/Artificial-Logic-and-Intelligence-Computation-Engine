@@ -12,6 +12,7 @@ const handlers = {
   project_note: onProjectNote,
   subagent: onSubagentEvent,
   user: (ev) => addUser(ev.text, ev.mi, ev.images),
+  btw: (ev) => addBtw(ev),
   busy: (ev) => { S.status.busy = ev.value; setBusy(ev.value); if (!ev.value) loadSessions(); },
   stream_start: () => { if (!S.cur) showWorking("Düşünüyor"); },
   thinking: (ev) => onThinking(ev.text),
@@ -138,4 +139,20 @@ function onBackground(ev) {
   };
   clock();
   setInterval(clock, 30000);
+})();
+
+/* "Sen yokken": pencere 20 dakikadan uzun gizli kaldıysa dönüşte öndeki sohbetin nerede kaldığını özetle. */
+(() => {
+  let hiddenAt = 0;
+  document.addEventListener("visibilitychange", async () => {
+    if (document.hidden) { hiddenAt = Date.now(); return; }
+    if (!hiddenAt || Date.now() - hiddenAt < 20 * 60 * 1000 || S.busy) return;
+    hiddenAt = 0;
+    const r = await api("/api/recap").catch(() => null);
+    if (!r || !r.text) return;
+    const card = el("div", "btw-card recap");
+    card.append(el("div", "btw-q", "Sen yokken"), el("div", "btw-a", r.text));
+    add(card);
+    toBottom(true);
+  });
 })();

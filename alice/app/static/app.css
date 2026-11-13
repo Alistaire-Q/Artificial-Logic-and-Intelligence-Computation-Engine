@@ -2124,3 +2124,8 @@ details > summary::marker { color: var(--faint); }
 }
 .kairos-hist { font-size: var(--t-sm); color: var(--muted); }
 .kairos-hist .list-row small { white-space: normal; }
+
+/* /btw yan soru kartı: konuşmanın parçası değil */
+.btw-card { margin: 10px 0; padding: 10px 14px; border: 1px dashed var(--line-strong); border-radius: var(--r-md); background: var(--panel); font-size: var(--t-sm); }
+.btw-card .btw-q { color: var(--muted); font-weight: 600; margin-bottom: 4px; }
+.btw-card.pending .btw-a { color: var(--faint); font-style: italic; }

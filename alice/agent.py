@@ -1125,11 +1125,43 @@ class Agent:
         bad = check_args(tool, args)
         if bad:
             return ToolResult(bad + " Düzeltip tekrar çağır.", is_error=True)
+        hook_verdict = ""
+        if not quiet and self.hooks.has("PreToolUse"):
+            # İzinden önce: hook argümanları değiştirebilir ya da izin kararı verebilir (bkz. alice.hooks.decision).
+            from alice.hooks import decision, feedback
+
+            results = self.hooks.run("PreToolUse", {"args": args}, tool.name)
+            blocked = feedback(results)
+            if blocked:
+                res = ToolResult(f"Kullanıcının hook'u bu çağrıyı engelledi: {blocked}", is_error=True)
+                self.ui.tool_start(call["id"], name, name)
+                self.ui.tool_end(call["id"], name, res)
+                return res
+            d = decision(results)
+            if "updatedInput" in d:
+                args = d["updatedInput"]
+                bad = check_args(tool, args)
+                if bad:
+                    return ToolResult(f"Hook'un değiştirdiği argümanlar geçersiz: {bad}", is_error=True)
+            hook_verdict = str(d.get("permissionDecision") or "")
+            if hook_verdict == "deny":
+                why = d.get("reason") or "gerekçe verilmedi"
+                res = ToolResult(f"Kullanıcının hook'u bu çağrıya izin vermedi: {why}", is_error=True)
+                self.ui.tool_start(call["id"], name, name)
+                self.ui.tool_end(call["id"], name, res)
+                self._note_denial()
+                return res
+            if d.get("additionalContext"):
+                self.__dict__.setdefault("_hook_notes", {})[call["id"]] = d["additionalContext"]
         try:
             summary = tool.summary(args)
             if quiet:
                 return tool, args, summary
             verdict = self.permissions.decide(tool, args, self.ctx)
+            if hook_verdict == "allow" and verdict == "ask":
+                verdict = "allow"  # hook onayladı; yasak kuralları ve plan modu yine geçerli
+            elif hook_verdict == "ask" and verdict == "allow":
+                verdict = "ask"
             risk = tool.risk_for(args) if verdict == "ask" else ""
         except Exception as e:  # noqa: BLE001 - zayıf modelin yanlış tipli argümanı (liste, null) turu ve geçmişi bozmasın
             return ToolResult(f"geçersiz argüman: {type(e).__name__}: {e}. Parametre tiplerini düzeltip tekrar dene.",
@@ -1191,16 +1223,13 @@ class Agent:
 
     def _execute(self, call: dict[str, Any], tool: Tool, args: dict[str, Any], summary: str) -> ToolResult:
         self.ui.tool_start(call["id"], tool.name, summary)
-        if self.hooks.has("PreToolUse"):
-            from alice.hooks import feedback
-
-            blocked = feedback(self.hooks.run("PreToolUse", {"args": args}, tool.name))
-            if blocked:
-                result = ToolResult(f"Kullanıcının hook'u bu çağrıyı engelledi: {blocked}", is_error=True)
-                self.ui.tool_end(call["id"], tool.name, result)
-                return result
         watch = self._watch(tool, args)
         result = self._run_tool(tool, args)
+        note = self.__dict__.get("_hook_notes", {}).pop(call["id"], "")
+        if note:
+            from dataclasses import replace
+
+            result = replace(result, text=result.text + "\n\n[hook bağlamı]\n" + note)
         if watch is not None and not self.cancel.is_set():
             from dataclasses import replace
 
@@ -1210,10 +1239,11 @@ class Agent:
         if self.hooks.has("PostToolUse"):
             from dataclasses import replace
 
-            from alice.hooks import feedback
+            from alice.hooks import decision, feedback
 
-            back = feedback(self.hooks.run("PostToolUse", {"args": args, "result": result.text[:4000],
-                                                           "is_error": result.is_error}, tool.name))
+            post = self.hooks.run("PostToolUse", {"args": args, "result": result.text[:4000],
+                                                  "is_error": result.is_error}, tool.name)
+            back = "\n".join(x for x in (feedback(post), decision(post).get("additionalContext", "")) if x)
             if back:
                 result = replace(result, text=result.text + "\n\n[hook geri bildirimi]\n" + back)
         self._log_outward(tool, args, summary, "failed" if result.is_error else "sent", result.text)

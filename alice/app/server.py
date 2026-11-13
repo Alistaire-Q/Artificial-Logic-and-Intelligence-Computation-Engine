@@ -1838,6 +1838,12 @@ class AppState:
         chat = self.chat if not sid or sid == self.chat.sid else self.chat_for(sid)
         if chat is None:
             return False, f"arkada zaten {self.MAX_BACKGROUND} sohbet çalışıyor; biri bitince tekrar dene"
+        if text.split(" ", 1)[0].lower() == "/btw":
+            question = text[4:].strip()
+            if not question:
+                return False, "kullanım: /btw <soru>"
+            threading.Thread(target=self._side_question, args=(chat, question), daemon=True, name="alice-btw").start()
+            return True, None
         if chat.busy:
             if not text.startswith("/") and chat.agent.steer(text, images):
                 # Çalışan tura iletildi: iş durmadan bir sonraki adımda ALICE bunu görür. Önceden mesaj arayüzde
@@ -1857,6 +1863,49 @@ class AppState:
                     return False, f"bilinmeyen komut: {text.split()[0]}"
         self._start_turn(chat, text, prompt, images or [])
         return True, None
+
+    def recap(self) -> dict[str, Any]:
+        """"Sen yokken": uzun aradan sonra uygulamaya dönünce öndeki sohbetin nerede kaldığının 1-3 cümlelik özeti.
+        Yalnız son ~30 mesaja bakılır; konuşmaya yazılmaz. Aynı konuşma hâli için bir kez üretilir."""
+        chat = self.chat
+        msgs = [m for m in chat.agent.messages[1:] if m.get("role") in ("user", "assistant", "tool")
+                and isinstance(m.get("content"), str) and m["content"].strip()]
+        if len(msgs) < 4:
+            return {"text": ""}
+        key = (chat.sid, len(chat.agent.messages))
+        cached = getattr(self, "_recap_cache", None)
+        if cached and cached[0] == key:
+            return {"text": cached[1]}
+        lines = []
+        for m in msgs[-30:]:
+            who = {"user": "Kullanıcı", "assistant": "ALICE", "tool": "araç"}[m["role"]]
+            lines.append(f"{who}: {' '.join(m['content'].split())[:400]}")
+        prompt = ("Kullanıcı bir süredir uzaktaydı ve sohbete dönüyor. Aşağıdaki konuşmanın nerede kaldığını Türkçe, "
+                  "en fazla 3 kısa cümleyle özetle: ne yapılıyordu, ne bitti, ne bekliyor. Selamlama yok.\n\n"
+                  + "\n".join(lines))
+        try:
+            res = chat.agent.router.chat("fast", [{"role": "user", "content": prompt}], max_tokens=220)
+            text = " ".join((res.text or "").split())
+        except Exception:  # noqa: BLE001 - özet yoksa kart da yok
+            text = ""
+        self._recap_cache = (key, text)
+        return {"text": text}
+
+    def _side_question(self, chat: Any, question: str) -> None:
+        """/btw: iş sürerken yan soru. Konuşmanın o anki hâliyle (araçsız) cevaplanır; konuşmaya ve hafızaya
+        yazılmaz, çalışan turu bölmez. Aynı önek kullanıldığı için çoğu önbellekten okunur."""
+        pub = chat.ui.publish
+        pub({"type": "btw", "q": question, "a": "", "pending": True})
+        try:
+            msgs = [m for m in list(chat.agent.messages) if not m.get("_image")]
+            msgs.append({"role": "user", "content": (
+                "[Yan soru: kullanıcı süren işi bölmeden bunu soruyor. Araç kullanmadan, bildiklerinle kısa cevap ver; "
+                "işe devam etme, plan değiştirme.]\n" + question)})
+            res = chat.agent.router.chat(chat.agent.role, msgs, max_tokens=800)
+            answer = (res.text or "").strip() or "(cevap yok)"
+        except Exception as e:  # noqa: BLE001 - yan soru başarısızsa iş etkilenmesin
+            answer = f"cevaplanamadı: {str(e)[:300]}"
+        pub({"type": "btw", "q": question, "a": answer, "pending": False})
 
     def deliver(self, sid: str, text: str, tries: int = 30) -> str:
         """Arka plandan bir sohbete mesaj (izleme olayı, ayrı oturumun sonucu): sohbet çalışıyorsa işe iletilir,
@@ -2322,6 +2371,8 @@ def make_handler(state: AppState):
                                    for t in state.agent.tools.values()])
             if u.path == "/api/memory":
                 return self._json(state.memory_view())
+            if u.path == "/api/recap":
+                return self._json(state.recap())
             if u.path == "/api/buddy":
                 return self._json(state.buddy_view())
             if u.path == "/api/kairos":

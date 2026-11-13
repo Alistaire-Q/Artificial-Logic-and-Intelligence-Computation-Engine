@@ -14,6 +14,11 @@ Olaylar:
   PostToolUse       araç bittikten sonra; çıkış kodu 2 = stderr modele geri bildirim olarak gider (ör. lint hatası)
   Stop              ajan cevabını bitirince; çıkış kodu 2 = stderr modele gider ve ajan devam eder (ör. testler kırık)
 
+PreToolUse hook'u çıkış 0 ile stdout'a JSON yazarsa (Claude Code'daki gibi) daha fazlasını yapabilir:
+  {"updatedInput": {...}}                              aracın argümanlarını değiştir (ör. komuta bayrak ekle)
+  {"permissionDecision": "allow" | "deny" | "ask", "reason": "..."}   izin kararı (allow sormadan çalıştırır)
+  {"additionalContext": "..."}                         araç sonucuna bağlam ekle (PostToolUse'ta da geçerli)
+
 Komut kabukta çalışır, olay bilgisi stdin'e JSON olarak gelir ({"event", "tool", "args", "result", "prompt",
 "cwd"}); ortamda ALICE_EVENT, ALICE_TOOL, ALICE_TOOL_PATH (aracın yol/komut/url argümanı) ve ALICE_CWD var.
 Güvenlik: hook'lar sadece senin config'inden okunur; klonladığın bir depodaki dosya komut çalıştıramaz.
@@ -208,6 +213,37 @@ class Hooks:
             return HookResult(h, 1, "", f"hook {h.timeout:.0f} sn içinde bitmedi: {h.command}")
         except OSError as e:
             return HookResult(h, 1, "", f"hook çalıştırılamadı: {e}")
+
+
+def decision(results: list[HookResult]) -> dict[str, Any]:
+    """Başarılı (çıkış 0) hook'ların stdout'undaki JSON kararı birleştir (sonraki hook öncekini ezer):
+      updatedInput        PreToolUse: aracın argümanlarını bununla değiştir (nesne)
+      permissionDecision  PreToolUse: "allow" (sormadan çalıştır; yasak kuralları yine geçerli), "deny", "ask"
+      reason              karar gerekçesi (deny'da modele gider)
+      additionalContext   araç sonucuna eklenecek bağlam metni
+    JSON olmayan stdout yok sayılır (eski hook'lar aynen çalışır)."""
+    out: dict[str, Any] = {}
+    notes: list[str] = []
+    for r in results:
+        if r.code != 0 or not r.stdout.lstrip().startswith("{"):
+            continue
+        try:
+            data = json.loads(r.stdout)
+        except ValueError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        data = data.get("hookSpecificOutput", data) if isinstance(data.get("hookSpecificOutput"), dict) else data
+        if isinstance(data.get("updatedInput"), dict):
+            out["updatedInput"] = data["updatedInput"]
+        if data.get("permissionDecision") in ("allow", "deny", "ask"):
+            out["permissionDecision"] = data["permissionDecision"]
+            out["reason"] = str(data.get("permissionDecisionReason") or data.get("reason") or "")[:1000]
+        if data.get("additionalContext"):
+            notes.append(str(data["additionalContext"])[:2000])
+    if notes:
+        out["additionalContext"] = "\n".join(notes)
+    return out
 
 
 def feedback(results: list[HookResult]) -> str:

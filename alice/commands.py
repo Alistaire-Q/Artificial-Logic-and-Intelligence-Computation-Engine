@@ -24,6 +24,7 @@ BUILTINS: dict[str, str] = {
     "help": "Komutları göster",
     "clear": "Konuşmayı sıfırla (yeni sohbet)",
     "compact": "Context'i şimdi özetle",
+    "btw": "İş sürerken yan soru sor: işi bölmez, konuşmaya yazılmaz (/btw <soru>)",
     "mode": "İzin modu: plan | ask | auto | yolo",
     "plan": "Plan moduna geç (sadece okur, plan yazar)",
     "model": "Rol zincirleri / modeli sabitle",

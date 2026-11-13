@@ -492,3 +492,32 @@ def test_phone_chat_does_not_move_the_desktop_chat(app):
     assert not [h for h in client.get("/api/history").json() if h["type"] == "user"]  # masaüstü sohbeti boş
     r = client.post("/api/resume", json={"id": phone, "detached": True}).json()
     assert r["ok"] and r["sid"] == phone and state.sid == desk
+
+
+def test_btw_side_question_does_not_touch_history(app):
+    state, srv, client, prov = app
+    prov.script.extend(["cevap 1", "Yan cevap: 42."])
+    events, t = collect(state, lambda e: e["type"] == "status")
+    assert client.post("/api/send", json={"text": "selam"}).json()["ok"]
+    t.join()
+    before = list(state.chat.agent.messages)
+    events, t = collect(state, lambda e: e["type"] == "btw" and not e.get("pending"))
+    assert client.post("/api/send", json={"text": "/btw sayı kaç?"}).json()["ok"]
+    t.join()
+    done = [e for e in events if e["type"] == "btw" and not e.get("pending")]
+    assert done and done[-1]["a"] == "Yan cevap: 42." and done[-1]["q"] == "sayı kaç?"
+    assert state.chat.agent.messages == before  # konuşmaya yazılmadı
+    assert "Yan soru" in prov.calls[-1]["messages"][-1]["content"] and not prov.calls[-1].get("tools")
+    assert client.post("/api/send", json={"text": "/btw"}).json()["ok"] is False
+
+
+def test_recap_summarizes_once_per_state(app):
+    state, srv, client, prov = app
+    assert client.get("/api/recap").json() == {"text": ""}  # konuşma yok
+    for m in ("bir", "iki"):
+        state.chat.agent.messages += [{"role": "user", "content": m}, {"role": "assistant", "content": m + " oldu"}]
+    prov.script.append("Dosyalar yazıldı, testler bekliyor.")
+    assert client.get("/api/recap").json()["text"] == "Dosyalar yazıldı, testler bekliyor."
+    n = len(prov.calls)
+    assert client.get("/api/recap").json()["text"].startswith("Dosyalar")
+    assert len(prov.calls) == n  # aynı hâl için tekrar üretilmez

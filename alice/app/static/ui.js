@@ -3015,6 +3015,13 @@ async function submit(textArg) {
     return;
   }
   if (textArg === undefined) remember(text);
+  if (/^\/btw(\s|$)/i.test(text)) {
+    // Yan soru işi beklemez ve bölmez: hemen gider, cevap kart olarak gelir.
+    if (textArg === undefined) { input.value = ""; autosize(); }
+    const r = await api("/api/send", { text });
+    if (!r || !r.ok) toast((r && r.error) || "yan soru gönderilemedi");
+    return;
+  }
   if (S.busy && text.startsWith("/")) {
     S.queue.push({ text, images });  // komutlar yeni tur ister: iş bitince çalışır
     drawQueue();
