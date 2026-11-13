@@ -269,6 +269,12 @@ def test_old_tool_outputs_are_shortened(tmp_path):
     agent = Agent(cfg, None, [], ToolContext(cwd=tmp_path, config=cfg), Permissions("auto"))
     for i in range(8):
         agent.messages.append({"role": "tool", "tool_call_id": str(i), "name": "read_file", "content": f"{i}" * 5000})
+    import time
+
+    agent._last_call_at = time.monotonic()
+    agent._shrink_old_outputs()  # önbellek sıcak, bağlam rahat: geçmiş değişmez (prompt önbelleği bozulmasın)
+    assert all(len(m["content"]) == 5000 for m in agent.messages if m["role"] == "tool")
+    agent._last_call_at = time.monotonic() - 400  # önbellek zaten soğudu: şimdi kısaltmanın bedeli yok
     agent._shrink_old_outputs()
     tools = [m for m in agent.messages if m["role"] == "tool"]
     assert all(len(m["content"]) < 1500 and "kısaltıldı" in m["content"] for m in tools[:2])

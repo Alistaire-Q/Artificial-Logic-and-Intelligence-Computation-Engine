@@ -67,6 +67,7 @@ class ChatResult:
     model: str
     usage: dict[str, Any] = field(default_factory=dict)
     latency: float = 0.0
+    finish: str = ""  # "length": cevap çıktı sınırına takılıp yarıda kesildi
 
     @property
     def text(self) -> str:
@@ -334,6 +335,7 @@ class OpenAICompatProvider:
             model=data.get("model") or model,
             usage=data.get("usage") if isinstance(data.get("usage"), dict) else {},
             latency=latency,
+            finish=str(choices[0].get("finish_reason") or ""),
         )
 
     def chat_stream(
@@ -459,7 +461,8 @@ class OpenAICompatProvider:
             msg["tool_calls"] = [calls[i] for i in sorted(calls)]
         if not text and not calls and finish == "length":
             raise ProviderError("too_large", "cevap max_tokens'a takıldı, içerik yok")
-        return ChatResult(normalize_message(msg), self.name, served_model, usage, time.monotonic() - t0)
+        return ChatResult(normalize_message(msg), self.name, served_model, usage, time.monotonic() - t0,
+                          finish=str(finish or ""))
 
     def list_models(self) -> list[dict[str, Any]]:
         try:

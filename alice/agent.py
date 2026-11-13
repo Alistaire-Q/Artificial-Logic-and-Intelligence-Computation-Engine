@@ -209,8 +209,22 @@ PLAN_NOTE = ("[PLAN MODU: Şu an sadece okuyup araştırabilirsin; dosya değiş
 
 
 _CATALOG_RX = re.compile(r"\n\n# Yüklenebilir araçlar\n.*?(?=\n\n# |\n\n<|\Z)", re.S)
+# Ret sayacı: izin verilmeyen çağrılar art arda bu kadar ya da turda toplam bu kadar olunca tur durur. Gözetimsiz
+# ajan (KAIROS, PR takibi, görevler) ya da plan modu reddedildikçe aynı şeyi başka biçimde deneyip duruyordu.
+DENIAL_LIMITS = (3, 20)
+DENIAL_HALT = ("İzin verilmeyen işlemleri art arda denediğim için durdum: bu iş şu anki izin moduyla yapılamıyor. "
+               "İzin modunu değiştirip ya da ne yapmamı istediğini söyleyip \"devam et\" yazarsan sürdürürüm.")
+MAX_CUTOFFS = 3  # çıktı sınırında kesilen cevap en fazla bu kadar kez sürdürülür
+CUTOFF_NOTE = ("Cevabın çıktı sınırına takılıp yarıda kesildi. Tam kaldığın yerden, önceki kısmı tekrar etmeden "
+               "ve özür dilemeden devam et.")
 KEEP_OUTPUTS = 6  # son bu kadar araç çıktısı tam kalır
 OLD_OUTPUT_CHARS = 1200  # daha eskilerin uzunları bu kadara kısaltılır
+# Geçmişteki bir mesajı değiştirmek sağlayıcının prompt önbelleğini o noktadan sonrası için boşa çıkarır. Kısaltma
+# her adımda değil, toplu ve ancak gerektiğinde yapılır: önbellek zaten soğuduysa (son istekten bu kadar sn sonra)
+# ya da bağlam özetleme eşiğinin yarısını geçtiyse ve kısaltılacak yeterince eski çıktı biriktiyse.
+CACHE_COLD_S = 300
+TRIM_BATCH = 8
+IMAGE_SLACK = 3  # ekran görüntüleri keep_images + bu kadar olunca topluca budanır
 NUDGE_PREFIX = "[devam kontrolü] "
 # Cevabın sonu "yapacağım" diyorsa iş yarım kalmış demektir.
 _PROMISE_RX = re.compile(
@@ -323,6 +337,7 @@ class Agent:
         self._last_prompt: tuple[int, int, Any] | None = None  # (sağlayıcının saydığı token, mesaj sayısı, son mesaj)
         self.output_limit = int(a.get("tool_output_chars", 12000))
         self.keep_images = int(a.get("keep_images", 2))
+        self._last_call_at = 0.0  # son model çağrısının bittiği an (monotonic): önbellek soğudu mu
         self.stream = bool(a.get("stream", True))
         # Araçlarla çalışırken iş bitmeden durursa ("şimdi testleri çalıştıracağım" deyip susmak, todo listesinde
         # bitmemiş adım bırakmak) en fazla bu kadar kez devam etmesi hatırlatılır. 0 = kapalı.
@@ -436,8 +451,8 @@ class Agent:
 
         from alice import buddy
 
-        if not buddy.settings(self.config).get("enabled", True):
-            return
+        if not buddy.settings(self.config).get("enabled", True) or self.is_child or self.role == "voice"                 or self.memory_channel in ("ses", "telefon", "voice", "call"):
+            return  # sesli konuşmada ve alt ajanlarda arkadaş yorum yapmaz (gereksiz model çağrısı)
 
         def work() -> None:
             try:
@@ -568,6 +583,8 @@ class Agent:
         self._turn_start = len(self.messages) - 1
         self.stats["turns"] += 1
         stop_hooks = 3  # Stop hook'u ajanı en fazla bu kadar kez geri çevirebilir (sonsuz döngü olmasın)
+        cutoffs, cut_text = 0, ""  # çıktı sınırında kesilen cevabın önceki parçaları
+        self._denials = [0, 0]  # (art arda, toplam) reddedilen çağrı
         self._steering = not self.is_child
         try:
             for _ in range(steps):
@@ -614,7 +631,13 @@ class Agent:
                 sink.parts.clear()  # metin artık geçmişte: kesilirse bir daha "[durduruldu]" diye eklenmesin
                 self.ui.stream_end(msg.get("content") or "", f"{res.provider}:{res.model}")
                 if msg.get("content"):
-                    final = msg["content"]
+                    final = cut_text + msg["content"]
+                if not msg.get("tool_calls") and getattr(res, "finish", "") == "length" and cutoffs < MAX_CUTOFFS:
+                    # Cevap yazının ortasında kesildi: yarım metni son cevap sayma, kaldığı yerden sürdürt.
+                    cutoffs += 1
+                    cut_text = final
+                    self.messages.append({"role": "user", "content": NUDGE_PREFIX + CUTOFF_NOTE, "_nudge": True})
+                    continue
                 if not msg.get("tool_calls"):
                     if self._drain_inbox():
                         continue  # cevap yazarken kullanıcı yeni bir şey söyledi: tur bitmeden onu da ele al
@@ -646,6 +669,8 @@ class Agent:
                 t_tools = time.monotonic()
                 self._run_tools(msg["tool_calls"])
                 self.stats["tool_s"] += time.monotonic() - t_tools
+                if self._denials[0] >= DENIAL_LIMITS[0] or self._denials[1] >= DENIAL_LIMITS[1]:
+                    return self._halt(DENIAL_HALT) or final
                 if self.on_step is not None:
                     try:
                         self.on_step()
@@ -688,6 +713,7 @@ class Agent:
         """Bir model çağrısını oturum istatistiğine ekle."""
         st = self.stats
         now = time.monotonic()
+        self._last_call_at = now
         st["steps"] += 1
         st["llm_s"] += now - started
         if first:
@@ -975,7 +1001,9 @@ class Agent:
         pending_images: list[tuple[str, list[str]]] = []
         for call, result in zip(calls, results, strict=True):
             name = call["function"]["name"]
-            text = truncate(result.text, self.output_limit)
+            from alice import tool_results
+
+            text = tool_results.shape(result.text, self.output_limit, str(call.get("id") or ""), name)
             if result.is_error:
                 text = f"HATA: {text}"
             text += self._loop_note(call, result)
@@ -1108,6 +1136,7 @@ class Agent:
                                  "kullanıcı onaylayıp modu değiştirince uygularsın.", is_error=True)
             self.ui.tool_start(call["id"], name, summary)
             self.ui.tool_end(call["id"], name, res)
+            self._note_denial()
             return res
         if verdict == "ask":
             from alice import guard
@@ -1138,9 +1167,17 @@ class Agent:
                     self.permissions.always_allow.add(name)
             elif ans not in ("y", "p"):
                 self._log_outward(tool, args, summary, "rejected")
+                self._note_denial()
                 return ToolResult("Kullanıcı bu çağrıyı reddetti. Aynı şeyi tekrar deneme; başka yol bul ya da kullanıcıya sor.",
                                   is_error=True)
+        if hasattr(self, "_denials"):
+            self._denials[0] = 0  # izin verilen çağrı art arda sayımı sıfırlar
         return tool, args, summary
+
+    def _note_denial(self) -> None:
+        d = self.__dict__.setdefault("_denials", [0, 0])
+        d[0] += 1
+        d[1] += 1
 
     def _execute(self, call: dict[str, Any], tool: Tool, args: dict[str, Any], summary: str) -> ToolResult:
         self.ui.tool_start(call["id"], tool.name, summary)
@@ -1268,8 +1305,13 @@ class Agent:
         except (AllProvidersFailed, KeyError) as e:
             return f"(görüntü açıklanamadı: {str(e)[:200]})"
 
+    def _cache_cold(self) -> bool:
+        return bool(self._last_call_at) and time.monotonic() - self._last_call_at > CACHE_COLD_S
+
     def _prune_images(self) -> None:
         idx = [i for i, m in enumerate(self.messages) if m.get("_image")]
+        if len(idx) <= self.keep_images + IMAGE_SLACK and not (self._cache_cold() and len(idx) > self.keep_images):
+            return  # her yeni ekran görüntüsünde budamak önbelleği her adımda bozuyordu: topluca buda
         for i in idx[:-self.keep_images] if self.keep_images else idx:
             self.messages[i] = {"role": "user", "content": "[eski ekran görüntüsü yer kazanmak için kaldırıldı]", "_image": False}
 
@@ -1278,7 +1320,12 @@ class Agent:
         kısaltılır. Uzun bir işte okunan dosyalar, listeler, sayfalar her adımda baştan gönderiliyor ve bağlamı
         dolduruyordu; model onların özünü zaten kullandı, gerekirse tekrar okur."""
         idx = [i for i, m in enumerate(self.messages) if m["role"] == "tool" and isinstance(m.get("content"), str)]
-        for i in idx[:-KEEP_OUTPUTS]:
+        todo = [i for i in idx[:-KEEP_OUTPUTS] if len(self.messages[i]["content"]) > OLD_OUTPUT_CHARS * 1.5]
+        if not todo:
+            return
+        if not self._cache_cold() and (len(todo) < TRIM_BATCH or self.context_tokens() < self.compact_at * 0.5):
+            return  # önbellek sıcak ve bağlam rahat: geçmişi değiştirme
+        for i in todo:
             c = self.messages[i]["content"]
             if len(c) > OLD_OUTPUT_CHARS * 1.5:
                 self.messages[i] = {**self.messages[i], "content": "[eski çıktı, yer kazanmak için kısaltıldı; "

@@ -57,6 +57,7 @@ def test_decay_care_and_night_sleep(tmp_path):
 def test_on_turn_feeds_and_sometimes_comments(tmp_path, monkeypatch):
     p = tmp_path / "b.json"
     c = make_config({"brain": ["a:m"]})
+    c.data["buddy"] = {"chatter": True}
 
     class Router:
         def __init__(self):

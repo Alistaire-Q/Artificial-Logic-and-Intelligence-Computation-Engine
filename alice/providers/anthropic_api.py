@@ -130,6 +130,31 @@ def to_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     return out
 
 
+_CACHEABLE = {"text", "tool_result", "image", "document"}
+
+
+def mark_cache(kw: dict[str, Any]) -> None:
+    """Prompt önbelleği için iki işaret: sistem metni (araç tanımlarıyla birlikte önek) ve son mesajın son bloğu.
+    Böylece her adımda yalnız yeni eklenen kısım işlenir; geçmiş önbellekten okunur (çok daha ucuz ve hızlı)."""
+    eph = {"type": "ephemeral"}
+    system = kw.get("system")
+    if isinstance(system, str) and system.strip():
+        kw["system"] = [{"type": "text", "text": system, "cache_control": eph}]
+    msgs = kw.get("messages") or []
+    if not msgs:
+        return
+    last = msgs[-1]
+    content = last.get("content")
+    if isinstance(content, str):
+        if content.strip():
+            last["content"] = [{"type": "text", "text": content, "cache_control": eph}]
+    elif isinstance(content, list) and content:
+        block = content[-1]
+        if isinstance(block, dict) and block.get("type") in _CACHEABLE and (block.get("type") != "text"
+                                                                            or str(block.get("text") or "").strip()):
+            content[-1] = {**block, "cache_control": eph}
+
+
 def from_message(msg: Any) -> tuple[dict[str, Any], dict[str, Any]]:
     """Claude cevabı → (OpenAI biçiminde mesaj, kullanım)."""
     texts, calls = [], []
@@ -193,6 +218,7 @@ class AnthropicProvider:
         t = to_tools(tools)
         if t:
             kw["tools"] = t
+        mark_cache(kw)
         if not model.startswith(("claude-3", "claude-haiku-4")):
             kw["thinking"] = {"type": "adaptive", "display": "summarized"}
         effort = (extra or {}).get("reasoning_effort") or ((extra or {}).get("output_config") or {}).get("effort")
@@ -247,7 +273,8 @@ class AnthropicProvider:
             raise self._error(e) from e
         self._check(msg)
         out, usage = from_message(msg)
-        return ChatResult(out, self.name, getattr(msg, "model", None) or model, usage, time.monotonic() - t0)
+        return ChatResult(out, self.name, getattr(msg, "model", None) or model, usage, time.monotonic() - t0,
+                          finish="length" if getattr(msg, "stop_reason", "") == "max_tokens" else "")
 
     def chat_stream(self, model: str, messages: list[dict[str, Any]], on_delta: Callable[[str], None],
                     tools: list[dict[str, Any]] | None = None, temperature: float | None = None,
@@ -285,7 +312,8 @@ class AnthropicProvider:
             raise self._error(e) from e
         self._check(msg)
         out, usage = from_message(msg)
-        return ChatResult(out, self.name, getattr(msg, "model", None) or model, usage, time.monotonic() - t0)
+        return ChatResult(out, self.name, getattr(msg, "model", None) or model, usage, time.monotonic() - t0,
+                          finish="length" if getattr(msg, "stop_reason", "") == "max_tokens" else "")
 
     def list_models(self) -> list[dict[str, Any]]:
         try:

@@ -727,6 +727,7 @@ class ChatGPTProvider(OpenAICompatProvider):
         calls: dict[str, dict[str, Any]] = {}
         usage: dict[str, Any] = {}
         served = model
+        finish = ""
         got_data = False
         try:
             with self._client.stream("POST", f"{self.cfg.base_url}/responses", headers=self._auth_headers(key),
@@ -770,8 +771,10 @@ class ChatGPTProvider(OpenAICompatProvider):
                                 "name": item.get("name") or "", "arguments": item.get("arguments") or ""}}
                             if on_tool is not None:
                                 on_tool(item.get("name") or "", len(item.get("arguments") or ""))
-                    elif kind == "response.completed":
+                    elif kind in ("response.completed", "response.incomplete"):
                         resp = ev.get("response") or {}
+                        if (resp.get("incomplete_details") or {}).get("reason") == "max_output_tokens":
+                            finish = "length"
                         served = resp.get("model") or served
                         u = resp.get("usage") or {}
                         usage = {"prompt_tokens": u.get("input_tokens", 0), "completion_tokens": u.get("output_tokens", 0),
@@ -792,7 +795,7 @@ class ChatGPTProvider(OpenAICompatProvider):
             msg["tool_calls"] = list(calls.values())
         if not msg["content"] and not calls:
             raise ProviderError("server", "ChatGPT boş cevap döndü")
-        return ChatResult(normalize_message(msg), self.name, served, usage, time.monotonic() - t0)
+        return ChatResult(normalize_message(msg), self.name, served, usage, time.monotonic() - t0, finish=finish)
 
 
 def make_client(pc: ProviderConfig, timeout: float = 180.0) -> OpenAICompatProvider:
