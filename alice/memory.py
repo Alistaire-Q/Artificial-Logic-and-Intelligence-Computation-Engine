@@ -302,7 +302,7 @@ class LongMemory:
         self.dream_hours = float(o.get("dream_hours", 24))
         self.dream_sessions = int(o.get("dream_sessions", 5))
         self._turns_since_extract = 0
-        self._last_dream_scan = 0.0
+        self._last_dream_scan: float | None = None  # monotonic; None = hiç taranmadı (açılıştan hemen sonra monotonic < 600 olabilir)
         self._dream_lock = threading.Lock()
         self.embedder = embedder  # alice.memvec.Embedder ya da None (sadece kelime araması)
         self.embed_min = float(o.get("embed_min", 0.68))  # bu kosinüsün altı "ilgisiz" sayılır
@@ -1231,7 +1231,7 @@ class LongMemory:
         last = self.notes.last_dream()
         if time.time() - last < self.dream_hours * 3600:
             return False
-        if time.monotonic() - self._last_dream_scan < 600:
+        if self._last_dream_scan is not None and time.monotonic() - self._last_dream_scan < 600:
             return False
         self._last_dream_scan = time.monotonic()
         groups = self.sessions(after=last or time.time() - 7 * 86400)

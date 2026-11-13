@@ -377,10 +377,10 @@ def test_maybe_dream_waits_for_time_and_enough_conversations():
     for i in range(2):
         _chat(m, now - 10 * 3600 + i * 3600, f"konuşma {i}", "cevap")
     assert not m.maybe_dream() and not seen  # 2 konuşma < 3
-    m._last_dream_scan = 0.0
+    m._last_dream_scan = None
     _chat(m, now - 5 * 3600, "üçüncü konuşma", "cevap")
     assert m.maybe_dream() and seen
-    m._last_dream_scan = 0.0
+    m._last_dream_scan = None
     assert not m.maybe_dream()  # son Dream'in üstünden 24 saat geçmedi
     assert m.notes.last_dream() > now - 60
 
