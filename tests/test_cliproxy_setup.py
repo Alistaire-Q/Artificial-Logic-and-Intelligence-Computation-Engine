@@ -88,3 +88,18 @@ def test_install_rejects_bad_checksum(tmp_path, monkeypatch):
     monkeypatch.setattr(cliproxy_setup, "_download", fake_download)
     r = cliproxy_setup.install("v9.9.9")
     assert not r["ok"] and "checksum" in r["error"]
+
+
+def test_cliproxy_key_comes_from_proxy_keys_file(tmp_path, monkeypatch):
+    """.env'deki kopya bozulsa da ALICE proxy'nin kabul ettiği anahtarı (keys.txt) gönderir."""
+    from alice.config import ProviderConfig
+
+    monkeypatch.setenv("ALICE_HOME", str(tmp_path))
+    monkeypatch.setenv("CLIPROXY_API_KEY", "eski-bozuk")
+    pc = ProviderConfig("cliproxy", "http://127.0.0.1:8317/v1", api_key_env="CLIPROXY_API_KEY")
+    assert pc.api_keys == ["eski-bozuk"]  # keys.txt yoksa .env
+    (tmp_path / "cliproxy").mkdir()
+    (tmp_path / "cliproxy" / "keys.txt").write_text("api_key=dogru\nmanagement_key=y\n", encoding="utf-8")
+    assert pc.api_keys == ["dogru"]
+    other = ProviderConfig("groq", "http://x", api_key_env="CLIPROXY_API_KEY")
+    assert other.api_keys == ["eski-bozuk"]  # yalnız proxy için

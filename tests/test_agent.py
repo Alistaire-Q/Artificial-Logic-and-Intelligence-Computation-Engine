@@ -101,12 +101,13 @@ def test_images_attached_when_brain_has_vision(workdir):
 
     providers = {"a": {"base_url": "http://a", "api_key_env": "", "vision_models": ["*"]},
                  "b": {"base_url": "http://b", "api_key_env": ""}}
-    agent, provs, _ = make_agent([tool_call("shot", {}), tool_call("shot", {}, "c2"), tool_call("shot", {}, "c3"), "ok"],
+    agent, provs, _ = make_agent([tool_call("shot", {}), tool_call("shot", {}, "c2"), tool_call("shot", {}, "c3"),
+                                  tool_call("shot", {}, "c4"), tool_call("shot", {}, "c5"), "ok"],
                                  workdir, providers=providers, keep_images=1)
     agent.tools["shot"] = Shot()
     agent.run_turn("bak")
     imgs = [m for m in agent.messages if m.get("_image")]
-    assert len(imgs) == 1  # eski görüntüler budandı
+    assert len(imgs) == 1  # keep_images + IMAGE_SLACK aşılınca topluca budandı
     assert not provs["b"].calls
 
 
@@ -328,3 +329,77 @@ def test_compacted_messages_are_kept_in_the_session_archive(workdir):
     assert "mi" not in users[0] and agent.messages[users[-1]["mi"]]["role"] == "user"
     assert any(h["type"] == "info" and "özetlendi" in h["text"] for h in items)
     assert sess.load_archive("yok") == []
+
+
+def test_cut_off_reply_is_continued_and_joined(workdir):
+    agent, provs, _ = make_agent([{"content": "Birinci yarı, ", "_finish": "length"},
+                                  {"content": "ikinci yarı.", "_finish": "stop"}], workdir)
+    assert agent.run_turn("uzun anlat") == "Birinci yarı, ikinci yarı."
+    nudges = [m for m in agent.messages if m.get("_nudge")]
+    assert len(nudges) == 1 and "kaldığın yerden" in nudges[0]["content"]
+
+
+def test_cut_off_continuation_is_bounded(workdir):
+    agent, provs, _ = make_agent([{"content": f"p{i} ", "_finish": "length"} for i in range(5)], workdir)
+    out = agent.run_turn("sonsuz")
+    assert out.startswith("p0 p1 p2 p3") and len(provs["a"].calls) == 4  # 1 + en fazla 3 devam
+
+
+def test_large_tool_output_is_saved_not_lost(workdir):
+    from alice.tools.base import Tool, ToolResult
+
+    class Big(Tool):
+        name = "big"
+        description = "fake"
+
+        def run(self, ctx, **a):
+            nl = chr(10)
+            return ToolResult("BAŞ" + nl + ("orta satır" + nl) * 5000 + "GİZLİ-ORTA" + nl
+                              + ("orta satır" + nl) * 5000 + "SON")
+
+    agent, _, _ = make_agent([tool_call("big", {}), "tamam"], workdir, tool_output_chars=4000)
+    agent.tools["big"] = Big()
+    agent.run_turn("çalıştır")
+    msg = next(m for m in agent.messages if m.get("role") == "tool")
+    assert len(msg["content"]) <= 4200 and "BAŞ" in msg["content"] and "SON" in msg["content"]
+    import re
+    from pathlib import Path
+
+    path = Path(re.search(r"tam çıktı dosyada: (.+?\.txt)", msg["content"]).group(1))
+    assert "GİZLİ-ORTA" in path.read_text(encoding="utf-8")  # kesilen kısım dosyada duruyor
+
+
+def test_repeated_denials_stop_the_turn(workdir):
+    calls = [tool_call("write_file", {"path": f"x{i}.txt", "content": "a"}, f"w{i}") for i in range(6)] + ["bitti"]
+    agent, provs, _ = make_agent(calls, workdir, mode="plan")
+    out = agent.run_turn("dosya yaz")
+    assert "art arda" in out and len(provs["a"].calls) == 3  # üçüncü retten sonra durdu
+    assert not any((workdir / f"x{i}.txt").exists() for i in range(6))
+
+
+def test_allowed_call_resets_denial_streak(workdir):
+    seq = [tool_call("write_file", {"path": "a.txt", "content": "a"}, "w1"),
+           tool_call("write_file", {"path": "b.txt", "content": "a"}, "w2"),
+           tool_call("list_dir", {"path": "."}, "l1"),
+           tool_call("write_file", {"path": "c.txt", "content": "a"}, "w3"), "tamam"]
+    agent, provs, _ = make_agent(seq, workdir, mode="plan")
+    assert agent.run_turn("dene") == "tamam"
+
+
+def test_request_prefix_stays_identical_for_prompt_cache(workdir):
+    """Önbellek isteğin başından itibaren eşleşir: sistem istemi ve araç listesi turlar boyunca aynı kalmalı."""
+    from alice.memory import LongMemory
+
+    agent, provs, _ = make_agent(["bir", tool_call("windows", {"action": "list"}), "iki", "üç"], workdir)
+    agent.memory = LongMemory(":memory:", {})
+    agent.run_turn("selam")
+    system1 = agent.messages[0]["content"]
+    names1 = [s["function"]["name"] for s in provs["a"].calls[-1]["tools"]]
+    agent.run_turn("pencereleri listele")  # masaüstü grubu açılır: yeni araçlar sona eklenmeli
+    agent.run_turn("teşekkürler")
+    assert agent.messages[0]["content"] == system1  # konuşma kaydı sistem istemini değiştirmez
+    names3 = [s["function"]["name"] for s in provs["a"].calls[-1]["tools"]]
+    assert names3[:len(names1)] == names1 and len(names3) > len(names1)
+    agent.memory.remember("Kullanıcı kısa cevap sever.", "preference")
+    agent.refresh_memory()
+    assert agent.messages[0]["content"] != system1  # not değişince yenilenir

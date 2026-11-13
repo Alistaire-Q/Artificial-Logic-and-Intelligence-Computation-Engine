@@ -272,4 +272,7 @@ def post(api: Any, repo: str, number: int, sha: str, findings: list[Finding], di
                    "body": summary.removesuffix(f"\n\n{ALICE_MARK}") + "\n\n"
                    + "\n\n".join(f.text() for f in findings) + f"\n\n{ALICE_MARK}"}
         r = api.post(f"/repos/{repo}/pulls/{number}/reviews", payload)
+    from alice import undercover
+
+    undercover.remember_own(r.get("id"))
     return str(r.get("html_url") or "")

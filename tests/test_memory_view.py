@@ -1,6 +1,8 @@
-"""Ayarlar > Hafıza: bilgileri tek tek silme ve eski rolden ("sevgili/mommy") kalan izleri temizleme."""
+"""Ayarlar > Hafıza: notları görme, düzenleme, silme, Dream ve eski rolden ("sevgili/mommy") kalan izleri temizleme."""
 
 from __future__ import annotations
+
+import json
 
 import httpx
 import pytest
@@ -24,10 +26,10 @@ def seeded() -> LongMemory:
 def test_old_role_traces_found_and_purged_but_user_words_kept():
     mem = seeded()
     old = mem.old_role()
-    assert [f.text for f in old["facts"]] == ["Kullanıcıya bebeğim diye hitap et."]
+    assert [n.body for n in old["facts"]] == ["Kullanıcıya bebeğim diye hitap et."]
     assert len(old["summaries"]) == 1 and len(old["episodes"]) == 1
     assert mem.purge_old_role() == {"facts": 1, "summaries": 1, "episodes": 1}
-    assert [f.text for f in mem.facts()] == ["Kullanıcı DCS'de F-16 uçuruyor."]
+    assert [n.body for n in mem.notes.scan()] == ["Kullanıcı DCS'de F-16 uçuruyor."]
     eps = mem.recent(5)
     assert [e.user for e in eps] == ["nasılsın", "saat kaç"] and eps[0].reply == "" and eps[1].reply == "Saat beş."
     assert mem.old_role() == {"facts": [], "summaries": [], "episodes": []}
@@ -44,16 +46,26 @@ def app(workdir):
     srv.stop()
 
 
-def test_memory_tab_lists_deletes_and_purges(app):
+def test_memory_tab_lists_edits_deletes_dreams_and_purges(app):
     state, client = app
     view = client.get("/api/memory").json()
     assert view["enabled"] and view["old_role"]["facts"] == 1 and view["old_role"]["episodes"] == 1
-    old = next(f for f in view["facts"] if f["old"])
-    assert old["kind"] == "tercih" and "bebeğim" in old["text"]
-    keep = next(f for f in view["facts"] if not f["old"])
-    assert client.post("/api/memory/action", json={"action": "forget", "id": keep["id"]}).json()["ok"]
-    assert client.post("/api/memory/action", json={"action": "forget", "id": 9999}).status_code == 400
+    notes = view["books"][0]["notes"]
+    old = next(n for n in notes if n["old"])
+    assert old["type"] == "feedback" and "bebeğim" in old["body"]
+    keep = next(n for n in notes if not n["old"])
+    r = client.post("/api/memory/action", json={"action": "save", "key": keep["key"], "body": "F-16 ve F-18 uçurur.",
+                                                  "description": "DCS'de uçtuğu uçaklar"}).json()
+    assert r["ok"]
+    edited = state.agent.memory.notes.get(keep["name"])
+    assert edited.body == "F-16 ve F-18 uçurur." and edited.source == "kullanıcı"  # elle düzeltilen korunur
+    state.agent.memory.synthesizer = lambda p: json.dumps({"summary": "Zaten derli toplu."})
+    r = client.post("/api/memory/action", json={"action": "dream"}).json()
+    assert r["ok"] and any("derli toplu" in x for x in r["done"])
+    assert client.get("/api/memory").json()["dream"]["summary"]
     r = client.post("/api/memory/action", json={"action": "purge_old_role"}).json()
     assert r["removed"] == {"facts": 1, "summaries": 1, "episodes": 1}
+    assert client.post("/api/memory/action", json={"action": "forget", "key": keep["key"]}).json()["ok"]
+    assert client.post("/api/memory/action", json={"action": "forget", "key": "genel:yok"}).status_code == 400
     view = client.get("/api/memory").json()
-    assert view["facts"] == [] and sum(v for k, v in view["old_role"].items() if k != "examples") == 0
+    assert view["books"][0]["notes"] == [] and sum(v for k, v in view["old_role"].items() if k != "examples") == 0

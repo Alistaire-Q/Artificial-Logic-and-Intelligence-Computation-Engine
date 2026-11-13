@@ -363,6 +363,22 @@ function addAiStatic(text) {
   add(root);
 }
 // Aynı not art arda gelirse (model atlandı, limit...) satır çoğalmasın, sayaç artsın.
+/* /btw yan sorusu: iş sürerken sorulur, konuşmaya yazılmaz. Önce "düşünüyor" kartı, cevap gelince aynı kart dolar. */
+function addBtw(ev) {
+  let card = [...document.querySelectorAll(".btw-card.pending")].find((c) => c._q === ev.q);
+  if (!card) {
+    card = el("div", "btw-card pending");
+    card._q = ev.q;
+    card.append(el("div", "btw-q", "Yan soru: " + ev.q), el("div", "btw-a md", "düşünüyor…"));
+    add(card);
+  }
+  if (!ev.pending) {
+    card.classList.remove("pending");
+    card.querySelector(".btw-a").replaceChildren(renderMd(ev.a || ""));
+  }
+  toBottom();
+}
+
 function addNote(text, kind) {
   const last = lastContent();
   if (last && last.classList.contains("note") && last._text === text) {
@@ -800,7 +816,7 @@ async function previewFile(f) {
       body.appendChild(fr);
     } else if (r.kind === "markdown") {
       const md = el("div", "md");
-      md.innerHTML = renderMd(r.text);
+      md.replaceChildren(renderMd(r.text));
       body.appendChild(md);
     } else if (r.kind === "html") {
       const fr = el("iframe");

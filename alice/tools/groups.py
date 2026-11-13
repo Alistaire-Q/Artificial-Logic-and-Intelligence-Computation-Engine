@@ -23,23 +23,30 @@ CORE = {"read_file", "write_file", "edit_file", "list_dir", "glob", "grep", "run
 # grup -> (araçlar, kısa açıklama, anahtar kelime regex'i)
 GROUPS: dict[str, tuple[set[str], str, str]] = {
     "files": ({"file_ops", "multi_edit", "apply_patch", "notebook_edit", "find_files", "send_file", "next_step",
-               "share", "permissions", "hooks", "usage"},
+               "share", "permissions", "hooks", "usage", "code_intel", "mcp_resources"},
               "dosya taşıma/kopyalama/silme, kişisel dosya bulma (indirilenler, son açılanlar), bir dosyada çok "
               "değişiklik, çok dosyaya yama, Jupyter defteri, kullanıcıya dosya gösterme",
               r"taşı|kopyala|\bsil(in|e|er misin)?\b|yeniden adlandır|adını değiştir|çöp|düzenle|değiştir|düzelt|refactor|"
               r"yama|patch|notebook|ipynb|jupyter|\bkod|code|script|fonksiyon|\.py\b|\.js\b|\.ts\b|bug|klasör|"
               r"indirdiğim|indirilen|açtığım|nerede(ydi)?\b|\bpdf|excel|word dosya|belge(yi|si|m)|toparla|"
               r"paylaş|bağlantı(sını)? ver|link(ini)? ver|izin(ler)?|artık sorma|sormadan|\bhook|her (dosya )?düzenleme|"
-              r"token|kullanım|nereye gitti|harcadı"),
+              r"token|kullanım|nereye gitti|harcadı|\bmcp\b|lint|tip hata|derleme hata|tanım(ı|landığı)|nerede kullanıl|"
+              r"sembol|referans"),
     "plan": ({"todo_write", "next_step", "monitor", "session", "run_plan", "task_control", "task", "subagents",
-              "agent_defs", "process_output", "process_stop", "process_wait", "skill", "exit_plan_mode"},
+              "agent_defs", "process_output", "process_stop", "process_wait", "skill", "exit_plan_mode",
+              "enter_plan_mode", "notify", "advisor"},
              "çok adımlı iş planı ve yapılacaklar listesi, tur sonu özet kutusu, alt ajan, ayrı sohbet başlatma/"
              "devretme, arka planda izleyip olay olunca dönme, arka plandaki komutun çıktısı/bekleme/durdurma, "
              "beceriler, plan onayı",
              r"önce .* sonra|ardından|sonra da|adım adım|planla|alt ajan|ajan tanımla|ajanlar(ım)?\b|arka planda|"
              r"background|sunucu(yu)? başlat|"
              r"dev server|npm run|\bwatch\b|beceri|skill|bitince|bitti(ğ|g)inde|haber ver|izle|ayrı (sohbet|oturum)|"
-             r"paralel|devret"),
+             r"paralel|devret|danış|advisor|ikinci görüş"),
+    "companions": ({"buddy", "kairos"},
+                   "BUDDY (küçük arkadaş: hâli, okşa, besle, ad koy) ve KAIROS (arka plan nöbeti: durum, aç/kapa, "
+                   "şimdi uyandır)",
+                   r"\bbuddy|bad[iı]\b|tamagotchi|evcil|minik arkadaş|kairos|nöbet|arka plan(da)? (bak|kolla)|"
+                   r"kendi kendine uyan"),
     "desktop": ({"computer", "computer_task", "ui_elements", "ui_act", "clipboard", "reflex", "app", "windows", "game"},
                 "uygulama/pencere açma-kapama, ekran görüntüsü, fare/klavye, masaüstü uygulamalarında tıklama, pano, "
                 "oyun oturumu (turlar, notlar)",

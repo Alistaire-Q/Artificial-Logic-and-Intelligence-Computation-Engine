@@ -37,7 +37,7 @@ from alice.tools import ToolContext, all_tools, attach_mcp, cleanup
 from alice.tools.base import DesktopLock, ToolResult
 
 STATIC = Path(__file__).parent / "static"
-STATIC_FILES = {"app.js": "text/javascript", "projects.js": "text/javascript", "ui.js": "text/javascript",
+STATIC_FILES = {"app.js": "text/javascript", "projects.js": "text/javascript", "ui.js": "text/javascript", "buddy.js": "text/javascript",
                 "main.js": "text/javascript", "app.css": "text/css", "marked.min.js": "text/javascript",
                 "purify.min.js": "text/javascript", "highlight.js": "text/javascript", "icon.svg": "image/svg+xml", "alice.png": "image/png", "quick.js": "text/javascript",
                 "quick.css": "text/css", "m.css": "text/css", "m.js": "text/javascript",
@@ -1068,6 +1068,8 @@ class AppState:
         ("greeting", "away_minutes"): (60, 90, 120, 180),
         ("memory", "digest"): (True, False),
         ("gmail", "notify"): (True, False),
+        ("buddy", "enabled"): (True, False),
+        ("buddy", "chatter"): (True, False),
     }
 
     def assistant(self) -> dict[str, Any]:
@@ -1095,6 +1097,40 @@ class AppState:
             "agents": [{"name": a.name, "description": a.description, "path": str(a.path)}
                        for a in load_agents(self.ctx.cwd).values()],
         }
+
+    # ------------------------------------------------------------------ BUDDY ve KAIROS
+    def buddy_view(self) -> dict[str, Any]:
+        from alice import buddy
+
+        try:
+            router = self.agent.router
+        except AttributeError:
+            router = None
+        return buddy.view(self.cfg, router=router)
+
+    def buddy_action(self, action: str, value: str = "") -> dict[str, Any]:
+        from alice import buddy
+
+        if action not in ("pet", "feed", "rename"):
+            return {"ok": False, "error": "bilinmeyen işlem"}
+        return {"ok": True, "text": buddy.act(action, value), "buddy": buddy.view(self.cfg)}
+
+    def kairos_view(self) -> dict[str, Any]:
+        from alice import kairos
+
+        return {**kairos.view(), "enabled": kairos.is_enabled(self.cfg)}
+
+    def kairos_action(self, action: str) -> dict[str, Any]:
+        from alice import kairos
+
+        if action == "wake":
+            kairos.request_wake()
+        elif action in ("on", "off"):
+            kairos.set_enabled(self.cfg, action == "on")
+            self.cfg.data.setdefault("kairos", {})["enabled"] = action == "on"
+        else:
+            return {"ok": False, "error": "bilinmeyen işlem"}
+        return {"ok": True, **self.kairos_view()}
 
     def assistant_set(self, section: str, key: str, value: Any) -> bool:
         from alice.config import set_config_value
@@ -1243,19 +1279,36 @@ class AppState:
 
     # ------------------------------------------------------------------ Hafıza sekmesi
     def memory_view(self) -> dict[str, Any]:
-        """Hafızadaki bilgiler (tek tek silinebilir), açık takipler ve eski rolden kalan izler."""
-        from alice.memory import KINDS, OLD_ROLE_RX
+        """Hafızadaki notlar (kapsama göre; açılıp düzenlenebilir, silinebilir), açık takipler, son Dream ve eski
+        rolden kalan izler."""
+        from alice.memdir import TYPE_TR, age_text
+        from alice.memory import OLD_ROLE_RX
 
         mem = self.agent.memory
         if mem is None:
-            return {"enabled": False, "facts": [], "followups": [], "old_role": {}, "text": ""}
+            return {"enabled": False, "books": [], "followups": [], "old_role": {}, "text": ""}
         old = mem.old_role()
+        cwd = getattr(self.agent.ctx, "cwd", None)
+        roots = {b.root for b in mem.books(cwd)}
+        books = mem.all_books() + [b for b in mem.books(cwd) if b.root not in {x.root for x in mem.all_books()}]
+        out = []
+        for b in books:
+            notes = b.scan()
+            out.append({
+                "scope": b.scope, "root": str(b.root), "current": b.root in roots,
+                "label": "Genel" if b.scope == "genel" else b.root.parent.name,
+                "notes": [{"key": n.key, "name": n.name, "title": n.title, "type": n.type,
+                           "type_tr": TYPE_TR.get(n.type, n.type or "?"), "description": n.description,
+                           "body": n.body, "age": age_text(n.modified), "source": n.source,
+                           "old": bool(OLD_ROLE_RX.search(f"{n.description}\n{n.body}"))} for n in notes],
+                "backups": b.backups()[:5], "last_dream": b.last_dream(),
+            })
         return {
             "enabled": True,
-            "facts": [{"id": f.id, "kind": KINDS.get(f.kind, f.kind), "text": f.text,
-                       "old": bool(OLD_ROLE_RX.search(f.text))} for f in mem.facts()],
+            "books": out,
             "followups": [{"id": f.id, "text": f.line()} for f in mem.followups()],
-            "portrait": mem._meta("portrait") or "",
+            "dream": {"summary": mem._meta("dream_summary") or "", "at": float(mem._meta("dream_at") or 0),
+                      "enabled": mem.dream_enabled, "hours": mem.dream_hours, "sessions": mem.dream_sessions},
             "old_role": {"facts": len(old["facts"]), "summaries": len(old["summaries"]),
                          "episodes": len(old["episodes"]),
                          "examples": [e.reply[:140] for e in old["episodes"][-3:]] + [s.text[:140] for s in old["summaries"][-2:]]},
@@ -1266,18 +1319,39 @@ class AppState:
         mem = self.agent.memory
         if mem is None:
             return {"ok": False, "error": "hafıza kapalı"}
-        if action == "tidy":  # Ayarlar → Hafıza → Toparla: günlük toparlamayı şimdi çalıştır
+        cwd = getattr(self.agent.ctx, "cwd", None)
+        if action in ("tidy", "dream"):  # Ayarlar → Hafıza → Dream: toparlamayı şimdi çalıştır
             try:
-                done = mem.consolidate()
+                done = mem.dream(force=True, cwd=cwd)
             except Exception as e:  # noqa: BLE001 - model yok/kota
                 return {"ok": False, "error": f"toparlanamadı: {e}"}
             return {"ok": True, "done": done}
         if action == "forget":
-            try:
-                gone = mem.forget(int(d.get("id", -1)))
-            except (TypeError, ValueError):
-                gone = None
+            gone = mem.delete_note(str(d.get("key") or d.get("id") or ""), cwd)
             return {"ok": gone is not None}
+        if action == "save":
+            from alice.memdir import MemoryFull
+
+            key = str(d.get("key") or "")
+            b, n = mem.find_note(key, cwd) if key else (None, None)
+            if n is None:
+                return {"ok": False, "error": "not bulunamadı"}
+            try:
+                b.save(n.name, str(d.get("description") or n.description), str(d.get("type") or n.type),
+                       str(d.get("body") or ""), title=n.title, source="kullanıcı")
+            except (MemoryFull, ValueError) as e:
+                return {"ok": False, "error": str(e)}
+            mem._bump()
+            return {"ok": True}
+        if action == "restore":
+            b, _ = (mem.notes, None)
+            for x in mem.all_books():
+                if str(x.root) == str(d.get("root") or ""):
+                    b = x
+            try:
+                return {"ok": True, "count": b.restore(str(d.get("backup") or ""))}
+            except ValueError as e:
+                return {"ok": False, "error": str(e)}
         if action == "done":
             try:
                 return {"ok": mem.done_followup(int(d.get("id", -1))) is not None}
@@ -1764,7 +1838,19 @@ class AppState:
         chat = self.chat if not sid or sid == self.chat.sid else self.chat_for(sid)
         if chat is None:
             return False, f"arkada zaten {self.MAX_BACKGROUND} sohbet çalışıyor; biri bitince tekrar dene"
+        if text.split(" ", 1)[0].lower() == "/btw":
+            question = text[4:].strip()
+            if not question:
+                return False, "kullanım: /btw <soru>"
+            threading.Thread(target=self._side_question, args=(chat, question), daemon=True, name="alice-btw").start()
+            return True, None
         if chat.busy:
+            # ALICE bir soru kartında cevap bekliyorsa yazılan mesaj o sorunun cevabıdır. Önceden mesaj gelen kutusuna
+            # gidiyordu; ajan soru aracının içinde beklediği için kutu hiç okunmuyor, mesaj "kayboluyordu".
+            choice = next((p for p in list(chat.ui.pending.values()) if p.get("type") == "ask_choice"), None)
+            if choice and not text.startswith("/") and chat.ui.answer_choice(choice["id"], text):
+                chat.ui.publish({"type": "user", "text": text, "mi": None, "images": [], "steer": True})
+                return True, None
             if not text.startswith("/") and chat.agent.steer(text, images):
                 # Çalışan tura iletildi: iş durmadan bir sonraki adımda ALICE bunu görür. Önceden mesaj arayüzde
                 # sırada bekliyor, iş bitmeden ALICE'e hiç gitmiyordu.
@@ -1783,6 +1869,74 @@ class AppState:
                     return False, f"bilinmeyen komut: {text.split()[0]}"
         self._start_turn(chat, text, prompt, images or [])
         return True, None
+
+    def _suggest(self, chat: Any) -> list[str]:
+        """Tur bitince kullanıcının muhtemel sonraki mesajı (en fazla 2 kısa öneri). Arayüzde düğme olur; tıklayınca
+        kutuya yazılır, kullanıcı değiştirip gönderir. Emin değilse öneri yok."""
+        msgs = [m for m in chat.agent.messages[1:] if m.get("role") in ("user", "assistant")
+                and isinstance(m.get("content"), str) and m["content"].strip() and not m.get("_nudge")]
+        if len(msgs) < 2 or msgs[-1].get("role") != "assistant":
+            return []
+        lines = [f"{'Kullanıcı' if m['role'] == 'user' else 'ALICE'}: {' '.join(m['content'].split())[:600]}"
+                 for m in msgs[-8:]]
+        prompt = ("Aşağıdaki konuşmada kullanıcının büyük ihtimalle yazacağı bir sonraki mesajı tahmin et. En fazla 2 "
+                  "öneri; her biri kullanıcının ağzından, en çok 8 kelime, Türkçe. ALICE bir soru sorduysa olası cevaplar; "
+                  "iş bittiyse mantıklı sonraki adım. Emin değilsen boş liste. Yalnız JSON: {\"items\": [\"...\"]}\n\n"
+                  + "\n".join(lines))
+        try:
+            res = chat.agent.router.chat("fast", [{"role": "user", "content": prompt}], max_tokens=120,
+                                         response_format={"type": "json_object"})
+            raw = res.text or ""
+            data = json.loads(raw[raw.find("{"): raw.rfind("}") + 1] or "{}")
+            items = [" ".join(str(x).split())[:80] for x in data.get("items") or [] if str(x).strip()][:2]
+        except Exception:  # noqa: BLE001 - öneri yoksa düğme de yok
+            items = []
+        if items and not chat.busy:
+            chat.ui.publish({"type": "suggest", "items": items})
+        return items
+
+    def recap(self) -> dict[str, Any]:
+        """"Sen yokken": uzun aradan sonra uygulamaya dönünce öndeki sohbetin nerede kaldığının 1-3 cümlelik özeti.
+        Yalnız son ~30 mesaja bakılır; konuşmaya yazılmaz. Aynı konuşma hâli için bir kez üretilir."""
+        chat = self.chat
+        msgs = [m for m in chat.agent.messages[1:] if m.get("role") in ("user", "assistant", "tool")
+                and isinstance(m.get("content"), str) and m["content"].strip()]
+        if len(msgs) < 4:
+            return {"text": ""}
+        key = (chat.sid, len(chat.agent.messages))
+        cached = getattr(self, "_recap_cache", None)
+        if cached and cached[0] == key:
+            return {"text": cached[1]}
+        lines = []
+        for m in msgs[-30:]:
+            who = {"user": "Kullanıcı", "assistant": "ALICE", "tool": "araç"}[m["role"]]
+            lines.append(f"{who}: {' '.join(m['content'].split())[:400]}")
+        prompt = ("Kullanıcı bir süredir uzaktaydı ve sohbete dönüyor. Aşağıdaki konuşmanın nerede kaldığını Türkçe, "
+                  "en fazla 3 kısa cümleyle özetle: ne yapılıyordu, ne bitti, ne bekliyor. Selamlama yok.\n\n"
+                  + "\n".join(lines))
+        try:
+            res = chat.agent.router.chat("fast", [{"role": "user", "content": prompt}], max_tokens=220)
+            text = " ".join((res.text or "").split())
+        except Exception:  # noqa: BLE001 - özet yoksa kart da yok
+            text = ""
+        self._recap_cache = (key, text)
+        return {"text": text}
+
+    def _side_question(self, chat: Any, question: str) -> None:
+        """/btw: iş sürerken yan soru. Konuşmanın o anki hâliyle (araçsız) cevaplanır; konuşmaya ve hafızaya
+        yazılmaz, çalışan turu bölmez. Aynı önek kullanıldığı için çoğu önbellekten okunur."""
+        pub = chat.ui.publish
+        pub({"type": "btw", "q": question, "a": "", "pending": True})
+        try:
+            msgs = [m for m in list(chat.agent.messages) if not m.get("_image")]
+            msgs.append({"role": "user", "content": (
+                "[Yan soru: kullanıcı süren işi bölmeden bunu soruyor. Araç kullanmadan, bildiklerinle kısa cevap ver; "
+                "işe devam etme, plan değiştirme.]\n" + question)})
+            res = chat.agent.router.chat(chat.agent.role, msgs, max_tokens=800)
+            answer = (res.text or "").strip() or "(cevap yok)"
+        except Exception as e:  # noqa: BLE001 - yan soru başarısızsa iş etkilenmesin
+            answer = f"cevaplanamadı: {str(e)[:300]}"
+        pub({"type": "btw", "q": question, "a": answer, "pending": False})
 
     def deliver(self, sid: str, text: str, tries: int = 30) -> str:
         """Arka plandan bir sohbete mesaj (izleme olayı, ayrı oturumun sonucu): sohbet çalışıyorsa işe iletilir,
@@ -1843,6 +1997,9 @@ class AppState:
                     self._finished(chat)
                     chat.ui.publish({"type": "busy", "value": False})
                     self.bus.publish({"type": "status", **self.status()})
+                    if not agent.cancel.is_set() and self.cfg.agent.get("suggestions", True):
+                        threading.Thread(target=self._suggest, args=(chat,), daemon=True,
+                                         name="alice-suggest").start()
 
         chat.run(run)
 
@@ -2248,6 +2405,12 @@ def make_handler(state: AppState):
                                    for t in state.agent.tools.values()])
             if u.path == "/api/memory":
                 return self._json(state.memory_view())
+            if u.path == "/api/recap":
+                return self._json(state.recap())
+            if u.path == "/api/buddy":
+                return self._json(state.buddy_view())
+            if u.path == "/api/kairos":
+                return self._json(state.kairos_view())
             if u.path == "/api/models/all":
                 return self._json({"providers": state.router.catalog_view(),
                                    "brain": state.router.chain("brain"),
@@ -2365,6 +2528,10 @@ def make_handler(state: AppState):
                 if p == "/api/voice/set":
                     r = state.set_voice(str(d.get("voice", "")))
                     return self._json(r, 200 if r.get("ok") else 400)
+                if p == "/api/buddy":
+                    return self._json(state.buddy_action(str(d.get("action", "")), str(d.get("value", ""))))
+                if p == "/api/kairos":
+                    return self._json(state.kairos_action(str(d.get("action", ""))))
                 if p == "/api/memory/action":
                     r = state.memory_action(str(d.get("action", "")), d)
                     return self._json(r, 200 if r.get("ok") else 400)

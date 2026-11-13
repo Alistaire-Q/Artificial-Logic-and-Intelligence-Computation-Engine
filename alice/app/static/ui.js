@@ -932,6 +932,40 @@ function healthPane(pane, data) {
   }
   poll();
 }
+/* KAIROS: arka plan nöbeti. Aç/kapa, sıradaki uyanış, şimdi uyandır ve son uyanışların özeti. */
+function kairosBlock(pane) {
+  const box = el("div");
+  pane.append(el("div", "sec", "KAIROS · arka plan nöbeti"), box);
+  const when = (ts) => new Date(ts * 1000).toLocaleString("tr-TR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  const draw = (k) => {
+    if (!k) { box.replaceChildren(el("p", "", "Durum okunamadı.")); return; }
+    const wake = el("button", "btn", "Şimdi uyandır");
+    wake.disabled = !k.enabled;
+    wake.addEventListener("click", () => api("/api/kairos", { action: "wake" }).then((r) => {
+      if (r && r.ok) { toast("KAIROS çekirdeğin bir sonraki turunda uyanacak"); draw(r); }
+    }));
+    const sub = k.enabled
+      ? (k.next ? "Sıradaki uyanış " + when(k.next) : "İlk uyanış birkaç dakika içinde") + ` · bugün ${k.wakes || 0} uyanış` +
+        (k.skipped ? ` · son erteleme: ${k.skipped}` : "")
+      : "Kapalıyken ALICE yalnız sen sorunca çalışır";
+    box.replaceChildren(
+      setRow("Nöbet", "ALICE kendi seçtiği aralıklarla uyanır, durumu kollar; yalnız gerçekten faydalı bir şey varsa haber verir. Yalnız okur, değişiklik yapmaz.",
+        segmented([["1", "Açık"], ["0", "Kapalı"]], k.enabled ? "1" : "0",
+          (x) => api("/api/kairos", { action: x === "1" ? "on" : "off" }).then((r) => { if (r && r.ok) { toast("KAIROS " + (x === "1" ? "açıldı" : "kapatıldı")); draw(r); } }))),
+      setRow("Durum", sub, wake));
+    const hist = el("div", "kairos-hist");
+    for (const h of k.history || []) {
+      const row = el("div", "list-row");
+      const l = el("span", "l");
+      l.append(el("b", "", when(h.ts)), el("small", "", (h.summary || "") + (h.sleep ? ` · ${h.sleep} dk sonra uyanmayı seçti` : "")));
+      row.appendChild(l);
+      hist.appendChild(row);
+    }
+    if ((k.history || []).length) box.appendChild(hist);
+  };
+  api("/api/kairos").then(draw).catch(() => draw(null));
+}
+
 function assistantPane(pane, data) {
   const d = data || {};
   const v = d.settings || {};
@@ -958,7 +992,15 @@ function assistantPane(pane, data) {
     setRow("Konuşma özetleri", "Biten konuşma özetlenir, takipler çıkarılır",
       onOff("memory", "digest", "Özetler")),
     setRow("E-posta bildirimi", "Yeni önemli e-posta gelince haber ver", onOff("gmail", "notify", "E-posta bildirimi")),
+    setRow("BUDDY", "Sohbet kutusunun yanındaki küçük arkadaş; konuştukça doyar, okşanınca keyiflenir",
+      segmented([["1", "Açık"], ["0", "Kapalı"]], v["buddy.enabled"] === false ? "0" : "1", (x) => {
+        set("buddy", "enabled", x === "1", "BUDDY");
+        if (x === "1" && window.buddyShow) window.buddyShow();
+        else if (window.buddyRefresh) setTimeout(window.buddyRefresh, 300);
+      })),
+    setRow("BUDDY yorumları", "Konuşmalara ara sıra kısa bir yan yorum yapsın", onOff("buddy", "chatter", "Yorumlar")),
   );
+  kairosBlock(pane);
   pane.appendChild(el("div", "sec", "İzin kuralları"));
   const rules = d.rules || [];
   if (!rules.length) pane.appendChild(el("p", "", "Kural yok. Onay kartında \"Bu projede hep izin ver\" deyince buraya eklenir."));
@@ -2029,11 +2071,11 @@ function scorePane() {
   api("/api/models/scores").then((d) => { data = d; draw(); });
   return box;
 }
-/* Ayarlar > Hafıza: bildiklerini tek tek gör ve sil; eski rolden ("sevgili") kalan izleri temizle. */
+/* Ayarlar > Hafıza: notlar (genel ve proje), Dream, takipler ve eski rolden ("sevgili") kalan izler. */
 function memoryPane(pane, data) {
   const d = data || {};
   pane.append(el("h2", "", "Hafıza"),
-    el("p", "", "ALICE'in senin hakkında bildikleri. Yanlış ya da istemediğin bir şeyi sil; sesle de \"bunu unut\" diyebilirsin."));
+    el("p", "", "ALICE'in seninle ve işlerinle ilgili notları. Her not ayrı bir dosya; dizini (MEMORY.md) her sohbete girer, ilgili notların tamamı mesaja eklenir. Yanlış olanı düzelt ya da sil; sesle de \"bunu unut\" diyebilirsin."));
   if (!d.enabled) { pane.appendChild(el("p", "", "Hafıza kapalı (config.toml [memory] enabled = false).")); return; }
   const old = d.old_role || {};
   const oldTotal = (old.facts || 0) + (old.summaries || 0) + (old.episodes || 0);
@@ -2041,7 +2083,7 @@ function memoryPane(pane, data) {
     const box = el("div", "list-row warn mem-old");
     const l = el("span", "l");
     l.append(el("b", "", "Eski rolden kalan izler"),
-      el("small", "", `${old.facts || 0} bilgi, ${old.summaries || 0} özet, ${old.episodes || 0} eski cevap ("bebeğim", "aşkım" gibi). `
+      el("small", "", `${old.facts || 0} not, ${old.summaries || 0} özet, ${old.episodes || 0} eski cevap ("bebeğim", "aşkım" gibi). `
         + "Bunlar kaldıkça ALICE eski tavrına dönebiliyor. Örnek: " + (old.examples || []).join(" / ")));
     const b = el("button", "btn primary", "Temizle");
     b.addEventListener("click", () => api("/api/memory/action", { action: "purge_old_role" }).then((r) => {
@@ -2051,54 +2093,64 @@ function memoryPane(pane, data) {
     box.append(l, b);
     pane.appendChild(box);
   }
-  if (d.portrait) {
-    // Günlük toparlamada bilgilerden ve son konuşma özetlerinden yazılır; ALICE'in sistem istemine bu girer.
-    pane.appendChild(el("div", "sec", "Seni nasıl tanıyor"));
-    const p = el("div", "md mem-portrait");
-    p.innerHTML = window.DOMPurify && window.marked ? DOMPurify.sanitize(marked.parse(d.portrait)) : "";
-    if (!p.innerHTML) p.textContent = d.portrait;
-    pane.appendChild(p);
-  }
-  const facts = d.facts || [];
-  pane.appendChild(el("div", "sec", `Bildikleri (${facts.length})`));
-  if (facts.length > 1) {
-    // Günde bir kendiliğinden de çalışır; tekrarları birleştirir, tek konuşmalık "bilgileri" atar.
-    const box = el("div", "list-row");
-    const l = el("span", "l");
-    l.append(el("b", "", "Toparla"), el("small", "", "Tekrarları birleştirir, bir konuşmalık ya da artık geçersiz olanları siler. \"Bunu hatırla\" dediklerine dokunmaz."));
-    const b = el("button", "btn", "Toparla");
-    b.addEventListener("click", () => {
-      b.disabled = true; b.textContent = "Toparlanıyor…";
-      api("/api/memory/action", { action: "tidy" }).then((r) => {
-        toast(r && r.ok ? ((r.done || []).length ? `${r.done.length} değişiklik yapıldı` : "Zaten derli toplu") : (r && r.error) || "toparlanamadı");
-        showSettings("memory");
-      });
+  // Dream: günde bir (yeterince konuşma birikince) kendiliğinden; buradan şimdi de çalıştırılabilir.
+  const dr = d.dream || {};
+  const dbox = el("div", "list-row");
+  const dl = el("span", "l");
+  const when = dr.at ? new Date(dr.at * 1000).toLocaleString("tr-TR") : "henüz hiç";
+  dl.append(el("b", "", "Dream (hafızayı toparla)"),
+    el("small", "", `Tekrarları birleştirir, eskiyeni düzeltir, son konuşmalardan kalıcı olanı ekler, dizini toparlar. Önce yedek alır. `
+      + (dr.enabled ? `Kendiliğinden: ${dr.hours} saatte bir, en az ${dr.sessions} konuşma birikince. ` : "Kendiliğinden çalışma kapalı. ")
+      + `Son: ${when}.` + (dr.summary ? " " + dr.summary : "")));
+  const db = el("button", "btn", "Şimdi toparla");
+  db.addEventListener("click", () => {
+    db.disabled = true; db.textContent = "Toparlanıyor…";
+    api("/api/memory/action", { action: "dream" }).then((r) => {
+      toast(r && r.ok ? ((r.done || []).length ? `${r.done.length} değişiklik` : "Zaten derli toplu") : (r && r.error) || "toparlanamadı");
+      showSettings("memory");
     });
-    box.append(l, b);
-    pane.appendChild(box);
+  });
+  dbox.append(dl, db);
+  pane.appendChild(dbox);
+
+  const f = el("input"); f.type = "text"; f.placeholder = "Notlarda ara"; f.className = "set-filter";
+  pane.appendChild(f);
+  const lists = [];
+  for (const book of d.books || []) {
+    const notes = book.notes || [];
+    if (!notes.length && book.scope !== "genel") continue;
+    pane.appendChild(el("div", "sec", `${book.label} (${notes.length})` + (book.scope === "proje" && book.current ? " · bu sohbetin projesi" : "")));
+    const list = el("div");
+    pane.appendChild(list);
+    lists.push([list, notes]);
+    if ((book.backups || []).length) {
+      const row = el("div", "list-row");
+      const sel = el("select");
+      for (const s of book.backups) { const o = el("option", "", s); o.value = s; sel.appendChild(o); }
+      const rb = el("button", "btn", "Yedeğe dön");
+      rb.addEventListener("click", () => {
+        if (!confirm(`${book.label} hafızası ${sel.value} yedeğine dönsün mü? Şimdiki hâli de yedeklenir.`)) return;
+        api("/api/memory/action", { action: "restore", root: book.root, backup: sel.value }).then((r) => {
+          toast(r && r.ok ? `${r.count} not geri geldi` : (r && r.error) || "dönülemedi");
+          showSettings("memory");
+        });
+      });
+      const l = el("span", "l"); l.append(el("small", "", "Dream öncesi yedekler"));
+      row.append(l, sel, rb);
+      pane.appendChild(row);
+    }
   }
-  const f = el("input"); f.type = "text"; f.placeholder = "Hafızada ara"; f.className = "set-filter";
-  const list = el("div");
   const draw = () => {
-    list.replaceChildren();
     const q = f.value.toLocaleLowerCase("tr");
-    const shown = facts.filter((x) => !q || x.text.toLocaleLowerCase("tr").includes(q));
-    if (!shown.length) list.appendChild(el("p", "", facts.length ? "Eşleşen yok." : "Henüz bir şey kaydedilmedi."));
-    for (const x of shown) {
-      const row = el("div", "list-row" + (x.old ? " warn" : ""));
-      const l = el("span", "l");
-      l.append(el("b", "", x.text), el("small", "", "#" + x.id + " · " + x.kind + (x.old ? " · eski rolden" : "")));
-      const del = el("button", "btn", "Sil");
-      del.addEventListener("click", () => api("/api/memory/action", { action: "forget", id: x.id }).then((r) => {
-        if (r && r.ok) { facts.splice(facts.indexOf(x), 1); draw(); }
-      }));
-      row.append(l, del);
-      list.appendChild(row);
+    for (const [list, notes] of lists) {
+      list.replaceChildren();
+      const shown = notes.filter((x) => !q || (x.title + " " + x.description + " " + x.body).toLocaleLowerCase("tr").includes(q));
+      if (!shown.length) list.appendChild(el("p", "", notes.length ? "Eşleşen yok." : "Henüz not yok."));
+      for (const x of shown) list.appendChild(noteRow(x, notes, draw));
     }
   };
   f.addEventListener("input", draw);
   draw();
-  pane.append(f, list);
   if ((d.followups || []).length) {
     pane.appendChild(el("div", "sec", "Takipler (sonra sorulacak / hatırlatılacak)"));
     for (const x of d.followups) {
@@ -2109,6 +2161,33 @@ function memoryPane(pane, data) {
       pane.appendChild(row);
     }
   }
+}
+function noteRow(x, notes, redraw) {
+  const row = el("div", "list-row mem-note" + (x.old ? " warn" : ""));
+  const l = el("span", "l");
+  const meta = `${x.type_tr} · ${x.age}` + (x.source === "kullanıcı" ? " · senin isteğin" : "") + (x.old ? " · eski rolden" : "");
+  l.append(el("b", "", x.title || x.name), el("small", "", x.description), el("small", "mem-meta", meta));
+  const body = el("div", "mem-body");
+  body.hidden = true;
+  const ta = el("textarea"); ta.value = x.body; ta.rows = Math.min(14, Math.max(3, x.body.split("\n").length + 1));
+  const save = el("button", "btn primary", "Kaydet");
+  save.addEventListener("click", () => {
+    save.disabled = true;
+    api("/api/memory/action", { action: "save", key: x.key, body: ta.value }).then((r) => {
+      save.disabled = false;
+      if (r && r.ok) { x.body = ta.value; toast("Not kaydedildi"); } else toast((r && r.error) || "kaydedilemedi");
+    });
+  });
+  body.append(ta, save);
+  l.appendChild(body);
+  const open = el("button", "btn", "Aç");
+  open.addEventListener("click", () => { body.hidden = !body.hidden; open.textContent = body.hidden ? "Aç" : "Kapat"; });
+  const del = el("button", "btn", "Sil");
+  del.addEventListener("click", () => api("/api/memory/action", { action: "forget", key: x.key }).then((r) => {
+    if (r && r.ok) { notes.splice(notes.indexOf(x), 1); redraw(); }
+  }));
+  row.append(l, open, del);
+  return row;
 }
 /* Bağlantılar > Anahtarlar: API anahtarlarını uygulamanın içinden gir. Değerin tamamı sunucudan hiç gelmez; sadece son 4 hane. */
 function keysPane(pane, data) {
@@ -2936,6 +3015,13 @@ async function submit(textArg) {
     return;
   }
   if (textArg === undefined) remember(text);
+  if (/^\/btw(\s|$)/i.test(text)) {
+    // Yan soru işi beklemez ve bölmez: hemen gider, cevap kart olarak gelir.
+    if (textArg === undefined) { input.value = ""; autosize(); }
+    const r = await api("/api/send", { text });
+    if (!r || !r.ok) toast((r && r.error) || "yan soru gönderilemedi");
+    return;
+  }
   if (S.busy && text.startsWith("/")) {
     S.queue.push({ text, images });  // komutlar yeni tur ister: iş bitince çalışır
     drawQueue();

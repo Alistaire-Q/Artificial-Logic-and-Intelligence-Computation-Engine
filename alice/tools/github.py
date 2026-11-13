@@ -493,9 +493,14 @@ THREADS_QUERY = """query($owner: String!, $name: String!, $number: Int!) {
     comments(first: 50) { nodes { databaseId body createdAt authorAssociation author { __typename login } } } } } }"""
 
 
-def by_alice(body: str) -> bool:
+def by_alice(body: str, cid: Any = None) -> bool:
     """Yorumu ALICE mi yazdı: imza gövdenin SONUNDA olmalı; alıntı satırları ('> ') sayılmaz. Kullanıcı ALICE'in
-    cevabını alıntılayıp altına yazınca o yorum ALICE'inki sanılıp atlanmasın."""
+    cevabını alıntılayıp altına yazınca o yorum ALICE'inki sanılıp atlanmasın. İmzasız yazılanlar (gizli mod, genel
+    yorumlar) kimliklerinden tanınır."""
+    from alice import undercover
+
+    if cid and undercover.is_own(cid):
+        return True
     own = [ln for ln in (body or "").splitlines() if not ln.lstrip().startswith(">")]
     return "\n".join(own).rstrip().endswith(ALICE_MARK)
 
@@ -556,9 +561,15 @@ def format_threads(data: dict[str, list[dict[str, Any]]], only_open: bool = True
     return "\n".join(rows) or ("açık inceleme konusu yok" if only_open else "yorum yok")
 
 
-def reply_to_comment(api: GitHubAPI, repo: str, number: int, comment_id: int, body: str) -> dict[str, Any]:
-    text = body.rstrip() + ("" if by_alice(body) else f"\n\n{ALICE_MARK}")
-    return api.post(f"/repos/{repo}/pulls/{int(number)}/comments/{int(comment_id)}/replies", {"body": text})
+def reply_to_comment(api: GitHubAPI, repo: str, number: int, comment_id: int, body: str,
+                     sign: bool = True) -> dict[str, Any]:
+    """sign=False (gizli mod): imzasız; ALICE'in yazdığı kimliğinden anlaşılır."""
+    from alice import undercover
+
+    text = body.rstrip() + ("" if not sign or by_alice(body) else f"\n\n{ALICE_MARK}")
+    c = api.post(f"/repos/{repo}/pulls/{int(number)}/comments/{int(comment_id)}/replies", {"body": text})
+    undercover.remember_own(c.get("id"))
+    return c
 
 
 def resolve_thread(api: GitHubAPI, thread_id: str) -> bool:
@@ -671,6 +682,10 @@ class Git(Tool):
                 raise ToolError("switch için branch gerekli")
             return ToolResult(switch_branch(root, branch, create, github_token(ctx.config)))
         if action == "commit":
+            from alice import undercover
+
+            if undercover.active(ctx.config, origin_repo(root), ctx.state.get("github_api")):
+                message = undercover.clean(ctx.config, message, "commit mesajı")
             return self._commit(root, message, files or [], all)
         if action == "pull":
             _, out = run_git(["pull", "--ff-only"], root, _token(ctx), timeout=300)
@@ -944,6 +959,14 @@ class GitHub(Tool):
                 ctx.cwd = path
             return ToolResult(f"{repo} {note}: {path}\nÇalışma klasörü artık bu.")
         repo = self._repo(ctx, repo)
+        sign = True
+        if action in ("pr_create", "pr_comment", "issue_create", "review_reply"):
+            from alice import undercover
+
+            if undercover.active(ctx.config, repo, api):
+                sign = False
+                title = undercover.clean(ctx.config, title, "başlık") if title else title
+                body = undercover.clean(ctx.config, body, "metin") if body else body
         if action == "prs":
             rows = api.get(f"/repos/{repo}/pulls", state=state or "open", per_page=30)
             if not rows:
@@ -968,7 +991,10 @@ class GitHub(Tool):
         if action == "pr_comment":
             if not body:
                 raise ToolError("yorum için body gerekli")
+            from alice import undercover
+
             c = api.post(f"/repos/{repo}/issues/{self._need(number)}/comments", {"body": body})
+            undercover.remember_own(c.get("id"))
             return ToolResult(f"yorum eklendi: {c.get('html_url', '')}")
         if action == "issue_create":
             if not title:
@@ -1013,7 +1039,7 @@ class GitHub(Tool):
         if action == "review_reply":
             if not comment_id or not body:
                 raise ToolError("review_reply için number, comment_id ve body gerekli")
-            c = reply_to_comment(api, repo, self._need(number), comment_id, body)
+            c = reply_to_comment(api, repo, self._need(number), comment_id, body, sign=sign)
             return ToolResult(f"cevap yazıldı: {c.get('html_url', '')}")
         if action == "review_resolve":
             if not thread:

@@ -30,6 +30,8 @@ DEFAULT_CONFIG_TOML = r'''
 # Model referansı formatı: "provider:model_id"  (model_id içinde ":" olabilir, ilk ":" ayırır)
 
 [agent]
+advisor = ""                             # danışman modeli (advisor aracı): ör. "cliproxy:claude-opus-5-5"; boş = kapalı
+suggestions = true                       # tur bitince sonraki mesaj için 1-2 öneri düğmesi
 # ask  = okuma dışındaki her şeyi sorar
 # auto = tehlikeli komutlar ve sistem klasörlerine yazma dışında her şeye izin verir
 # yolo = hiçbir şey sormaz, tam erişim
@@ -595,11 +597,25 @@ require_green_ci = true       # yeni commit'in CI'ı kırmızıysa otomatik gün
 startup_timeout = 12          # açılıştaki kontrol en fazla bu kadar saniye bekletir
 startup_check = true          # false: sadece uygulama açıkken ve elle kontrol
 
+[kairos]                                 # arka plan nöbeti: kendi seçtiği aralıklarla uyanıp durumu kollar
+enabled = false
+min_minutes = 20
+max_minutes = 240
+daily_wakes = 16
+quiet_hours = "00:30-07:00"
+
+[buddy]                                  # küçük arkadaş (Tamagotchi)
+enabled = true
+chatter = true                           # konuşmalara ara sıra kısa yorum
+
 [github]
 protected_branches = ["main", "master"]  # bunlara (ve deponun ana dalına) push her zaman onay ister
 merge_method = "squash"                  # PR birleştirme: merge | squash | rebase
 require_checks = true                    # CI kırmızı ya da sürüyorsa PR birleştirilmez
 clone_dir = ""                           # GitHub'dan açılan depolar; boş = ~/GitHub/<sahip>/<depo>
+undercover = "off"                       # gizli mod: off | on | auto (yalnız herkese açık depolar). Açıkken commit,
+                                         # PR ve yorumlar imzasız ve ALICE/yapay zekâdan söz etmeden gider
+undercover_words = []                    # gizli modda yazılara girmemesi gereken ek sözcükler (kod adları vb.)
 
 # Model bazlı ek parametreler (istek gövdesine eklenir).
 [models."groq:openai/gpt-oss-20b"]
@@ -928,6 +944,30 @@ KNOWN_VISION = ("*gemma-3-*", "*gemma-4-*", "*llama-4-*", "*-vl-*", "*-vl", "*vi
 NOT_VISION = ("*-1b*", "*embed*", "*tts*", "*guard*")
 
 
+_cliproxy_cache: dict[str, Any] = {"path": "", "mtime": 0.0, "key": ""}
+
+
+def cliproxy_local_key() -> str:
+    """Yerel CLIProxyAPI'nin istemci anahtarı (~/.alice/cliproxy/keys.txt, api_key=). Yoksa "". Dosya değişmedikçe
+    önbellekten."""
+    path = alice_home() / "cliproxy" / "keys.txt"
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return ""
+    c = _cliproxy_cache
+    if c["path"] != str(path) or c["mtime"] != mtime:
+        key = ""
+        try:
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                if line.startswith("api_key="):
+                    key = line.split("=", 1)[1].strip()
+        except OSError:
+            pass
+        c.update(path=str(path), mtime=mtime, key=key)
+    return c["key"]
+
+
 @dataclass
 class ProviderConfig:
     name: str
@@ -958,6 +998,12 @@ class ProviderConfig:
         diğerleriyle devam edilir."""
         if self.key_override:
             return [self.key_override]
+        if self.name == "cliproxy":
+            # Yerel proxy yalnız kendi config.yaml'ındaki anahtarı kabul eder; ALICE onu keys.txt ile birlikte üretti.
+            # .env'deki kopya bir şekilde değişince bütün abonelik modelleri "Invalid API key" veriyordu (13 Kasım).
+            local = cliproxy_local_key()
+            if local:
+                return [local]
         if not self.api_key_env:
             return []
         out = [os.environ.get(self.api_key_env, "").strip()]

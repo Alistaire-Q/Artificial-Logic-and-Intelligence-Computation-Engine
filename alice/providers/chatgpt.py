@@ -644,7 +644,8 @@ class ChatGPTProvider(OpenAICompatProvider):
         return self.chat_stream(model, messages, lambda _t: None, tools=tools, extra=extra)
 
     def chat_stream(self, model, messages, on_delta, tools=None, temperature=None, max_tokens=None,
-                    response_format=None, extra=None, cancel=None, on_reasoning=None, on_first=None, on_tool=None):
+                    response_format=None, extra=None, cancel=None, on_reasoning=None, on_first=None, on_tool=None,
+                    on_call=None):
         """Seçili hesap limite takılırsa ya da oturumu düşmüşse kayıtlı diğer hesaplara sırayla geçer."""
         tried: set[str] = set()
         full = 0  # kullanım limiti dolduğu için elenen hesap sayısı (geçici hız sınırı sayılmaz)
@@ -664,7 +665,7 @@ class ChatGPTProvider(OpenAICompatProvider):
             started = [False]  # veri gelmeye başladıysa hesap değiştirilmez: ekrana yarım cevap basılmış olur
             try:
                 return self._chat_one(model, messages, on_delta, tools, extra, cancel, on_reasoning, on_first, on_tool,
-                                      started, key)
+                                      started, key, on_call=on_call)
             except ProviderError as e:
                 if e.kind not in ("rate_limit", "quota", "auth") or started[0]:
                     raise
@@ -690,7 +691,7 @@ class ChatGPTProvider(OpenAICompatProvider):
                                     max(wait, 60.0)) from e
 
     def _chat_one(self, model, messages, on_delta, tools, extra, cancel, on_reasoning, on_first, on_tool,
-                  started: list[bool] | None = None, key: str | None = None):
+                  started: list[bool] | None = None, key: str | None = None, on_call=None):
         started = started if started is not None else [False]
 
         def first() -> None:
@@ -704,17 +705,19 @@ class ChatGPTProvider(OpenAICompatProvider):
 
         try:
             try:
-                return self._stream(model, messages, delta, tools, extra, cancel, on_reasoning, first, on_tool, key)
+                return self._stream(model, messages, delta, tools, extra, cancel, on_reasoning, first, on_tool, key,
+                                    on_call=on_call)
             except ProviderError as e:
                 if self.use_codex_prompt or e.kind != "bad_request" or "instruction" not in str(e).lower():
                     raise
                 self.use_codex_prompt = True  # arka uç kendi istemini istiyor: onunla tekrar dene
-                return self._stream(model, messages, delta, tools, extra, cancel, on_reasoning, first, on_tool, key)
+                return self._stream(model, messages, delta, tools, extra, cancel, on_reasoning, first, on_tool, key,
+                                    on_call=on_call)
         except ProviderError as e:
             raise self._scrub(e) from e.__cause__
 
     def _stream(self, model, messages, on_delta, tools, extra, cancel, on_reasoning, on_first, on_tool,
-                key: str | None = None) -> ChatResult:
+                key: str | None = None, on_call=None) -> ChatResult:
         instructions, items = to_responses(messages, codex_prompt(self._client) if self.use_codex_prompt else None)
         body: dict[str, Any] = {"model": model, "instructions": instructions, "input": items, "tools": to_tools(tools),
                                 "tool_choice": "auto", "parallel_tool_calls": bool(tools), "store": False,
@@ -727,6 +730,7 @@ class ChatGPTProvider(OpenAICompatProvider):
         calls: dict[str, dict[str, Any]] = {}
         usage: dict[str, Any] = {}
         served = model
+        finish = ""
         got_data = False
         try:
             with self._client.stream("POST", f"{self.cfg.base_url}/responses", headers=self._auth_headers(key),
@@ -770,8 +774,15 @@ class ChatGPTProvider(OpenAICompatProvider):
                                 "name": item.get("name") or "", "arguments": item.get("arguments") or ""}}
                             if on_tool is not None:
                                 on_tool(item.get("name") or "", len(item.get("arguments") or ""))
-                    elif kind == "response.completed":
+                            if on_call is not None and kind == "response.output_item.done":
+                                try:  # çağrı tamamlandı: ajan güvenli aracı cevap bitmeden başlatabilir
+                                    on_call(dict(calls[cid]))
+                                except Exception:  # noqa: BLE001
+                                    pass
+                    elif kind in ("response.completed", "response.incomplete"):
                         resp = ev.get("response") or {}
+                        if (resp.get("incomplete_details") or {}).get("reason") == "max_output_tokens":
+                            finish = "length"
                         served = resp.get("model") or served
                         u = resp.get("usage") or {}
                         usage = {"prompt_tokens": u.get("input_tokens", 0), "completion_tokens": u.get("output_tokens", 0),
@@ -792,7 +803,7 @@ class ChatGPTProvider(OpenAICompatProvider):
             msg["tool_calls"] = list(calls.values())
         if not msg["content"] and not calls:
             raise ProviderError("server", "ChatGPT boş cevap döndü")
-        return ChatResult(normalize_message(msg), self.name, served, usage, time.monotonic() - t0)
+        return ChatResult(normalize_message(msg), self.name, served, usage, time.monotonic() - t0, finish=finish)
 
 
 def make_client(pc: ProviderConfig, timeout: float = 180.0) -> OpenAICompatProvider:

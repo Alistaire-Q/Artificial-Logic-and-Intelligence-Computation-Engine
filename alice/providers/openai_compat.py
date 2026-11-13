@@ -67,6 +67,7 @@ class ChatResult:
     model: str
     usage: dict[str, Any] = field(default_factory=dict)
     latency: float = 0.0
+    finish: str = ""  # "length": cevap çıktı sınırına takılıp yarıda kesildi
 
     @property
     def text(self) -> str:
@@ -334,6 +335,7 @@ class OpenAICompatProvider:
             model=data.get("model") or model,
             usage=data.get("usage") if isinstance(data.get("usage"), dict) else {},
             latency=latency,
+            finish=str(choices[0].get("finish_reason") or ""),
         )
 
     def chat_stream(
@@ -350,17 +352,19 @@ class OpenAICompatProvider:
         on_reasoning: Callable[[str], None] | None = None,
         on_first: Callable[[], None] | None = None,
         on_tool: Callable[[str, int], None] | None = None,
+        on_call: Callable[[dict[str, Any]], None] | None = None,
     ) -> ChatResult:
-        """SSE ile akışlı cevap. Metin parçaları on_delta'ya gider, tool_call parçaları birleştirilir (yazıldıkça
+        """SSE ile akışlı cevap. on_call: bir araç çağrısı tamamlanınca (sonraki çağrı başlayınca) hemen bildirilir;
+        ajan güvenli araçları cevap bitmeden çalıştırmaya başlar. Metin parçaları on_delta'ya gider, tool_call parçaları birleştirilir (yazıldıkça
         on_tool'a araç adı ve argümanların o ana kadarki uzunluğu bildirilir)."""
         try:
             return self._chat_stream(model, messages, on_delta, tools, temperature, max_tokens, response_format,
-                                     extra, cancel, on_reasoning, on_first, on_tool)
+                                     extra, cancel, on_reasoning, on_first, on_tool, on_call)
         except ProviderError as e:
             raise self._scrub(e) from e.__cause__
 
     def _chat_stream(self, model, messages, on_delta, tools, temperature, max_tokens, response_format, extra,
-                     cancel, on_reasoning, on_first, on_tool) -> ChatResult:
+                     cancel, on_reasoning, on_first, on_tool, on_call=None) -> ChatResult:
         body = self._body(model, messages, tools, temperature, max_tokens, response_format, extra)
         body["stream"] = True
         if "openrouter.ai" in self.cfg.base_url:  # kullanım ve ücret son parçada gelsin (proje maliyet takibi)
@@ -368,6 +372,7 @@ class OpenAICompatProvider:
         t0 = time.monotonic()
         text_parts: list[str] = []
         calls: dict[int, dict[str, Any]] = {}
+        announced: set[int] = set()  # on_call ile bildirilen (tamamlanmış) çağrılar
         usage: dict[str, Any] = {}
         served_model = model
         finish = None
@@ -441,6 +446,8 @@ class OpenAICompatProvider:
                         for tc in tcs if isinstance(tcs, list) else []:
                             if isinstance(tc, dict):
                                 _merge_tool_delta(calls, tc)
+                        if on_call is not None and len(calls) > 1:
+                            _announce_done(calls, announced, on_call)
                         if calls and delta.get("tool_calls") and on_tool is not None:
                             cur = calls[max(calls)] if calls else {}
                             fn = cur.get("function") or {}
@@ -459,7 +466,8 @@ class OpenAICompatProvider:
             msg["tool_calls"] = [calls[i] for i in sorted(calls)]
         if not text and not calls and finish == "length":
             raise ProviderError("too_large", "cevap max_tokens'a takıldı, içerik yok")
-        return ChatResult(normalize_message(msg), self.name, served_model, usage, time.monotonic() - t0)
+        return ChatResult(normalize_message(msg), self.name, served_model, usage, time.monotonic() - t0,
+                          finish=str(finish or ""))
 
     def list_models(self) -> list[dict[str, Any]]:
         try:
@@ -486,6 +494,30 @@ def _text_of(content: Any) -> str:
         return "".join(p.get("text", "") for p in content
                        if isinstance(p, dict) and isinstance(p.get("text"), str))
     return ""
+
+
+def _announce_done(calls: dict[int, dict[str, Any]], announced: set[int],
+                   on_call: Callable[[dict[str, Any]], None]) -> None:
+    """Son çağrıdan öncekiler tamamlanmıştır (model sıradakine geçti): kimliği ve geçerli JSON argümanı olanları bir
+    kez bildir. Bildirim hatası akışı bozmaz."""
+    last = max(calls)
+    for i in sorted(calls):
+        if i >= last or i in announced:
+            continue
+        announced.add(i)
+        c = calls[i]
+        fn = c.get("function") or {}
+        if not c.get("id") or not fn.get("name"):
+            continue
+        try:
+            json.loads(fn.get("arguments") or "{}")
+        except ValueError:
+            continue
+        try:
+            on_call({"id": c["id"], "type": "function",
+                     "function": {"name": fn["name"], "arguments": fn.get("arguments") or "{}"}})
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _merge_tool_delta(calls: dict[int, dict[str, Any]], tc: dict[str, Any]) -> None:

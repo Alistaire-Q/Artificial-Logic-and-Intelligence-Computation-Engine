@@ -155,6 +155,20 @@ class MCPServer:
             if not cursor:
                 return tools
 
+    def list_resources(self) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        cursor = None
+        while len(out) < 2000:
+            res = self.request("resources/list", {"cursor": cursor} if cursor else {})
+            out += res.get("resources", [])
+            cursor = res.get("nextCursor")
+            if not cursor:
+                break
+        return out
+
+    def read_resource(self, uri: str) -> dict[str, Any]:
+        return self.request("resources/read", {"uri": uri})
+
     def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return self.request("tools/call", {"name": name, "arguments": arguments})
 

@@ -1,0 +1,432 @@
+"""Claude Code'da olup ALICE'te eksik kalan araçlar.
+
+- notify: kullanıcıya bildirim (masaüstü/HUD kartı, mod politikasına uyar). Claude Code'daki PushNotification.
+- enter_plan_mode: büyük bir işe başlamadan önce ALICE kendini plan moduna alır (yalnız okur, planı exit_plan_mode
+  ile onaya sunar). Claude Code'daki EnterPlanMode.
+- mcp_resources: bağlı MCP sunucularının kaynaklarını listele/oku. ListMcpResources + ReadMcpResource.
+- code_intel: kodu anlama: hata/uyarı teşhisi (ruff/pyright, tsc/node, go vet, cargo, JSON/TOML), bir dosyanın
+  sembolleri, bir sembolün tanımı ve kullanıldığı yerler. Claude Code'daki LSP aracının dil sunucusu kurmadan
+  çalışan karşılığı.
+"""
+
+from __future__ import annotations
+
+import ast
+import json
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+from alice.tools.base import EXEC, READ, Tool, ToolContext, ToolError, ToolResult, obj
+
+_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def _run(argv: list[str], cwd: Path, timeout: int = 120) -> tuple[int, str]:
+    try:
+        r = subprocess.run(argv, cwd=str(cwd), capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=timeout, creationflags=_FLAGS)
+    except FileNotFoundError:
+        return 127, f"{argv[0]} bulunamadı"
+    except subprocess.TimeoutExpired:
+        return 124, f"{argv[0]} {timeout} sn içinde bitmedi"
+    return r.returncode, (r.stdout + ("\n" + r.stderr if r.stderr.strip() else "")).strip()
+
+
+# ---------------------------------------------------------------------------------------------------- notify
+class Notify(Tool):
+    name = "notify"
+    description = ("Kullanıcıya bildirim gönderir (masaüstü bildirimi ya da ALICE'in ekran kartı; oyun/uçuş gibi "
+                   "modlarda mod kuralına göre susturulabilir ve kaydedilir).\n"
+                   "- Uzun bir iş bittiğinde ya da kullanıcının dönmesi gereken bir şey olduğunda (onay bekleyen adım, "
+                   "kırmızı CI, bitmiş indirme) ve kullanıcı muhtemelen başka bir şeyle meşgulken kullan.\n"
+                   "- Kullanıcı zaten sohbette seninle konuşuyorsa kullanma; cevabın yeter. Her adımda bildirim atma.")
+    parameters = obj({
+        "title": {"type": "string", "description": "Kısa başlık, ör. 'Testler bitti'."},
+        "body": {"type": "string", "description": "Bir iki cümle: ne oldu, kullanıcıdan ne bekleniyor."},
+        "severity": {"type": "string", "enum": ["info", "warn", "critical"], "description": "Önem; varsayılan info."},
+    }, ["title"])
+    risk = READ
+    parallel_safe = True
+
+    def summary(self, args: dict[str, Any]) -> str:
+        return str(args.get("title", ""))[:80]
+
+    def run(self, ctx: ToolContext, title: str, body: str = "", severity: str = "info") -> ToolResult:
+        from alice.core import notify as nt
+
+        n = nt.Notification(title.strip()[:120], body.strip()[:500], severity if severity in ("info", "warn",
+                            "critical") else "info", "task", kind="task")
+        hub = nt.ACTIVE
+        if hub is not None:
+            ok = hub.send(n)
+            return ToolResult("bildirim gönderildi" if ok else "şu anki mod bildirimi susturdu (kaydedildi; kullanıcı "
+                              "sonra 'ben yokken ne oldu' diye görebilir)")
+        if nt.desktop_notify(n):
+            return ToolResult("bildirim gönderildi (masaüstü)")
+        raise ToolError("bildirim gönderilemedi: çekirdek çalışmıyor ve masaüstü bildirimi başarısız")
+
+
+# ---------------------------------------------------------------------------------------------------- plan modu
+class EnterPlanMode(Tool):
+    name = "enter_plan_mode"
+    description = ("Kendini plan moduna alır: dosya yazma ve komut çalıştırma kapanır, sadece okuyup araştırırsın; "
+                   "plan hazır olunca exit_plan_mode ile kullanıcının onayına sunarsın.\n"
+                   "- Birçok dosyaya dokunacak, mimari karar gerektiren ya da birden çok makul yolu olan büyük bir "
+                   "işe BAŞLAMADAN önce kullan: önce kod tabanını incele, sonra planı sun.\n"
+                   "- Küçük, açık işlerde (tek dosya düzeltmesi, belirgin bir hata), sorulara ve araştırmaya kullanma.")
+    parameters = obj({"reason": {"type": "string", "description": "Neden plan gerekiyor (tek cümle)."}})
+    risk = READ
+
+    def run(self, ctx: ToolContext, reason: str = "") -> ToolResult:
+        agent = ctx.state.get("agent")
+        perms = getattr(agent, "permissions", None)
+        if perms is None or getattr(agent, "is_child", False):
+            raise ToolError("plan modu bu bağlamda kullanılamıyor")
+        if getattr(perms, "mode", "") == "plan":
+            return ToolResult("zaten plan modundasın: incele, sonra exit_plan_mode ile planı sun")
+        perms.mode = "plan"
+        return ToolResult("Plan moduna geçildi. Şimdi yalnız oku ve araştır (dosya yazma/komut kapalı). Plan hazır "
+                          "olunca exit_plan_mode ile sun; değişen dosyaları, sırayı ve nasıl doğrulayacağını yaz."
+                          + (f" Gerekçe: {reason}" if reason else ""))
+
+
+# ---------------------------------------------------------------------------------------------------- MCP kaynakları
+class McpResources(Tool):
+    name = "mcp_resources"
+    untrusted = True  # kaynak içeriği dışarıdan gelir
+    description = ("Bağlı MCP sunucularının kaynaklarını (dosya, belge, şema, kayıt) listeler ve okur.\n"
+                   "- list: bütün sunucuların (ya da server verilirse birinin) kaynakları: uri, ad, tür.\n"
+                   "- read: uri ile kaynağın içeriği. Sunucu birden çoksa server ver.")
+    parameters = obj({
+        "action": {"type": "string", "enum": ["list", "read"], "description": "list: kaynakları listele | "
+                   "read: uri ile oku."},
+        "server": {"type": "string", "description": "MCP sunucusunun adı (config'teki)."},
+        "uri": {"type": "string", "description": "read: kaynağın uri'si (list çıktısından)."},
+    }, ["action"])
+    risk = READ
+    parallel_safe = True
+
+    def run(self, ctx: ToolContext, action: str, server: str = "", uri: str = "") -> ToolResult:
+        from alice.mcp import MCPError
+
+        servers = [s for s in ctx.state.get("mcp_servers") or [] if not server or s.name == server]
+        if not servers:
+            raise ToolError("bağlı MCP sunucusu yok" + (f": {server}" if server else ""))
+        if action == "list":
+            out = []
+            for s in servers:
+                try:
+                    items = s.list_resources()
+                except MCPError as e:
+                    out.append(f"## {s.name}: kaynak listelenemedi ({e})")
+                    continue
+                out.append(f"## {s.name} ({len(items)})")
+                out += [f"- {r.get('uri')} — {r.get('name') or ''}"
+                        + (f" [{r['mimeType']}]" if r.get("mimeType") else "")
+                        + (f": {str(r.get('description'))[:160]}" if r.get("description") else "") for r in items[:200]]
+            return ToolResult("\n".join(out))
+        if action == "read":
+            if not uri:
+                raise ToolError("read için uri gerekli")
+            errors = []
+            for s in servers:
+                try:
+                    res = s.read_resource(uri)
+                except MCPError as e:
+                    errors.append(str(e))
+                    continue
+                texts, images = [], []
+                for c in res.get("contents") or []:
+                    if c.get("text") is not None:
+                        texts.append(str(c["text"]))
+                    elif c.get("blob") and str(c.get("mimeType", "")).startswith("image/"):
+                        images.append(c["blob"])
+                    elif c.get("blob"):
+                        texts.append(f"[ikili içerik: {c.get('mimeType', '?')}, {len(c['blob'])} bayt base64]")
+                body = "\n".join(texts)
+                if len(body) > 60000:
+                    body = body[:60000] + "\n… (kısaltıldı)"
+                return ToolResult(body or "(boş kaynak)", images=images)
+            raise ToolError("kaynak okunamadı: " + "; ".join(errors)[:500])
+        raise ToolError(f"bilinmeyen action: {action}")
+
+
+# ---------------------------------------------------------------------------------------------------- kod zekâsı
+_DEF_PATTERNS = [
+    r"^\s*(?:async\s+)?def\s+{n}\b", r"^\s*class\s+{n}\b",  # Python
+    r"\bfunction\s*\*?\s*{n}\s*\(", r"^\s*(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+{n}\b",  # JS/TS
+    r"^\s*(?:export\s+)?(?:const|let|var)\s+{n}\s*[=:]", r"^\s*(?:export\s+)?(?:interface|type|enum)\s+{n}\b",
+    r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+{n}\b", r"^\s*(?:pub\s+)?(?:struct|enum|trait)\s+{n}\b",  # Rust
+    r"^\s*func\s+(?:\([^)]*\)\s*)?{n}\s*\(", r"^\s*type\s+{n}\s+",  # Go
+    r"^\s*(?:public|private|protected|internal|static|\s)*[\w<>\[\],\s]+\s+{n}\s*\([^;]*$",  # C#/Java metodu
+]
+_CALL_LINE = re.compile(r"\s*(?:return|await|new|throw|yield|else|if|elif|while|for|case|print|assert|raise|"
+                        r"echo|var\s+\w+\s*=|let\s+\w+\s*=|const\s+\w+\s*=\s*\w+\()\b")
+_CODE_EXT = {".py", ".pyi", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".go", ".rs", ".cs", ".java", ".kt",
+             ".c", ".h", ".cpp", ".hpp", ".lua", ".rb", ".php", ".swift"}
+_SKIP = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".mypy_cache", ".ruff_cache",
+         "target", "bin", "obj", ".next", "Library"}
+
+
+def _code_files(root: Path, limit: int = 20000) -> list[Path]:
+    out: list[Path] = []
+    for p in root.rglob("*"):
+        if any(part in _SKIP for part in p.parts):
+            continue
+        if p.suffix in _CODE_EXT and p.is_file():
+            out.append(p)
+            if len(out) >= limit:
+                break
+    return out
+
+
+def _search(root: Path, regex: str, word: str = "", limit: int = 120) -> list[tuple[Path, int, str]]:
+    """(dosya, satır, metin). ripgrep varsa onunla, yoksa Python ile."""
+    rg = shutil.which("rg")
+    hits: list[tuple[Path, int, str]] = []
+    if rg:
+        argv = [rg, "--no-heading", "--line-number", "--color=never", "-g", "!node_modules", "-g", "!.git",
+                "-m", "50"]
+        argv += ["-w", "-F", word] if word else ["-e", regex]
+        _, out = _run(argv + ["."], root, timeout=60)
+        for line in out.splitlines():
+            m = re.match(r"^(.*?):(\d+):(.*)$", line)
+            if m and Path(m.group(1)).suffix in _CODE_EXT:
+                hits.append((root / m.group(1), int(m.group(2)), m.group(3).strip()))
+                if len(hits) >= limit:
+                    break
+        return hits
+    rx = re.compile(rf"\b{re.escape(word)}\b" if word else regex, re.M)
+    for p in _code_files(root):
+        try:
+            for i, line in enumerate(p.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+                if rx.search(line):
+                    hits.append((p, i, line.strip()))
+                    if len(hits) >= limit:
+                        return hits
+        except OSError:
+            continue
+    return hits
+
+
+def _py_symbols(path: Path) -> list[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"), filename=str(path))
+    out: list[str] = []
+
+    def walk(node: ast.AST, prefix: str, depth: int) -> None:
+        for ch in ast.iter_child_nodes(node):
+            if isinstance(ch, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                args = ", ".join(a.arg for a in ch.args.args)
+                out.append(f"{'  ' * depth}{ch.lineno}: def {prefix}{ch.name}({args})")
+                if depth < 1:  # iç içe fonksiyonların yalnız ilk katı
+                    walk(ch, f"{prefix}{ch.name}.", depth + 1)
+            elif isinstance(ch, ast.ClassDef):
+                out.append(f"{'  ' * depth}{ch.lineno}: class {prefix}{ch.name}")
+                walk(ch, f"{prefix}{ch.name}.", depth + 1)
+            elif isinstance(ch, ast.Assign) and depth == 0:
+                for t in ch.targets:
+                    if isinstance(t, ast.Name) and t.id.isupper():
+                        out.append(f"{ch.lineno}: {t.id} =")
+
+    walk(tree, "", 0)
+    return out
+
+
+_SYM_RX = re.compile(
+    r"^\s*(?:export\s+)?(?:default\s+)?(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?"
+    r"(?P<kind>function\*?|class|interface|type|enum|struct|trait|fn|func|const|let)\s+"
+    r"(?:\([^)]*\)\s*)?(?P<name>[A-Za-z_$][\w$]*)")
+
+
+def _regex_symbols(path: Path) -> list[str]:
+    out = []
+    for i, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+        m = _SYM_RX.match(line)
+        if m and not (m.group("kind") in ("const", "let") and line[:1].isspace()):
+            out.append(f"{i}: {m.group('kind')} {m.group('name')}")
+    return out
+
+
+def _diagnose(path: Path, root: Path) -> tuple[str, list[str]]:
+    """(kullanılan denetçiler, bulgular). Bulgu yoksa boş liste."""
+    ext = path.suffix.lower()
+    used, found = [], []
+    if ext in (".py", ".pyi"):
+        try:
+            compile(path.read_text(encoding="utf-8", errors="replace"), str(path), "exec")
+        except SyntaxError as e:
+            return "python", [f"{path.name}:{e.lineno}:{e.offset}: sözdizimi hatası: {e.msg}"]
+        used.append("python")
+        code, out = _run([sys.executable, "-m", "ruff", "check", "--output-format=concise", "--no-cache", str(path)],
+                         root)
+        if code != 127 and "No module named ruff" not in out:
+            used.append("ruff")
+            found += [x for x in out.splitlines() if re.search(r":\d+:\d+:", x)]
+        pyright = shutil.which("pyright") or shutil.which("basedpyright")
+        if pyright:
+            used.append(Path(pyright).stem)
+            _, out = _run([pyright, "--outputjson", str(path)], root, timeout=180)
+            try:
+                for d in json.loads(out[out.find("{"):]).get("generalDiagnostics", []):
+                    if d.get("severity") in ("error", "warning"):
+                        ln = d.get("range", {}).get("start", {}).get("line", 0) + 1
+                        found.append(f"{path.name}:{ln}: {d['severity']}: {d.get('message', '')}")
+            except (ValueError, KeyError):
+                pass
+    elif ext in (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"):
+        cfg = next((d / "tsconfig.json" for d in [path.parent, *path.parents] if (d / "tsconfig.json").is_file()),
+                   None)
+        tsc = cfg is not None and ((cfg.parent / "node_modules" / ".bin" / "tsc").exists()
+                                   or (cfg.parent / "node_modules" / ".bin" / "tsc.cmd").exists())
+        if tsc and shutil.which("npx"):
+            used.append("tsc")
+            _, out = _run(["npx", "--no-install", "tsc", "--noEmit", "--pretty", "false", "-p", str(cfg)],
+                          cfg.parent, timeout=240)
+            found += [x for x in out.splitlines() if path.name in x and "error" in x]
+        elif ext in (".js", ".mjs", ".cjs") and shutil.which("node"):
+            used.append("node --check")
+            code, out = _run(["node", "--check", str(path)], root)
+            if code:
+                found.append(out[:1500])
+    elif ext == ".go" and shutil.which("go"):
+        used.append("go vet")
+        code, out = _run(["go", "vet", "."], path.parent, timeout=240)
+        found += [x for x in out.splitlines() if path.name in x]
+    elif ext == ".rs" and shutil.which("cargo"):
+        used.append("cargo check")
+        _, out = _run(["cargo", "check", "--message-format", "short", "-q"], path.parent, timeout=600)
+        found += [x for x in out.splitlines() if path.name in x and ("error" in x or "warning" in x)]
+    elif ext == ".json":
+        used.append("json")
+        try:
+            json.loads(path.read_text(encoding="utf-8"))
+        except ValueError as e:
+            found.append(f"{path.name}: {e}")
+    elif ext == ".toml":
+        import tomllib
+
+        used.append("toml")
+        try:
+            tomllib.loads(path.read_text(encoding="utf-8"))
+        except tomllib.TOMLDecodeError as e:
+            found.append(f"{path.name}: {e}")
+    return ", ".join(used), found
+
+
+class CodeIntel(Tool):
+    name = "code_intel"
+    description = ("Kodu anlama ve doğrulama (dil sunucusu gerektirmez).\n"
+                   "- diagnostics: dosya(lar)daki hata ve uyarılar: Python (sözdizimi, ruff, varsa pyright), "
+                   "TS/JS (projede tsc varsa tip hataları, yoksa node --check), Go (go vet), Rust (cargo check), "
+                   "JSON/TOML. Bir dosyayı düzenledikten sonra, testten önce hızlı kontrol için.\n"
+                   "- symbols: bir dosyadaki sınıf/fonksiyon/sabitler ve satırları (büyük dosyada nereye bakacağını "
+                   "bulmak için, tamamını okumadan).\n"
+                   "- definition: bir sembolün (fonksiyon, sınıf, tip) tanımlandığı yer(ler).\n"
+                   "- references: sembolün kullanıldığı yerler (yeniden adlandırma/değişiklikten önce etkiyi görmek "
+                   "için).")
+    parameters = obj({
+        "action": {"type": "string", "enum": ["diagnostics", "symbols", "definition", "references"],
+                   "description": "diagnostics: hata/uyarılar | symbols: dosyanın sembolleri | definition: "
+                   "sembolün tanımı | references: kullanıldığı yerler."},
+        "paths": {"type": "array", "items": {"type": "string"}, "description": "diagnostics/symbols: dosyalar "
+                  "(en fazla 10)."},
+        "symbol": {"type": "string", "description": "definition/references: sembol adı."},
+        "root": {"type": "string", "description": "definition/references: aranacak klasör (varsayılan çalışma "
+                 "klasörü)."},
+    }, ["action"])
+    risk = READ
+
+    def risk_for(self, args: dict[str, Any]) -> str:
+        return EXEC if args.get("action") == "diagnostics" else READ  # denetçi programları çalıştırır
+
+    def summary(self, args: dict[str, Any]) -> str:
+        return f"{args.get('action')} {args.get('symbol') or ', '.join((args.get('paths') or [])[:2])}".strip()
+
+    def run(self, ctx: ToolContext, action: str, paths: list[str] | None = None, symbol: str = "",
+            root: str = "") -> ToolResult:
+        if action in ("diagnostics", "symbols"):
+            files = [ctx.resolve(str(p)) for p in (paths or [])[:10]]
+            if not files:
+                raise ToolError(f"{action} için paths gerekli")
+            out = []
+            for p in files:
+                if not p.is_file():
+                    out.append(f"## {p}\ndosya yok")
+                    continue
+                if action == "symbols":
+                    try:
+                        syms = _py_symbols(p) if p.suffix in (".py", ".pyi") else _regex_symbols(p)
+                    except SyntaxError as e:
+                        syms = [f"(ayrıştırılamadı: {e.msg}, satır {e.lineno}) "] + _regex_symbols(p)
+                    out.append(f"## {p.name} ({len(syms)})\n" + ("\n".join(syms[:400]) or "(sembol yok)"))
+                else:
+                    used, found = _diagnose(p, ctx.cwd)
+                    if not used:
+                        out.append(f"## {p.name}\nbu dosya türü için denetçi yok ya da kurulu değil")
+                    else:
+                        out.append(f"## {p.name} ({used})\n" + ("\n".join(found[:150]) if found else "sorun yok"))
+            return ToolResult("\n\n".join(out))
+        if action in ("definition", "references"):
+            if not re.fullmatch(r"[A-Za-z_$][\w$]*", symbol or ""):
+                raise ToolError("geçerli bir sembol adı ver (ör. MyClass, load_config)")
+            base = ctx.resolve(root) if root else ctx.cwd
+            if action == "definition":
+                rx = "|".join(p.replace("{n}", re.escape(symbol)) for p in _DEF_PATTERNS)
+                # C#/Java kalıbı "return f(x)" gibi çağrılara da uyar (ripgrep geriye bakış desteklemiyor): ele.
+                hits = [h for h in _search(base, rx) if not _CALL_LINE.match(h[2])]
+            else:
+                hits = _search(base, "", word=symbol, limit=150)
+            if not hits:
+                return ToolResult(f"'{symbol}' için {'tanım' if action == 'definition' else 'kullanım'} bulunamadı "
+                                  f"({base})")
+            lines = []
+            for p, ln, text in hits:
+                try:
+                    rel = p.relative_to(base)
+                except ValueError:
+                    rel = p
+                lines.append(f"{rel}:{ln}: {text[:200]}")
+            return ToolResult(f"{len(hits)} sonuç{' (ilk 150)' if len(hits) >= 150 else ''}:\n" + "\n".join(lines))
+        raise ToolError(f"bilinmeyen action: {action}")
+
+
+TOOLS = [Notify(), EnterPlanMode(), McpResources(), CodeIntel()]
+
+
+class Advisor(Tool):
+    """Daha güçlü bir modele danış: konuşmanın tamamını görür, araç kullanmaz, kısa ve somut tavsiye verir."""
+
+    name = "advisor"
+    description = ("Daha güçlü bir modele (danışman) danış. Zor bir karar, takıldığın bir hata, emin olmadığın bir plan "
+                   "ya da işi bitirmeden önce son kontrol için kullan. Danışman bu konuşmanın tamamını görür, araç "
+                   "kullanmaz; somut tavsiye verir. question: neyi sorduğun ve neden emin olmadığın.")
+    parameters = obj({"question": {"type": "string", "description": "Danışmana soru: durum, seçenekler, kuşkun."}},
+                     ["question"])
+    risk = READ
+
+    def run(self, ctx: ToolContext, question: str) -> ToolResult:
+        ref = str((ctx.config.agent or {}).get("advisor") or "").strip()
+        if not ref:
+            raise ToolError("danışman modeli ayarlı değil: config.toml'da [agent] advisor = \"sağlayıcı:model\" "
+                            "(ör. cliproxy:claude-opus-5-5)")
+        router = ctx.router
+        agent = ctx.state.get("agent")
+        if router is None or agent is None:
+            raise ToolError("danışman bu ortamda kullanılamıyor")
+        msgs = [m for m in list(agent.messages) if not m.get("_image")]
+        # Son asistan mesajı bu aracı çağıran adım: sonucu henüz yok, gönderilirse sağlayıcı reddeder.
+        while msgs and msgs[-1].get("role") == "assistant" and msgs[-1].get("tool_calls"):
+            msgs.pop()
+        msgs.append({"role": "user", "content": (
+            "[Danışman olarak çağrıldın. Yukarıdaki konuşmada çalışan asistan sana danışıyor. Araç kullanma; kısa, "
+            "somut, uygulanabilir tavsiye ver: ne yanlış gidiyor olabilir, hangi seçenek neden daha iyi, neye dikkat "
+            "etmeli. Gerekiyorsa açıkça 'bu yanlış' de.]\nSoru: " + question)})
+        res = router.chat(ref, msgs, max_tokens=1500)
+        return ToolResult(f"[danışman: {ref}]\n{(res.text or '(cevap yok)').strip()}")
+
+
+TOOLS.append(Advisor())

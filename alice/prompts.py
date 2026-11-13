@@ -34,8 +34,11 @@ specific folder the task is about. Large searches stop after a time limit and te
 - Only the core tools come with full definitions; the rest are listed by name under "Yüklenebilir araçlar" at the end \
 and load automatically from the user's words. A tool that is not loaded cannot be called: call `load_tools` with its \
 group or name first (one call, then use it in the next step).
-- You have long-term memory that persists across sessions (memory tool, stored locally). When the user tells you something lasting about themselves (preferences, dislikes, personal info, people, habits, how you should behave), save it with memory action=add as one short sentence; update or forget it when it changes. Don't save one-off requests. For a future event (exam, trip, deadline) add a follow-up \
-(memory action=followup) so you can ask about it later; finished conversations are also summarized automatically.
+- You have a persistent, file-based memory (memory tool; rules and the MEMORY.md index are in the "Long-term \
+memory" section at the end). Save what will matter in future conversations as typed notes (user / feedback / \
+project / reference) and keep them current; watch especially for corrections and for approaches the user \
+confirmed. For a future event (exam, trip, deadline) add a follow-up (memory action=followup) so you can ask about \
+it later; finished conversations are summarized automatically.
 - For big jobs with separable parts (several modules in a large codebase, frontend+backend+tests, broad review or \
 research) start an autonomous project with the `team` tool (group team): a project lead (you, in the background) \
 splits the work into parallel agents with their own tasks, limits, write scopes, models and thinking levels, answers \
@@ -46,7 +49,9 @@ user follows it on the Projects page; tell them it started, and use action=wait 
 `github action=ci_wait`; if CI is red read `action=ci_logs` before guessing. For review comments use action=reviews, \
 fix, then review_reply and review_resolve each one. After opening a PR, offer `action=watch` (ALICE then fixes CI, \
 conflicts and review comments in the background); set auto_merge only if the user explicitly asks. For a second task \
-in the same repo without disturbing uncommitted work, use `git action=worktree`.
+in the same repo without disturbing uncommitted work, use `git action=worktree`. If a git/github tool says \
+undercover mode is on, write commits, PRs and comments as the user would, with no mention of ALICE, AI or \
+automation; never deny being AI if someone sincerely asks, leave that thread to the user.
 - Never invent tool results. If you can't do something, say why in one sentence and offer the closest alternative.
 
 # Using the computer (fastest/most reliable first)
@@ -124,7 +129,7 @@ def build_system_prompt(cwd: Path, personality: bool = True) -> str:
         extras.append("\n".join(x for x in (sk, note) if x))
     from alice.memory import profile_text
 
-    profile = profile_text()
+    profile = profile_text(cwd=cwd)
     if profile:
         extras.append(memory_section(profile))
     return text + ("\n\n" + "\n\n".join(extras) if extras else "")

@@ -159,6 +159,24 @@ def is_gemini(pc: ProviderConfig) -> bool:
     return "generativelanguage.googleapis.com" in pc.base_url or pc.name == "gemini"
 
 
+_ACCEPTS: dict[tuple[Any, str], bool] = {}
+
+
+def _accepts(fn: Any, name: str) -> bool:
+    """fn bu anahtar kelime argümanını alıyor mu (ya da **kw ile her şeyi). Sahte/eski istemcilere bilmediği argüman
+    gönderilmesin."""
+    key = (getattr(fn, "__func__", fn), name)
+    if key not in _ACCEPTS:
+        import inspect
+
+        try:
+            params = inspect.signature(fn).parameters
+            _ACCEPTS[key] = name in params or any(p.kind is p.VAR_KEYWORD for p in params.values())
+        except (TypeError, ValueError):
+            _ACCEPTS[key] = False
+    return _ACCEPTS[key]
+
+
 def clean_messages(messages: list[dict[str, Any]], gemini: bool = False) -> list[dict[str, Any]]:
     """ALICE'in iç işaretlerini ("_" ile başlayan anahtarlar) sağlayıcıya göndermeden önce temizle.
     Gemini'ye giderken her tool_call'a thought_signature eklenir (yoksa Gemini 3 isteği 400 ile reddediyor)."""
@@ -612,7 +630,9 @@ class Router:
         pc = self.providers_cfg.get(p)
         return bool(pc and pc.supports_vision(m)) and ref not in self.no_vision
 
-    def available(self, ref: str, now: float | None = None) -> tuple[bool, str]:
+    def available(self, ref: str, now: float | None = None, pinned: bool = False) -> tuple[bool, str]:
+        """pinned: kullanıcı bu modeli elle seçti. Soğuma ve oturumluk kapatma yalnız otomatik sırayı ilgilendirir;
+        elle seçilen model her istekte yine denenir (bir zaman aşımı yüzünden dakikalarca istek atılamıyordu)."""
         now = time.monotonic() if now is None else now
         try:
             p, _ = parse_ref(ref)
@@ -623,6 +643,8 @@ class Router:
             return False, "bilinmeyen sağlayıcı"
         if not pc.enabled:
             return False, f"{pc.api_key_env} yok"
+        if pinned:
+            return True, "hazır (elle seçildi)"
         if p in self.dead_providers:
             return False, "sağlayıcı kapalı (auth)"
         if ref in self.dead_models:
@@ -666,6 +688,7 @@ class Router:
             if self._real_clients:
                 ranking.refresh_in_background(self, emit=self.on_event)
         chain = self.chain(role)
+        chosen = set(self.role_overrides.get(role) or [])  # elle seçilenler soğumada olsa da denenir
         est = estimate_tokens(messages, tools)
         attempts = 0
         failed: list[str] = []
@@ -675,7 +698,7 @@ class Router:
             for ref in chain:
                 if stream is not None and stream.cancelled():
                     raise StreamCancelled()
-                ok, why = self.available(ref, now)
+                ok, why = self.available(ref, now, pinned=ref in chosen)
                 if not ok:
                     errors.append(f"{ref}: {why}")
                     continue
@@ -720,6 +743,8 @@ class Router:
                         extra_kw = {"on_tool": stream.on_tool} if hasattr(stream, "on_tool") else {}
                         if isinstance(client, OpenAICompatProvider):
                             extra_kw["on_first"] = on_first
+                        if hasattr(stream, "on_call") and _accepts(client.chat_stream, "on_call"):
+                            extra_kw["on_call"] = stream.on_call  # tamamlanan araç çağrısı cevap bitmeden bildirilir
                         r = client.chat_stream(model, msgs, on_delta, cancel=stream.cancelled,
                                                on_reasoning=getattr(stream, "on_reasoning", None), **extra_kw, **kw)
                         if not r.usage:

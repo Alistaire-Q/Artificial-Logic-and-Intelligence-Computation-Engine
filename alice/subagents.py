@@ -225,7 +225,8 @@ def _go(ctx: ToolContext, sub: Sub, text: str) -> None:
         ui.changed(force=True)
         # Ekran kilidini ana sohbet adına almış olabilir: ana sohbet o an çalışmıyorsa bırakılır (çalışıyorsa turu
         # bitince kendisi bırakır).
-        lock, owner = sub.child.ctx.state.get("desktop_lock"), sub.child.ctx.state.get("lock_owner")
+        state = getattr(getattr(sub.child, "ctx", None), "state", None) or {}
+        lock, owner = state.get("desktop_lock"), state.get("lock_owner")
         if lock is not None and owner is not None and not getattr(parent, "busy", False):
             lock.release(owner)
         if sub.background and sub.status != "stopped" and callable(deliver):

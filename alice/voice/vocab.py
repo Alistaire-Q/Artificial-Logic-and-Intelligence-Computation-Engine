@@ -128,8 +128,8 @@ def memory_names(limit: int = 25) -> list[str]:
     if mem is None:
         return []
     out: list[str] = []
-    for f in mem.facts(200):
-        words = f.text.split()
+    for f in mem.notes.scan():
+        words = f"{f.description} {f.body[:300]}".split()
         for w in words[1:]:
             w = w.strip(".,;:!?()\"'").split("'")[0].split("’")[0]
             if len(w) > 2 and w[0].isupper() and w not in out and w.lower() not in ("kullanıcı", "kullanıcının"):

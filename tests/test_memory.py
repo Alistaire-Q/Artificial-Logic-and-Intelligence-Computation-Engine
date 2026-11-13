@@ -14,6 +14,10 @@ def mem(**opts) -> LongMemory:
     return LongMemory(":memory:", opts)
 
 
+def notes(m: LongMemory) -> list:
+    return m.notes.scan()
+
+
 def test_terms_fold_turkish_suffixes():
     assert "kahv" in terms("Kahveyi şekersiz içerim")
     assert set(terms("KAHVEMİ")) == {"kahv"}
@@ -21,37 +25,65 @@ def test_terms_fold_turkish_suffixes():
     assert terms("ve bu bir şey") == []
 
 
-def test_remember_dedupes_and_profile_orders_by_kind():
+def test_remember_writes_typed_note_dedupes_and_profile_shows_index_and_rules():
     m = mem()
     a, new_a = m.remember("Kullanıcı kahveyi şekersiz içer.", "preference")
     b, new_b = m.remember("Kullanıcı kahveyi şekersiz içer", "preference")
     assert new_a and not new_b and a == b
-    m.remember("Kullanıcının kardeşinin adı Ece.", "person")
+    m.remember("Kullanıcı oyunu kapatmadan önce sorulmasını ister.", "preference")
+    types = {n.type for n in notes(m)}
+    assert types == {"user", "feedback"}  # kalıcı talimat feedback notu olur
     prof = m.profile()
-    assert "Long-term memory" in prof
-    assert prof.index("şekersiz") < prof.index("Ece")
-    assert len(m.facts()) == 2
+    assert "Long-term memory" in prof and "MEMORY.md" in prof and "Note types" in prof
+    assert f"]({a}.md)" in prof and "sorulmasını" in prof  # dizin + feedback notunun tamamı
+    assert m.notes.index_raw().count("\n") == 2
 
 
-def test_search_finds_fact_and_old_conversation():
+def test_search_notes_and_old_conversation():
     m = mem()
     m.remember("Kullanıcı en çok Interstellar filmini sever.", "preference")
     m.record("Hey Alice, yarın Ankara'ya trenle gidiyorum, bilet fiyatlarına bak\n\n[şu an: 01.10.2026 ...]",
              "Bilet 450 lira.", "ses")
-    hits = m.search("en sevdiğim film neydi")
-    assert hits and "Interstellar" in hits[0].item.text
+    assert "Interstellar" in m.search_notes("en sevdiğim film interstellar")[0].body
     hits = m.search("ankara treni ne kadardı")
     assert hits and "Ankara" in hits[0].item.user and "[şu an" not in hits[0].item.user
     assert m.search("hava nasıl") == []
 
 
-def test_recall_block_and_hits():
+def test_recall_attaches_whole_note_once_and_strips_cleanly():
     m = mem()
-    fid, _ = m.remember("Kullanıcı Opera GX kullanır.", "fact")
-    block = m.recall("opera'yı aç")
+    key, _ = m.remember("Kullanıcı Opera GX tarayıcısını kullanır.", "fact")
+    seen: set[str] = set()
+    block = m.recall("opera gx tarayıcısını aç", surfaced=seen)
     assert block.startswith("[hafızadan") and "Opera GX" in block
-    assert next(f for f in m.facts() if f.id == fid).hits == 1
+    assert m.recall("opera gx tarayıcısını aç", surfaced=seen) == ""  # bu sohbette ikinci kez eklenmez
     assert clean_user_text("merhaba\n\n" + block) == "merhaba"
+
+
+def test_recall_lets_the_fast_model_pick_and_warns_about_old_notes():
+    asked = []
+
+    def chooser(prompt: str) -> str:
+        asked.append(prompt)
+        return json.dumps({"selected": ["genel:feedback-testler"]})
+
+    m = LongMemory(":memory:", {}, chooser)
+    m.save_note("feedback-testler", "Yalnız değişen koda ait testleri koş", "feedback",
+                "Tüm suite'i değil ilgili testleri koş.\n**Neden:** suite çok uzun.\n**Nasıl uygulanır:** her değişiklikte.")
+    m.save_note("user-oyunlar", "Oynadığı oyunlar: War Thunder, Unciv", "user", "War Thunder ve Unciv oynar.")
+    import os
+    import re
+    from datetime import datetime
+
+    old = m.notes.path_for("feedback-testler")
+    then = time.time() - 40 * 86400
+    old.write_text(re.sub(r"modified: .*", f"modified: {datetime.fromtimestamp(then).isoformat(timespec='seconds')}",
+                          old.read_text(encoding="utf-8")), encoding="utf-8")
+    os.utime(old, (then, then))
+    block = m.recall("testleri çalıştır")
+    assert "genel:feedback-testler" in asked[0] and "Unciv" in asked[0]  # açıklamalar modele gösterildi
+    assert "**Neden:**" in block and "War Thunder" not in block
+    assert "gün önce yazıldı" in block  # eski not: şimdiki hâli kontrol et uyarısı
 
 
 def test_explicit_note_and_signals():
@@ -62,26 +94,61 @@ def test_explicit_note_and_signals():
     assert not has_signal("YouTube'u aç")
     m = mem()
     m.learn("bunu hatırla: annemin doğum günü 3 Mayıs")
-    assert "3 Mayıs" in m.facts()[0].text
+    n = notes(m)[0]
+    assert "3 Mayıs" in n.body and n.source == "kullanıcı"
 
 
-def test_learn_uses_extractor_and_updates_existing():
+def test_learn_extracts_typed_notes_and_updates_existing_by_name():
     seen = []
 
     def extractor(prompt: str) -> str:
         seen.append(prompt)
-        if "artık" in prompt:
-            return json.dumps({"update": [{"id": 1, "text": "Kullanıcı artık çayı tercih ediyor."}], "add": []})
-        return '```json\n{"add": [{"text": "Kullanıcı kahveyi şekersiz içer.", "kind": "preference"}]}\n```'
+        if "çay" in prompt:
+            return json.dumps({"save": [{"name": "user-icecek", "type": "user", "description": "Artık çay içiyor",
+                                         "content": "Kullanıcı kahveyi bıraktı, çay içiyor."}]})
+        return ('```json\n{"save": [{"name": "user-icecek", "type": "user", "description": "Kahveyi şekersiz içer",'
+                ' "content": "Kullanıcı kahveyi şekersiz içer."}]}\n```')
 
     m = LongMemory(":memory:", {}, extractor)
+    m.record("YouTube'u aç", "Açtım.")
     m.learn("YouTube'u aç", background=False)
-    assert not seen  # sinyal yok: model çağrılmaz
+    assert not seen  # sinyal yok, sıra da gelmedi: model çağrılmaz
+    m.record("ben kahveyi hep şekersiz içerim", "Not ettim.")
     m.learn("ben kahveyi hep şekersiz içerim", "Not ettim.", background=False)
-    assert m.facts()[0].text == "Kullanıcı kahveyi şekersiz içer."
+    assert [n.description for n in notes(m)] == ["Kahveyi şekersiz içer"]
+    m.record("artık kahve içmiyorum, çay seviyorum", "Tamam.")
     m.learn("artık kahve içmiyorum, çay seviyorum", background=False)
-    assert "1: Kullanıcı kahveyi" in seen[-1]  # ilgili eski bilgi modele gösterildi
-    assert [f.text for f in m.facts()] == ["Kullanıcı artık çayı tercih ediyor."]
+    assert "genel:user-icecek" in seen[-1] and "Kahveyi şekersiz" in seen[-1]  # mevcut not modele gösterildi
+    assert [n.description for n in notes(m)] == ["Artık çay içiyor"]  # aynı adla güncellendi, kopya yok
+    assert "artık kahve" in seen[-1] and "YouTube" not in seen[-1]  # imleç: zaten bakılan turlar tekrar gitmez
+
+
+def test_feedback_and_confirmation_trigger_extraction_and_own_write_skips_it():
+    calls = []
+    m = LongMemory(":memory:", {}, lambda p: calls.append(p) or "{}")
+    m.record("hayır öyle değil, testleri tek tek koşma", "Tamam.")
+    m.learn("hayır öyle değil, testleri tek tek koşma", background=False)
+    m.record("aynen böyle devam", "Peki.")
+    m.learn("aynen böyle devam", background=False)
+    assert len(calls) == 2  # düzeltme de onay da feedback sinyali
+    m.record("bunu feedback olarak kaydettim", "")
+    m.learn("hayır, bundan sonra hep sor", wrote=True, background=False)
+    assert len(calls) == 2  # ALICE bu turda hafızaya kendisi yazdı: arka plan çıkarımı atlanır
+
+
+def test_one_off_things_are_not_saved_as_user_notes_and_requested_notes_are_protected():
+    m = mem()
+    done = m.apply_notes({"save": [
+        {"name": "user-deneme", "type": "user", "description": r"C:\Users\x\Desktop\Deneme klasörünü açtı",
+         "content": "..."},
+        {"name": "user-kahve", "type": "user", "description": "Kahveyi şekersiz içer", "content": "Şekersiz."},
+        {"name": "bad", "type": "secret", "description": "x", "content": "y"},
+    ]})
+    assert [n.name for n in notes(m)] == ["user-kahve"] and done == ["eklendi genel:user-kahve"]
+    m.remember("Kullanıcının adı Hayat.", "fact", source="kullanıcı")
+    keep = [n for n in notes(m) if n.source == "kullanıcı"][0]
+    m.apply_notes({"delete": [keep.key, "genel:user-kahve"]})
+    assert {n.name for n in notes(m)} == {keep.name}  # elle istenen silinmedi
 
 
 def test_import_markdown_once(tmp_path):
@@ -90,7 +157,22 @@ def test_import_markdown_once(tmp_path):
     m = mem()
     assert m.import_markdown(md) == 2
     assert m.import_markdown(md) == 0
-    assert {f.text for f in m.facts()} == {"Kullanıcının adı Hayat", "Projeler D:\\Unity altında"}
+    assert {n.body for n in notes(m)} == {"Kullanıcının adı Hayat", "Projeler D:\\Unity altında"}
+
+
+def test_old_facts_migrate_to_notes_once():
+    m = mem()
+    now = time.time()
+    with m._lock:
+        m.db.execute("INSERT INTO facts(created, updated, kind, text, terms, source) VALUES (?, ?, ?, ?, '', ?)",
+                     (now, now, "preference", "Kullanıcı GitHub işlerinde kendi gh oturumunun kullanılmasını ister.",
+                      "otomatik"))
+        m.db.execute("INSERT INTO facts(created, updated, kind, text, terms, source) VALUES (?, ?, ?, ?, '', ?)",
+                     (now, now, "person", "Kanin, kullanıcının yakın bir arkadaşıdır.", "araç"))
+        m.db.commit()
+    assert m.migrate_facts() == 2 and m.migrate_facts() == 0
+    by = {n.type: n for n in notes(m)}
+    assert "gh oturumunun" in by["feedback"].body and by["user"].source == "kullanıcı"
 
 
 def test_episodes_pruned_by_age():
@@ -112,60 +194,35 @@ def test_agent_injects_recall_records_turns_and_refreshes_profile(workdir):
     agent, provs, _ = make_agent(["Tamam.", "Interstellar dedin."], workdir)
     attach_memory(agent, "yazı")
     assert agent.memory is not None
+    agent.memory.recall_model = False
     agent.memory.remember("Kullanıcının en sevdiği film Interstellar.", "preference")
-    agent.run_turn("en sevdiğim film hangisiydi?")
+    agent.run_turn("en sevdiğim film interstellar mıydı?")
     sent = provs["a"].calls[0]["messages"]
-    assert "Interstellar" in sent[0]["content"]  # profil sistem isteminde
+    assert "Interstellar" in sent[0]["content"]  # dizin + kullanıcı notu sistem isteminde
     assert "[hafızadan" in sent[-1]["content"]
-    assert agent.messages[1]["_display"] == "en sevdiğim film hangisiydi?"
+    assert agent.messages[1]["_display"] == "en sevdiğim film interstellar mıydı?"
     ep = agent.memory.recent(1)[0]
-    assert ep.user == "en sevdiğim film hangisiydi?" and ep.reply == "Tamam." and ep.channel == "yazı"
+    assert ep.user == "en sevdiğim film interstellar mıydı?" and ep.reply == "Tamam." and ep.channel == "yazı"
 
 
-def test_memory_tool_add_search_forget(workdir):
+def test_memory_tool_save_read_search_delete(workdir):
     agent, _, _ = make_agent([], workdir)
     attach_memory(agent, "yazı")
     ctx: ToolContext = agent.ctx
     tool = Memory()
+    out = tool.run(ctx, "save", name="user-takim", type="user", description="Tuttuğu takım: Galatasaray",
+                   content="Kullanıcı Galatasaray tutar.").text
+    assert out.startswith("kaydedildi: genel:user-takim") and ctx.state["memory_wrote"]
+    assert "Galatasaray" in tool.run(ctx, "read", name="user-takim").text
+    assert "user-takim" in tool.run(ctx, "search", query="galatasaray").text
+    assert "user-takim" in tool.run(ctx, "list").text
+    assert tool.risk_for({"action": "delete"}) == "write" and tool.risk_for({"action": "save"}) == "read"
+    assert tool.run(ctx, "delete", name="user-takim").text.startswith("silindi")
+    assert agent.memory.notes.scan() == [] and "user-takim" not in agent.memory.notes.index_raw()
+    assert any((agent.memory.notes.root / ".trash").glob("*user-takim.md"))  # çöpte, geri alınabilir
+    # eski adlar da çalışır
     assert "kaydedildi" in tool.run(ctx, "add", note="Kullanıcı Galatasaray tutar.", kind="preference").text
-    assert "Galatasaray" in tool.run(ctx, "search", query="hangi takımı tutuyorum galatasaray").text
-    assert tool.risk_for({"action": "forget"}) == "write"
-    out = tool.run(ctx, "forget", query="Galatasaray tutar").text
-    assert out.startswith("silindi")
-    assert agent.memory.facts() == []
-
-
-def test_bir_konusmalik_seyler_bilgi_diye_kaydedilmez():
-    m = mem()
-    m.apply({"add": [
-        {"text": "Kullanıcı, Spotify'da DNA parçasını dinlemek istedi ancak oynatma başarısız oldu.", "kind": "fact"},
-        {"text": r"Kullanıcının masaüstünde C:\Users\x\Desktop\Deneme adında bir klasör var.", "kind": "fact"},
-        {"text": "Kullanıcı us.txt dosyasındaki değerin doğru olduğunu onayladı.", "kind": "fact"},
-        {"text": "Kullanıcı kahveyi şekersiz içer.", "kind": "preference"},
-    ]})
-    assert [f.text for f in m.facts()] == ["Kullanıcı kahveyi şekersiz içer."]
-
-
-def test_toparlama_birlestirir_siler_ama_hatirla_dediklerine_dokunmaz():
-    seen = []
-
-    def extractor(prompt):
-        seen.append(prompt)
-        return json.dumps({"remove": [2, 3], "merge": [{"ids": [4, 5], "text": "Kullanıcı Unciv ve Solitaire oynar."}],
-                           "update": []})
-
-    m = LongMemory(":memory:", {}, extractor)
-    m.remember("Kullanıcı kahveyi şekersiz içer.", "preference", source="kullanıcı")  # 1
-    m.remember("Kullanıcı reflex katmanında çalışıyor.", "fact", source="otomatik")  # 2
-    m.remember("Kullanıcının adı Hayat.", "fact", source="kullanıcı")  # 3: elle kaydedildi, silinmez
-    m.remember("Kullanıcı Unciv oynuyor.", "fact", source="otomatik")  # 4
-    m.remember("Kullanıcı Solitaire sever.", "preference", source="otomatik")  # 5
-    done = m.consolidate()
-    texts = {f.id: f.text for f in m.facts()}
-    assert texts == {1: "Kullanıcı kahveyi şekersiz içer.", 3: "Kullanıcının adı Hayat.",
-                     4: "Kullanıcı Unciv ve Solitaire oynar."}
-    assert "user asked to remember" in seen[0] and done
-    assert not m.maybe_consolidate()  # günde bir
+    assert tool.run(ctx, "forget", query="Galatasaray").text.startswith("silindi")
 
 
 def _chat(m, ts, user, reply=""):
@@ -175,8 +232,6 @@ def _chat(m, ts, user, reply=""):
 
 
 def test_gecmis_sohbet_arama_ve_son_sohbetler():
-    from alice.memory import terms
-
     m = mem()
     day = 86400
     now = time.time()
@@ -198,26 +253,6 @@ def test_gecmis_sohbet_arama_ve_son_sohbetler():
     assert "bulunamadı" in m.search_chats("uzay gemisi")
     # Eski turlar artık her mesaja kendiliğinden eklenmez; onları model search_chats ile bulur.
     assert "Raycast" not in m.recall("unity silah sistemi")
-
-
-def test_portre_profile_girer_ve_bilgi_silinince_duser():
-    def extractor(prompt):
-        if "portrait" in prompt:
-            return json.dumps({"portrait": "**Kim**\n- Hayat, oyun geliştiriyor"})
-        return json.dumps({})
-
-    m = LongMemory(":memory:", {}, extractor)
-    fid, _ = m.remember("Kullanıcı Unity ile FPS oyunu yapıyor.", "fact", source="otomatik")
-    m.remember("Kullanıcı kahveyi şekersiz içer.", "preference", source="otomatik")
-    time.sleep(0.05)  # Windows saati ~15 ms adımlı: tanıtım bilgilerden sonra yazılmış görünsün
-    m.consolidate()
-    prof = m.profile()
-    assert "Hayat, oyun geliştiriyor" in prof and "şekersiz" not in prof  # bilgiler tanıtımda, madde değil
-    time.sleep(0.05)
-    m.remember("Kullanıcı köpek besliyor.", "fact", source="otomatik")
-    assert "köpek" in m.profile()  # tanıtımdan sonra eklenen madde olarak görünür
-    m.forget(fid)
-    assert "Hayat, oyun geliştiriyor" not in m.profile() and "şekersiz" in m.profile()
 
 
 def test_hafiza_araci_gecmis_sohbet_eylemleri(workdir):
@@ -285,50 +320,86 @@ def test_gurultu_kaydedilmez_ozetteki_kalip_cumleler_atilir():
     assert strip_filler("Kullanıcı hava durumunu sordu; ALICE henüz yanıt vermedi.") == "Kullanıcı hava durumunu sordu."
 
 
-def test_toparlama_tekrar_eden_ilgiyi_ekler_degersiz_ozeti_siler():
+# ---------------------------------------------------------------------------------------------------- Dream
+def _dream_mem(answer, sessions: int = 5, **opts):
     seen = []
 
-    def extractor(prompt):
+    def synth(prompt):
         seen.append(prompt)
-        if "portrait" in prompt:
-            return json.dumps({"portrait": "**Tercihler**\n- Unciv oynar"})
-        return json.dumps({"add": [{"text": "Kullanıcı Unciv oynar.", "kind": "preference"},
-                                   {"text": r"Kullanıcı C:\Deneme klasörünü açtı.", "kind": "fact"}],
-                           "drop_summaries": [2, 99]})
+        return json.dumps(answer) if not callable(answer) else answer(prompt)
 
-    m = LongMemory(":memory:", {}, extractor)
+    m = LongMemory(":memory:", {"dream_sessions": sessions, **opts}, lambda p: "{}")
+    m.synthesizer = synth
+    return m, seen
+
+
+def test_dream_merges_fixes_prunes_and_keeps_a_backup():
+    m, seen = _dream_mem({
+        "save": [{"name": "user-oyunlar", "type": "user", "title": "Oyunlar",
+                  "description": "Oynadığı oyunlar: Unciv, Solitaire", "content": "Unciv ve Solitaire oynar."}],
+        "delete": ["user-unciv", "user-solitaire"],
+        "index": "## Kullanıcı\n- [Oyunlar](user-oyunlar.md) — Unciv, Solitaire\n- [Yok](olmayan.md) — x",
+        "summary": "İki oyun notu birleştirildi."})
+    m.save_note("user-unciv", "Unciv oynuyor", "user", "Unciv oynuyor.")
+    m.save_note("user-solitaire", "Solitaire sever", "user", "Solitaire sever.")
+    m.remember("Kullanıcının adı Hayat.", "fact", source="kullanıcı")
     now = time.time()
-    m.add_summary(now - 7200, now - 7000, "Kullanıcı Unciv'de yeni şehir kurdu.")
-    m.add_summary(now - 3600, now - 3500, "Kullanıcı ALICE'in Not Defteri otomasyonunu denedi.")
     m.add_summary(now - 600, now - 500, "Kullanıcı Unciv'de savaş başlattı.")
-    done = m.consolidate()
-    assert "Unciv'de savaş" in seen[0] and "drop_summaries" in seen[0]  # özetler toparlamaya girer
-    assert [f.text for f in m.facts()] == ["Kullanıcı Unciv oynar."]  # yol içeren eklenmez
-    assert [x.id for x in m.summaries(10)] == [1, 3] and "özet silindi #2" in done
+    done = m.dream(force=True)
+    names = {n.name for n in notes(m)}
+    assert "user-oyunlar" in names and "user-unciv" not in names and "user-solitaire" not in names
+    assert any("Hayat" in n.body for n in notes(m))  # elle istenen not dokunulmadan kaldı
+    idx = m.notes.index_raw()
+    assert idx.startswith("## Kullanıcı") and "olmayan.md" not in idx and "Hayat" in idx  # eksik satır eklendi
+    assert "Unciv'de savaş" in seen[0] and "(kullanıcı istedi)" in seen[0]  # özetler ve koruma işareti modelde
+    assert any("İki oyun notu" in x for x in done) and m.notes.backups()  # yedek alındı
+    assert "Dream:" in m.notes.logs_since(0)
+    # yedeğe dönülebilir
+    m.notes.restore(m.notes.backups()[-1])
+    assert {"user-unciv", "user-solitaire"} <= {n.name for n in notes(m)}
 
 
-def test_toparlama_talimati_silmez_toplu_silmez_guclu_modeli_kullanir():
-    fast, strong = [], []
+def test_dream_never_bulk_deletes_and_uses_the_strong_model():
+    fast = []
+    m, seen = _dream_mem({"delete": [f"user-meyve-{i}" for i in range(8)], "summary": "budandı"})
+    m.extractor = lambda p: fast.append(p) or "{}"
+    for i in range(8):
+        m.save_note(f"user-meyve-{i}", f"meyve {i} sever", "user", f"{i}. meyveyi sever.")
+    m.dream(force=True)
+    assert len(notes(m)) == 6  # 8'in en fazla dörtte biri (2) silindi
+    assert seen and not fast  # Dream güçlü modelle
 
-    def synthesizer(prompt):
-        strong.append(prompt)
-        return json.dumps({"remove": [1, 2, 3, 4, 5, 6, 7, 8],
-                           "add": [{"text": "Kullanıcı WhatsApp'ta Que Mal ile iletişime geçti.", "kind": "person"},
-                                   {"text": "Kullanıcı Unciv oynar.", "kind": "preference"}],
-                           "drop_summaries": [1, 2, 3, 4, 5, 6]})
 
-    m = LongMemory(":memory:", {}, lambda p: fast.append(p) or "{}")
-    m.synthesizer = synthesizer
-    m.remember("Kullanıcı oyunlarda reklam çıkınca durulmasını ister.", "preference", source="otomatik")  # 1
-    for word in ("elma", "armut", "kiraz", "erik", "incir", "ayva", "dut"):  # 2..8
-        m.remember(f"Kullanıcı {word} meyvesini sever.", "preference", source="otomatik")
+def test_maybe_dream_waits_for_time_and_enough_conversations():
+    m, seen = _dream_mem({"summary": "tamam"}, sessions=3)
+    m.save_note("user-x", "x", "user", "x")
     now = time.time()
-    for i in range(6):
-        m.add_summary(now - 1000 + i, now - 900 + i, f"Kullanıcı konu{i} üzerinde çalıştı.")
-    m.consolidate()
-    texts = [f.text for f in m.facts()]
-    assert any("reklam" in t for t in texts)  # talimat silinmedi
-    assert len([t for t in texts if "meyvesini" in t]) == 5  # 8'in en fazla dörtte biri (2) silindi
-    assert "Kullanıcı Unciv oynar." in texts and not any("Que Mal" in t for t in texts)  # tek olay bilgi olmaz
-    assert len(m.summaries(10)) == 4  # özetlerin en fazla üçte biri
-    assert strong and not fast  # günlük toparlama güçlü modelle
+    for i in range(2):
+        _chat(m, now - 10 * 3600 + i * 3600, f"konuşma {i}", "cevap")
+    assert not m.maybe_dream() and not seen  # 2 konuşma < 3
+    m._last_dream_scan = None
+    _chat(m, now - 5 * 3600, "üçüncü konuşma", "cevap")
+    assert m.maybe_dream() and seen
+    m._last_dream_scan = None
+    assert not m.maybe_dream()  # son Dream'in üstünden 24 saat geçmedi
+    assert m.notes.last_dream() > now - 60
+
+
+def test_dream_lock_blocks_a_second_process_and_failure_rolls_back_the_clock():
+    import os
+
+    m, _ = _dream_mem(lambda p: "bozuk cevap")
+    m.save_note("user-x", "x", "user", "x")
+    prior = m.notes.last_dream()
+    m.dream(force=True)  # cevap boş: hata -> kilit zamanı eskiye döner, kapı yine açık
+    assert m.notes.last_dream() == prior == 0.0
+    m.notes.lock_path.write_text("999999", encoding="utf-8")  # başka (ölü olmayan) süreç tutuyor gibi
+    import alice.memdir as md
+
+    real = md._pid_alive
+    md._pid_alive = lambda pid: True
+    try:
+        assert "başka bir süreç" in " ".join(m.dream(force=True))
+    finally:
+        md._pid_alive = real
+        os.utime(m.notes.lock_path, (0, 0))

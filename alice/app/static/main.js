@@ -12,7 +12,9 @@ const handlers = {
   project_note: onProjectNote,
   subagent: onSubagentEvent,
   user: (ev) => addUser(ev.text, ev.mi, ev.images),
-  busy: (ev) => { S.status.busy = ev.value; setBusy(ev.value); if (!ev.value) loadSessions(); },
+  btw: (ev) => addBtw(ev),
+  suggest: (ev) => showSuggest(ev.items),
+  busy: (ev) => { S.status.busy = ev.value; setBusy(ev.value); if (ev.value) showSuggest([]); else loadSessions(); },
   stream_start: () => { if (!S.cur) showWorking("Düşünüyor"); },
   thinking: (ev) => onThinking(ev.text),
   delta: (ev) => onDelta(ev.text),
@@ -139,3 +141,44 @@ function onBackground(ev) {
   clock();
   setInterval(clock, 30000);
 })();
+
+/* "Sen yokken": pencere 20 dakikadan uzun gizli kaldıysa dönüşte öndeki sohbetin nerede kaldığını özetle. */
+(() => {
+  let hiddenAt = 0;
+  document.addEventListener("visibilitychange", async () => {
+    if (document.hidden) { hiddenAt = Date.now(); return; }
+    if (!hiddenAt || Date.now() - hiddenAt < 20 * 60 * 1000 || S.busy) return;
+    hiddenAt = 0;
+    const r = await api("/api/recap").catch(() => null);
+    if (!r || !r.text) return;
+    const card = el("div", "btw-card recap");
+    card.append(el("div", "btw-q", "Sen yokken"), el("div", "btw-a", r.text));
+    add(card);
+    toBottom(true);
+  });
+})();
+
+/* Sonraki mesaj önerileri: tur bitince en fazla iki düğme. Tıklayınca kutuya yazılır (değiştirip gönderebilirsin);
+   yazmaya başlayınca ya da yeni tur başlayınca kaybolur. */
+function showSuggest(items) {
+  let box = document.getElementById("suggest");
+  if (!box) {
+    box = el("div", "suggest");
+    box.id = "suggest";
+    const wrap = document.getElementById("composerWrap");
+    wrap.insertBefore(box, document.getElementById("composer"));
+    document.getElementById("input").addEventListener("input", () => { if (box.childElementCount) box.replaceChildren(); });
+  }
+  box.replaceChildren();
+  for (const t of items || []) {
+    const b = el("button", "sg", t);
+    b.addEventListener("click", () => {
+      const inp = document.getElementById("input");
+      inp.value = t;
+      inp.focus();
+      inp.dispatchEvent(new Event("input", { bubbles: true }));
+      box.replaceChildren();
+    });
+    box.appendChild(b);
+  }
+}
