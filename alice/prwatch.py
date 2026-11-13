@@ -208,22 +208,22 @@ def new_comments(w: Watch, data: dict[str, list[dict[str, Any]]]) -> tuple[list[
     outside: list[dict] = []
 
     def take(item: dict, extra: dict) -> None:
-        if item["id"] in w.seen or by_alice(item["body"]) or not item["body"].strip():
+        if item["id"] in w.seen or by_alice(item["body"], item["id"]) or not item["body"].strip():
             return
         (good if item["trusted"] else outside).append({**item, **extra})
 
     for t in data.get("threads", []):
         if t["resolved"] or not t["comments"]:
             continue
-        if by_alice(t["comments"][-1]["body"]):
+        if by_alice(t["comments"][-1]["body"], t["comments"][-1]["id"]):
             continue  # son söz ALICE'te: yeni bir şey yazılmadı
         # Konudaki en yeni, ALICE'in yazmadığı yorum: ALICE'in inceleme yorumunun altına kullanıcı cevap yazınca da
         # görülsün (konunun ilk yorumu ALICE'inki olduğu için önceden atlanıyordu).
-        human = [c for c in t["comments"] if not by_alice(c["body"])]
+        human = [c for c in t["comments"] if not by_alice(c["body"], c["id"])]
         last = human[-1]
         # Düzeltici ajana yalnız ALICE'in ve güvenilir yazarların sözü gider. Konuya dışarıdan yazılanlar güvenilir
         # bir yorumun yanında gelse bile talimat olarak gitmez: ayrıca yalnız bildirilir.
-        convo = [f"{c['author']}: {c['body']}" for c in t["comments"] if c["trusted"] or by_alice(c["body"])]
+        convo = [f"{c['author']}: {c['body']}" for c in t["comments"] if c["trusted"] or by_alice(c["body"], c["id"])]
         for c in human:
             if not c["trusted"] and c is not last:
                 take(c, {"kind": "thread", "thread": t["id"], "path": t["path"], "line": t["line"]})
@@ -278,9 +278,10 @@ def worktree_for(cfg: Any, w: Watch, branch: str, token: str | None) -> Path:
 
 
 # ------------------------------------------------------------------------------------------------- istem
-def fix_prompt(w: Watch, pr: dict[str, Any], p: Problems, in_chat: bool = False) -> str:
+def fix_prompt(w: Watch, pr: dict[str, Any], p: Problems, in_chat: bool = False, hidden: bool = False) -> str:
     """in_chat: iş PR'ı hazırlayan sohbete gidiyor (ajan kodu ve kararları biliyor, çalışma klasörü kullanıcının
-    kopyası); değilse temiz bağlamlı ajan ALICE'in kendi worktree'sinde çalışır."""
+    kopyası); değilse temiz bağlamlı ajan ALICE'in kendi worktree'sinde çalışır. hidden: gizli mod (imzasız)."""
+    from alice import undercover
     from alice.guard import wrap
     from alice.tools.github import ALICE_MARK
 
@@ -324,7 +325,7 @@ def fix_prompt(w: Watch, pr: dict[str, Any], p: Problems, in_chat: bool = False)
         f"- Uyguladığın ya da bilerek uygulamadığın her satır yorumuna github action=review_reply number={w.number} "
         "comment_id=<yorum> ile tek cümlelik cevap yaz (ne değişti ya da neden değişmedi), sonra uyguladıklarını "
         "action=review_resolve thread=<konu> ile çözüldü işaretle. Genel yorumlara pr_comment ile kısaca cevap ver. "
-        f"Cevaplar otomatik olarak '{ALICE_MARK}' imzası alır.\n"
+        + (f"{undercover.RULES}\n" if hidden else f"Cevaplar otomatik olarak '{ALICE_MARK}' imzası alır.\n") +
         "- Düzeltemediğin bir şey kalırsa ne olduğunu ve nedenini son cevabında açıkça söyle.")
     return "\n\n".join(parts)
 
@@ -354,6 +355,12 @@ def default_reviewer(cfg: Any) -> Callable[[Watch, dict[str, Any], Any, str | No
             findings = review.review(cfg, router, wt, title, diff)
         finally:
             router.close()
+        from alice import undercover
+
+        if undercover.active(cfg, w.repo, api):
+            # Sahibin hesabından yazılan inceleme yorumları takipte "sahibin isteği" sanılırdı; yalnız bildir.
+            body = "\n".join(f"- {' '.join(f.text().split())[:300]}" for f in findings)
+            return f"{len(findings)} bulgu (gizli mod: PR'a yazılmadı)" + (f"\n{body}" if body else "")
         url = review.post(api, w.repo, w.number, sha, findings, diff)
         return f"{len(findings)} bulgu" + (f": {url}" if url else "")
 
@@ -401,6 +408,9 @@ def check_one(cfg: Any, w: Watch, api: Any, notify: Callable[[str, str], Any],
         _update(w.key, lambda x: (setattr(x, "sha", sha), setattr(x, "attempts", 0)))
         w.sha, w.attempts = sha, 0
     p = inspect(w, api, pr)
+    from alice import undercover
+
+    hidden = undercover.active(cfg, w.repo, api)
     out: list[str] = []
     if p.outside:
         ids = [c["id"] for c in p.outside]
@@ -425,7 +435,7 @@ def check_one(cfg: Any, w: Watch, api: Any, notify: Callable[[str, str], Any],
                                          (f"{len(fixable.comments)} yorum", fixable.comments)) if on)
         if w.session and deliver is not None:
             # Kodu yazan sohbetin ajanı: bağlamı biliyor, baştan araştırma yapmadan düzeltir.
-            why = deliver(w.session, fix_prompt(w, pr, fixable, in_chat=True))
+            why = deliver(w.session, fix_prompt(w, pr, fixable, in_chat=True, hidden=hidden))
             if not why:
                 _update(w.key, lambda x: x.__setattr__("attempts", x.attempts + 1))
                 _mark(w, sha, fixable, f"{what}: PR'ı hazırlayan sohbete iletildi")
@@ -437,7 +447,7 @@ def check_one(cfg: Any, w: Watch, api: Any, notify: Callable[[str, str], Any],
             _update(w.key, lambda x, why=why: x.log(f"sohbete iletilemedi ({why}); ayrı ajan düzeltecek"))
         _update(w.key, lambda x: (setattr(x, "attempts", x.attempts + 1), x.log(f"düzeltiliyor: {what}")))
         wt = worktree_for(cfg, w, pr["head"]["ref"], token)
-        result = run_fix(fix_prompt(w, pr, fixable), wt)
+        result = run_fix(fix_prompt(w, pr, fixable, hidden=hidden), wt)
         _mark(w, sha, fixable, f"düzeltme denendi ({what}): {' '.join(result.split())[:200]}")
         notify(f"{w.key}: {what} ele alındı", result[:600])
         return out + [f"{w.key}: düzeltme ({what})"]
