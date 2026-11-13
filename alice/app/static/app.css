@@ -2129,3 +2129,9 @@ details > summary::marker { color: var(--faint); }
 .btw-card { margin: 10px 0; padding: 10px 14px; border: 1px dashed var(--line-strong); border-radius: var(--r-md); background: var(--panel); font-size: var(--t-sm); }
 .btw-card .btw-q { color: var(--muted); font-weight: 600; margin-bottom: 4px; }
 .btw-card.pending .btw-a { color: var(--faint); font-style: italic; }
+
+/* Sonraki mesaj önerileri */
+.suggest { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; margin: 0 4px 6px; }
+.suggest:empty { display: none; }
+.suggest .sg { border: 1px solid var(--line-strong); background: var(--panel); color: var(--muted); border-radius: var(--r-full); padding: 4px 12px; font: inherit; font-size: var(--t-sm); cursor: pointer; }
+.suggest .sg:hover { color: var(--text); border-color: var(--accent); }

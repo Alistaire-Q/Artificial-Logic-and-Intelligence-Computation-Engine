@@ -149,8 +149,10 @@ def make_config(roles: dict[str, list[str]], providers: dict[str, dict] | None =
     }
     data["models"] = {}
     data["decider"]["chain"] = ["llm:fast"]
+    # Arka planda modele giden işler sahte modelin cevap sırasını bozmasın: hafıza çıkarımı, BUDDY yorumu, öneriler.
     data.setdefault("memory", {})["auto_extract"] = False
-    data.setdefault("buddy", {})["chatter"] = False  # BUDDY'nin arka plan yorumu sahte modelin cevap sırasını bozmasın  # sahte modelin cevap sırasını arka plan çıkarımı bozmasın
+    data.setdefault("buddy", {})["chatter"] = False
+    data.setdefault("agent", {}).setdefault("suggestions", False)
     data.setdefault("voice", {})["call_live"] = False  # aramalar gerçek Realtime proxy'sine bağlanmasın
     data["agent"]["verify_claims"] = False  # kanıt kontrolü de aynı sahte modelden cevap çeker: istenen testte açılır
     data["agent"].update(agent)

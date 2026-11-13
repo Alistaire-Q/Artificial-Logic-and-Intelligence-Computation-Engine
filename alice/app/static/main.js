@@ -13,7 +13,8 @@ const handlers = {
   subagent: onSubagentEvent,
   user: (ev) => addUser(ev.text, ev.mi, ev.images),
   btw: (ev) => addBtw(ev),
-  busy: (ev) => { S.status.busy = ev.value; setBusy(ev.value); if (!ev.value) loadSessions(); },
+  suggest: (ev) => showSuggest(ev.items),
+  busy: (ev) => { S.status.busy = ev.value; setBusy(ev.value); if (ev.value) showSuggest([]); else loadSessions(); },
   stream_start: () => { if (!S.cur) showWorking("Düşünüyor"); },
   thinking: (ev) => onThinking(ev.text),
   delta: (ev) => onDelta(ev.text),
@@ -156,3 +157,28 @@ function onBackground(ev) {
     toBottom(true);
   });
 })();
+
+/* Sonraki mesaj önerileri: tur bitince en fazla iki düğme. Tıklayınca kutuya yazılır (değiştirip gönderebilirsin);
+   yazmaya başlayınca ya da yeni tur başlayınca kaybolur. */
+function showSuggest(items) {
+  let box = document.getElementById("suggest");
+  if (!box) {
+    box = el("div", "suggest");
+    box.id = "suggest";
+    const wrap = document.getElementById("composerWrap");
+    wrap.insertBefore(box, document.getElementById("composer"));
+    document.getElementById("input").addEventListener("input", () => { if (box.childElementCount) box.replaceChildren(); });
+  }
+  box.replaceChildren();
+  for (const t of items || []) {
+    const b = el("button", "sg", t);
+    b.addEventListener("click", () => {
+      const inp = document.getElementById("input");
+      inp.value = t;
+      inp.focus();
+      inp.dispatchEvent(new Event("input", { bubbles: true }));
+      box.replaceChildren();
+    });
+    box.appendChild(b);
+  }
+}

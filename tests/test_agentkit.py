@@ -104,3 +104,31 @@ def test_code_intel_diagnostics_reports_syntax_and_data_errors(ctx, workdir):
     assert "bad.py:1" in out and "sözdizimi" in out
     assert "## ok.json (json)\nsorun yok" in out and "## bad.json (json)\nbad.json:" in out
     assert "dosya yok" in out
+
+
+def test_advisor_sees_conversation_and_uses_configured_model(tmp_path):
+    from types import SimpleNamespace
+
+    from alice.tools.agentkit import Advisor
+    from alice.tools.base import ToolContext, ToolError
+
+    calls = []
+
+    class R:
+        def chat(self, role, messages, **kw):
+            calls.append((role, messages))
+            return SimpleNamespace(text="B seçeneği daha güvenli.")
+
+    agent = SimpleNamespace(messages=[{"role": "system", "content": "s"}, {"role": "user", "content": "A mı B mi?"},
+                                      {"role": "assistant", "content": "", "tool_calls": [{"id": "1"}]}])
+    cfg = make_config({"brain": ["a:m"]})
+    ctx = ToolContext(cwd=tmp_path, config=cfg, router=R())
+    ctx.state["agent"] = agent
+    with pytest.raises(ToolError, match="ayarlı değil"):
+        Advisor().run(ctx, "hangisi?")
+    cfg.data["agent"]["advisor"] = "a:big"
+    out = Advisor().run(ctx, "hangisi?").text
+    assert "B seçeneği" in out and calls[-1][0] == "a:big"
+    sent = calls[-1][1]
+    assert sent[1]["content"] == "A mı B mi?" and not sent[-2].get("tool_calls")  # yarım çağrı adımı gönderilmez
+    assert "Soru: hangisi?" in sent[-1]["content"]

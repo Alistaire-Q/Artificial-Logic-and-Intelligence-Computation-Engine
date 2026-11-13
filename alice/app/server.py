@@ -1870,6 +1870,31 @@ class AppState:
         self._start_turn(chat, text, prompt, images or [])
         return True, None
 
+    def _suggest(self, chat: Any) -> list[str]:
+        """Tur bitince kullanıcının muhtemel sonraki mesajı (en fazla 2 kısa öneri). Arayüzde düğme olur; tıklayınca
+        kutuya yazılır, kullanıcı değiştirip gönderir. Emin değilse öneri yok."""
+        msgs = [m for m in chat.agent.messages[1:] if m.get("role") in ("user", "assistant")
+                and isinstance(m.get("content"), str) and m["content"].strip() and not m.get("_nudge")]
+        if len(msgs) < 2 or msgs[-1].get("role") != "assistant":
+            return []
+        lines = [f"{'Kullanıcı' if m['role'] == 'user' else 'ALICE'}: {' '.join(m['content'].split())[:600]}"
+                 for m in msgs[-8:]]
+        prompt = ("Aşağıdaki konuşmada kullanıcının büyük ihtimalle yazacağı bir sonraki mesajı tahmin et. En fazla 2 "
+                  "öneri; her biri kullanıcının ağzından, en çok 8 kelime, Türkçe. ALICE bir soru sorduysa olası cevaplar; "
+                  "iş bittiyse mantıklı sonraki adım. Emin değilsen boş liste. Yalnız JSON: {\"items\": [\"...\"]}\n\n"
+                  + "\n".join(lines))
+        try:
+            res = chat.agent.router.chat("fast", [{"role": "user", "content": prompt}], max_tokens=120,
+                                         response_format={"type": "json_object"})
+            raw = res.text or ""
+            data = json.loads(raw[raw.find("{"): raw.rfind("}") + 1] or "{}")
+            items = [" ".join(str(x).split())[:80] for x in data.get("items") or [] if str(x).strip()][:2]
+        except Exception:  # noqa: BLE001 - öneri yoksa düğme de yok
+            items = []
+        if items and not chat.busy:
+            chat.ui.publish({"type": "suggest", "items": items})
+        return items
+
     def recap(self) -> dict[str, Any]:
         """"Sen yokken": uzun aradan sonra uygulamaya dönünce öndeki sohbetin nerede kaldığının 1-3 cümlelik özeti.
         Yalnız son ~30 mesaja bakılır; konuşmaya yazılmaz. Aynı konuşma hâli için bir kez üretilir."""
@@ -1972,6 +1997,9 @@ class AppState:
                     self._finished(chat)
                     chat.ui.publish({"type": "busy", "value": False})
                     self.bus.publish({"type": "status", **self.status()})
+                    if not agent.cancel.is_set() and self.cfg.agent.get("suggestions", True):
+                        threading.Thread(target=self._suggest, args=(chat,), daemon=True,
+                                         name="alice-suggest").start()
 
         chat.run(run)
 

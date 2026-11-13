@@ -30,6 +30,8 @@ DEFAULT_CONFIG_TOML = r'''
 # Model referansı formatı: "provider:model_id"  (model_id içinde ":" olabilir, ilk ":" ayırır)
 
 [agent]
+advisor = ""                             # danışman modeli (advisor aracı): ör. "cliproxy:claude-opus-5-5"; boş = kapalı
+suggestions = true                       # tur bitince sonraki mesaj için 1-2 öneri düğmesi
 # ask  = okuma dışındaki her şeyi sorar
 # auto = tehlikeli komutlar ve sistem klasörlerine yazma dışında her şeye izin verir
 # yolo = hiçbir şey sormaz, tam erişim

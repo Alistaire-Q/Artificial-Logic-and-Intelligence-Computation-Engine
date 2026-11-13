@@ -453,6 +453,19 @@ class Agent:
         except Exception:  # noqa: BLE001
             log.debug("tur hafızaya yazılamadı", exc_info=True)
         self._feed_buddy(user_text, reply)
+        self._update_magic_docs()
+
+    def _update_magic_docs(self) -> None:
+        """Bu sohbette okunan sihirli belgeleri (# MAGIC DOC:) arka planda konuşmaya göre güncelle."""
+        if self.is_child or not self.ctx.state.get("magic_docs"):
+            return
+        import threading
+
+        from alice import magicdocs
+
+        msgs = list(self.messages)
+        threading.Thread(target=lambda: magicdocs.update(self.ctx.state, self.router, msgs), daemon=True,
+                         name="alice-magicdocs").start()
 
     def _feed_buddy(self, user_text: str, reply: str) -> None:
         """BUDDY konuşmayla doyar; ara sıra kısa bir yorum yapar (arka planda, turu bekletmez)."""
@@ -1225,6 +1238,13 @@ class Agent:
         self.ui.tool_start(call["id"], tool.name, summary)
         watch = self._watch(tool, args)
         result = self._run_tool(tool, args)
+        if tool.name == "read_file" and not result.is_error and args.get("path"):
+            try:
+                from alice import magicdocs
+
+                magicdocs.note_read(self.ctx.state, self.ctx.resolve(str(args["path"])))
+            except Exception:  # noqa: BLE001 - sihirli belge kaydı aracı bozmasın
+                pass
         note = self.__dict__.get("_hook_notes", {}).pop(call["id"], "")
         if note:
             from dataclasses import replace

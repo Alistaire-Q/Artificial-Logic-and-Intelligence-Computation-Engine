@@ -395,3 +395,38 @@ class CodeIntel(Tool):
 
 
 TOOLS = [Notify(), EnterPlanMode(), McpResources(), CodeIntel()]
+
+
+class Advisor(Tool):
+    """Daha güçlü bir modele danış: konuşmanın tamamını görür, araç kullanmaz, kısa ve somut tavsiye verir."""
+
+    name = "advisor"
+    description = ("Daha güçlü bir modele (danışman) danış. Zor bir karar, takıldığın bir hata, emin olmadığın bir plan "
+                   "ya da işi bitirmeden önce son kontrol için kullan. Danışman bu konuşmanın tamamını görür, araç "
+                   "kullanmaz; somut tavsiye verir. question: neyi sorduğun ve neden emin olmadığın.")
+    parameters = obj({"question": {"type": "string", "description": "Danışmana soru: durum, seçenekler, kuşkun."}},
+                     ["question"])
+    risk = READ
+
+    def run(self, ctx: ToolContext, question: str) -> ToolResult:
+        ref = str((ctx.config.agent or {}).get("advisor") or "").strip()
+        if not ref:
+            raise ToolError("danışman modeli ayarlı değil: config.toml'da [agent] advisor = \"sağlayıcı:model\" "
+                            "(ör. cliproxy:claude-opus-5-5)")
+        router = ctx.router
+        agent = ctx.state.get("agent")
+        if router is None or agent is None:
+            raise ToolError("danışman bu ortamda kullanılamıyor")
+        msgs = [m for m in list(agent.messages) if not m.get("_image")]
+        # Son asistan mesajı bu aracı çağıran adım: sonucu henüz yok, gönderilirse sağlayıcı reddeder.
+        while msgs and msgs[-1].get("role") == "assistant" and msgs[-1].get("tool_calls"):
+            msgs.pop()
+        msgs.append({"role": "user", "content": (
+            "[Danışman olarak çağrıldın. Yukarıdaki konuşmada çalışan asistan sana danışıyor. Araç kullanma; kısa, "
+            "somut, uygulanabilir tavsiye ver: ne yanlış gidiyor olabilir, hangi seçenek neden daha iyi, neye dikkat "
+            "etmeli. Gerekiyorsa açıkça 'bu yanlış' de.]\nSoru: " + question)})
+        res = router.chat(ref, msgs, max_tokens=1500)
+        return ToolResult(f"[danışman: {ref}]\n{(res.text or '(cevap yok)').strip()}")
+
+
+TOOLS.append(Advisor())

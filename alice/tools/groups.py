@@ -34,14 +34,14 @@ GROUPS: dict[str, tuple[set[str], str, str]] = {
               r"sembol|referans"),
     "plan": ({"todo_write", "next_step", "monitor", "session", "run_plan", "task_control", "task", "subagents",
               "agent_defs", "process_output", "process_stop", "process_wait", "skill", "exit_plan_mode",
-              "enter_plan_mode", "notify"},
+              "enter_plan_mode", "notify", "advisor"},
              "çok adımlı iş planı ve yapılacaklar listesi, tur sonu özet kutusu, alt ajan, ayrı sohbet başlatma/"
              "devretme, arka planda izleyip olay olunca dönme, arka plandaki komutun çıktısı/bekleme/durdurma, "
              "beceriler, plan onayı",
              r"önce .* sonra|ardından|sonra da|adım adım|planla|alt ajan|ajan tanımla|ajanlar(ım)?\b|arka planda|"
              r"background|sunucu(yu)? başlat|"
              r"dev server|npm run|\bwatch\b|beceri|skill|bitince|bitti(ğ|g)inde|haber ver|izle|ayrı (sohbet|oturum)|"
-             r"paralel|devret"),
+             r"paralel|devret|danış|advisor|ikinci görüş"),
     "companions": ({"buddy", "kairos"},
                    "BUDDY (küçük arkadaş: hâli, okşa, besle, ad koy) ve KAIROS (arka plan nöbeti: durum, aç/kapa, "
                    "şimdi uyandır)",

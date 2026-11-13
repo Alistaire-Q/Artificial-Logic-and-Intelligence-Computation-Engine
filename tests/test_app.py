@@ -496,7 +496,12 @@ def test_phone_chat_does_not_move_the_desktop_chat(app):
 
 def test_btw_side_question_does_not_touch_history(app):
     state, srv, client, prov = app
-    prov.script.extend(["cevap 1", "Yan cevap: 42."])
+
+    def answer(model, messages, tools, **kw):  # arka plandaki başka çağrılar (başlık vb.) sırayı bozmasın
+        last = messages[-1].get("content")
+        return "Yan cevap: 42." if isinstance(last, str) and "Yan soru" in last else "cevap 1"
+
+    prov.script = answer
     events, t = collect(state, lambda e: e["type"] == "status")
     assert client.post("/api/send", json={"text": "selam"}).json()["ok"]
     t.join()
@@ -539,3 +544,14 @@ def test_message_while_question_waits_answers_the_question(app):
     assert "C yap" in tool_msg["content"]
     assert any(e["type"] == "user" and e["text"] == "ikisi de değil, C yap" for e in events)
     assert any(e["type"] == "ask_choice_done" for e in events)
+
+
+def test_next_message_suggestions(app):
+    state, srv, client, prov = app
+    state.cfg.data["agent"]["suggestions"] = True
+    prov.script.extend(["Dosyayı yazdım. Test edeyim mi?", '{"items": ["Evet, testleri koş", "Önce diff göster"]}'])
+    events, t = collect(state, lambda e: e["type"] == "suggest", timeout=15)
+    assert client.post("/api/send", json={"text": "dosyayı yaz"}).json()["ok"]
+    t.join()
+    sug = [e for e in events if e["type"] == "suggest"]
+    assert sug and sug[-1]["items"] == ["Evet, testleri koş", "Önce diff göster"]
