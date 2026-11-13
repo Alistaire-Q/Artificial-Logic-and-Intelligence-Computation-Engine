@@ -612,7 +612,9 @@ class Router:
         pc = self.providers_cfg.get(p)
         return bool(pc and pc.supports_vision(m)) and ref not in self.no_vision
 
-    def available(self, ref: str, now: float | None = None) -> tuple[bool, str]:
+    def available(self, ref: str, now: float | None = None, pinned: bool = False) -> tuple[bool, str]:
+        """pinned: kullanıcı bu modeli elle seçti. Soğuma ve oturumluk kapatma yalnız otomatik sırayı ilgilendirir;
+        elle seçilen model her istekte yine denenir (bir zaman aşımı yüzünden dakikalarca istek atılamıyordu)."""
         now = time.monotonic() if now is None else now
         try:
             p, _ = parse_ref(ref)
@@ -623,6 +625,8 @@ class Router:
             return False, "bilinmeyen sağlayıcı"
         if not pc.enabled:
             return False, f"{pc.api_key_env} yok"
+        if pinned:
+            return True, "hazır (elle seçildi)"
         if p in self.dead_providers:
             return False, "sağlayıcı kapalı (auth)"
         if ref in self.dead_models:
@@ -666,6 +670,7 @@ class Router:
             if self._real_clients:
                 ranking.refresh_in_background(self, emit=self.on_event)
         chain = self.chain(role)
+        chosen = set(self.role_overrides.get(role) or [])  # elle seçilenler soğumada olsa da denenir
         est = estimate_tokens(messages, tools)
         attempts = 0
         failed: list[str] = []
@@ -675,7 +680,7 @@ class Router:
             for ref in chain:
                 if stream is not None and stream.cancelled():
                     raise StreamCancelled()
-                ok, why = self.available(ref, now)
+                ok, why = self.available(ref, now, pinned=ref in chosen)
                 if not ok:
                     errors.append(f"{ref}: {why}")
                     continue

@@ -64,7 +64,7 @@ def test_all_fail_waits_for_short_cooldown_then_retries():
     # sleep sahte olduğu için cooldown'u elle geçmişe çekiyoruz
     orig = r.available
 
-    def avail(ref, now=None):
+    def avail(ref, now=None, pinned=False):
         if slept:
             r.cooldown_until.clear()
         return orig(ref, now)
@@ -424,6 +424,25 @@ def test_pinned_model_does_not_fall_back_to_the_role_chain():
         r.chat("brain", [{"role": "user", "content": "hi"}])
     assert e.value.pinned and "Seçtiğin model" in str(e.value)
     assert not b.calls
+
+
+def test_pinned_model_is_tried_even_while_cooling_down():
+    # 13 Kasım: elle seçilen model bir kez zaman aşımına düşünce soğumaya giriyor, "devam et" de dakikalarca
+    # "soğumada" diye reddediliyordu. Soğuma ve oturumluk kapatma yalnız otomatik sırayı etkiler.
+    import time
+
+    cfg = make_config({"brain": ["a:m1", "b:m2"]})
+    a = FakeProvider("a", [ProviderError("network", "zaman aşımı", 0), "tekrar geldim"])
+    r = router_with(cfg, {"a": a, "b": FakeProvider("b", ["b"])}, max_wait=0)
+    r.role_overrides["brain"] = ["a:m1"]
+    with pytest.raises(AllProvidersFailed):
+        r.chat("brain", [{"role": "user", "content": "hi"}])
+    assert r.cooldown_until["a:m1"] > time.monotonic()  # otomatik sıra için soğumada
+    assert not r.available("a:m1")[0] and r.available("a:m1", pinned=True)[0]
+    assert r.chat("brain", [{"role": "user", "content": "devam et"}]).text == "tekrar geldim"
+    r.dead_providers.add("a")  # oturumluk kapatma da elle seçimi durdurmaz
+    a.script.append("yine")
+    assert r.chat("brain", [{"role": "user", "content": "x"}]).text == "yine"
 
 
 def test_pinned_fallback_can_be_turned_back_on():
