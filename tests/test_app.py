@@ -521,3 +521,21 @@ def test_recap_summarizes_once_per_state(app):
     n = len(prov.calls)
     assert client.get("/api/recap").json()["text"].startswith("Dosyalar")
     assert len(prov.calls) == n  # aynı hâl için tekrar üretilmez
+
+
+def test_message_while_question_waits_answers_the_question(app):
+    """ALICE soru kartında beklerken yazılan mesaj kaybolmaz: sorunun cevabı olur."""
+    state, srv, client, prov = app
+    prov.script.extend([tool_call("ask_user", {"question": "Hangi yol?", "options": ["A", "B"]}), "Tamam, C ile."])
+    events, t = collect(state, lambda e: e["type"] == "status", timeout=15)
+    assert client.post("/api/send", json={"text": "başla"}).json()["ok"]
+    for _ in range(100):
+        if any(p.get("type") == "ask_choice" for p in state.chat.ui.pending.values()):
+            break
+        time.sleep(0.05)
+    assert client.post("/api/send", json={"text": "ikisi de değil, C yap"}).json()["ok"]
+    t.join()
+    tool_msg = next(m for m in state.chat.agent.messages if m.get("role") == "tool")
+    assert "C yap" in tool_msg["content"]
+    assert any(e["type"] == "user" and e["text"] == "ikisi de değil, C yap" for e in events)
+    assert any(e["type"] == "ask_choice_done" for e in events)

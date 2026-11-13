@@ -1845,6 +1845,12 @@ class AppState:
             threading.Thread(target=self._side_question, args=(chat, question), daemon=True, name="alice-btw").start()
             return True, None
         if chat.busy:
+            # ALICE bir soru kartında cevap bekliyorsa yazılan mesaj o sorunun cevabıdır. Önceden mesaj gelen kutusuna
+            # gidiyordu; ajan soru aracının içinde beklediği için kutu hiç okunmuyor, mesaj "kayboluyordu".
+            choice = next((p for p in list(chat.ui.pending.values()) if p.get("type") == "ask_choice"), None)
+            if choice and not text.startswith("/") and chat.ui.answer_choice(choice["id"], text):
+                chat.ui.publish({"type": "user", "text": text, "mi": None, "images": [], "steer": True})
+                return True, None
             if not text.startswith("/") and chat.agent.steer(text, images):
                 # Çalışan tura iletildi: iş durmadan bir sonraki adımda ALICE bunu görür. Önceden mesaj arayüzde
                 # sırada bekliyor, iş bitmeden ALICE'e hiç gitmiyordu.
