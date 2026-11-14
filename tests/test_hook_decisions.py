@@ -86,10 +86,8 @@ def test_failing_hook_ignored_by_default_but_blocks_when_asked(workdir):
 def test_on_failure_round_trips_through_hooks_file(tmp_path, monkeypatch):
     from alice import hooks as hk
 
-    monkeypatch.setattr(hk, "hooks_path", lambda: tmp_path / "hooks.toml")
-    monkeypatch.setattr(hk, "_read_hooks_file", lambda: __import__("tomllib").loads(
-        (tmp_path / "hooks.toml").read_text(encoding="utf-8")).get("hooks", {}) if (tmp_path / "hooks.toml").exists()
-        else {})
+    # Modülün kendi okuyucusu (3.10'da tomli yedeği var): dosya gerçekten yazılıp geri okunur.
+    monkeypatch.setattr("alice.config.alice_home", lambda: tmp_path)
     hk.add_hook("PreToolUse", "denetle", "run_command", 10, on_failure="block")
     hk.add_hook("PostToolUse", "ruff", "")
     rows = hk.file_hooks()
