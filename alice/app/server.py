@@ -1817,12 +1817,16 @@ class AppState:
         if action == "delete":
             if team.active():
                 raise ToolError("önce projeyi durdur")
-            team.deleted = True  # kapanmakta olan ajan thread'i dosyayı geri yazmasın
+            # Bayrak ve silme kayıt kilidi altında: kapanmakta olan bir ajan thread'i save()'in içinde (bayrak
+            # kontrolünü geçmiş) olabilir; kilitsiz silince dosyayı geri yazıyor, silinen proje yine
+            # açılıyordu (Windows CI'da görüldü).
+            with team._save_lock:
+                team.deleted = True
+                team.path().unlink(missing_ok=True)
             team.cleanup()
             self._teams().pop(team.id, None)
             if self.ctx.state.get("team") is team:
                 self.ctx.state.pop("team", None)
-            team.path().unlink(missing_ok=True)
             return "silindi"
         raise ToolError(f"bilinmeyen işlem: {action}")
 
