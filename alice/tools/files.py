@@ -73,22 +73,42 @@ def _with_note(body: str, note: str) -> ToolResult:
     return ToolResult(note + body, is_error=bool(note))
 
 
+_UTF16_BOMS = (b"\xff\xfe", b"\xfe\xff")
+
+
 def _is_binary(path: Path) -> bool:
     try:
         with open(path, "rb") as f:
-            return b"\0" in f.read(4096)
+            head = f.read(4096)
     except OSError:
         return True
+    # PowerShell'in `>` ile yazdığı dosyalar UTF-16: içleri sıfır bayt dolu ama metin. Eskiden binary sayılıp
+    # okunamıyordu (2026-11-13 sohbetinde 740 baytlık bir .txt).
+    if head.startswith(_UTF16_BOMS):
+        return False
+    return b"\0" in head
 
 
 def _read_text(path: Path) -> str:
     raw = path.read_bytes()
-    for enc in ("utf-8", "utf-8-sig", "cp1254", "latin-1"):
+    if raw.startswith(_UTF16_BOMS):
+        return raw.decode("utf-16", errors="replace")
+    for enc in ("utf-8-sig", "cp1254", "latin-1"):
         try:
             return raw.decode(enc)
         except UnicodeDecodeError:
             continue
     return raw.decode("utf-8", errors="replace")
+
+
+def _write_like(path: Path, text: str) -> None:
+    """Düzenlenen dosyayı aynı kodlamayla geri yaz: UTF-16 bir .ps1/.reg sessizce UTF-8'e dönmesin."""
+    try:
+        with open(path, "rb") as f:
+            utf16 = f.read(2) in _UTF16_BOMS
+    except OSError:
+        utf16 = False
+    path.write_text(text, encoding="utf-16" if utf16 else "utf-8", newline="")
 
 
 def snapshot(ctx: ToolContext, p: Path) -> None:
@@ -490,7 +510,7 @@ class EditFile(Tool):
         before = _read_text(p)
         text, n = _apply_edit(before, old_string, new_string, replace_all)
         snapshot(ctx, p)
-        p.write_text(text, encoding="utf-8", newline="")
+        _write_like(p, text)
         mark_read(ctx, p)
         return ToolResult(f"düzenlendi: {p} ({n} değişiklik)",
                           diff=make_diff(path, before.replace("\r\n", "\n"), text.replace("\r\n", "\n")))
@@ -535,7 +555,7 @@ class MultiEdit(Tool):
                                   where=f"edit {i}/{len(edits)}: ")
             total += n
         snapshot(ctx, p)
-        p.write_text(text, encoding="utf-8", newline="")
+        _write_like(p, text)
         mark_read(ctx, p)
         return ToolResult(f"düzenlendi: {p} ({len(edits)} edit, {total} değişiklik)",
                           diff=make_diff(path, before.replace("\r\n", "\n"), text.replace("\r\n", "\n")))

@@ -63,8 +63,13 @@ def is_dangerous(command: str) -> bool:
 def shell_argv(command: str) -> list[str]:
     if IS_WIN:
         exe = shutil.which("pwsh") or shutil.which("powershell") or "powershell"
-        prefix = "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; $OutputEncoding=[System.Text.Encoding]::UTF8; "
-        return [exe, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", prefix + command]
+        # Kodlama kurulumunu ayrı bir SATIRA al (eskiden "; " ile aynı satırdaydı). Böylece PowerShell'in
+        # ayrıştırma hatalarındaki "At line:N char:M" konumu kullanıcının komutuna (2. satır) denk gelir;
+        # önceden ~110 karakterlik önek yüzünden char konumu kayıyor, model hatayı yanlış yerde arıyordu
+        # (2026-11-13 oturumunda gh/jq komutlarında çok görüldü). -EncodedCommand denendi ama Windows
+        # PowerShell 5.1 onunla stderr'i okunamaz CLIXML'e sarıyor; -Command düz metin bırakıyor.
+        setup = "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; $OutputEncoding=[System.Text.Encoding]::UTF8"
+        return [exe, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", setup + "\n" + command]
     sh = shutil.which("bash") or "/bin/sh"
     return [sh, "-lc", command]
 
