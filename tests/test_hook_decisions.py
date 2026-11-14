@@ -54,3 +54,43 @@ def test_hook_deny_and_allow_decisions(workdir):
                          workdir)
     agent2.run_turn("yaz")
     assert (workdir / "c.txt").exists()
+
+
+def test_post_hook_replaces_tool_output(workdir):
+    # SDK'daki updatedToolOutput: PostToolUse hook'u çıktıyı değiştirir (ör. sır gizleme), model yalnız onu görür.
+    (workdir / "s.txt").write_text("API_KEY=gizli123", encoding="utf-8")
+    agent, provs, _ = make_agent([tool_call("read_file", {"path": "s.txt"}), "tamam"], workdir)
+    cmd = script_hook(workdir, "redact", {"updatedToolOutput": "API_KEY=[gizlendi]"})
+    agent.hooks = Hooks([Hook("PostToolUse", cmd, "read_file")], workdir)
+    agent.run_turn("oku")
+    tool_msg = next(m for m in agent.messages if m["role"] == "tool")
+    assert "gizli123" not in tool_msg["content"] and "[gizlendi]" in tool_msg["content"]
+
+
+def test_failing_hook_ignored_by_default_but_blocks_when_asked(workdir):
+    broken = f'"{sys.executable}" -c "import sys; sys.exit(1)"'
+    ok = HookResult(Hook("PreToolUse", broken), 1, "", "çöktü")
+    assert ok.failed and not ok.blocked  # eski davranış: bozuk hook yok sayılır
+    strict = HookResult(Hook("PreToolUse", broken, on_failure="block"), 1, "", "çöktü")
+    assert strict.failed and strict.blocked
+    assert not HookResult(Hook("PreToolUse", broken, on_failure="block"), 0, "", "").blocked
+
+    agent, provs, _ = make_agent([tool_call("write_file", {"path": "a.txt", "content": "x"}), "tamam"], workdir)
+    agent.hooks = Hooks([Hook("PreToolUse", broken, "write_file", on_failure="block")], workdir)
+    agent.run_turn("yaz")
+    assert not (workdir / "a.txt").exists()
+    tool_msg = next(m for m in agent.messages if m["role"] == "tool")
+    assert "on_failure=block" in tool_msg["content"]
+
+
+def test_on_failure_round_trips_through_hooks_file(tmp_path, monkeypatch):
+    from alice import hooks as hk
+
+    monkeypatch.setattr(hk, "hooks_path", lambda: tmp_path / "hooks.toml")
+    monkeypatch.setattr(hk, "_read_hooks_file", lambda: __import__("tomllib").loads(
+        (tmp_path / "hooks.toml").read_text(encoding="utf-8")).get("hooks", {}) if (tmp_path / "hooks.toml").exists()
+        else {})
+    hk.add_hook("PreToolUse", "denetle", "run_command", 10, on_failure="block")
+    hk.add_hook("PostToolUse", "ruff", "")
+    rows = hk.file_hooks()
+    assert [r.on_failure for r in rows] == ["block", "ignore"]

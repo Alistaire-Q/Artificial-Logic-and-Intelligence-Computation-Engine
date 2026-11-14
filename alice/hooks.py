@@ -18,6 +18,10 @@ PreToolUse hook'u çıkış 0 ile stdout'a JSON yazarsa (Claude Code'daki gibi) 
   {"updatedInput": {...}}                              aracın argümanlarını değiştir (ör. komuta bayrak ekle)
   {"permissionDecision": "allow" | "deny" | "ask", "reason": "..."}   izin kararı (allow sormadan çalıştırır)
   {"additionalContext": "..."}                         araç sonucuna bağlam ekle (PostToolUse'ta da geçerli)
+PostToolUse hook'u {"updatedToolOutput": "..."} yazarsa aracın modele giden çıktısı onunla değişir (ör. sır gizleme).
+
+Hook'un kendisi bozulursa (zaman aşımı, çalıştırılamadı, 0 ya da 2 dışında çıkış kodu) varsayılan olarak yok sayılır.
+Denetim yapan bir hook için `on_failure = "block"` yaz: bozulduğunda engelleme sayılır, araç denetimsiz geçmez.
 
 Komut kabukta çalışır, olay bilgisi stdin'e JSON olarak gelir ({"event", "tool", "args", "result", "prompt",
 "cwd"}); ortamda ALICE_EVENT, ALICE_TOOL, ALICE_TOOL_PATH (aracın yol/komut/url argümanı) ve ALICE_CWD var.
@@ -45,6 +49,9 @@ class Hook:
     command: str
     matcher: str = ""
     timeout: float = 30.0
+    # Hook'un kendisi çökerse/zaman aşarsa (çıkış kodu 0 ya da 2 değilse): "ignore" yok sayar (eski davranış),
+    # "block" engelleme sayar. Güvenlik denetimi yapan bir PreToolUse hook'u bozulunca araç denetimsiz geçmesin.
+    on_failure: str = "ignore"
 
     def matches(self, tool: str) -> bool:
         if not self.matcher or self.matcher == "*":
@@ -63,8 +70,13 @@ class HookResult:
     stderr: str
 
     @property
+    def failed(self) -> bool:
+        """Hook'un kendisi bozuldu (zaman aşımı, çalıştırılamadı, beklenmeyen çıkış kodu)."""
+        return self.code not in (0, BLOCK)
+
+    @property
     def blocked(self) -> bool:
-        return self.code == BLOCK
+        return self.code == BLOCK or (self.failed and self.hook.on_failure == "block")
 
 
 def _read_hooks_file() -> dict[str, Any]:
@@ -103,8 +115,9 @@ def _parse(data: dict[str, Any]) -> list[Hook]:
     for event in EVENTS:
         for h in data.get(event, []) or []:
             if isinstance(h, dict) and str(h.get("command", "")).strip():
+                on_failure = "block" if str(h.get("on_failure", "")).lower() == "block" else "ignore"
                 hooks.append(Hook(event, str(h["command"]), str(h.get("matcher", "") or ""),
-                                  float(h.get("timeout", 30))))
+                                  float(h.get("timeout", 30)), on_failure))
     return hooks
 
 
@@ -123,6 +136,8 @@ def _save(hooks: list[Hook]) -> None:
         lines += [f"[[hooks.{h.event}]]", f"command = {_q(h.command)}"]
         if h.matcher:
             lines.append(f"matcher = {_q(h.matcher)}")
+        if h.on_failure == "block":
+            lines.append('on_failure = "block"')
         lines += [f"timeout = {h.timeout:g}", ""]
     p = hooks_path()
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -131,7 +146,7 @@ def _save(hooks: list[Hook]) -> None:
     tmp.replace(p)
 
 
-def add_hook(event: str, command: str, matcher: str = "", timeout: float = 30.0) -> Hook:
+def add_hook(event: str, command: str, matcher: str = "", timeout: float = 30.0, on_failure: str = "ignore") -> Hook:
     if event not in EVENTS:
         raise ValueError(f"bilinmeyen olay: {event} (olaylar: {', '.join(EVENTS)})")
     if not command.strip():
@@ -141,7 +156,8 @@ def add_hook(event: str, command: str, matcher: str = "", timeout: float = 30.0)
             re.compile(matcher)
         except re.error as e:
             raise ValueError(f"matcher geçerli bir regex değil: {e}") from e
-    h = Hook(event, command.strip(), matcher.strip(), max(1.0, min(float(timeout), 600.0)))
+    h = Hook(event, command.strip(), matcher.strip(), max(1.0, min(float(timeout), 600.0)),
+             "block" if on_failure == "block" else "ignore")
     _save(file_hooks() + [h])
     return h
 
@@ -221,6 +237,7 @@ def decision(results: list[HookResult]) -> dict[str, Any]:
       permissionDecision  PreToolUse: "allow" (sormadan çalıştır; yasak kuralları yine geçerli), "deny", "ask"
       reason              karar gerekçesi (deny'da modele gider)
       additionalContext   araç sonucuna eklenecek bağlam metni
+      updatedToolOutput   PostToolUse: aracın modele giden çıktısını bununla değiştir (metin)
     JSON olmayan stdout yok sayılır (eski hook'lar aynen çalışır)."""
     out: dict[str, Any] = {}
     notes: list[str] = []
@@ -239,6 +256,8 @@ def decision(results: list[HookResult]) -> dict[str, Any]:
         if data.get("permissionDecision") in ("allow", "deny", "ask"):
             out["permissionDecision"] = data["permissionDecision"]
             out["reason"] = str(data.get("permissionDecisionReason") or data.get("reason") or "")[:1000]
+        if isinstance(data.get("updatedToolOutput"), str):
+            out["updatedToolOutput"] = data["updatedToolOutput"]
         if data.get("additionalContext"):
             notes.append(str(data["additionalContext"])[:2000])
     if notes:
@@ -247,8 +266,9 @@ def decision(results: list[HookResult]) -> dict[str, Any]:
 
 
 def feedback(results: list[HookResult]) -> str:
-    """Çıkış kodu 2 olan hook'ların stderr'i (modele gidecek metin)."""
-    return "\n".join(r.stderr or r.stdout or f"hook engelledi: {r.hook.command}" for r in results if r.blocked)
+    """Engelleyen hook'ların stderr'i (modele gidecek metin): çıkış kodu 2 ya da on_failure="block" iken bozulan."""
+    return "\n".join((f"hook başarısız oldu, güvenlik için engellendi (on_failure=block): " if r.failed else "")
+                     + (r.stderr or r.stdout or f"hook engelledi: {r.hook.command}") for r in results if r.blocked)
 
 
 def context(results: list[HookResult]) -> str:

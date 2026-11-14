@@ -18,16 +18,21 @@ class HooksTool(Tool):
         "SessionStart (ilk mesajda; stdout bağlama eklenir). matcher: araç adı regex'i (ör. "
         "'edit_file|write_file|multi_edit'). Komutta $ALICE_TOOL_PATH (aracın yol argümanı), $ALICE_TOOL, $ALICE_CWD "
         "kullanılabilir; olay JSON'u stdin'den gelir.\n"
-        "action: list | add (event, command, matcher, timeout) | remove (index) | test (index: hook'u örnek olayla "
+        "action: list | add (event, command, matcher, timeout, on_failure) | remove (index) | test (index: hook'u örnek olayla "
         "bir kez çalıştırıp sonucu gösterir). Hook kalıcıdır ve her sohbette çalışır: eklemeden önce kullanıcıya ne "
         "yapacağını söyle.")
     parameters = obj({
         "action": {"type": "string", "enum": ["list", "add", "remove", "test"], "description": "Yapılacak işlem."},
         "event": {"type": "string", "enum": ["PostToolUse", "PreToolUse", "Stop", "UserPromptSubmit",
                                               "SessionStart"], "description": "add: hook'un çalışacağı an."},
-        "command": {"type": "string", "description": "Çalışacak kabuk komutu."},
+        "command": {"type": "string", "description": "Çalışacak kabuk komutu. PostToolUse komutu stdout'a "
+                                                     "{\"updatedToolOutput\": \"...\"} yazarsa araç çıktısı onunla "
+                                                     "değişir (ör. sırları gizleme)."},
         "matcher": {"type": "string", "description": "PreToolUse/PostToolUse: araç adı regex'i; boş = her araç."},
         "timeout": {"type": "number", "description": "saniye (varsayılan 30)"},
+        "on_failure": {"type": "string", "enum": ["ignore", "block"],
+                       "description": "add: hook'un kendisi bozulursa (zaman aşımı/çalışmazsa) ne olsun. Denetim "
+                                      "yapan PreToolUse hook'larında 'block' (bozulunca araç geçmesin)."},
         "index": {"type": "integer", "description": "remove/test: list'teki sıra numarası."},
     }, ["action"])
     risk = READ
@@ -43,12 +48,12 @@ class HooksTool(Tool):
         return f"hook {a}" + (f" #{args['index']}" if "index" in args else "")
 
     def run(self, ctx: ToolContext, action: str = "list", event: str = "", command: str = "", matcher: str = "",
-            timeout: float = 30.0, index: int = -1) -> ToolResult:
+            timeout: float = 30.0, index: int = -1, on_failure: str = "ignore") -> ToolResult:
         from alice import hooks as hk
 
         try:
             if action == "add":
-                h = hk.add_hook(event, command, matcher, timeout)
+                h = hk.add_hook(event, command, matcher, timeout, on_failure)
                 return ToolResult(f"eklendi ({hk.hooks_path()}): {h.event} [{h.matcher or 'her araç'}] {h.command}. "
                                   "Açık sohbetler dahil hemen geçerli.")
             if action == "remove":

@@ -223,6 +223,8 @@ _CATALOG_RX = re.compile(r"\n\n# Yüklenebilir araçlar\n.*?(?=\n\n# |\n\n<|\Z)"
 DENIAL_LIMITS = (3, 20)
 DENIAL_HALT = ("İzin verilmeyen işlemleri art arda denediğim için durdum: bu iş şu anki izin moduyla yapılamıyor. "
                "İzin modunu değiştirip ya da ne yapmamı istediğini söyleyip \"devam et\" yazarsan sürdürürüm.")
+BUDGET_HALT = ("Bu tur için ayrılan token bütçesini ({used:,} / {budget:,}) doldurduğum için durdum. İş yarıda; "
+               "\"devam et\" yazarsan kaldığım yerden sürdürürüm. (Sınır: [agent] turn_token_budget)")
 MAX_CUTOFFS = 3  # çıktı sınırında kesilen cevap en fazla bu kadar kez sürdürülür
 CUTOFF_NOTE = ("Cevabın çıktı sınırına takılıp yarıda kesildi. Tam kaldığın yerden, önceki kısmı tekrar etmeden "
                "ve özür dilemeden devam et.")
@@ -618,6 +620,7 @@ class Agent:
         stop_hooks = 3  # Stop hook'u ajanı en fazla bu kadar kez geri çevirebilir (sonsuz döngü olmasın)
         cutoffs, cut_text = 0, ""  # çıktı sınırında kesilen cevabın önceki parçaları
         self._denials = [0, 0]  # (art arda, toplam) reddedilen çağrı
+        self._turn_tokens = 0  # bu turda harcanan (önbellekten gelmeyen girdi + çıktı) token: tur bütçesi için
         self._steering = not self.is_child
         try:
             for _ in range(steps):
@@ -705,6 +708,10 @@ class Agent:
                 self.stats["tool_s"] += time.monotonic() - t_tools
                 if self._denials[0] >= DENIAL_LIMITS[0] or self._denials[1] >= DENIAL_LIMITS[1]:
                     return self._halt(DENIAL_HALT) or final
+                budget = self._turn_budget()
+                if budget and self._turn_tokens >= budget:
+                    # Gözetimsiz uzun araç zincirleri (yüzlerce çağrı) faturayı habersiz büyütmesin.
+                    return self._halt(BUDGET_HALT.format(used=self._turn_tokens, budget=budget)) or final
                 if self.on_step is not None:
                     try:
                         self.on_step()
@@ -743,6 +750,16 @@ class Agent:
             self.busy = False
             self._release_desktop()
 
+    def _turn_budget(self) -> int:
+        """Turda harcanabilecek token (0 = sınırsız). Alt ajanlar kendi sınırlarını [agent] sub_turn_token_budget'tan
+        alır; yoksa ana sınır geçerli. Önbellekten okunan girdi sayılmaz: ucuz ve her adımda tekrar ediyor."""
+        try:
+            if self.is_child and self.config.agent.get("sub_turn_token_budget") is not None:
+                return max(0, int(self.config.agent.get("sub_turn_token_budget") or 0))
+            return max(0, int(self.config.agent.get("turn_token_budget", 0) or 0))
+        except (TypeError, ValueError):
+            return 0
+
     def _count_call(self, res: ChatResult, started: float, first: float) -> None:
         """Bir model çağrısını oturum istatistiğine ekle."""
         st = self.stats
@@ -755,6 +772,8 @@ class Agent:
             st["ttft_n"] += 1
         u = res.usage or {}
         out = int(u.get("completion_tokens") or u.get("output_tokens") or 0)
+        fresh = max(0, int(u.get("prompt_tokens") or u.get("input_tokens") or 0) - cached_tokens(u))
+        self.__dict__["_turn_tokens"] = self.__dict__.get("_turn_tokens", 0) + fresh + out
         st["input"] += int(u.get("prompt_tokens") or u.get("input_tokens") or 0)
         st["cached"] += cached_tokens(u)
         st["output"] += out
@@ -1319,9 +1338,12 @@ class Agent:
 
             from alice.hooks import decision, feedback
 
-            post = self.hooks.run("PostToolUse", {"args": args, "result": result.text[:4000],
+            post = self.hooks.run("PostToolUse", {"args": args, "result": result.text[:200_000],
                                                   "is_error": result.is_error}, tool.name)
-            back = "\n".join(x for x in (feedback(post), decision(post).get("additionalContext", "")) if x)
+            verdict = decision(post)
+            if "updatedToolOutput" in verdict:  # hook çıktıyı değiştirdi (ör. sırları gizledi)
+                result = replace(result, text=verdict["updatedToolOutput"][:200_000])
+            back = "\n".join(x for x in (feedback(post), verdict.get("additionalContext", "")) if x)
             if back:
                 result = replace(result, text=result.text + "\n\n[hook geri bildirimi]\n" + back)
         self._log_outward(tool, args, summary, "failed" if result.is_error else "sent", result.text)

@@ -32,6 +32,8 @@ DEFAULT_CONFIG_TOML = r'''
 [agent]
 advisor = ""                             # danışman modeli (advisor aracı): ör. "cliproxy:claude-opus-5-5"; boş = kapalı
 suggestions = true                       # tur bitince sonraki mesaj için 1-2 öneri düğmesi
+turn_token_budget = 0                    # bir turda harcanabilecek token (önbellek hariç girdi + çıktı); 0 = sınırsız
+# sub_turn_token_budget = 200000         # alt ajanlar için ayrı sınır (yoksa yukarıdaki geçerli)
 # ask  = okuma dışındaki her şeyi sorar
 # auto = tehlikeli komutlar ve sistem klasörlerine yazma dışında her şeye izin verir
 # yolo = hiçbir şey sormaz, tam erişim

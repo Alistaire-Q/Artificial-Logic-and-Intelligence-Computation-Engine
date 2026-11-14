@@ -81,7 +81,7 @@ class Automations:
         from alice import hooks as hk
 
         hk.add_hook(str(d.get("event", "")), str(d.get("command", "")), str(d.get("matcher", "")),
-                    float(d.get("timeout") or 30))
+                    float(d.get("timeout") or 30), str(d.get("on_failure") or "ignore"))
         return {"ok": True}
 
     def _hook_rm(self, d: dict[str, Any]) -> dict[str, Any]:
