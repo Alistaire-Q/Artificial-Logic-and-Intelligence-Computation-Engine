@@ -113,6 +113,7 @@ _FEEDBACK = re.compile(
     r"beğendim|begendim|istemiyorum|isterim|tercih|don'?t|stop|exactly|perfect|keep doing)\b", re.I)
 
 RECALL_ITEM_CHARS, RECALL_TOTAL_CHARS = 1800, 6000
+RECENT_TURNS_HOURS = 3  # sistem istemine giren "son turlar" bundan eskiyse girmez (yeni sohbet devam sanılmasın)
 
 
 def _clip(text: str, n: int) -> str:
@@ -333,6 +334,10 @@ class LongMemory:
             except sqlite3.DatabaseError:
                 pass
         self.db.executescript(_SCHEMA)
+        cols = {r[1] for r in self.db.execute("PRAGMA table_info(episodes)")}
+        if "sid" not in cols:  # tur hangi sohbetten: sohbet silinince hafızadaki turları da silinebilsin
+            self.db.execute("ALTER TABLE episodes ADD COLUMN sid TEXT NOT NULL DEFAULT ''")
+        self.db.execute("CREATE INDEX IF NOT EXISTS ix_episodes_sid ON episodes(sid)")
         self.db.commit()
         self._prune()
 
@@ -591,14 +596,15 @@ class LongMemory:
         return [], hits
 
     # ------------------------------------------------------------------ konuşmalar
-    def record(self, user: str, reply: str, channel: str = "") -> int | None:
+    def record(self, user: str, reply: str, channel: str = "", sid: str = "") -> int | None:
         user = clean_user_text(user)
         reply = (reply or "").strip()
         if not user or noise_turn(user):
             return None
         with self._lock:
-            cur = self.db.execute("INSERT INTO episodes(ts, channel, user, reply, terms) VALUES (?, ?, ?, ?, ?)",
-                                  (time.time(), channel, user[:2000], reply[:2000], " ".join(terms(user + " " + reply))))
+            cur = self.db.execute("INSERT INTO episodes(ts, channel, user, reply, terms, sid) VALUES (?, ?, ?, ?, ?, ?)",
+                                  (time.time(), channel, user[:2000], reply[:2000], " ".join(terms(user + " " + reply)),
+                                   str(sid or "")))
             self.db.commit()
         self.index_soon()
         return int(cur.lastrowid)
@@ -1067,20 +1073,28 @@ class LongMemory:
         if always:
             parts.append(f"## Notların tamamı: {TYPE_TR['feedback']} ve {TYPE_TR['user']} (her konuşmada geçerli)\n"
                          + "\n\n".join(always))
-        eps = self.recent(recent)
+        # Son turlar yalnız yakın zamandansa girer: dünkü sohbetin son cümleleri yeni açılan sohbete "kaldığımız yer"
+        # gibi giriyor, ALICE kullanıcının yeni (alakasız) mesajını dünkü konuşmanın devamı sanıyordu.
+        cutoff = time.time() - RECENT_TURNS_HOURS * 3600
+        eps = [e for e in self.recent(recent) if e.ts >= cutoff]
         sums = self.summaries(4, within_days=10)
         due = self.due_followups()
-        parts.append("Older conversations are not shown here: when the user refers to one, look it up with memory "
-                     "action=search_chats (by topic) or recent_chats (by time) before answering.")
+        parts.append("This chat is a NEW, separate conversation. The past conversations below are background only: do "
+                     "not assume the user is continuing one of them or reacting to something said there, unless they "
+                     "say so or it is obvious from their message. Older conversations are not shown here: when the "
+                     "user refers to one, look it up with memory action=search_chats (by topic) or recent_chats (by "
+                     "time) before answering.")
         if sums:
-            parts.append("Earlier conversations, summarized (continue from them naturally, e.g. ask how a thing went):\n"
+            parts.append("Earlier conversations (separate chats), summarized; bring one up briefly only when it fits, "
+                         "e.g. ask how a thing went, and never treat them as this chat's history:\n"
                          + "\n".join(f"- {s.line()}" for s in sums))
         if due:
             parts.append("Follow-ups due now: bring each up ONCE at a natural moment (a greeting or a pause is fine), "
                          "briefly, in your own words; then call memory action=done id=<n>. Unfinished threads: offer "
                          "to continue.\n" + "\n".join(f"- {f.line()}" for f in due))
         if eps:
-            parts.append("Recent conversations:\n" + "\n".join(f"- {e.line(width=160)}" for e in eps))
+            parts.append("Last turns of earlier chats from the past few hours (other chats or voice, not this "
+                         "conversation):\n" + "\n".join(f"- {e.line(width=160)}" for e in eps))
         return "\n\n".join(parts)
 
     def export_markdown(self, cwd: Path | str | None = None) -> str:
@@ -1328,6 +1342,63 @@ class LongMemory:
 
     def consolidate(self) -> list[str]:
         return self.dream(force=True)
+
+    def forget_session(self, sid: str, users: list[str] | None = None, start: float | None = None,
+                       end: float | None = None) -> dict[str, int]:
+        """Silinen sohbetin hafızadaki izleri: turları (vektörleriyle) ve yalnız o turları kapsayan özetler.
+
+        Sohbet kimliğiyle kaydedilen turlar kimlikten bulunur. Kimlik eklenmeden önceki eski turlar için sohbetin
+        zaman aralığı (start..end) ve kullanıcının yazdıkları eşleştirilir; başka sohbetin turu silinmesin diye
+        ikisi birden tutmalı. Sohbet silindiği hâlde ALICE onu "Son konuşmalar"dan hatırlamaya devam ediyordu."""
+        ids: set[int] = set()
+        with self._lock:
+            if sid:
+                ids |= {r[0] for r in self.db.execute("SELECT id FROM episodes WHERE sid = ?", (str(sid),))}
+            wanted = {fold(" ".join(clean_user_text(u).split()))[:2000] for u in users or [] if u and u.strip()}
+            if wanted and start is not None and end is not None:
+                for eid, user in self.db.execute("SELECT id, user FROM episodes WHERE sid = '' AND ts BETWEEN ? AND ?",
+                                                 (start - 120, end + 120)):
+                    if fold(" ".join(user.split())) in wanted:
+                        ids.add(eid)
+            if not ids:
+                return {"episodes": 0, "summaries": 0}
+            marks = ",".join("?" * len(ids))
+            lo, hi = self.db.execute(f"SELECT MIN(ts), MAX(ts) FROM episodes WHERE id IN ({marks})", tuple(ids)).fetchone()
+            self.db.execute(f"DELETE FROM episodes WHERE id IN ({marks})", tuple(ids))
+            self.db.execute(f"DELETE FROM vectors WHERE kind = 'episode' AND ref IN ({marks})", tuple(ids))
+            # Özet bir konuşmanın tamamını anlatır: aralığında başka tur kalmadıysa o sohbetindir, gider.
+            gone_sums = []
+            for s_id, s_start, s_end in self.db.execute("SELECT id, start, end FROM summaries WHERE end >= ? AND "
+                                                        "start <= ?", (lo - 1, hi + 1)).fetchall():
+                left = self.db.execute("SELECT COUNT(*) FROM episodes WHERE ts BETWEEN ? AND ?",
+                                       (s_start - 1, s_end + 1)).fetchone()[0]
+                if not left:
+                    gone_sums.append(s_id)
+            for s_id in gone_sums:
+                self.db.execute("DELETE FROM summaries WHERE id = ?", (s_id,))
+                self.db.execute("DELETE FROM vectors WHERE kind = 'summary' AND ref = ?", (s_id,))
+            self.db.commit()
+        self._bump()
+        return {"episodes": len(ids), "summaries": len(gone_sums)}
+
+    def forget_history(self) -> dict[str, int]:
+        """Bütün konuşma geçmişi (turlar, özetler, vektörleri). Notlar ve takipler kalır."""
+        with self._lock:
+            n_eps = self.db.execute("DELETE FROM episodes").rowcount
+            n_sums = self.db.execute("DELETE FROM summaries").rowcount
+            self.db.execute("DELETE FROM vectors WHERE kind IN ('episode', 'summary')")
+            self.db.commit()
+        self._bump()
+        return {"episodes": n_eps, "summaries": n_sums}
+
+    def forget_episode(self, eid: int) -> bool:
+        with self._lock:
+            cur = self.db.execute("DELETE FROM episodes WHERE id = ?", (int(eid),))
+            self.db.execute("DELETE FROM vectors WHERE kind = 'episode' AND ref = ?", (int(eid),))
+            self.db.commit()
+        if cur.rowcount:
+            self._bump()
+        return bool(cur.rowcount)
 
     def forget_summary(self, sid: int) -> bool:
         with self._lock:

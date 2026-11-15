@@ -459,7 +459,8 @@ class Agent:
             return
         try:
             wrote = bool(self.ctx.state.pop("memory_wrote", False))
-            self.memory.record(user_text, reply, self.memory_channel)
+            self.memory.record(user_text, reply, self.memory_channel,
+                               sid=str(self.ctx.state.get("session_id") or ""))
             self.memory.learn(user_text, reply, cwd=self.ctx.cwd, wrote=wrote)
         except Exception:  # noqa: BLE001
             log.debug("tur hafızaya yazılamadı", exc_info=True)

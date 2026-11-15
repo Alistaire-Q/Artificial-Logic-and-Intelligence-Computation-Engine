@@ -2154,6 +2154,7 @@ function memoryPane(pane, data) {
   };
   f.addEventListener("input", draw);
   draw();
+  historyBlock(pane, d);
   if ((d.followups || []).length) {
     pane.appendChild(el("div", "sec", "Takipler (sonra sorulacak / hatırlatılacak)"));
     for (const x of d.followups) {
@@ -2164,6 +2165,42 @@ function memoryPane(pane, data) {
       pane.appendChild(row);
     }
   }
+}
+/* Hatırlanan geçmiş konuşmalar (özetler ve son turlar): ALICE bunları yeni sohbetlerde "hatırlar"; tek tek ya da
+   hepsi birden silinebilir. Sohbeti kenar çubuğundan silmek de o sohbetin buradaki izlerini siler. */
+function historyBlock(pane, d) {
+  const sums = d.summaries || [], eps = d.episodes || [];
+  if (!sums.length && !eps.length) return;
+  const head = el("div", "list-row");
+  const hl = el("span", "l");
+  hl.append(el("b", "", "Hatırlanan konuşmalar"),
+    el("small", "", "ALICE geçmiş sohbetleri bu özetlerden ve turlardan hatırlar. Yanlış ya da istemediğin birini sil; sohbeti kenar çubuğundan silmek de buradaki izlerini siler."));
+  const all = el("button", "btn", "Hepsini unut");
+  all.addEventListener("click", async () => {
+    if (!confirm("Bütün konuşma geçmişi (özetler ve turlar) hafızadan silinsin mi? Notlar ve takipler kalır. Geri alınamaz.")) return;
+    const r = await api("/api/memory/action", { action: "forget_history" });
+    toast(r && r.ok ? `${r.episodes} tur, ${r.summaries} özet silindi` : "silinemedi");
+    showSettings("memory");
+  });
+  head.append(hl, all);
+  pane.appendChild(head);
+  const rows = (title, items, action) => {
+    if (!items.length) return;
+    const det = el("details", "mem-history");
+    det.appendChild(el("summary", "", `${title} (${items.length})`));
+    for (const x of items) {
+      const row = el("div", "list-row");
+      const b = el("button", "btn", "Sil");
+      b.addEventListener("click", () => api("/api/memory/action", { action, id: x.id }).then((r) => {
+        if (r && r.ok) row.remove(); else toast("silinemedi");
+      }));
+      row.append(el("span", "l", x.text), b);
+      det.appendChild(row);
+    }
+    pane.appendChild(det);
+  };
+  rows("Konuşma özetleri", sums, "forget_summary");
+  rows("Son turlar", eps, "forget_episode");
 }
 function noteRow(x, notes, redraw) {
   const row = el("div", "list-row mem-note" + (x.old ? " warn" : ""));
