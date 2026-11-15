@@ -66,7 +66,10 @@ CREATE TABLE IF NOT EXISTS followups (
     text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS vectors (
     kind TEXT NOT NULL, ref INTEGER NOT NULL, vec BLOB NOT NULL, PRIMARY KEY (kind, ref));
+CREATE TABLE IF NOT EXISTS forgotten (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, text TEXT NOT NULL, terms TEXT NOT NULL DEFAULT '');
 """
+KEEP_FORGOTTEN = 200  # silinen notların izi (otomatik çıkarım ve Dream aynı şeyi geri yazmasın)
 FOLLOWUP_KINDS = {"ask": "sor", "remind": "hatırlat", "open": "yarım kaldı"}
 # Eski "sevgili/mommy" kişiliğinden kalan izler. Hafızada kaldıkça yeni kişilik "Buradayım bebeğim" diye geri
 # dönüyordu (voice.log); Ayarlar > Hafıza bunları gösterip tek tıkla temizler.
@@ -431,16 +434,59 @@ class LongMemory:
                   scope: str = "genel", cwd: Path | str | None = None) -> tuple[Any, bool]:
         b = self.book(scope, cwd)
         note, new = b.save(name, description, type, content, title=title, source=source)
+        if source in ("kullanıcı", "araç"):  # konuşmada açıkça yeniden kaydedildi
+            self.unforget(f"{title} {description} {content}")
         self._bump()
         return note, new
 
     def delete_note(self, key: str, cwd: Path | str | None = None) -> Any:
+        """Notu sil (kullanıcı arayüzden, sesle ya da ALICE kullanıcının isteğiyle). Silinen notun izi tutulur: konuşma
+        özetleri durduğu için tur sonu çıkarımı ve Dream aynı bilgiyi yeniden not yapıyor, silinen not geri
+        geliyordu. Dream'in birleştirme silmeleri buradan geçmez (iz bırakmaz)."""
         b, n = self.find_note(key, cwd)
         if b is None:
             return None
         gone = b.delete(n.name)
+        if gone is not None:
+            self._tombstone(f"{n.title}. {n.description}. {_clip(n.body, 400)}")
         self._bump()
         return gone
+
+    def _tombstone(self, text: str) -> None:
+        text = " ".join(text.split())
+        with self._lock:
+            self.db.execute("INSERT INTO forgotten(ts, text, terms) VALUES (?, ?, ?)",
+                            (time.time(), text[:800], " ".join(sorted(set(terms(text))))))
+            self.db.execute("DELETE FROM forgotten WHERE id NOT IN (SELECT id FROM forgotten ORDER BY id DESC "
+                            "LIMIT ?)", (KEEP_FORGOTTEN,))
+            self.db.commit()
+
+    def forgotten(self, limit: int = 20) -> list[str]:
+        with self._lock:
+            return [r[0] for r in self.db.execute("SELECT text FROM forgotten ORDER BY id DESC LIMIT ?", (int(limit),))]
+
+    def _forgotten_like(self, text: str) -> list[int]:
+        """Metinle aynı şeyi söyleyen silinmiş notların kimlikleri (kelime örtüşmesi: kısa olanın en az %60'ı)."""
+        mine = set(terms(text))
+        if len(mine) < 2:
+            return []
+        out = []
+        with self._lock:
+            rows = self.db.execute("SELECT id, terms FROM forgotten").fetchall()
+        for fid, t in rows:
+            other = set(t.split())
+            if len(other) >= 2 and len(mine & other) / min(len(mine), len(other)) >= 0.6:
+                out.append(fid)
+        return out
+
+    def unforget(self, text: str) -> int:
+        """Kullanıcı aynı şeyi yeniden açıkça kaydettirdi: izi kaldır."""
+        ids = self._forgotten_like(text)
+        if ids:
+            with self._lock:
+                self.db.execute(f"DELETE FROM forgotten WHERE id IN ({','.join('?' * len(ids))})", ids)
+                self.db.commit()
+        return len(ids)
 
     def migrate_facts(self) -> int:
         """Eski tek cümlelik bilgileri (facts tablosu) bir kez notlara taşı. Tablo silinmez (yedek)."""
@@ -530,6 +576,8 @@ class LongMemory:
             title = _clip(words.rstrip("."), 60)
         note, new = book.save(name, text, typ, text, title=title,
                               source=source if old is None else (old.source or source), when=when)
+        if source in ("kullanıcı", "araç"):  # konuşmada açıkça yeniden kaydedildi
+            self.unforget(text)
         self._bump()
         return note.name, new
 
@@ -1188,6 +1236,10 @@ class LongMemory:
                 rules=MEMORY_RULES, manifest="\n".join(n.manifest_line() for n in notes) or "(yok)",
                 related="\n\n".join(f"--- {n.key}\n{n.body}" for n in related) or "(yok)", explicit="",
                 repo=f" ({root.name})" if root else " (şu an bir depoda değilsin: hep genel)", transcript=transcript)
+            gone = self.forgotten(15)
+            if gone:
+                prompt += ("\n\nThe user DELETED these notes; never save them (or anything saying the same) again:\n"
+                           + "\n".join(f"- {_clip(g, 200)}" for g in gone))
             data = parse_json(self.extractor(prompt) if self.extractor else "")
             done = self.apply_notes(data, cwd=cwd, source="otomatik", max_save=3, max_delete=2)
             self._meta("notes_cursor", str(turns[-1].id))
@@ -1222,6 +1274,10 @@ class LongMemory:
             except ValueError:
                 target = self.notes
             old = target.get(str(s.get("name") or ""))
+            if old is None and source in ("otomatik", "dream") and \
+                    self._forgotten_like(f"{s.get('title') or ''} {desc} {content}"):
+                done.append(f"atlandı (kullanıcı silmişti): {desc[:60]}")
+                continue
             try:
                 note, new = target.save(str(s.get("name") or s.get("title") or desc), desc, typ, content,
                                         title=str(s.get("title") or ""),
@@ -1314,6 +1370,10 @@ class LongMemory:
                 signal.append("Open follow-ups:\n" + "\n".join(f"- {f.line()}" for f in fups))
         if not notes and not signal:
             return []
+        gone = self.forgotten(20)
+        if gone and signal:
+            signal.append("Notes the user DELETED (do NOT re-create them or anything saying the same):\n"
+                          + "\n".join(f"- {_clip(g, 200)}" for g in gone))
         backup = b.backup()
         listing = "\n\n".join(
             f"--- {n.name}.md [{n.type or '?'}] ({age_text_iso(n.modified)})"

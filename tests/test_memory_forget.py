@@ -105,3 +105,20 @@ def test_recall_skips_model_for_small_talk_and_notes_already_in_prompt():
     m.profile()  # user notunun tamamı artık sistem isteminde
     asked.clear()
     assert m.recall("war thunder'da jet seçimi") == ""  # istemde olan not mesaja ikinci kez eklenmez
+
+
+def test_deleted_note_is_not_recreated_by_extraction_or_dream_until_user_saves_it_again():
+    m = LongMemory(":memory:", {})
+    m.save_note("user-sosyal-medya", "Kullanıcı YouTube ve sosyal medyada çok vakit geçirir", "user",
+                "Kullanıcı YouTube ve diğer sosyal medya sitelerinde çok vakit geçirir.", source="otomatik")
+    assert m.delete_note("genel:user-sosyal-medya") is not None
+    again = {"save": [{"name": "user-youtube", "type": "user", "description": "Kullanıcı YouTube'da çok vakit geçirir",
+                       "content": "Kullanıcı YouTube ve sosyal medya sitelerinde çok vakit geçirir."}]}
+    done = m.apply_notes(again, source="dream")
+    assert m.notes.scan() == [] and "kullanıcı silmişti" in done[0]
+    other = {"save": [{"name": "user-kahve", "type": "user", "description": "Kullanıcı kahveyi şekersiz içer",
+                       "content": "Kullanıcı kahveyi şekersiz içer."}]}
+    assert m.apply_notes(other, source="otomatik") and len(m.notes.scan()) == 1  # alakasız not engellenmez
+    # Kullanıcı aynı şeyi açıkça yeniden kaydettirirse iz kalkar.
+    m.remember("Kullanıcı YouTube ve sosyal medya sitelerinde çok vakit geçirir.", "fact", source="kullanıcı")
+    assert m.forgotten() == []
