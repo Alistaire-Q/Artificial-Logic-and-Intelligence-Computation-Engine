@@ -89,3 +89,19 @@ def test_memory_tab_lists_and_forgets_history(app):  # noqa: F811
     assert e1 not in {e.id for e in m.recent(10)}
     r = client.post("/api/memory/action", json={"action": "forget_history"}).json()
     assert r["ok"] and r["episodes"] == 1 and m.recent(10) == []
+
+
+def test_recall_skips_model_for_small_talk_and_notes_already_in_prompt():
+    asked = []
+
+    def chooser(prompt):
+        asked.append(prompt)
+        return '{"selected": ["genel:user-oyun"]}'
+
+    m = LongMemory(":memory:", {}, chooser)
+    m.save_note("user-oyun", "Kullanıcı War Thunder oynar", "user", "War Thunder'da uçak ağacını açıyor, jetleri sever.")
+    assert m.recall("selam naber") == "" and asked == []  # notlarla ortak kelime yok: model çağrılmaz
+    assert "War Thunder" in m.recall("war thunder'da hangi uçağı açayım") and len(asked) == 1
+    m.profile()  # user notunun tamamı artık sistem isteminde
+    asked.clear()
+    assert m.recall("war thunder'da jet seçimi") == ""  # istemde olan not mesaja ikinci kez eklenmez

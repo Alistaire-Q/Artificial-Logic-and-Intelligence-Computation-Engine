@@ -305,6 +305,7 @@ class LongMemory:
         self._turns_since_extract = 0
         self._last_dream_scan: float | None = None  # monotonic; None = hiç taranmadı (açılıştan hemen sonra monotonic < 600 olabilir)
         self._dream_lock = threading.Lock()
+        self._in_profile: dict[str, set[str]] = {}  # cwd -> sistem isteminde tamamı duran notlar (anahtar@zaman)
         self.embedder = embedder  # alice.memvec.Embedder ya da None (sadece kelime araması)
         self.embed_min = float(o.get("embed_min", 0.68))  # bu kosinüsün altı "ilgisiz" sayılır
         self.digest_enabled = bool(o.get("digest", True))
@@ -859,9 +860,14 @@ class LongMemory:
             return ""
         seen = surfaced if surfaced is not None else set()
         stamp = lambda n: f"{n.key}@{int(n.modified)}"  # noqa: E731 - not değişince yeniden gösterilsin
-        notes = [n for n in self.all_notes(cwd) if stamp(n) not in seen]
+        in_profile = self._in_profile.get(str(cwd or ""), set())
+        notes = [n for n in self.all_notes(cwd) if stamp(n) not in seen and stamp(n) not in in_profile]
         use = self.recall_model if use_model is None else use_model
         chooser = self.extractor if use and self.extractor is not None else None
+        if chooser is not None and notes and not _worth_asking(clean, notes):
+            # "selam naber", "hava nasıl" gibi kısa mesajlar: hiçbir notla kelime ortaklığı yoksa model çağrısı (her
+            # mesajın başında ~1 sn bekleme) boşuna; zaten hiçbir not seçilmiyordu.
+            chooser = None
         picked = select_relevant(clean, notes, chooser, limit=5, recent_tools=recent_tools) if notes else []
         sums = [h for h in self.search(clean, limit=4, facts=False, exclude_after=exclude_after)
                 if isinstance(h.item, Summary) and h.score >= 0.6][:2]
@@ -1061,6 +1067,7 @@ class LongMemory:
         # Davranış kuralları ve kullanıcıyı tanıtan notlar kısa olur ve her konuşmada gerekir: tamamı istemde. Diğer
         # notlar dizinden okunur ya da ilgili olduklarında mesaja kendiliğinden eklenir.
         always, used = [], 0
+        shown: set[str] = set()  # tamamı istemde olan notlar: hatırlama bunları mesaja bir daha eklemesin
         for typ in ("feedback", "user"):
             for n in sorted((n for b in books for n in b.scan() if n.type == typ), key=lambda n: -n.modified):
                 if " ".join(n.body.split()) == " ".join(n.description.split()):
@@ -1070,6 +1077,8 @@ class LongMemory:
                     continue
                 always.append(block)
                 used += len(block)
+                shown.add(f"{n.key}@{int(n.modified)}")
+        self._in_profile[str(cwd or "")] = shown
         if always:
             parts.append(f"## Notların tamamı: {TYPE_TR['feedback']} ve {TYPE_TR['user']} (her konuşmada geçerli)\n"
                          + "\n\n".join(always))
@@ -1514,6 +1523,19 @@ def parse_json(raw: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _worth_asking(text: str, notes: list[Any]) -> bool:
+    """Not seçimini modele sormaya değer mi: mesajda en az 3 anlamlı kelime var ya da bir notla ortak kelime var."""
+    q = set(terms(text))
+    if len(q) >= 3:
+        return True
+    if not q:
+        return False
+    for n in notes:
+        if q & set(terms(f"{n.title} {n.name.replace('-', ' ')} {n.description} {n.body[:600]}")):
+            return True
+    return False
 
 
 def make_extractor(options: dict[str, Any], router, role: str | None = None) -> Callable[[str], str] | None:
