@@ -153,15 +153,37 @@ def session_prompt(session_id: str, messages: list[dict[str, Any]]) -> str:
     return _first_archived(session_id) or first_prompt(messages)
 
 
+# list_sessions önbelleği: yol -> ((dosya ve arşivin mtime/boyutu), (cwd, ilk istek)). Kenar çubuğu her açılışta 60
+# sohbet dosyasını baştan okuyup JSON çözüyordu (soğuk açılışta ~600 ms); değişmeyen dosya yeniden okunmaz.
+_list_cache: dict[str, tuple[tuple[int, ...], tuple[str, str]]] = {}
+_list_lock = threading.Lock()
+
+
+def _file_sig(path: Path) -> tuple[int, int]:
+    try:
+        st = path.stat()
+    except OSError:
+        return (0, 0)
+    return (st.st_mtime_ns, st.st_size)
+
+
 def list_sessions(limit: int = 15) -> list[tuple[str, str, str]]:
     out = []
     for p in sorted(sessions_dir().glob("*.json"), reverse=True)[:limit]:
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        first = session_prompt(p.stem, data.get("messages", []))
-        out.append((p.stem, data.get("cwd", ""), first[:70].replace("\n", " ")))
+        sig = _file_sig(p) + _file_sig(archive_path(p.stem))
+        with _list_lock:
+            hit = _list_cache.get(str(p))
+        if hit is not None and hit[0] == sig:
+            cwd, first = hit[1]
+        else:
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            cwd, first = str(data.get("cwd", "")), session_prompt(p.stem, data.get("messages", []))
+            with _list_lock:
+                _list_cache[str(p)] = (sig, (cwd, first))
+        out.append((p.stem, cwd, first[:70].replace("\n", " ")))
     return out
 
 

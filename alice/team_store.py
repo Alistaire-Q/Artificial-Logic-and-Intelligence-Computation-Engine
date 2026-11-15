@@ -45,9 +45,23 @@ def _slim(messages: list[dict[str, Any]], limit: int = 6000) -> list[dict[str, A
     return out
 
 
+# list_projects önbelleği: yol -> ((mtime, boyut), satır). Proje dosyaları günlükleriyle MB'larca olabiliyor; Projeler
+# sayfası her açılışta hepsini baştan okuyup çözüyordu. Değişmeyen dosyanın satırı yeniden kullanılır.
+_list_cache: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
+
+
 def list_projects() -> list[dict[str, Any]]:
     out = []
     for f in projects_dir().glob("*.json"):
+        try:
+            st = f.stat()
+            sig = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            continue
+        hit = _list_cache.get(str(f))
+        if hit is not None and hit[0] == sig:
+            out.append(dict(hit[1]))
+            continue
         try:
             # Proje o an kaydediliyorsa (Windows'ta replace sırasında) düz okuma PermissionError verip proje
             # listeden düşüyordu: biten proje "yok" görünüyordu.
@@ -62,6 +76,7 @@ def list_projects() -> list[dict[str, Any]]:
                     "status": status if status in ("done", "stopped") else "stopped",
                     "questions": sum(1 for q in data.get("questions") or [] if not q.get("answer")),
                     "members": [{"name": m.get("name"), "status": m.get("status")} for m in members]})
+        _list_cache[str(f)] = (sig, dict(out[-1]))
     return sorted(out, key=lambda x: -float(x.get("updated") or x.get("created") or 0))
 
 
