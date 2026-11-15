@@ -430,12 +430,22 @@ class LongMemory:
                 best, best_score = n, j
         return best if best_score >= 0.75 else None
 
+    # Kullanıcının elle yaptığı hafıza değişiklikleri (not silme/düzenleme, geçmişi unutma). Sohbet ortasında sistem
+    # istemi yalnız bunlar değişince yenilenir; otomatik çıkarım ve Dream'in yazdıkları sonraki sohbete kalır (sistem
+    # istemi değişince prompt önbelleği baştan kuruluyor, bkz. Agent.refresh_memory).
+    user_edits = 0
+
+    def mark_user_edit(self) -> None:
+        self.user_edits += 1
+
     def save_note(self, name: str, description: str, type: str, content: str, title: str = "", source: str = "",
                   scope: str = "genel", cwd: Path | str | None = None) -> tuple[Any, bool]:
         b = self.book(scope, cwd)
         note, new = b.save(name, description, type, content, title=title, source=source)
         if source in ("kullanıcı", "araç"):  # konuşmada açıkça yeniden kaydedildi
             self.unforget(f"{title} {description} {content}")
+        if source == "kullanıcı":
+            self.mark_user_edit()
         self._bump()
         return note, new
 
@@ -449,6 +459,7 @@ class LongMemory:
         gone = b.delete(n.name)
         if gone is not None:
             self._tombstone(f"{n.title}. {n.description}. {_clip(n.body, 400)}")
+        self.mark_user_edit()
         self._bump()
         return gone
 
@@ -578,6 +589,8 @@ class LongMemory:
                               source=source if old is None else (old.source or source), when=when)
         if source in ("kullanıcı", "araç"):  # konuşmada açıkça yeniden kaydedildi
             self.unforget(text)
+        if source == "kullanıcı":
+            self.mark_user_edit()
         self._bump()
         return note.name, new
 

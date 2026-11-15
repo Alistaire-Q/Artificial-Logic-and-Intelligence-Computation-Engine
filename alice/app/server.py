@@ -1368,6 +1368,9 @@ class AppState:
         if mem is None:
             return {"ok": False, "error": "hafıza kapalı"}
         cwd = getattr(self.agent.ctx, "cwd", None)
+        if action in ("tidy", "dream", "forget", "save", "restore", "forget_summary", "forget_episode",
+                      "forget_history", "purge_old_role"):
+            mem.mark_user_edit()  # açık sohbetlerin sistem istemi de bir sonraki turda yenilensin
         if action in ("tidy", "dream"):  # Ayarlar → Hafıza → Dream: toparlamayı şimdi çalıştır
             try:
                 done = mem.dream(force=True, cwd=cwd)
