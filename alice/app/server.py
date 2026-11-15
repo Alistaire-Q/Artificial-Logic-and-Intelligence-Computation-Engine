@@ -1064,6 +1064,7 @@ class AppState:
         ("agent", "sandbox"): ("off", "auto", "on"),
         ("agent", "taint_guard"): (True, False),
         ("agent", "search_grounding"): (True, False),
+        ("agent", "turn_token_budget"): (0, 200_000, 500_000, 1_000_000, 2_000_000),
         ("greeting", "enabled"): (True, False),
         ("greeting", "away_minutes"): (60, 90, 120, 180),
         ("memory", "digest"): (True, False),
