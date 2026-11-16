@@ -69,6 +69,19 @@ class BadRequest(Exception):
         self.code = code
 
 
+def int_field(d: dict[str, Any], key: str, default: int = 0) -> int:
+    """İstek gövdesindeki tamsayı alan; sayı değilse 500 yerine 400 (BadRequest)."""
+    v = d.get(key)
+    if v is None or v == "":
+        return default
+    if isinstance(v, bool):
+        raise BadRequest(400, f"{key} tamsayı olmalı")
+    try:
+        return int(v)
+    except (TypeError, ValueError, OverflowError):
+        raise BadRequest(400, f"{key} tamsayı olmalı") from None
+
+
 # ----------------------------------------------------------------------- olaylar
 class EventBus:
     def __init__(self) -> None:
@@ -2813,7 +2826,10 @@ def make_handler(state: AppState):
                         return self._json({"ok": False, "error": str(e)}, 400)
                     return self._json({"ok": True, "note": note, **state.status()})
                 if p == "/api/rewind":
-                    out = state.rewind(int(d.get("mi", -1)))
+                    try:
+                        out = state.rewind(int_field(d, "mi", -1))
+                    except ValueError as e:  # geçersiz mesaj sırası: istemci hatası
+                        return self._json({"ok": False, "error": str(e)}, 400)
                     return self._json({"ok": True, **out, "history": state.history_for(),
                                        **state.status()})
                 if p == "/api/changes/revert":
@@ -2827,7 +2843,7 @@ def make_handler(state: AppState):
                     from alice import prwatch
                     from alice.tools.base import ToolError
 
-                    repo, number = str(d.get("repo", "")), int(d.get("number") or 0)
+                    repo, number = str(d.get("repo", "")), int_field(d, "number")
                     if not repo or not number:
                         return self._json({"ok": False, "error": "repo ve number gerekli"}, 400)
                     try:
@@ -2969,6 +2985,8 @@ def make_handler(state: AppState):
                         except OSError:
                             pass
                     return self._json({"ok": True})
+            except BadRequest as e:
+                return self._json({"ok": False, "error": str(e)}, e.code)
             except Exception as e:  # noqa: BLE001
                 log_error()
                 return self._json({"ok": False, "error": str(e)}, 500)

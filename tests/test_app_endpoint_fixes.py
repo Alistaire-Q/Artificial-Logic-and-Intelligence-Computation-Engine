@@ -27,3 +27,19 @@ def test_usage_has_session_breakdown_and_today(app):
     # Kullanım dökümü penceresi (models/tools/ctx) ve Ayarlar > Kullanım (today) aynı yanıttan beslenir.
     assert {"models", "tools", "ctx", "steps"} <= set(u)
     assert u["today"]["a:m"]["requests"] == 1
+
+
+@pytest.mark.parametrize("mi", ["abc", [1], {"x": 1}, True, 99])
+def test_rewind_bad_index_is_400(app, mi):
+    state, client = app
+    r = client.post("/api/rewind", json={"mi": mi})
+    assert r.status_code == 400 and r.json()["ok"] is False
+
+
+@pytest.mark.parametrize("path", ["/api/prs/watch", "/api/prs/unwatch", "/api/prs/flag", "/api/prs/rerun"])
+@pytest.mark.parametrize("number", ["abc", "1.5x", [3], {"n": 1}])
+def test_prs_bad_number_is_400(app, path, number):
+    state, client = app
+    r = client.post(path, json={"repo": "o/r", "number": number})
+    assert r.status_code == 400 and r.json()["ok"] is False
+    assert client.post(path, json={"repo": "o/r"}).status_code == 400  # eksik number da 400
