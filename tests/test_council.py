@@ -355,3 +355,19 @@ def test_council_reports_live_progress(workdir):
     assert "Plan inceleniyor" in phases and "Kontrolcü bulguları doğruluyor" in phases
     assert any("working" in states.values() for _, states in seen)
     assert all(a["state"] == "done" and a["vote"] == "approve" for a in snap["activity"].values())
+
+
+def test_council_setup_failure_marks_entry_failed(workdir):
+    import pytest
+
+    agent, _, ctx = make(lambda *a, **k: "x", workdir)
+    team = Team(ctx, "hedef")
+
+    def boom(*a, **k):
+        raise RuntimeError("ekran görüntüsü alınamadı")
+
+    team._screens = boom
+    store: list = []
+    with pytest.raises(RuntimeError):
+        team._council("adhoc", "site.html", "bağlam", store)
+    assert store[0]["state"] == "failed" and "ekran" in store[0]["result"]["error"]

@@ -757,30 +757,37 @@ class Team:
         slot = len(store)
         store.append({"kind": kind, "state": "running", "title": subject[:80], "result": {}, "votes": [],
                       "findings": [], "round": 0, "rounds": 0})
-        if kind in ("work", "recheck", "final") and self.check:
-            chk = self.run_check(cwd)
-            if chk:
-                context += (f"\n\n# Kontrol komutu: `{chk['cmd']}` → çıkış {chk['code']} "
-                            f"({'GEÇTİ' if chk['code'] == 0 else 'BAŞARISIZ'})\n```\n{chk['out'][-3000:]}\n```")
-        if kind in ("work", "recheck", "final", "adhoc"):
-            slop = self.slop_report(cwd)
-            if slop:
-                context += ("\n\n# Otomatik kalıp denetimi: sitede yapay zekâ yapımı görünen kalıplar\nBunlar koddan "
-                            "sayıldı, tahmin değil. Her biri 'major' tasarım sorunudur (iş hedefi 'AI yapımı gibi "
-                            "durmasın'); küçük kod ayrıntılarından önce bunlara bak:\n" + slop)
-        c = Council(self.parent_ctx, kind, subject, context, cwd=cwd or self.cwd, previous=previous,
-                    critical=critical or self._critical(subject), rules=self.review_rules(),
-                    lessons=self.lessons[-10:], check=self.check, images=self._screens(kind, subject + context, cwd))
+        try:
+            if kind in ("work", "recheck", "final") and self.check:
+                chk = self.run_check(cwd)
+                if chk:
+                    context += (f"\n\n# Kontrol komutu: `{chk['cmd']}` → çıkış {chk['code']} "
+                                f"({'GEÇTİ' if chk['code'] == 0 else 'BAŞARISIZ'})\n```\n{chk['out'][-3000:]}\n```")
+            if kind in ("work", "recheck", "final", "adhoc"):
+                slop = self.slop_report(cwd)
+                if slop:
+                    context += ("\n\n# Otomatik kalıp denetimi: sitede yapay zekâ yapımı görünen kalıplar\nBunlar koddan "
+                                "sayıldı, tahmin değil. Her biri 'major' tasarım sorunudur (iş hedefi 'AI yapımı gibi "
+                                "durmasın'); küçük kod ayrıntılarından önce bunlara bak:\n" + slop)
+            c = Council(self.parent_ctx, kind, subject, context, cwd=cwd or self.cwd, previous=previous,
+                        critical=critical or self._critical(subject), rules=self.review_rules(),
+                        lessons=self.lessons[-10:], check=self.check, images=self._screens(kind, subject + context, cwd))
 
-        def live() -> None:
-            store[slot] = c.snapshot()
-            self._changed()
+            def live() -> None:
+                store[slot] = c.snapshot()
+                self._changed()
 
-        c.on_change = live
-        c.on_usage = lambda u: self._use(COUNCIL, u)
-        self._live_councils.add(c)
-        if self.stopped:
-            c.stop()
+            c.on_change = live
+            c.on_usage = lambda u: self._use(COUNCIL, u)
+            self._live_councils.add(c)
+            if self.stopped:
+                c.stop()
+        except Exception as e:
+            # Kurul kurulamadıysa (kontrol komutu, ekran görüntüsü, Council) kayıt arayüzde "running" kalmasın.
+            store[slot] = {**store[slot], "state": "failed", "result": {
+                "decision": "contested", "score": 0.0, "veto": [], "conditions": [], "error": f"{type(e).__name__}: {e}"}}
+            self._changed(save=True)
+            raise
         try:
             snap = c.run()
         finally:
