@@ -116,8 +116,11 @@ def _parse(data: dict[str, Any]) -> list[Hook]:
         for h in data.get(event, []) or []:
             if isinstance(h, dict) and str(h.get("command", "")).strip():
                 on_failure = "block" if str(h.get("on_failure", "")).lower() == "block" else "ignore"
-                hooks.append(Hook(event, str(h["command"]), str(h.get("matcher", "") or ""),
-                                  float(h.get("timeout", 30)), on_failure))
+                try:  # timeout = "30s" gibi bir yazım bütün hook'ları (ve her araç çağrısını) çökertmesin
+                    timeout = float(h.get("timeout", 30))
+                except (TypeError, ValueError):
+                    timeout = 30.0
+                hooks.append(Hook(event, str(h["command"]), str(h.get("matcher", "") or ""), timeout, on_failure))
     return hooks
 
 
@@ -221,14 +224,40 @@ class Hooks:
         data = json.dumps({"event": h.event, "tool": tool, "cwd": str(self.cwd or ""), **payload},
                           ensure_ascii=False, default=str)
         try:
-            p = subprocess.run(h.command, shell=True, input=data, capture_output=True, text=True, encoding="utf-8",
-                               errors="replace", timeout=h.timeout, cwd=str(self.cwd) if self.cwd else None, env=env,
-                               creationflags=0x08000000 if sys.platform == "win32" else 0)
-            return HookResult(h, p.returncode, (p.stdout or "").strip()[:4000], (p.stderr or "").strip()[:4000])
-        except subprocess.TimeoutExpired:
-            return HookResult(h, 1, "", f"hook {h.timeout:.0f} sn içinde bitmedi: {h.command}")
+            p = subprocess.Popen(h.command, shell=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+                                 cwd=str(self.cwd) if self.cwd else None, env=env,
+                                 creationflags=0x08000000 if sys.platform == "win32" else 0)
         except OSError as e:
             return HookResult(h, 1, "", f"hook çalıştırılamadı: {e}")
+        try:
+            out, err = p.communicate(data, timeout=h.timeout)
+            return HookResult(h, p.returncode, (out or "").strip()[:4000], (err or "").strip()[:4000])
+        except subprocess.TimeoutExpired:
+            # subprocess.run zaman aşımında yalnız kabuğu öldürüp boruların kapanmasını süresiz bekliyordu: kabuğun
+            # başlattığı program (cmd /c python ...) boruları tutunca hook ajanı sonsuza kadar kilitliyordu.
+            _kill(p)
+            return HookResult(h, 1, "", f"hook {h.timeout:.0f} sn içinde bitmedi: {h.command}")
+        except OSError as e:
+            _kill(p)
+            return HookResult(h, 1, "", f"hook çalıştırılamadı: {e}")
+
+
+def _kill(p: subprocess.Popen) -> None:
+    """Hook sürecini alt süreçleriyle birlikte öldür ve kısa süre bekle (borular kapansın, zombi kalmasın)."""
+    try:
+        from alice.tools.shell import kill_tree
+
+        kill_tree(p.pid)
+    except Exception:  # noqa: BLE001 - psutil yoksa en azından kabuğu öldür
+        try:
+            p.kill()
+        except OSError:
+            pass
+    try:
+        p.communicate(timeout=5)
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        pass
 
 
 def decision(results: list[HookResult]) -> dict[str, Any]:
