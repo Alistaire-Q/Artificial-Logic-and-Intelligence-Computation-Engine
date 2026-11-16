@@ -553,6 +553,9 @@ class Agent:
             self.messages[0]["content"] = new
 
     def run_turn(self, user_text: str, max_steps: int | None = None, images: list[str] | None = None) -> str:
+        # Durdurma bayrağı her şeyden önce temizlenir: hatırlama ve kurulum sırasında basılan Durdur kaybolmasın
+        # (önceden _run_turn içinde temizleniyordu; o arada gelen durdurma isteği silinip tur sürüyordu).
+        self.cancel.clear()
         self.refresh_memory()
         self.sync_catalog()
         recall = self._recall(user_text)
@@ -694,7 +697,6 @@ class Agent:
         self._enable_groups_for(content_text)
         final = ""
         steps = max_steps or self.max_steps
-        self.cancel.clear()
         self.busy = True
         self._call_counts.clear()
         self._fail_counts.clear()
