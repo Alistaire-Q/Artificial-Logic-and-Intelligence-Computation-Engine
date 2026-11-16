@@ -1329,13 +1329,16 @@ class LongMemory:
                 target = book or self.book(str(s.get("scope") or "genel"), cwd)
             except ValueError:
                 target = self.notes
-            old = target.get(str(s.get("name") or ""))
+            # Kaydedilecek adla aynı ad: ad boşken get("") "not" adlı başka bir notu buluyordu (silinmiş not kontrolü
+            # atlanıyor, kaynağı o nottan alınıyordu).
+            key = str(s.get("name") or s.get("title") or desc)
+            old = target.get(key)
             if old is None and source in ("otomatik", "dream") and \
                     self._forgotten_like(f"{s.get('title') or ''} {desc} {content}"):
                 done.append(f"atlandı (kullanıcı silmişti): {desc[:60]}")
                 continue
             try:
-                note, new = target.save(str(s.get("name") or s.get("title") or desc), desc, typ, content,
+                note, new = target.save(key, desc, typ, content,
                                         title=str(s.get("title") or ""),
                                         source=(old.source if old is not None and old.source else source))
             except (MemoryFull, ValueError) as e:
