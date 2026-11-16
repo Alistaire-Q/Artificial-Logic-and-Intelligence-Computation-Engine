@@ -169,6 +169,29 @@ def test_tool_ids_from_other_providers_are_made_claude_safe():
     assert re.fullmatch(r"[A-Za-z0-9_-]+", use["id"]) and result["tool_use_id"] == use["id"]
 
 
+def test_tool_result_with_image_becomes_image_block_not_base64_text():
+    from alice.providers.anthropic_api import to_messages
+
+    b64 = "QUJD" * 400
+    _, msgs = to_messages([
+        {"role": "user", "content": "ekrana bak"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "screen", "arguments": "{}"}},
+            {"id": "c2", "type": "function", "function": {"name": "mcp", "arguments": "{}"}},
+            {"id": "c3", "type": "function", "function": {"name": "raw", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": [
+            {"type": "text", "text": "ekran görüntüsü"},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}]},
+        {"role": "tool", "tool_call_id": "c2", "content": [{"type": "image", "data": b64, "mimeType": "image/jpeg"}]},
+        {"role": "tool", "tool_call_id": "c3", "content": {"png": b64, "name": "x"}},
+    ])
+    r1, r2, r3 = msgs[2]["content"]
+    assert r1["content"] == [{"type": "text", "text": "ekran görüntüsü"},
+                             {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": b64}}]
+    assert r2["content"] == [{"type": "image", "source": {"type": "base64", "data": b64, "media_type": "image/jpeg"}}]
+    assert isinstance(r3["content"], str) and b64 not in r3["content"] and '"name": "x"' in r3["content"]
+
+
 def _final(stop="end_turn", text="Merhaba", tool=None):
     content = [NS(type="thinking", thinking="", signature="s"), NS(type="text", text=text)]
     if tool:

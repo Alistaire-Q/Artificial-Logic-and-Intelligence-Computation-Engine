@@ -33,7 +33,7 @@ import httpx
 from alice.config import ProviderConfig, alice_home
 from alice.providers.openai_compat import (_TOO_LARGE_HINTS, _TRANSPORT_ERRORS, ChatResult, OpenAICompatProvider,
                                            ProviderError, StreamCancelled, _transport_error, classify_error,
-                                           normalize_message)
+                                           normalize_message, redact_binary)
 
 ISSUER = "https://auth.openai.com"
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"  # Codex CLI'ın herkese açık OAuth istemcisi
@@ -570,14 +570,23 @@ def to_responses(messages: list[dict[str, Any]], codex_prompt: str | None = None
     items: list[dict[str, Any]] = []
     if codex_prompt is not None and system:
         items.append({"type": "message", "role": "developer", "content": [{"type": "input_text", "text": system}]})
+    images: list[dict[str, Any]] = []  # araç sonuçlarındaki görüntüler: araç çıktıları bitince kullanıcı mesajıyla
+
+    def flush_images() -> None:
+        if images:
+            items.append({"type": "message", "role": "user", "content": list(images)})
+            images.clear()
+
     for m in messages:
         role = m.get("role")
         c = m.get("content")
-        if role == "system":
-            continue
         if role == "tool":
-            items.append({"type": "function_call_output", "call_id": m.get("tool_call_id") or "",
-                          "output": c if isinstance(c, str) else json.dumps(c, ensure_ascii=False)})
+            output, imgs = _tool_output(c)
+            items.append({"type": "function_call_output", "call_id": m.get("tool_call_id") or "", "output": output})
+            images.extend(imgs)
+            continue
+        flush_images()
+        if role == "system":
             continue
         parts: list[dict[str, Any]] = []
         kind = "output_text" if role == "assistant" else "input_text"
@@ -596,7 +605,36 @@ def to_responses(messages: list[dict[str, Any]], codex_prompt: str | None = None
             fn = tc.get("function") or {}
             items.append({"type": "function_call", "call_id": tc.get("id") or "", "name": fn.get("name") or "",
                           "arguments": fn.get("arguments") or "{}"})
+    flush_images()
     return (codex_prompt if codex_prompt is not None else system), items
+
+
+def _tool_output(c: Any) -> tuple[str, list[dict[str, Any]]]:
+    """Araç sonucu -> (function_call_output metni, ayrıca gönderilecek input_image parçaları). Parça listesi önceden
+    JSON metnine dökülüyordu: ekran görüntüsünün base64'ü modele metin olarak gidiyordu."""
+    if isinstance(c, str):
+        return c, []
+    if not isinstance(c, list):
+        return redact_binary(c), []
+    texts: list[str] = []
+    imgs: list[dict[str, Any]] = []
+    for p in c:
+        if not isinstance(p, dict):
+            continue
+        if p.get("type") == "text" and p.get("text"):
+            texts.append(p["text"])
+        elif p.get("type") == "image_url":
+            url = p["image_url"].get("url") if isinstance(p.get("image_url"), dict) else p.get("image_url")
+            if url:
+                imgs.append({"type": "input_image", "image_url": url})
+        elif p.get("type") == "image" and isinstance(p.get("data"), str):  # MCP biçimi
+            mime = p.get("mimeType") or "image/png"
+            imgs.append({"type": "input_image", "image_url": f"data:{mime};base64,{p['data']}"})
+    if not texts and not imgs:
+        return redact_binary(c), []
+    if imgs:
+        texts.append(f"[araç {len(imgs)} görüntü döndürdü; görüntüler sonraki mesajda]")
+    return "\n".join(texts), imgs
 
 
 def to_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:

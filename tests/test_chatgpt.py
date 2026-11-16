@@ -71,6 +71,29 @@ def test_messages_become_responses_items():
          "strict": False}]
 
 
+def test_tool_result_images_go_as_input_image_not_base64_text():
+    b64 = "QUJD" * 400
+    msgs = [{"role": "user", "content": "bak"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "screen", "arguments": "{}"}},
+                {"id": "c2", "type": "function", "function": {"name": "raw", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": [
+                {"type": "text", "text": "ekran"},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}]},
+            {"role": "tool", "tool_call_id": "c2", "content": {"png": b64, "name": "x"}},
+            {"role": "user", "content": "devam"}]
+    _, items = to_responses(msgs)
+    out1, out2, img, user = items[3:]
+    assert out1["type"] == "function_call_output" and out1["output"].startswith("ekran") and b64 not in out1["output"]
+    assert out2["type"] == "function_call_output" and b64 not in out2["output"] and '"name": "x"' in out2["output"]
+    # Görüntü, araç çıktıları bitince (aralarına girmeden) kullanıcı mesajı olarak gider.
+    assert img == {"type": "message", "role": "user", "content": [
+        {"type": "input_image", "image_url": f"data:image/png;base64,{b64}"}]}
+    assert user["content"] == [{"type": "input_text", "text": "devam"}]
+    _, items = to_responses(msgs[:3])  # konuşma araç sonucuyla bitiyorsa da görüntü gönderilir
+    assert items[-1]["role"] == "user" and items[-1]["content"][0]["type"] == "input_image"
+
+
 def test_stream_text_tool_call_usage_and_headers():
     chatgpt.save_auth(tokens())
     seen = {}

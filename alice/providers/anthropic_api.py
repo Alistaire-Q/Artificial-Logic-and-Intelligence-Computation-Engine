@@ -21,7 +21,8 @@ import time
 from typing import Any, Callable
 
 from alice.config import ProviderConfig
-from alice.providers.openai_compat import ChatResult, ProviderError, StreamCancelled, classify_error, redact
+from alice.providers.openai_compat import (ChatResult, ProviderError, StreamCancelled, classify_error, redact,
+                                           redact_binary)
 
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 # Sunucu tarafı yedeği destekleyen modeller (Haiku'da yok).
@@ -69,6 +70,26 @@ def _user_content(content: Any) -> list[dict[str, Any]]:
             if block:
                 out.append(block)
     return out
+
+
+def _tool_result_content(content: Any) -> str | list[dict[str, Any]]:
+    """Araç sonucu: metin olduğu gibi; parça listesi (ör. ekran görüntüsü) metin ve görüntü bloklarına çevrilir.
+    Önceden liste JSON metnine dökülüyordu: görüntünün base64'ü modele binlerce token metin olarak gidiyordu."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        blocks = []
+        for p in content:
+            if not isinstance(p, dict):
+                continue
+            if p.get("type") == "image" and isinstance(p.get("data"), str):  # MCP biçimi
+                blocks.append({"type": "image", "source": {"type": "base64", "data": p["data"],
+                                                           "media_type": p.get("mimeType") or "image/png"}})
+            else:
+                blocks.extend(_user_content([p]))
+        if blocks:
+            return blocks
+    return redact_binary(content)
 
 
 def _text(content: Any) -> str:
@@ -123,9 +144,8 @@ def to_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any
                                "input": args if isinstance(args, dict) else {"value": args}})
             push("assistant", blocks)
         elif role == "tool":
-            c = m.get("content")
             push("user", [{"type": "tool_result", "tool_use_id": _tool_id(m.get("tool_call_id")),
-                           "content": c if isinstance(c, str) else _text(c) or json.dumps(c, ensure_ascii=False)}])
+                           "content": _tool_result_content(m.get("content"))}])
     if out and out[0]["role"] != "user":  # ilk tur kullanıcıdan olmalı
         out.insert(0, {"role": "user", "content": [{"type": "text", "text": "(devam)"}]})
     return "\n\n".join(s for s in system if s), out

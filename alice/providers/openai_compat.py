@@ -44,6 +44,21 @@ def redact(text: str, *secrets: str | None) -> str:
     return text
 
 
+def redact_binary(content: Any) -> str:
+    """Tanınmayan araç sonucu JSON metni olarak gider; içindeki görüntü/ikili veri yer tutucuyla değiştirilir."""
+    def scrub(v: Any) -> Any:
+        if isinstance(v, dict):
+            return {k: scrub(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [scrub(x) for x in v]
+        if isinstance(v, str) and (v.startswith("data:") and ";base64," in v[:100]
+                                   or len(v) > 512 and re.fullmatch(r"[A-Za-z0-9+/=\r\n]+", v)):
+            return "[ikili veri atlandı]"
+        return v
+
+    return "" if content is None else json.dumps(scrub(content), ensure_ascii=False)
+
+
 class ProviderError(Exception):
     """kind: rate_limit | quota | auth | not_found | too_large | bad_request | server | network | unreachable | garbled"""
 
