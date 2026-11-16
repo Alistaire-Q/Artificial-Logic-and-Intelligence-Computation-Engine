@@ -158,3 +158,20 @@ def test_moved_downloads_folder_is_found(tmp_path, monkeypatch):
     monkeypatch.setattr(fetch_file, "downloads_dir", lambda: moved)
     assert files.known_folder("İndirilenler") == moved
     assert findfiles.downloads_dir() == moved
+
+
+def test_tidy_plan_never_targets_same_destination_twice(tmp_path):
+    import os
+    import time
+
+    from alice.tools import findfiles as ff
+
+    dl = tmp_path / "Downloads"
+    (dl / "Belgeler").mkdir(parents=True)
+    (dl / "Belgeler" / "x.pdf").write_bytes(b"eski")
+    old = time.time() - 3 * 86400
+    for name in ("x.pdf", "x (1).pdf"):
+        (dl / name).write_bytes(name.encode())
+        os.utime(dl / name, (old, old))
+    dests = [d for _, d in ff.tidy_plan(dl)]
+    assert len(dests) == len(set(dests)) == 2
