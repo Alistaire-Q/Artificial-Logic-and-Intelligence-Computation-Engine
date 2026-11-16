@@ -58,6 +58,15 @@ def note_read(state: dict[str, Any], path: Path) -> bool:
     return True
 
 
+def _read(path: Path) -> str | None:
+    """Belgenin metni; okunamıyor ya da UTF-8 değilse None (title_of hatalı baytları yutuyor, burada
+    UnicodeDecodeError tur sonundaki güncellemeyi çökertiyordu)."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
 def _talk(messages: list[dict[str, Any]], n: int = 24) -> str:
     rows = []
     for m in messages[1:]:
@@ -79,9 +88,8 @@ def update(state: dict[str, Any], router: Any, messages: list[dict[str, Any]], n
         if now - float(info.get("at") or 0) < MIN_GAP:
             continue
         path = Path(path_s)
-        try:
-            doc = path.read_text(encoding="utf-8")
-        except OSError:
+        doc = _read(path)
+        if doc is None:
             continue
         title = title_of(path)
         if not title or len(doc) > MAX_DOC:
@@ -102,9 +110,12 @@ def update(state: dict[str, Any], router: Any, messages: list[dict[str, Any]], n
             continue
         with _lock:
             try:
-                if path.read_text(encoding="utf-8") != doc:
+                if _read(path) != doc:
                     continue  # bu arada kullanıcı (ya da ALICE) değiştirdi: üzerine yazma
-                path.write_text(new.rstrip() + "\n", encoding="utf-8")
+                # Dosyanın satır sonu korunur: Windows'ta metin kipi LF dosyayı baştan sona CRLF yapıyordu.
+                eol = "\r\n" if b"\r\n" in path.read_bytes() else "\n"
+                with open(path, "w", encoding="utf-8", newline=eol) as fh:
+                    fh.write(new.replace("\r\n", "\n").rstrip() + "\n")
             except OSError:
                 continue
         done.append(path_s)

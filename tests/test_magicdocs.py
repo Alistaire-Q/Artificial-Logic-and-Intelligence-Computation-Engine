@@ -46,3 +46,18 @@ def test_update_rewrites_doc_and_respects_rules(workdir):
     assert magicdocs.update(state, r, TALK, now=5000.0) == [] and "9000" in p.read_text(encoding="utf-8")
     r.reply = "başlıksız saçma çıktı"
     assert magicdocs.update(state, r, TALK, now=9000.0) == []  # başlığı bozan cevap yazılmaz
+
+
+def test_update_keeps_line_endings_and_skips_non_utf8_docs(workdir):
+    lf, crlf, bad = workdir / "lf.md", workdir / "crlf.md", workdir / "bad.md"
+    lf.write_bytes(b"# MAGIC DOC: Kurulum\nPort 8000.\n")
+    crlf.write_bytes(b"# MAGIC DOC: Kurulum\r\nPort 8000.\r\n")
+    bad.write_bytes("# MAGIC DOC: Kurulum\nŞifre değil, port 8000.\n".encode("cp1254"))
+    state = {}
+    for p in (bad, lf, crlf):
+        assert magicdocs.note_read(state, p)
+    r = Router("# MAGIC DOC: Kurulum\nPort 9000.")
+    # UTF-8 olmayan belge atlanır (eskiden UnicodeDecodeError bütün güncellemeyi çökertiyordu).
+    assert magicdocs.update(state, r, TALK, now=1000.0) == [str(lf), str(crlf)]
+    assert lf.read_bytes() == b"# MAGIC DOC: Kurulum\nPort 9000.\n"  # LF dosya CRLF'e dönmedi
+    assert crlf.read_bytes() == b"# MAGIC DOC: Kurulum\r\nPort 9000.\r\n"
