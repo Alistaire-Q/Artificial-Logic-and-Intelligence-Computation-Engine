@@ -86,7 +86,8 @@ def test_permission_via_api(app, workdir):
     t.join()
     perm = events[-1]
     assert perm["risk"] == "danger"
-    assert client.get("/api/state").json()["pending"][0]["id"] == perm["id"]
+    pend = client.get("/api/state").json()["pending"][0]
+    assert pend["id"] == perm["id"] and pend["sid"] == state.sid  # arayüz arkadaki sohbetin sorusunu ayırabilsin
     # Meşgulken yazılan mesaj yeni iş başlatmaz, çalışan işe iletilir (bir sonraki adımda modele gider).
     assert client.post("/api/send", json={"text": "başka"}).status_code == 200
     assert state.agent._inbox and state.agent._inbox[0][0] == "başka"

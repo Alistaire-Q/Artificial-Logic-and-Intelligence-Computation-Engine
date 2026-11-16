@@ -938,7 +938,9 @@ class AppState:
             "session": self.sid,
             "started": self.chat.started,
             "running": self.running(),
-            "pending": [p for ui in self.all_uis() for p in ui.pending.values()],
+            # Hangi sohbetin sorusu olduğu da gelir: arayüz arkadaki sohbetin kartını öndekine çizmesin. list(): soru
+            # ajan thread'inde eklenip silinirken sözlüğü gezmek RuntimeError atıyordu.
+            "pending": [{**p, "sid": ui.sid} for ui in self.all_uis() for p in list(ui.pending.values())],
             "brain_chain": self.router.chain("brain"),
             "brain_pinned": "brain" in self.router.role_overrides,
             "thinking": self.router.thinking_level("brain"),

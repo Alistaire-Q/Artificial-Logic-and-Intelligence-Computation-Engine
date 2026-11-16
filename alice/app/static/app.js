@@ -1152,7 +1152,10 @@ function applyStatus(s) {
   if (PREFS.panel && PREFS.tab === "context") renderPanel();
   // Sadece gelen durumda busy varsa uygula: kısmi güncelleme (ör. model değişimi) eski busy değeriyle işi bitmiş saymasın.
   if (s.busy !== undefined && s.busy !== S.busy) setBusy(s.busy);
-  for (const p of st.pending || []) (p.type === "ask_choice" ? onChoice : onPermission)(p);
+  // Arkadaki sohbetin sorusu öndekine çizilmez (olayı da çizilmiyor; cevabı gelince kart açık kalıyordu).
+  for (const p of st.pending || []) {
+    if (!p.sid || !st.session || p.sid === st.session) (p.type === "ask_choice" ? onChoice : onPermission)(p);
+  }
   markSessions();
   drawChatTitle();
   if (app.classList.contains("empty")) greet();
