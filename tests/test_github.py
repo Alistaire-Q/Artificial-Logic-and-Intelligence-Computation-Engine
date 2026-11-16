@@ -169,12 +169,22 @@ def test_risk_rules():
     assert perms_plan.decide(g, {"action": "commit", "message": "x"}, ctx) == "deny"
 
 
-def test_mcp_destructive_tools_need_approval():
+def test_mcp_destructive_tools_need_approval(tmp_path):
     srv = type("S", (), {"name": "github"})()
     assert MCPTool(srv, {"name": "merge_pull_request"}).risk == "danger"
     assert MCPTool(srv, {"name": "delete_file"}).risk == "danger"
     assert MCPTool(srv, {"name": "create_pull_request"}).risk == "exec"
-    assert MCPTool(srv, {"name": "list_commits", "annotations": {"readOnlyHint": True}}).risk == "read"
+    # readOnlyHint'i sunucu kendisi koyar: config'te trust_annotations = true olmadan okuma sayılmaz.
+    ro = {"name": "list_commits", "annotations": {"readOnlyHint": True}}
+    assert MCPTool(srv, ro).risk == "write"
+    assert MCPTool(srv, {"name": "delete_file", "annotations": {"readOnlyHint": True}}).risk == "danger"
+    trusted = type("S", (), {"name": "github", "trust_annotations": True})()
+    assert MCPTool(trusted, ro).risk == "read"
+    ctx = ToolContext(cwd=tmp_path, config=make_config({"brain": ["a:m"]}))
+    assert Permissions("plan").decide(MCPTool(srv, ro), {}, ctx) == "deny"
+    assert Permissions("ask").decide(MCPTool(srv, ro), {}, ctx) == "ask"
+    assert Permissions("auto").decide(MCPTool(srv, ro), {}, ctx) == "allow"  # auto modda okuma gibi sormadan
+    assert Permissions("plan").decide(MCPTool(trusted, ro), {}, ctx) == "allow"
 
 
 # ------------------------------------------------------------------------------------- git aracı

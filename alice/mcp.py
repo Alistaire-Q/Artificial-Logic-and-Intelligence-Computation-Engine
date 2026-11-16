@@ -8,6 +8,8 @@ MCP sunucuları vb.). config.toml:
     args = ["-y", "@modelcontextprotocol/server-filesystem", "C:/Users/hayat/Projeler"]
     # env = { TOKEN = "${GITHUB_TOKEN}" }   # ${AD} ortamdan / .env'den doldurulur
     # enabled = false
+    # trust_annotations = true   # sunucunun "readOnlyHint" etiketine güven: o araçlar okuma sayılır (plan modunda
+    #                            # da çalışır, onay sormaz). Yoksa etiketli araçlar yazma sayılır (ask modunda sorar).
 
 Her sunucunun araçları ajana `mcp__<sunucu>__<araç>` adıyla eklenir.
 """
@@ -26,7 +28,7 @@ from typing import Any, Callable
 
 from alice import __version__
 from alice.config import Config, alice_home
-from alice.tools.base import DANGER, EXEC, READ, Tool, ToolContext, ToolError, ToolResult
+from alice.tools.base import DANGER, EXEC, READ, WRITE, Tool, ToolContext, ToolError, ToolResult
 
 # Yutulan hatalar için iz: varsayılan olarak sessiz, `logging.basicConfig(level=logging.DEBUG)` ile görünür.
 log = logging.getLogger(__name__)
@@ -54,6 +56,7 @@ class MCPServer:
         self._lock = threading.Lock()
         self._pending: dict[int, tuple[threading.Event, dict[str, Any]]] = {}
         self.server_info: dict[str, Any] = {}
+        self.trust_annotations = False  # config: trust_annotations = true ise readOnlyHint'e güvenilir
 
     # ------------------------------------------------------------ süreç
     def _argv(self) -> list[str]:
@@ -190,7 +193,17 @@ class MCPTool(Tool):
         schema.setdefault("properties", {})
         self.parameters = schema
         ann = spec.get("annotations") or {}
-        self.risk = READ if ann.get("readOnlyHint") else DANGER if _DANGER_NAME.search(spec["name"]) else EXEC
+        if ann.get("readOnlyHint") and getattr(server, "trust_annotations", False):
+            self.risk = READ
+        elif _DANGER_NAME.search(spec["name"]):
+            self.risk = DANGER
+        elif ann.get("readOnlyHint"):
+            # "Salt okuma" etiketini sunucu kendisi koyuyor: güvenilmeyen sunucu yazan aracını böyle işaretleyip
+            # plan/ask modunda onaysız çalıştırabilirdi. Yazma sayılır: auto modda yine sormadan çalışır (yolu yok),
+            # ask modunda sorar, plan modunda kapalı. Sunucuya güveniliyorsa: trust_annotations = true.
+            self.risk = WRITE
+        else:
+            self.risk = EXEC
         self.parallel_safe = self.risk == READ  # istemci thread-safe, salt okuma araçları paralel çalışabilir
 
     def run(self, ctx: ToolContext, **args: Any) -> ToolResult:
@@ -219,6 +232,7 @@ def load_mcp(config: Config, emit: Callable[[str], None] = lambda s: None) -> tu
         if spec.get("enabled", True) is False or not spec.get("command"):
             continue
         srv = MCPServer(name, spec["command"], spec.get("args"), spec.get("env"), float(spec.get("timeout", 60)))
+        srv.trust_annotations = spec.get("trust_annotations") is True
         try:
             srv.start()
             found = srv.list_tools()
