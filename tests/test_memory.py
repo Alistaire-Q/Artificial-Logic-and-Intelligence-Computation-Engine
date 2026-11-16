@@ -453,3 +453,21 @@ def test_dream_lock_blocks_a_second_process_and_failure_rolls_back_the_clock():
     finally:
         md._pid_alive = real
         os.utime(m.notes.lock_path, (0, 0))
+
+
+def test_failing_dream_backs_off_instead_of_retrying_every_scan():
+    calls = []
+
+    def broken(p):
+        calls.append(1)
+        return "bozuk cevap"
+
+    m, _ = _dream_mem(broken, sessions=1)
+    m.save_note("user-x", "x", "user", "x")
+    _chat(m, time.time() - 5 * 3600, "konuşma", "cevap")
+    assert m.maybe_dream() and len(calls) == 1
+    m._last_dream_scan = None  # 10 dakika geçti gibi
+    assert not m.maybe_dream() and len(calls) == 1  # hata sonrası bekleme: model tekrar çağrılmadı
+    m._dream_retry_at = 0.0  # bekleme bitti
+    m._last_dream_scan = None
+    assert m.maybe_dream() and len(calls) == 2 and m._dream_fails == 2

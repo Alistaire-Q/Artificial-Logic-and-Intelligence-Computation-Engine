@@ -1371,13 +1371,22 @@ class LongMemory:
             return False
         if self._last_dream_scan is not None and time.monotonic() - self._last_dream_scan < 600:
             return False
+        if time.monotonic() < getattr(self, "_dream_retry_at", 0.0):
+            return False  # son Dream'ler başarısız oldu: güçlü modeli 10 dakikada bir boşuna çağırma
         self._last_dream_scan = time.monotonic()
         groups = self.sessions(after=last or time.time() - 7 * 86400)
         if groups and time.time() - groups[-1][-1].ts < self.session_gap:
             groups = groups[:-1]  # süren konuşma sayılmaz
         if len(groups) < self.dream_sessions:
             return False
-        self.dream()
+        report = self.dream()
+        if any("toparlanamadı" in r for r in report):
+            # Başarısız Dream zaman kapısını geri sarıyor (bir sonraki fırsatta tekrar denensin diye); model sürekli
+            # hata veriyorsa bu her 10 dakikada bir güçlü model çağrısı demekti. Art arda hatada bekleme katlanır.
+            self._dream_fails = getattr(self, "_dream_fails", 0) + 1
+            self._dream_retry_at = time.monotonic() + min(3600.0 * 2 ** (self._dream_fails - 1), 24 * 3600.0)
+        else:
+            self._dream_fails, self._dream_retry_at = 0, 0.0
         return True
 
     def dream(self, force: bool = False, cwd: Path | str | None = None) -> list[str]:
