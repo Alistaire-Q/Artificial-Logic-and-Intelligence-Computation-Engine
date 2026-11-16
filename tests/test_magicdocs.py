@@ -32,6 +32,18 @@ def test_read_file_registers_only_magic_docs(workdir):
     assert [k.endswith("notlar.md") for k in docs] == [True] and list(docs.values())[0]["title"] == "Kurulum"
 
 
+def test_parallel_reads_register_magic_docs(workdir):
+    """Aynı cevaptaki iki read_file paralel çalışır; önceden bu yol sihirli belgeyi hiç kaydetmiyordu."""
+    (workdir / "notlar.md").write_text("# MAGIC DOC: Kurulum\nPort 8000.\n", encoding="utf-8")
+    (workdir / "duz.md").write_text("# Sıradan\n", encoding="utf-8")
+    two = tool_call("read_file", {"path": "notlar.md"})
+    two["tool_calls"] += tool_call("read_file", {"path": "duz.md"}, "c2")["tool_calls"]
+    agent, _, _ = make_agent([two, "okudum"], workdir)
+    agent.run_turn("oku")
+    docs = agent.ctx.state.get("magic_docs") or {}
+    assert [k.endswith("notlar.md") for k in docs] == [True]
+
+
 def test_update_rewrites_doc_and_respects_rules(workdir):
     p = workdir / "notlar.md"
     p.write_text("# MAGIC DOC: Kurulum\n_Kurulum adımları_\nPort 8000.\n", encoding="utf-8")

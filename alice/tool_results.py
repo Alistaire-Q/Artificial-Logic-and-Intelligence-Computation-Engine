@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 import shutil
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -42,7 +43,9 @@ def save(text: str, call_id: str, tool: str) -> Path | None:
     now = time.time()
     folder = root() / datetime.fromtimestamp(now).strftime("%Y%m%d")
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", f"{tool}-{call_id}")[:120] or "cikti"
-    path = folder / f"{safe}.txt"
+    # Çağrı kimliği tekil değil: bazı sağlayıcılar boş ya da sıra numarası ("call_0") veriyor. Ad yalnız kimlikten
+    # olunca sonraki çıktı öncekinin dosyasını eziyor, eski sonuçtaki yol başka bir çıktıyı gösteriyordu.
+    path = folder / f"{safe}-{uuid.uuid4().hex[:8]}.txt"
     try:
         folder.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8", errors="replace")

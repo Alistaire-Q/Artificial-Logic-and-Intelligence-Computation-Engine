@@ -92,3 +92,24 @@ def test_on_failure_round_trips_through_hooks_file(tmp_path, monkeypatch):
     hk.add_hook("PostToolUse", "ruff", "")
     rows = hk.file_hooks()
     assert [r.on_failure for r in rows] == ["block", "ignore"]
+
+
+def test_timed_out_hook_does_not_hang_on_grandchild(tmp_path):
+    """Zaman aşımında kabukla birlikte kabuğun başlattığı program da öldürülür: önceden boruyu tutan alt süreç
+    bitene kadar (burada 30 sn) ajan kilitleniyordu."""
+    import time
+
+    p = tmp_path / "uyu.py"
+    p.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    hooks = Hooks([Hook("PreToolUse", f'"{sys.executable}" "{p}"', timeout=1)], tmp_path)
+    t = time.monotonic()
+    res = hooks.run("PreToolUse", {"args": {}}, "x")
+    assert time.monotonic() - t < 15
+    assert res[0].failed and "bitmedi" in res[0].stderr
+
+
+def test_bad_timeout_in_config_does_not_break_hooks():
+    from alice.hooks import _parse
+
+    rows = _parse({"PostToolUse": [{"command": "x", "timeout": "30s"}, {"command": "y", "timeout": 5}]})
+    assert [(r.command, r.timeout) for r in rows] == [("x", 30.0), ("y", 5.0)]

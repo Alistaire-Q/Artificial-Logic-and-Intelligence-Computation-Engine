@@ -67,14 +67,38 @@ def parse_rule(rule: str) -> tuple[str, str | None]:
     return rule, None
 
 
-def rule_matches(rule: str, tool_name: str, args: dict[str, Any]) -> bool:
+def _path_forms(raw: str, cwd: Path | None) -> list[str]:
+    """Yol argümanının kuralla karşılaştırılacak biçimleri: çözülmüş tam yol ve (proje içindeyse) projeye göre yolu.
+    Ham metin yalnız ".." içermiyorsa eklenir. Önceden yalnız ham metne bakılıyordu: "edit_file(gizli/*)" yasağı
+    "./gizli/a" ya da tam yolla deliniyor, "edit_file(src/*)" izni "src/../../dışarı" yazmaya izin veriyordu; "bu
+    projede hep izin ver" ile yazılan göreli kural da tam yolla gelen çağrıda hiç eşleşmiyordu."""
+    out = []
+    if ".." not in Path(raw).parts:
+        out.append(raw)
+    if cwd is not None:
+        try:
+            base = Path(cwd).resolve()
+            p = Path(raw).expanduser()
+            full = (p if p.is_absolute() else base / p).resolve()
+            out.append(str(full))
+            if full != base and _inside(full, base):
+                out.append(str(full.relative_to(base)))
+        except (OSError, ValueError, RuntimeError):
+            pass
+    return out
+
+
+def rule_matches(rule: str, tool_name: str, args: dict[str, Any], cwd: Path | None = None) -> bool:
     name, spec = parse_rule(rule)
     if not fnmatch.fnmatchcase(tool_name, name):
         return False
     if spec is None:
         return True
-    value = primary_arg(args).replace("\\", "/").lower()
-    return fnmatch.fnmatchcase(value, spec.replace("\\", "/").lower())
+    raw = primary_arg(args)
+    is_path = args.get("command") in (None, "") and args.get("path") not in (None, "")  # asıl argüman yol mu
+    values = _path_forms(raw, cwd) if is_path else [raw]
+    pattern = spec.replace("\\", "/").lower()
+    return any(fnmatch.fnmatchcase(v.replace("\\", "/").lower(), pattern) for v in values)
 
 
 def _trust_path() -> Path:
@@ -319,18 +343,20 @@ class Permissions:
             return not sandbox.usable(ctx, args)  # sandbox'ta çalışacaksa sormaya gerek yok: proje dışına yazamaz
         if risk == SEND or tool.name == "process_kill" or "command" in args:
             return True
-        if risk == WRITE and args.get("path"):
+        if risk == WRITE:
+            # "path" ve yama metnindeki dosyalar (apply_patch'in "path"i yok: önceden hiç bakılmıyordu). Önek
+            # karşılaştırması C:\proje2'yi C:\proje'nin içinde sayıyordu; klasör sınırına göre bakılır.
             try:
-                target = ctx.resolve(str(args["path"]))
-                return not str(target).startswith(str(Path(ctx.cwd).resolve()))
-            except (OSError, ValueError, AttributeError):
+                root = Path(ctx.cwd).resolve()
+                return any(not _inside(ctx.resolve(p), root) for p in _write_targets(args))
+            except (OSError, ValueError, AttributeError, TypeError):
                 return True
         return False
 
     def matching_rule(self, tool: Tool, args: dict[str, Any], ctx: ToolContext, kind: str) -> str | None:
         for rule in self.rules_for(ctx).get(kind, []):
             try:
-                if rule_matches(rule, tool.name, args):
+                if rule_matches(rule, tool.name, args, getattr(ctx, "cwd", None)):
                     return rule
             except Exception:  # noqa: BLE001 - garip argüman kuralı bozmasın
                 continue
@@ -352,6 +378,12 @@ class Permissions:
         allowed = self.matching_rule(tool, args, ctx, "allow")
         if allowed and (risk != DANGER or parse_rule(allowed)[1] is not None):
             return "allow"
+        from alice import guard
+
+        # Bu turda dış içerik okundu: talimat oradan gelmiş olabilir. Oturumluk "hep izin ver" (always_allow) bunu
+        # delmez: kullanıcı o onayı enjeksiyonu düşünerek vermedi (açık allow kuralları yukarıda geçerli).
+        if guard.tainted(ctx) and self._risky_after_untrusted(tool, args, risk, ctx):
+            return "ask"
         if tool.name in self.always_allow and risk != DANGER:
             return "allow"
         if self.mode == "ask":
@@ -359,10 +391,6 @@ class Permissions:
         # auto
         if risk == DANGER:
             return "ask"
-        from alice import guard
-
-        if guard.tainted(ctx) and self._risky_after_untrusted(tool, args, risk, ctx):
-            return "ask"  # bu turda dış içerik okundu: talimat oradan gelmiş olabilir
         if risk == SEND and _confirm_outward(ctx):
             return "ask"
         if risk == WRITE:
@@ -372,6 +400,15 @@ class Permissions:
             except (OSError, ValueError):
                 return "ask"
         return "allow"
+
+
+def _inside(target: Path, root: Path) -> bool:
+    """target, root klasörünün içinde mi (Windows'ta büyük/küçük harf duyarsız)."""
+    t, r = str(target), str(root)
+    if sys.platform == "win32":
+        t, r = t.lower(), r.lower()
+    sep = "\\" if sys.platform == "win32" else "/"
+    return t == r or t.startswith(r.rstrip("\\/") + sep)
 
 
 def _write_targets(args: dict[str, Any]) -> list[str]:

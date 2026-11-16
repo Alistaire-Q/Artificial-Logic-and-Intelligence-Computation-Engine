@@ -79,6 +79,19 @@ def test_rule_matching_patterns():
     assert rule_matches("write_file(*.env)", "write_file", {"path": "C:\\proje\\.env"})
 
 
+def test_path_rules_use_normalized_path(workdir):
+    """Yol kuralları ham metne değil yolun kendisine bakar: "./gizli/a", tam yol ve ".." yasağı delemez, izin de
+    ".." ile proje dışına taşmaz; göreli izin kuralı tam yolla gelen çağrıda da geçerli."""
+    wf = TOOLS["write_file"]
+    ctx = ctx_with(workdir, {"deny": ["write_file(gizli/*)"], "allow": ["write_file(src/*)"]})
+    yolo, ask = Permissions("yolo"), Permissions("ask")
+    for p in ("gizli/a.txt", "./gizli/a.txt", str(workdir / "gizli" / "a.txt"), "src/../gizli/a.txt"):
+        assert yolo.decide(wf, {"path": p, "content": "x"}, ctx) == "deny", p
+    assert ask.decide(wf, {"path": "src/a.py", "content": "x"}, ctx) == "allow"
+    assert ask.decide(wf, {"path": str(workdir / "src" / "a.py"), "content": "x"}, ctx) == "allow"
+    assert ask.decide(wf, {"path": "src/../../disari.txt", "content": "x"}, ctx) == "ask"
+
+
 def test_permission_rules_allow_ask_deny(workdir):
     rc, wf = TOOLS["run_command"], TOOLS["write_file"]
     ctx = ctx_with(workdir, {"allow": ["run_command(git status*)", "run_command"], "ask": ["run_command(git push*)"],
