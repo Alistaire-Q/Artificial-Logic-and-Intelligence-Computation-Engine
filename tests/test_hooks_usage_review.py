@@ -95,6 +95,15 @@ def test_diff_lines_and_finding_anchoring():
     assert review._anchor(review.Finding("b.py", 11, "high", "t", "d"), lines) == 0
 
 
+def test_added_line_starting_with_plus_plus_is_not_a_file_header():
+    # "++ x" diye eklenen satır farkta "+++ x" görünür; parçanın içindeyse dosya başlığı sanılmamalı.
+    diff = ("diff --git a/notes.md b/notes.md\n--- a/notes.md\n+++ b/notes.md\n@@ -1,3 +1,4 @@\n baş\n"
+            "+++ yeni madde\n--- eski madde\n+son\n son satır\n"
+            "diff --git a/b.py b/b.py\n--- a/b.py\n+++ b/b.py\n@@ -5 +5 @@\n-x = 1\n+x = 2\n")
+    assert review.diff_lines(diff) == {"notes.md": {1, 2, 3, 4}, "b.py": {5}}
+    assert review._added_lines(diff) == {"notes.md": {2: "++ yeni madde", 3: "son"}, "b.py": {5: "x = 2"}}
+
+
 def test_post_puts_inline_and_outside_findings_correctly():
     sent = []
 
