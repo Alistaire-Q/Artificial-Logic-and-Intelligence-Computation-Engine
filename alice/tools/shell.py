@@ -385,6 +385,9 @@ class ProcessWait(Tool):
         start = len(read())
         end = time.monotonic() + max(1, min(int(timeout or 60), 600))
         while True:
+            # Önce bitti mi bak, sonra oku: tersinde süreç son satırını yazıp okuma ile poll arasında çıkınca o satır
+            # (çoğu zaman aranan "error"/"done") hiç görülmeden "desen görünmedi" deniyordu.
+            code = p.popen.poll()
             data = read()
             new = data[start:]
             if rx is not None:
@@ -392,7 +395,6 @@ class ProcessWait(Tool):
                 if hits:
                     return ToolResult(f"pid={pid} desen göründü:\n" + "\n".join(hits[-20:]) +
                                       f"\n--- çıktının sonu ---\n{data[-2000:]}")
-            code = p.popen.poll()
             if code is not None:
                 return ToolResult(f"pid={pid} bitti (kod {code})" + (" — desen görünmedi" if rx else "") +
                                   f"\n{data[-4000:]}", is_error=bool(rx) or code != 0)

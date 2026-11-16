@@ -94,6 +94,12 @@ class ProcessList(Tool):
         return ToolResult("    PID       RAM     CPU  İSİM\n" + "\n".join(rows) if rows else "süreç bulunamadı")
 
 
+def _same_name(proc_name: str, wanted: str) -> bool:
+    """Tam ad, Windows'ta '.exe' olmadan da: model çoğu zaman 'notepad' yazıyor, eskiden "eşleşen süreç yok" dönüyordu."""
+    a, b = proc_name.lower(), wanted.strip().lower()
+    return a == b or (sys.platform == "win32" and not b.endswith(".exe") and a == f"{b}.exe")
+
+
 class ProcessKill(Tool):
     name = "process_kill"
     description = ("Bir süreci PID ya da tam adıyla zorla sonlandırır; adla verilirse o adı taşıyan TÜM süreçler kapanır.\n"
@@ -110,6 +116,8 @@ class ProcessKill(Tool):
 
     def risk_for(self, args: dict[str, Any]) -> str:
         n = (args.get("name") or "").lower()
+        if n and not n.endswith(".exe") and f"{n}.exe" in PROTECTED:
+            n += ".exe"  # "explorer" de explorer.exe'yi kapatır (bkz. _same_name)
         pid = args.get("pid")
         if pid:  # PID ile verilince de korunan süreçleri (explorer, winlogon) ve ALICE'in kendisini sor
             import os
@@ -125,20 +133,39 @@ class ProcessKill(Tool):
     def run(self, ctx: ToolContext, pid: int | None = None, name: str | None = None) -> ToolResult:
         targets = []
         if pid:
-            targets = [psutil.Process(pid)]
+            try:
+                targets = [psutil.Process(pid)]
+            except psutil.NoSuchProcess:
+                raise ToolError(f"pid {pid} ile çalışan süreç yok (zaten kapanmış olabilir)") from None
         elif name:
-            targets = [p for p in psutil.process_iter(["name"]) if (p.info["name"] or "").lower() == name.lower()]
+            targets = [p for p in psutil.process_iter(["name"]) if _same_name(p.info["name"] or "", name)]
         if not targets:
-            raise ToolError("eşleşen süreç yok")
-        done = []
+            raise ToolError(f"eşleşen süreç yok: {name or pid} (adı process_list ile bak)")
+        failed: dict[int, str] = {}
         for p in targets:
             try:
                 p.terminate()
-                done.append(f"{p.pid}")
+            except psutil.NoSuchProcess:
+                pass  # bu arada kendisi kapandı
             except psutil.Error as e:
-                done.append(f"{p.pid} (hata: {e})")
-        psutil.wait_procs(targets, timeout=3)
-        return ToolResult("sonlandırıldı: " + ", ".join(done))
+                failed[p.pid] = str(e) or type(e).__name__
+        _, alive = psutil.wait_procs([p for p in targets if p.pid not in failed], timeout=3)
+        for p in alive:  # SIGTERM'i yok sayan süreç: zorla
+            try:
+                p.kill()
+            except psutil.NoSuchProcess:
+                pass
+            except psutil.Error as e:
+                failed[p.pid] = str(e) or type(e).__name__
+        if alive:
+            _, alive = psutil.wait_procs(alive, timeout=2)
+        for p in alive:
+            failed.setdefault(p.pid, "hâlâ çalışıyor")
+        # Eskiden kapanmayan süreçler de "sonlandırıldı" diye raporlanıyordu (erişim reddi, kapanmayı yok sayma).
+        ok = [str(p.pid) for p in targets if p.pid not in failed]
+        parts = [f"sonlandırıldı: {', '.join(ok)}"] if ok else []
+        parts += [f"{pid_}: kapatılamadı ({why})" for pid_, why in failed.items()]
+        return ToolResult("\n".join(parts), is_error=bool(failed) and not ok)
 
 
 TOOLS = [SystemInfo(), ProcessList(), ProcessKill()]

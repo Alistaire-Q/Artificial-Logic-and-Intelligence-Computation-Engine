@@ -467,6 +467,8 @@ class HttpRequest(Tool):
         elif body is not None:
             kw["content"] = body.encode("utf-8")
         method = method.upper()
+        # Adreste ${env:..} varsa sonuçta açılmış adres (r.url) değil şablon gösterilir: anahtar modele sızmasın.
+        where = (lambda r: url) if _ENV_RX.search(url) else (lambda r: r.url)
         try:
             if save_to:
                 dest = ctx.resolve(save_to)
@@ -475,13 +477,21 @@ class HttpRequest(Tool):
                 with httpx.stream(method, _expand_env(url), **kw) as r:
                     if r.status_code >= 400:
                         r.read()
-                        return ToolResult(f"HTTP {r.status_code} {r.url}\n\n{truncate(r.text, 2000)}", is_error=True)
-                    with open(dest, "wb") as f:
-                        for part in r.iter_bytes():
-                            if ctx.cancelled():
-                                raise ToolError("kullanıcı durdurdu; dosya yarım kaldı")
-                            f.write(part)
-                            size += len(part)
+                        return ToolResult(f"HTTP {r.status_code} {where(r)}\n\n{truncate(r.text, 2000)}", is_error=True)
+                    # Önce yan dosyaya: eskiden hedef baştan "wb" ile açılıyordu, indirme yarıda kesilince (ağ hatası,
+                    # Durdur) var olan dosya silinmiş, yerinde yarım bir dosya kalıyordu.
+                    tmp = dest.with_name(dest.name + ".part")
+                    try:
+                        with open(tmp, "wb") as f:
+                            for part in r.iter_bytes():
+                                if ctx.cancelled():
+                                    raise ToolError("kullanıcı durdurdu; dosya kaydedilmedi")
+                                f.write(part)
+                                size += len(part)
+                        tmp.replace(dest)
+                    except BaseException:
+                        tmp.unlink(missing_ok=True)
+                        raise
                 return ToolResult(f"HTTP {r.status_code}: {size} byte kaydedildi -> {dest}")
             r = httpx.request(method, _expand_env(url), **kw)
         except httpx.HTTPError as e:
@@ -495,7 +505,7 @@ class HttpRequest(Tool):
             except ValueError:
                 pass
         limit = int(ctx.config.agent.get("tool_output_chars", 12000))
-        return ToolResult(truncate(f"HTTP {r.status_code} {r.url}\n{shown}\n\n{text}", limit),
+        return ToolResult(truncate(f"HTTP {r.status_code} {where(r)}\n{shown}\n\n{text}", limit),
                           is_error=r.status_code >= 400)
 
 

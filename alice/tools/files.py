@@ -101,14 +101,39 @@ def _read_text(path: Path) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
-def _write_like(path: Path, text: str) -> None:
-    """Düzenlenen dosyayı aynı kodlamayla geri yaz: UTF-16 bir .ps1/.reg sessizce UTF-8'e dönmesin."""
+def file_encoding(path: Path) -> str:
+    """Dosyanın _read_text'in çözdüğü kodlaması (yazarken aynısı kullanılsın). Okunamazsa utf-8."""
     try:
-        with open(path, "rb") as f:
-            utf16 = f.read(2) in _UTF16_BOMS
+        raw = path.read_bytes()
     except OSError:
-        utf16 = False
-    path.write_text(text, encoding="utf-16" if utf16 else "utf-8", newline="")
+        return "utf-8"
+    if raw.startswith(_UTF16_BOMS):
+        return "utf-16"
+    if raw.startswith(b"\xef\xbb\xbf"):
+        return "utf-8-sig"
+    for enc in ("utf-8", "cp1254"):
+        try:
+            raw.decode(enc)
+            return enc
+        except UnicodeDecodeError:
+            continue
+    return "latin-1"
+
+
+def write_encoded(path: Path, text: str, encoding: str) -> None:
+    """Metni verilen kodlamayla yaz; eski tek baytlık kodlamaya sığmayan karakter varsa UTF-8'e geç."""
+    try:
+        data = text.encode(encoding)
+    except UnicodeEncodeError:
+        data = text.encode("utf-8")
+    path.write_bytes(data)
+
+
+def _write_like(path: Path, text: str) -> None:
+    """Düzenlenen dosyayı aynı kodlamayla geri yaz: UTF-16 bir .ps1/.reg sessizce UTF-8'e dönmesin, UTF-8 BOM'lu
+    bir .ps1'in BOM'u düşmesin (Windows PowerShell 5.1 BOM'suz dosyayı ANSI okur, Türkçe karakterler bozulur),
+    cp1254 bir .bat UTF-8'e çevrilmesin."""
+    write_encoded(path, text, file_encoding(path))
 
 
 def snapshot(ctx: ToolContext, p: Path) -> None:
@@ -373,6 +398,9 @@ class ReadFile(Tool):
         start = max(int(offset or 1), 1)
         limit = max(int(limit or 2000), 1)
         chunk = lines[start - 1:start - 1 + limit]
+        if not chunk and lines:
+            # Eskiden "(boş dosya)" diyordu: model dolu dosyayı boş sanıyordu.
+            raise ToolError(f"offset={start} dosyanın sonunu geçiyor: {p.name} {len(lines)} satır")
         body = "\n".join(f"{i:>6}\t{line[:2000]}" for i, line in enumerate(chunk, start))
         more = len(lines) - (start - 1 + len(chunk))
         if more > 0:
@@ -438,6 +466,10 @@ def _apply_edit(text: str, old: str, new: str, replace_all: bool, where: str = "
         else:
             hint = _similar_hint(text, old)
         raise ToolError(f"{where}old_string dosyada bulunamadı. Dosyayı read_file ile tekrar oku ve birebir kopyala.{hint}")
+    if "\r\n" in text and text.count("\r\n") == text.count("\n") and "\n" in new and "\r\n" not in old:
+        # CRLF dosyada eski metin satır sonu içermeyince yeni metnin LF'leri dönüştürülmüyor, dosya karışık satır
+        # sonlu kalıyordu.
+        new = new.replace("\r\n", "\n").replace("\n", "\r\n")
     if count > 1 and not replace_all:
         lines = text.splitlines()
         old_lines = [l.strip() for l in old.splitlines() if l.strip()]
@@ -579,6 +611,14 @@ def known_folder(path: str) -> Path | None:
     key = path.strip().strip("/\\").lower()
     for cand in KNOWN_FOLDERS.get(key, []):
         p = Path.home() / cand
+        if p.is_dir():
+            return p
+    if KNOWN_FOLDERS.get(key) == ["Downloads"]:
+        # Taşınmış İndirilenler (Özellikler > Konum, başka disk) ~/Downloads'ta değil: Windows'un bildiği konum.
+        # Eskiden None dönüp "klasör yok: <çalışma klasörü>/İndirilenler" deniyordu.
+        from alice.tools.fetch_file import downloads_dir
+
+        p = downloads_dir()
         if p.is_dir():
             return p
     return None
@@ -879,6 +919,13 @@ def _glob_match(name: str, pattern: str) -> bool:
     return fnmatch.fnmatch(name, pattern)
 
 
+def _same_file(a: Path, b: Path) -> bool:
+    try:
+        return a.exists() and b.exists() and os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
 class FileOps(Tool):
     name = "file_ops"
     description = ("Dosya ve klasör yönetimi: taşı/yeniden adlandır (move), kopyala (copy), sil (delete), klasör aç "
@@ -936,18 +983,33 @@ class FileOps(Tool):
         if not destination:
             raise ToolError(f"{action} için destination gerekli")
         dest = ctx.resolve(destination)
+        given = Path(destination.rstrip("/\\")).name
+        if given and given != dest.name and given.lower() == dest.name.lower():
+            # Windows'ta resolve() var olan dosyanın diskteki harflerini döndürür: "Rapor.txt" hedefi "rapor.txt"
+            # oluyordu. Kullanıcının yazdığı ad korunur.
+            dest = dest.with_name(given)
         into_dir = dest.is_dir() or len(sources) > 1 or destination.endswith(("/", "\\"))
+        if into_dir and _same_file(sources[0], dest) and len(sources) == 1:
+            into_dir = False  # klasörün kendi adını değiştirme (yalnız harf farkı), içine taşıma değil
         if len(sources) > 1 and dest.exists() and not dest.is_dir():
             raise ToolError(f"birden fazla kaynak için destination bir klasör olmalı: {dest}")
         plan = [(s, dest / s.name if into_dir else dest) for s in sources]
         for s, d in plan:
-            if d == s or s in d.parents:
+            case_rename = action == "move" and d.name != s.name and d.parent == s.parent and _same_file(s, d)
+            if not case_rename and (d == s or s in d.parents):
                 raise ToolError(f"{s} kendi içine {action} edilemez")
-            if d.exists() and not overwrite:
+            if d.exists() and not overwrite and not case_rename:
                 raise ToolError(f"hedef zaten var: {d} (üzerine yazmak için overwrite=true)")
         done = []
         for s, d in plan:
             d.parent.mkdir(parents=True, exist_ok=True)
+            if action == "move" and d.name != s.name and d.parent == s.parent and _same_file(s, d):
+                # Windows'ta yalnız büyük/küçük harf değişen ad ("rapor.txt" -> "Rapor.txt"): hedef "var" görünür
+                # ama kaynağın kendisidir. Eskiden overwrite=true ile kaynak çöpe atılıp taşıma patlıyordu.
+                snapshot(ctx, s)
+                os.rename(s, d)
+                done.append(f"{s} -> {d}")
+                continue
             if d.exists():
                 self._trash(ctx, d)
             if action == "move":
