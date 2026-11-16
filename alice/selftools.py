@@ -223,7 +223,7 @@ def run_tests(name: str, source: str, test: str, ctx: Any, timeout: float = TEST
     except RuntimeError as e:
         return False, f"kum havuzu kurulamadı, test çalıştırılmadı: {e}"
     root = str(Path(__file__).resolve().parent.parent)
-    env = {**os.environ, **env_extra, "PYTHONDONTWRITEBYTECODE": "1",
+    env = {**sandbox.scrub_env(dict(os.environ), ctx), **env_extra, "PYTHONDONTWRITEBYTECODE": "1",
            "PYTHONPATH": os.pathsep.join([str(d), root, os.environ.get("PYTHONPATH", "")]).rstrip(os.pathsep)}
     try:
         r = subprocess.run(argv, cwd=str(d), env=env, capture_output=True, text=True, encoding="utf-8",

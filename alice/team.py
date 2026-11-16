@@ -270,7 +270,9 @@ _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 def _git(cwd: Path, *args: str, timeout: int = 60) -> subprocess.CompletedProcess:
     # git çıktısı UTF-8: kodlama verilmezse Windows'ta yerel kod sayfasıyla (cp1254) çözülür ve "Ğ", "Ş" ya da emoji
     # içeren fark/dosya içeriği UnicodeDecodeError ile ajanın adımını düşürür. Konsol penceresi de açılmasın.
-    return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, encoding="utf-8",
+    from alice.gitsafe import harden  # sandbox'ın .git'e bıraktığı hook/fsmonitor ALICE'in git'iyle çalışmasın
+
+    return subprocess.run(["git", "-C", str(cwd), *harden(args)], capture_output=True, text=True, encoding="utf-8",
                           errors="replace", timeout=timeout, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
 
 

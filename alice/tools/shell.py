@@ -157,7 +157,13 @@ class RunCommand(Tool):
             except (RuntimeError, OSError, subprocess.SubprocessError) as e:
                 raise ToolError(f"sandbox kurulamadı, komut çalıştırılmadı: {e}. Gerekiyorsa unsandboxed=true ile "
                                 "(kullanıcı onayıyla) çalıştır.") from e
+            env = sandbox.scrub_env(env, ctx)  # .env'deki API anahtarları sandbox'a geçmesin
             env.update(extra)
+        from alice import gitsafe
+
+        # Sandbox .git'e yazabilir: hook ya da config değişirse (ALICE ya da kullanıcı sonra sandbox dışında git
+        # çalıştırınca devreye girer) sonuca uyarı eklenir.
+        git_before = gitsafe.snapshot(wd) if boxed and not background else None
         limit = int(ctx.config.agent.get("tool_output_chars", 12000))
         if background:
             # Ad zaman damgasıydı: aynı milisaniyede başlayan iki süreç aynı dosyaya yazıp çıktıları karışıyordu.
@@ -204,7 +210,9 @@ class RunCommand(Tool):
         if timed_out:
             return ToolResult(f"ZAMAN AŞIMI ({timeout} sn). Uzun işler için background=true kullan. Pencereli bir "
                               "program açıyorsan run_command yerine windows action=open kullan; Blender için blender aracını "
-                              f"kullan.\n{truncate(out + err, limit)}", is_error=True)
+                              f"kullan.\n{truncate(out + err, limit)}"
+                              + (gitsafe.warning(gitsafe.changes(git_before, gitsafe.snapshot(wd)))
+                                 if git_before is not None else ""), is_error=True)
         body = out
         if err.strip():
             body += ("\n[stderr]\n" if out.strip() else "[stderr]\n") + err
@@ -230,6 +238,8 @@ class RunCommand(Tool):
             # engellendi" sanıyordu (olmayan Sonora-Setup.exe'ye bakan Get-Item, 2026-11-02).
             body += (f"\n[sandbox: komut sadece {wd} ve geçici klasöre yazabildi. Bu erişim hatası bu yüzdense ve proje "
                      "dışına yazmak gerçekten gerekiyorsa unsandboxed=true ile tekrar dene.]")
+        if git_before is not None:
+            body += gitsafe.warning(gitsafe.changes(git_before, gitsafe.snapshot(wd)))
         return ToolResult(f"çıkış kodu {returncode}\n{body}", is_error=returncode != 0)
 
 

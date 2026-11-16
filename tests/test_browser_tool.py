@@ -500,8 +500,8 @@ class FakeChromium:
         self.calls: list[tuple] = []
         self.fail_channels, self.fail_all = fail_channels, fail_all
 
-    def connect_over_cdp(self, endpoint, timeout):
-        self.calls.append(("cdp", endpoint, timeout))
+    def connect_over_cdp(self, endpoint, timeout, headers=None):
+        self.calls.append(("cdp", endpoint, timeout, headers))
         return FakeBrowser(FakeCtx([FakePage("https://a.com/")]))
 
     def launch_persistent_context(self, profile, **kw):
@@ -533,6 +533,22 @@ def test_session_attaches_over_cdp(fake_pw, monkeypatch):
     assert "page" in s.ctx.handlers
     s.close()  # kullanıcının tarayıcısı kapatılmaz
     assert not s.ctx.closed
+
+
+def test_session_sends_bridge_token_only_to_bridge(fake_pw, monkeypatch):
+    """Köprü anahtarsız bağlantıyı reddeder (sandbox'taki program da Origin göndermez); ALICE anahtarı başlıkta yollar,
+    kullanıcının doğrudan CDP portuna göndermez."""
+    from alice.tools import browser_bridge as bb
+
+    chromium, _ = fake_pw
+    token = bb.write_token()
+    monkeypatch.setattr(browser, "user_browser_endpoint", lambda cdp, port: bb.endpoint(9339))
+    monkeypatch.setattr(browser.BrowserSession, "_visible_page", lambda self: None)
+    browser.BrowserSession(allow_launch=False, bridge_port=9339)
+    assert chromium.calls[-1][3] == {bb.TOKEN_HEADER: token}
+    monkeypatch.setattr(browser, "user_browser_endpoint", lambda cdp, port: "ws://127.0.0.1:9333/devtools/browser/a")
+    browser.BrowserSession(allow_launch=False, bridge_port=9339)
+    assert chromium.calls[-1][3] is None
 
 
 def test_session_launch_falls_back_channels_and_tracks_close(fake_pw, monkeypatch):

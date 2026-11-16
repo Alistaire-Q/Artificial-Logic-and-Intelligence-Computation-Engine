@@ -438,3 +438,42 @@ def test_pr_worktree_is_detached_and_leaves_users_branch_alone(repo, tmp_path, m
     Git().run(ctx, action="push", branch="ozellik")
     log = subprocess.run(["git", "log", "--oneline", "ozellik"], cwd=remote, capture_output=True, text=True).stdout
     assert " d" in log and "yerel" not in log
+
+
+@needs_git
+def test_alice_git_ignores_planted_hooks_and_fsmonitor(repo):
+    """Sandbox'taki komut proje klasörüne (ve .git'e) yazabilir: .git/hooks/pre-commit ya da core.fsmonitor bıraksa
+    ALICE'in sandbox dışındaki git çağrısı onu tam yetkiyle çalıştırırdı."""
+    from alice import team, team_pr
+    from alice.tools.github import run_git
+
+    work, _ = repo
+    hit = work.parent / "hook-calisti.txt"
+    hook = work / ".git" / "hooks" / "pre-commit"
+    hook.write_text(f"#!/bin/sh\necho x > '{hit.as_posix()}'\n", encoding="utf-8", newline="\n")
+    hook.chmod(0o755)
+    fsmon = work.parent / "fsmonitor-calisti.txt"
+    git(work, "config", "core.fsmonitor", f"echo x > '{fsmon.as_posix()}' #")
+    (work / "b.txt").write_text("b\n", encoding="utf-8")
+    run_git(["add", "b.txt"], work)
+    run_git(["commit", "-m", "b"], work)
+    run_git(["status"], work)
+    assert team._git(work, "status").returncode == 0
+    assert team_pr._git(work, "status").returncode == 0
+    assert not hit.exists() and not fsmon.exists()
+    # kontrol: korumasız git gerçekten çalıştırıyor
+    (work / "c.txt").write_text("c\n", encoding="utf-8")
+    git(work, "-c", "core.fsmonitor=false", "add", "c.txt")
+    git(work, "-c", "core.fsmonitor=false", "commit", "-m", "c")
+    git(work, "status")
+    assert hit.exists() and fsmon.exists()
+
+
+def test_harden_adds_safe_config_and_disables_external_diff():
+    from alice.gitsafe import harden
+
+    args = harden(["-c", "user.name=ALICE", "diff", "--cached"])
+    assert args[:2] == ["-c", args[1]] and "core.hooksPath=" in args[1]
+    assert "core.fsmonitor=false" in args and "protocol.ext.allow=never" in args
+    assert args[-5:] == ["user.name=ALICE", "diff", "--no-ext-diff", "--no-textconv", "--cached"]
+    assert harden(["status"])[-1] == "status"
