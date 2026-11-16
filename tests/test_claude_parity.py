@@ -340,6 +340,18 @@ def test_review_builtins_and_user_override(workdir):
     assert names.count("review") == 1 and "security-review" in names
 
 
+def test_slash_command_name_ends_at_newline(workdir):
+    # Shift+Enter ile "/kurul\nkonu" yazınca ad yalnız boşlukta bölündüğü için "bilinmeyen komut" deniyordu.
+    assert "giriş akışı" in builtin_prompt("/kurul\ngiriş akışı")
+    assert "PR 12" in builtin_prompt("/review\tPR 12")
+    d = workdir / ".alice" / "commands"
+    d.mkdir(parents=True)
+    (d / "ozet.md").write_text("Özetle: $ARGUMENTS\n", encoding="utf-8")
+    assert expand_custom("/ozet\nşu dosya", workdir) == "Özetle: şu dosya"
+    assert expand_custom("/ozet", workdir) == "Özetle: "
+    assert builtin_prompt("/") is None
+
+
 # ----------------------------------------------------------------------------------------- eval
 def test_eval_cases_roundtrip_and_log_import(isolated_home):
     isolated_home.mkdir(parents=True, exist_ok=True)
