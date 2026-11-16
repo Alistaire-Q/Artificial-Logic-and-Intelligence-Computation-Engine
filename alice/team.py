@@ -385,7 +385,7 @@ class Team:
 
     def all_done(self) -> bool:
         """Ajanların hepsi son durumda (yönetici bitirmemiş olabilir)."""
-        return bool(self.members) and all(m.status in FINAL and not m.resume_wanted for m in self.members.values())
+        return bool(self.members) and all(m.status in FINAL and not m.resume_wanted for m in list(self.members.values()))
 
     # ------------------------------------------------------------- mesajlar
     def send(self, sender: str, to: str, text: str) -> str:
@@ -394,7 +394,7 @@ class Team:
             raise ToolError("mesaj boş")
         to = (to or "").strip().lower()
         if to == "all":
-            targets = [n for n in self.members if n != sender] + ([LEAD] if sender != LEAD else [])
+            targets = [n for n in list(self.members) if n != sender] + ([LEAD] if sender != LEAD else [])
         else:
             targets = [to]
         unknown = [t for t in targets if t != LEAD and t not in self.members]
@@ -576,7 +576,7 @@ class Team:
         self.mark(USER if self.origin == "user" else LEAD, "start", f"proje başladı: {self.title}")
         self.prepare_pr()
         self._dirty0 = self._git_dirty()
-        for m in self.members.values():
+        for m in list(self.members.values()):
             self._launch(m)
         if plan or not self.members:
             self.event("Proje başladı ve henüz ajan yok. Kodu kısaca incele, işi çakışmayan parçalara böl ve planı "
@@ -588,7 +588,7 @@ class Team:
         self._changed(save=True)
 
     def _running(self) -> int:
-        return sum(1 for m in self.members.values() if m.status in ACTIVE)
+        return sum(1 for m in list(self.members.values()) if m.status in ACTIVE)
 
     def _deps_ok(self, m: Member) -> bool:
         return all(self.members[a].status == "done" for a in m.after if a in self.members)
@@ -619,7 +619,7 @@ class Team:
         self._changed()
 
     def _next(self) -> None:
-        for m in self.members.values():
+        for m in list(self.members.values()):
             if self._running() >= self.max_parallel:
                 return
             if m.status == "queued" and self._deps_ok(m):
@@ -876,7 +876,7 @@ class Team:
         from alice.council import report
 
         parts = []
-        for m in self.members.values():
+        for m in list(self.members.values()):
             parts.append(f"## {m.name} ({m.status})\nGörev: {m.task}\nRapor: {m.result[:1500]}\n"
                          f"Dosyalar: {', '.join(m.files) or '-'}\nFark:\n{self.diff(m.name, limit=6000) or '-'}")
         snap = self._council("final", f"Projenin tamamı: {self.goal}", "\n\n".join(parts)[:40_000], self.councils,
@@ -914,7 +914,7 @@ class Team:
                 from alice.council import report
 
                 parts = [f"## {m.name}: {m.task}\n{m.result[:1500]}\n{self.diff(m.name, limit=5000)}"
-                         for m in self.members.values()]
+                         for m in list(self.members.values())]
                 snap = self._council("adhoc", f"Projenin şu anki hali: {self.goal}", "\n\n".join(parts)[:40_000],
                                      self.councils)
                 if snap.get("state") == "stopped":
@@ -1232,7 +1232,7 @@ class Team:
         now = self._git_dirty(m.cwd)
         if not now:
             return
-        others = {k for o in self.members.values() if o is not m for k in o.originals}
+        others = {k for o in list(self.members.values()) if o is not m for k in o.originals}
         top = _git(m.cwd, "rev-parse", "--show-toplevel", timeout=10).stdout.strip()
         for path in sorted(now - set(base0) - set(m.originals) - others)[:50]:
             rel = Path(path).resolve().relative_to(Path(top).resolve()).as_posix() if top else path
@@ -1292,7 +1292,7 @@ class Team:
 
     def brief(self, m: Member) -> str:
         roster = "\n".join(f"- {o.name}: {o.task[:160]}" + (f" (yazar: {', '.join(o.scope)})" if o.scope else "")
-                           for o in self.members.values() if o.name != m.name) or "- (tek başınasın)"
+                           for o in list(self.members.values()) if o.name != m.name) or "- (tek başınasın)"
         where = {"shared": "Diğerleriyle aynı klasörde çalışıyorsun; başkasının dosyasına dokunma.",
                  "worktree": f"Kendi git worktree'ndesin (dal {m.branch}); değişikliklerin bu dalda kalır, yönetici "
                              "onaylayınca birleştirilir.",
@@ -1437,7 +1437,7 @@ Kurallar:
     def _lead_exit(self) -> bool:
         """Yöneticinin bekleyeceği bir şey kalmadıysa döngüden çık (yeni olay gelince _ensure_lead yeniden başlatır).
         Gelen kutusu kilit altında son kez kontrol edilir: çıkarken gelen olay kaybolmasın."""
-        idle = all(m.status in FINAL + ("review",) and not m.resume_wanted for m in self.members.values()) and \
+        idle = all(m.status in FINAL + ("review",) and not m.resume_wanted for m in list(self.members.values())) and \
             not self.council_busy
         if not (self.stopped or self.finished or (self.members and idle and self._nudges >= 2)):
             return False
@@ -1517,10 +1517,10 @@ Kurallar:
         if not self.members:
             return self._plan_nudge()
         if any(not q.get("answer") for q in self.questions) or self._nudges >= 3 or self.council_busy or \
-                any(m.council_running for m in self.members.values()):
+                any(m.council_running for m in list(self.members.values())):
             return ""
-        pending = [m.name for m in self.members.values() if m.status == "review"]
-        if pending and all(m.status in FINAL + ("review",) for m in self.members.values()):
+        pending = [m.name for m in list(self.members.values()) if m.status == "review"]
+        if pending and all(m.status in FINAL + ("review",) for m in list(self.members.values())):
             self._nudges += 1
             if self._nudges <= 2:
                 return f"İnceleme bekleyen ajanlar var: {', '.join(pending)}. diff ile bak ve review ile karar ver."
@@ -1646,7 +1646,7 @@ Nasıl yapılır:
         icon = {"queued": "…", "running": "▶", "waiting": "⏸", "asking": "?", "review": "◎", "done": "✓",
                 "failed": "✗", "stopped": "■"}
         rows = []
-        for m in self.members.values():
+        for m in list(self.members.values()):
             s = m.snapshot()
             rows.append(f"{icon.get(m.status, '?')} {m.name} [{m.status}, {m.model}"
                         f"{', düşünme ' + m.thinking if m.thinking != 'default' else ''}, {m.steps} adım, {s['secs']} sn]"
@@ -1658,7 +1658,7 @@ Nasıl yapılır:
         return "\n".join(rows) or "(henüz ajan yok)"
 
     def snapshot(self) -> dict[str, Any]:
-        done = sum(1 for m in self.members.values() if m.status == "done")
+        done = sum(1 for m in list(self.members.values()) if m.status == "done")
         return {"type": "team", "id": self.id, "title": self.title, "goal": self.goal, "origin": self.origin,
                 "cwd": str(self.cwd), "created": self.created, "status": self.status(), "review": self.review,
                 "summary": self.summary, "lead": {"state": self.lead_state, "model": self.lead_model,
@@ -1670,7 +1670,7 @@ Nasıl yapılır:
                 "pr": {"on": self.pr, "branch": self.pr_branch, "base": self.pr_base, "url": self.pr_url,
                        "number": self.pr_number},
                 "usage": {"total": self.usage_total(), "by": self.usage},
-                "members": [m.snapshot() for m in self.members.values()],
+                "members": [m.snapshot() for m in list(self.members.values())],
                 "log": [{"from": x.sender, "to": x.to, "text": x.text[:400], "at": x.at} for x in self.log[-40:]],
                 "active": self.active()}
 
@@ -1804,7 +1804,7 @@ Nasıl yapılır:
         self.stopped = self.finished = False
         self._nudges = 0
         if announce and len(self.members) > 1:
-            others = [n for n in self.members if n != m.name]
+            others = [n for n in list(self.members) if n != m.name]
             note = f"takıma yeni ajan katıldı: {m.name}: {m.task[:200]}" + (f" (yazar: {', '.join(m.scope)})" if m.scope else "")
             with self.cond:
                 msg = Message(SYSTEM, "all", note)
@@ -1883,14 +1883,14 @@ Nasıl yapılır:
         self.mark(USER, "resume", "proje sürdürüldü")
         self.stopped = False
         self._nudges = 0
-        for m in self.members.values():
+        for m in list(self.members.values()):
             if m.status == "stopped":
                 if m.agent is None and not m.saved_messages:
                     m.status = "queued"
                     self._launch(m)
                 else:
                     self._launch(m, resume=True)
-        for m in self.members.values():  # durdurulurken yarıda kalan iş kurulları yeniden toplanır
+        for m in list(self.members.values()):  # durdurulurken yarıda kalan iş kurulları yeniden toplanır
             if m.status == "review" and self.council and m.councils and m.councils[-1].get("state") == "stopped" \
                     and not m.council_running:
                 self._spawn(self._member_council, m)
@@ -1906,7 +1906,7 @@ Nasıl yapılır:
                "pr": self.pr, "cwd": str(self.pr_top or self.cwd),
                "agents": [{"name": m.name, "task": m.task, "constraints": m.constraints, "scope": m.scope,
                            "model": m.model, "thinking": m.thinking, "isolation": m.isolation, "after": m.after,
-                           "max_steps": m.max_steps} for m in self.members.values()]}
+                           "max_steps": m.max_steps} for m in list(self.members.values())]}
         _tpl_file(name).write_text(json.dumps(tpl, ensure_ascii=False, indent=1), encoding="utf-8")
         return tpl
 

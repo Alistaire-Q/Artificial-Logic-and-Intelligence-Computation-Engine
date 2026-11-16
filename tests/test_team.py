@@ -478,3 +478,24 @@ def test_stopped_lead_loop_exits_even_if_resumed_meanwhile(workdir):
     team.finished = True  # eski kodda döngü sürüyorsa kapansın
     t.join(5)
     assert not alive and team.lead_thread is other
+
+
+def test_next_survives_member_added_while_launching(workdir):
+    # Ajan bitince _next() üyeleri gezerken (her _launch thread açıp kaydediyor) yönetici assign/plan ile yeni ajan
+    # eklerse "dictionary changed size during iteration" ile biten ajanın thread'i düşüyor, sıradakiler başlamıyordu.
+    from alice.team import Member
+
+    _, _, ctx = make(simple, workdir)
+    team = Team(ctx, "hedef")
+    for n in ("a", "b"):
+        team.members[n] = Member(name=n, task="t")
+    launched = []
+
+    def launch(m, resume=False):
+        launched.append(m.name)
+        if "c" not in team.members:  # tam bu arada yönetici yeni ajan ekledi
+            team.members["c"] = Member(name="c", task="t", status="running")
+
+    team._launch = launch
+    team._next()
+    assert launched == ["a", "b"]
