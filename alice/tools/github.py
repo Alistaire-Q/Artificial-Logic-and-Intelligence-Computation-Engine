@@ -294,10 +294,15 @@ def protected(branch: str, cfg: Any, default_branch: str = "") -> bool:
 
 def staged_secrets(cwd: Path) -> list[str]:
     """Commit'e girecek dosyalarda anahtar ya da .env var mı?"""
+    return diff_secrets(cwd, ["--cached"])
+
+
+def diff_secrets(cwd: Path, spec: list[str]) -> list[str]:
+    """`git diff <spec>` ile eklenen dosya/satırlarda anahtar ya da .env var mı? (["--cached"] ya da ["taban..HEAD"])"""
     hits = []
-    _, names = run_git(["diff", "--cached", "--name-only"], cwd, check=False)
+    _, names = run_git(["diff", *spec, "--name-only", "--diff-filter=AMR"], cwd, check=False)
     hits += [n for n in names.splitlines() if SECRET_FILES.search(n.strip())]
-    _, diff = run_git(["diff", "--cached", "-U0", "--no-color"], cwd, check=False)
+    _, diff = run_git(["diff", *spec, "-U0", "--no-color"], cwd, check=False)
     fname = ""
     for line in diff.splitlines():
         if line.startswith("+++ b/"):

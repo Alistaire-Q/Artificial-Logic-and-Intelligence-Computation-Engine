@@ -58,7 +58,7 @@ def prepare(team: Any) -> str:
 def open_pr(team: Any) -> str:
     """Projenin dalını commit'le, push'la, PR aç ve izlemeye al. Sonuç satırı döndürür (hata da metin olarak)."""
     from alice import prwatch
-    from alice.tools.github import GitHubAPI, github_token, repo_root, run_git
+    from alice.tools.github import GitHubAPI, diff_secrets, github_token, repo_root, run_git
 
     try:
         wt = repo_root(Path(team.cwd))
@@ -70,6 +70,12 @@ def open_pr(team: Any) -> str:
         ahead = _git(wt, "rev-list", "--count", f"{team.pr_sha}..HEAD").stdout.strip()
         if ahead in ("", "0"):
             return "PR açılmadı: projede değişiklik yok"
+        # Ajanlar `add -A` ile commit'liyor: projede eklenen bir anahtar/.env GitHub'a gitmeden durdurulur. Bütün
+        # aralık taranır (ajanların kendi dallarında önceden yaptığı commit'ler de push'a girer).
+        leaks = diff_secrets(wt, [f"{team.pr_sha}..HEAD"])
+        if leaks:
+            return ("PR açılmadı: projede anahtar ya da gizli dosya var, GitHub'a gönderilmedi: " + ", ".join(leaks[:8])
+                    + ". Dosyayı çıkarıp .gitignore'a ekle, commit geçmişinden de temizle.")
         token = github_token(team.parent_ctx.config)
         run_git(["push", "-u", "origin", team.pr_branch], wt, token, timeout=300)
         api = GitHubAPI(token)
