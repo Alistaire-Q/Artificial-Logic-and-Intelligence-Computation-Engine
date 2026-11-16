@@ -438,6 +438,55 @@ def test_stream_cut_mid_tool_call_is_an_error_not_an_empty_call():
     assert ei.value.kind == "network"
 
 
+def test_concurrent_limit_write_does_not_lose_refreshed_token(monkeypatch):
+    """Bir akışın save_limits'i ile anahtar yenilemenin kaydı aynı anda olunca biri diğerini ezmemeli."""
+    chatgpt.save_auth(tokens())
+    real_write = chatgpt._write
+
+    def slow_write(store):
+        time.sleep(0.15)  # oku-değiştir-yaz arasındaki pencereyi büyüt
+        real_write(store)
+
+    monkeypatch.setattr(chatgpt, "_write", slow_write)
+    t = threading.Thread(target=chatgpt.save_limits, args=({"primary": {"used_percent": 40.0}},))
+    t.start()
+    time.sleep(0.05)
+    chatgpt.save_auth(tokens(refresh="r2"), key="acc1")
+    t.join()
+    acc = chatgpt._store()["accounts"]["acc1"]
+    assert acc["refresh_token"] == "r2" and acc["limits"]["primary"]["used_percent"] == 40.0
+
+
+def test_expired_token_is_refreshed_once_by_concurrent_requests():
+    """refresh_token tek kullanımlık: aynı anda süresi dolan iki istek tek yenileme yapmalı."""
+    chatgpt.save_auth(tokens(exp_in=-10))
+    posts = []
+
+    def handler(req):
+        posts.append(json.loads(req.content)["refresh_token"])
+        time.sleep(0.2)
+        if len(posts) > 1:
+            return httpx.Response(400, json={"error": "refresh_token_reused"})
+        return httpx.Response(200, json=tokens(refresh="r2"))
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    out, errs = [], []
+
+    def run():
+        try:
+            out.append(chatgpt.access(client))
+        except ProviderError as e:
+            errs.append(e)
+
+    threads = [threading.Thread(target=run) for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert posts == ["r1"] and not errs and len(out) == 3
+    assert chatgpt.load_auth()["refresh_token"] == "r2"
+
+
 def test_token_refresh_keeps_models_and_used_up_mark():
     chatgpt.save_auth(tokens())
     chatgpt._update(None, models=["gpt-5.5"])

@@ -15,6 +15,7 @@ Giriş bilgileri ~/.alice/chatgpt-auth.json'da (yalnız kullanıcı okuyabilir);
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
 import json
 import os
@@ -62,10 +63,29 @@ def _jwt_claims(token: str) -> dict[str, Any]:
         return {}
 
 
+# Hesap dosyasının oku-değiştir-yaz adımları tek tek: birkaç sohbet aynı anda limit yazıp anahtar yenileyebiliyor.
+# Kilitsizken bir akışın save_limits'i, yenilemenin kaydettiği yeni (tek kullanımlık) refresh_token'ı eski
+# kopyayla eziyordu; sonraki yenileme reddedilip hesaptan çıkılıyordu.
+_store_lock = threading.RLock()
+# Aynı hesabın süresi dolan anahtarı aynı anda tek kez yenilenir: refresh_token tek kullanımlık, ikinci yenileme
+# aynı (artık geçersiz) anahtarla gidip "oturum yenilenemedi" hatası veriyordu.
+_refresh_lock = threading.RLock()
+
+
+def _locked(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Hesap dosyasını okuyup değiştirip yazan işlev _store_lock altında çalışır."""
+    @functools.wraps(fn)
+    def wrapper(*a: Any, **kw: Any) -> Any:
+        with _store_lock:
+            return fn(*a, **kw)
+    return wrapper
+
+
 def _store() -> dict[str, Any]:
     """{"active": anahtar, "accounts": {anahtar: giriş bilgisi}}. Eski tek hesaplı dosya da okunur."""
     try:
-        data = json.loads(auth_path().read_text(encoding="utf-8"))
+        with _store_lock:
+            data = json.loads(auth_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {"active": "", "accounts": {}}
     if not isinstance(data, dict):
@@ -79,11 +99,22 @@ def _store() -> dict[str, Any]:
 def _write(store: dict[str, Any]) -> None:
     p = auth_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(store), encoding="utf-8")
+    # Geçici dosyaya yaz, sonra yerine koy: yarım yazılmış dosyayı okuyan (başka süreç) boş hesap listesi görüp
+    # onu kaydederek bütün hesapları silmesin.
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(store), encoding="utf-8")
     try:
-        os.chmod(p, 0o600)
+        os.chmod(tmp, 0o600)
     except OSError:
         pass
+    try:
+        os.replace(tmp, p)
+    except OSError:  # Windows: hedef o an başka süreçte açıksa yerine konamıyor
+        p.write_text(json.dumps(store), encoding="utf-8")
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 def load_auth(key: str | None = None) -> dict[str, Any]:
@@ -92,6 +123,7 @@ def load_auth(key: str | None = None) -> dict[str, Any]:
     return dict(st["accounts"].get(key or st["active"]) or {})
 
 
+@_locked
 def save_auth(tokens: dict[str, Any], key: str | None = None) -> dict[str, Any]:
     """Giriş ya da yenilemeden gelen anahtarları kaydet. key yoksa (yeni giriş) hesap anahtarlardan bulunur ve seçili
     hesap olur; aynı hesaba tekrar girilirse üzerine yazılır."""
@@ -127,6 +159,7 @@ def accounts() -> list[dict[str, Any]]:
             for k, a in st["accounts"].items()]
 
 
+@_locked
 def use(key: str) -> bool:
     """Kayıtlı başka bir hesaba geç (elle)."""
     st = _store()
@@ -137,6 +170,7 @@ def use(key: str) -> bool:
     return True
 
 
+@_locked
 def remove(key: str | None = None) -> bool:
     """Hesabı kaldır (varsayılan: seçili olan); seçili kaldırılırsa kalan ilk hesap seçilir."""
     st = _store()
@@ -156,6 +190,7 @@ def remove(key: str | None = None) -> bool:
     return True
 
 
+@_locked
 def _update(key: str | None, **fields: Any) -> None:
     """key'li hesabın (None: seçili hesap) alanlarını güncelle."""
     st = _store()
@@ -307,6 +342,7 @@ def _used(acc: dict[str, Any], now: float) -> float:
     return worst
 
 
+@_locked
 def _mark_exhausted(reset_in: float | None = None, key: str | None = None) -> None:
     """Kullanım limiti dolan hesabı (key; None: seçili) dolu işaretle: sıradaki seçimde atlanır. reset_in: sunucunun
     söylediği sıfırlanma süresi (sn); bilinmiyorsa kayıtlı pencereninki, o da yoksa 1 saat."""
@@ -433,7 +469,11 @@ def access(client: httpx.Client | None = None, key: str | None = None) -> dict[s
     if not a.get("access_token") and not a.get("refresh_token"):
         raise ProviderError("auth", "ChatGPT'ye giriş yapılmamış (Sistem → Kurulum → ChatGPT ile giriş)")
     if float(a.get("expires_at") or 0) - REFRESH_EARLY < time.time():
-        a = refresh(client, key)
+        key = key or _store()["active"]
+        with _refresh_lock:
+            a = load_auth(key)  # beklerken başka bir istek yenilemiş olabilir: aynı refresh_token'ı tekrar harcama
+            if float(a.get("expires_at") or 0) - REFRESH_EARLY < time.time():
+                a = refresh(client, key)
     return a
 
 
