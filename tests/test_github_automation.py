@@ -388,3 +388,36 @@ def test_saved_session_reopens_in_its_own_folder(tmp_path):
     assert sess.saved_cwd("20261112-090000") == proj
     sess.save("20261112-090001", [{"role": "system", "content": ""}], tmp_path / "yok")
     assert sess.saved_cwd("20261112-090001") is None and sess.saved_cwd("bilinmeyen") is None
+
+
+def test_unreadable_watch_file_is_not_wiped_by_writers(monkeypatch):
+    # Windows'ta dosya o an başka süreçte replace ediliyorsa okuma PermissionError veriyordu; load() boş dönünce
+    # ardından gelen watch/_update kaydı bütün izleme listesini siliyordu.
+    prwatch.watch("o/r", 1)
+    prwatch.watch("o/r", 2)
+    real, fail = Path.read_text, [True]
+
+    def locked(self, *a, **k):
+        if fail[0] and self.name == "prwatch.json":
+            raise PermissionError(13, "Permission denied")
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(Path, "read_text", locked)
+    monkeypatch.setattr(prwatch.time, "sleep", lambda s: None)
+    prwatch._update("o/r#1", lambda w: w.log("x"))
+    with pytest.raises(PermissionError):
+        prwatch.watch("o/r", 3)
+    fail[0] = False
+    assert sorted(w.number for w in prwatch.load()) == [1, 2]
+    # Kısa kilit: birkaç denemede okunur, kayıt kaybolmaz.
+    calls = []
+
+    def flaky(self, *a, **k):
+        if self.name == "prwatch.json" and len(calls) < 2:
+            calls.append(1)
+            raise PermissionError(13, "Permission denied")
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(Path, "read_text", flaky)
+    prwatch.watch("o/r", 3)
+    assert sorted(w.number for w in prwatch.load()) == [1, 2, 3]
