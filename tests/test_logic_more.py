@@ -91,6 +91,21 @@ def test_session_load_skips_corrupt_latest_file():
     assert session.load() == ("20260101-000000", [{"role": "user", "content": "a"}])
 
 
+def test_session_files_with_valid_but_wrong_shaped_json_do_not_crash():
+    session.save("20260101-000000", [{"role": "system"}, {"role": "user", "content": "a"}], Path("."))
+    d = session.sessions_dir()
+    (d / "20260103-000000.json").write_text("[1, 2]", encoding="utf-8")
+    (d / "20260102-000000.json").write_text('{"messages": 5}', encoding="utf-8")
+    assert session.load() == ("20260101-000000", [{"role": "user", "content": "a"}])
+    assert session.load("20260103-000000") is None
+    assert [r[0] for r in session.list_sessions()] == ["20260101-000000"]
+    assert session.load_extra("20260103-000000") == {} and session.saved_cwd("20260103-000000") is None
+    session.checkpoints_path("x").write_text("[1]", encoding="utf-8")
+    assert session.load_checkpoints("x") == {}
+    session.checkpoints_path("y").write_text('{"1": [1], "2": {"a.txt": null}, "z": {}}', encoding="utf-8")
+    assert session.load_checkpoints("y") == {2: {"a.txt": None}}
+
+
 # ===================================================================== hotkeys
 def test_key_vk_and_parse_combo_edge_cases():
     assert hotkeys.key_vk("<f24>") == 0x87

@@ -201,6 +201,8 @@ def list_sessions(limit: int = 15) -> list[tuple[str, str, str]]:
                 data = json.loads(p.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
+            if not isinstance(data, dict) or not isinstance(data.get("messages", []), list):
+                continue
             cwd, first = str(data.get("cwd", "")), session_prompt(p.stem, data.get("messages", []))
             with _list_lock:
                 _list_cache[str(p)] = (sig, (cwd, first))
@@ -218,7 +220,10 @@ def load(session_id: str | None = None) -> tuple[str, list[dict[str, Any]]] | No
             data = json.loads(f.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        return f.stem, data.get("messages", [])
+        messages = data.get("messages") if isinstance(data, dict) else None
+        if not isinstance(messages, list):
+            continue  # geçerli JSON ama oturum biçiminde değil (ör. liste ya da sayı): bozuk dosya gibi atla
+        return f.stem, [m for m in messages if isinstance(m, dict)]
     return None
 
 
@@ -226,6 +231,8 @@ def load_extra(session_id: str) -> dict[str, Any]:
     try:
         data = json.loads((sessions_dir() / f"{session_id}.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
         return {}
     extra = data.get("extra")
     return extra if isinstance(extra, dict) else {}
@@ -266,8 +273,12 @@ def load_checkpoints(session_id: str) -> dict[int, dict[str, bytes | None]]:
         raw = json.loads(checkpoints_path(session_id).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
+    if not isinstance(raw, dict):
+        return {}
     out: dict[int, dict[str, bytes | None]] = {}
     for k, row in raw.items():
+        if not isinstance(row, dict):
+            continue
         try:
             out[int(k)] = {p: (None if v is None else base64.b64decode(v)) for p, v in row.items()}
         except (ValueError, TypeError):
@@ -281,6 +292,8 @@ def saved_cwd(session_id: str) -> Path | None:
     try:
         data = json.loads((sessions_dir() / f"{session_id}.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
         return None
     cwd = Path(data.get("cwd") or "")
     return cwd if data.get("cwd") and cwd.is_dir() else None
