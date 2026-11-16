@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from alice import plugins, selftools
-from alice.tools.base import DANGER, EXEC, READ, WRITE
+from alice.tools.base import DANGER, EXEC, READ, WRITE, ToolError
 from alice.tools.selftool import MakeTool
 
 GOOD = '''
@@ -135,6 +135,9 @@ def test_three_errors_disable_tool_and_loader_skips_it(monkeypatch):
     info = selftools.load_registry()["steam_recent"]
     assert info["errors"] == 3 and info["disabled"] and "liste boş" in info["last_error"]
     assert "kapalı (3 hata)" in selftools.listing()
+    with pytest.raises(ToolError, match="kapatıldı"):  # aynı oturumda da artık çalışmaz
+        tools[0].run(None, n=1)
+    assert selftools.load_registry()["steam_recent"]["errors"] == 3
     loaded = plugins.load_plugins(None)
     assert "steam_recent" not in [p.name for p in loaded]
 
@@ -149,10 +152,12 @@ def test_asks_each_time_makes_every_use_need_approval(monkeypatch):
 def test_remove_moves_file_aside(monkeypatch):
     monkeypatch.setattr(selftools, "run_tests", lambda *a, **k: (True, "ok"))
     selftools.prepare("steam_recent", "x", "listeler", NO_NET, GOOD, GOOD_TEST, None)
-    path, _ = selftools.install("steam_recent")
+    path, tools = selftools.install("steam_recent")
     assert "kaldırıldı" in selftools.remove("steam_recent")
     assert not path.exists() and list((plugins.plugin_dir() / "_kaldirilan").glob("steam_recent-*.py"))
     assert selftools.load_registry()["steam_recent"]["disabled"]
+    with pytest.raises(ToolError, match="kaldırıldı"):  # çalışan ajandaki kopyası da durur
+        tools[0].run(None, n=1)
 
 
 # ---------------------------------------------------------------- araç

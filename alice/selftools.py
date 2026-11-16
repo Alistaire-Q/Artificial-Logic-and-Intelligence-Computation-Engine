@@ -331,6 +331,11 @@ def _wrap(plugin: str, tool: Any, ask: bool) -> None:
     orig = tool.run
 
     def run(ctx, **kw):
+        # Kapatma (3 hata) ve make_tool remove yalnız sonraki yüklemede etkiliydi: araç aynı oturumda listede kalıp
+        # çalışmaya devam ediyordu. Her çağrıda kayda bakılır.
+        if (load_registry().get(plugin) or {}).get("disabled"):
+            raise ToolError(f"{plugin} aracı kapatıldı ya da kaldırıldı (make_tool action=list); yeniden yazmadan "
+                            "kullanılamaz")
         try:
             res = orig(ctx, **kw)
         except ToolError:
