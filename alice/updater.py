@@ -265,9 +265,11 @@ def remote_head(repo: Path, branch: str, timeout: float = 20.0) -> tuple[str, st
     code, out = _git(["ls-remote", "--heads", "origin", branch], repo, timeout=timeout)
     if code != 0:
         return "", out.strip().splitlines()[-1] if out.strip() else "ls-remote başarısız"
+    # ls-remote deseni sondan eşleşir: "main" deseni "refs/heads/x/main"i de getirir ve o (alfabetik önce gelen) dal
+    # alınıp yanlış commit "yeni sürüm" sanılıyordu. Tam ad aranır.
     for line in out.splitlines():
         parts = line.split()
-        if len(parts) == 2 and parts[1].endswith(f"/{branch}"):
+        if len(parts) == 2 and parts[1] == f"refs/heads/{branch}":
             return parts[0], ""
     return "", f"uzak dal bulunamadı: {branch}"
 
@@ -399,12 +401,30 @@ def read_state() -> dict[str, Any]:
 
 
 def write_state(**kw: Any) -> None:
+    """Geçici dosyaya yazıp yerine koyar. Uygulama ve çekirdek aynı dosyayı yazıyor: doğrudan write_text sırasında
+    öbür süreç dosyayı yarım/boş okuyup {} sanıyor, kendi yazışında "bad" listesini ve bekleyen sağlık kontrolünü
+    siliyordu (geri alınmış bozuk sürüm yeniden çekilebilirdi)."""
+    import threading
+
     data = {**read_state(), **kw}
+    p = _state_path()
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
-        _state_path().parent.mkdir(parents=True, exist_ok=True)
-        _state_path().write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        for i in range(5):
+            try:
+                os.replace(tmp, p)
+                break
+            except PermissionError:  # Windows: öbür süreç tam o an okuyor
+                if i == 4:
+                    raise
+                time.sleep(0.05)
     except OSError:
-        pass
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 # --------------------------------------------------------------------------------- süreçler arası
@@ -647,8 +667,13 @@ def smoke_test(repo: Path, timeout: float = 180.0) -> str:
 
 
 def rollback(repo: Path, good: str, bad: str, reason: str) -> bool:
-    """Çalışma ağacını iyi commit'e döndür, kötüyü bir daha otomatik çekilmesin diye işaretle."""
-    code, _ = _git(["reset", "--hard", good], repo, timeout=60)
+    """Çalışma ağacını iyi commit'e döndür, kötüyü bir daha otomatik çekilmesin diye işaretle.
+
+    --keep: `alice update --force` kirli ağaçta çekip duman testi düşünce --hard kullanıcının kaydedilmemiş
+    değişikliklerini siliyordu. --keep onları korur (fast-forward zaten çakışan dosyalara dokunmamıştı)."""
+    code, _ = _git(["reset", "--keep", good], repo, timeout=60)
+    if code != 0 and not is_dirty(repo):
+        code, _ = _git(["reset", "--hard", good], repo, timeout=60)
     st = read_state()
     bads = [b for b in (st.get("bad") or []) if b != bad][-20:] + [bad]
     write_state(bad=bads, local=good, pending_health="", bad_boots=0,

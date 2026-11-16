@@ -259,12 +259,22 @@ class Core:
                 hook(self.modes.policy)
             except Exception as e:  # noqa: BLE001 - bir kanca çökse de tur sürsün
                 self.store.add_event("error", "çekirdek kancası hata verdi", repr(e)[:300], topic="core")
-        self._reload_if_changed()
-        self.engine.evaluate(now)
-        self._run_due(now)
-        self._maybe_update(now)
-        self._maybe_memory()
-        self._maybe_prwatch(now)
+        # Adımlar birbirinden bağımsız: biri (bozuk bir kural, kilitli dosya) her turda hata verince geri kalanı
+        # (görevler, güncelleme, durum dosyası) hiç çalışmıyordu; durum dosyası eskiyince uygulama çekirdeği kapalı
+        # sanıyordu. Aynı hata günde bir kez yazılır.
+        steps: tuple[tuple[str, Callable[[], Any]], ...] = (
+            ("kural/görev dosyası yükleme", self._reload_if_changed),
+            ("kural değerlendirme", lambda: self.engine.evaluate(now)),
+            ("zamanlanmış görevler", lambda: self._run_due(now)),
+            ("güncelleme kontrolü", lambda: self._maybe_update(now)),
+            ("hafıza işi", self._maybe_memory),
+            ("PR takibi", lambda: self._maybe_prwatch(now)),
+        )
+        for name, step in steps:
+            try:
+                step()
+            except Exception as e:  # noqa: BLE001 - bir adım turu durdurmasın
+                self._step_error(name, e)
         try:
             self.greeter.tick()
         except Exception as e:  # noqa: BLE001 - karşılama çekirdeği durdurmasın
@@ -275,7 +285,10 @@ class Core:
             self.store.add_event("error", "KAIROS hata verdi", repr(e)[:300], topic="core")
         if now - self._last_prune > 3600:
             self._last_prune = now
-            self.store.prune(self.retention_days, now)
+            try:
+                self.store.prune(self.retention_days, now)
+            except Exception as e:  # noqa: BLE001 - veritabanı kilitliyse sonraki saatte yine denenir
+                self._step_error("eski veriyi temizleme", e)
         self.write_state(now)
 
     def prime(self) -> None:
