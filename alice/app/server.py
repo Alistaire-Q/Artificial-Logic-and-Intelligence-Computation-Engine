@@ -2438,7 +2438,8 @@ def make_handler(state: AppState):
                 except ToolError as e:
                     return self._json({"ok": False, "error": str(e)}, 404)
             if u.path == "/api/usage":
-                return self._json(state.agent.usage_breakdown())
+                # Oturum dökümü (Kullanım dökümü penceresi) + bugünün model başına istek sayıları (Ayarlar > Kullanım).
+                return self._json({**state.agent.usage_breakdown(), "today": state.router.usage.today()})
             if u.path == "/api/prs":
                 return self._json(state.pr_panel(force=(q.get("force") or [""])[0] == "1"))
             if u.path == "/api/subagents":
@@ -2514,8 +2515,6 @@ def make_handler(state: AppState):
             if u.path == "/api/update":
                 return self._json(state.check_update() if (q.get("refresh") or [""])[0] == "1"
                                   else (state.update.as_dict() if state.update is not None else {"available": False}))
-            if u.path == "/api/usage":
-                return self._json(state.router.usage.today())
             if u.path == "/api/tools":
                 return self._json([{"name": t.name, "risk": t.risk, "description": t.description.split("\n")[0][:160]}
                                    for t in state.agent.tools.values()])

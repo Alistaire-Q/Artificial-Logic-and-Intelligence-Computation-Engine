@@ -2868,7 +2868,7 @@ async function showSettings(tab) {
       memoryPane(pane, data.memory);
     } else if (tab === "usage") {
       pane.append(el("h2", "", "Bugünkü kullanım"));
-      const entries = Object.entries(data.usage || {});
+      const entries = Object.entries((data.usage && data.usage.today) || {});
       if (!entries.length) pane.appendChild(el("p", "", "Bugün henüz istek yok."));
       const pct = (r) => (r.prompt_tokens ? Math.round((100 * (r.cached_tokens || 0)) / r.prompt_tokens) : 0);
       const sum = entries.reduce((a, [, r]) => ({ prompt_tokens: a.prompt_tokens + (r.prompt_tokens || 0),
