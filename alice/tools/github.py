@@ -178,7 +178,7 @@ def run_git(args: list[str], cwd: Path, token: str | None = None, timeout: int =
         from alice.gitsafe import harden
 
         # Hook'lar ve fsmonitor kapalı: sandbox'taki bir komutun .git'e bıraktığı program ALICE'in git'iyle çalışmasın.
-        r = subprocess.run([git, *harden(args)], cwd=cwd, capture_output=True, timeout=timeout, env=git_env(token),
+        r = subprocess.run([git, *harden(args, cwd)], cwd=cwd, capture_output=True, timeout=timeout, env=git_env(token),
                            stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
     except subprocess.TimeoutExpired as e:
         raise ToolError(f"git {args[0]} {timeout} sn'de bitmedi") from e

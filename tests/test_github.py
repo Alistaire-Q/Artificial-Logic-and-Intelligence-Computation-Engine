@@ -487,3 +487,28 @@ def test_harden_adds_safe_config_and_disables_external_diff():
     assert "core.fsmonitor=false" in args and "protocol.ext.allow=never" in args
     assert args[-5:] == ["user.name=ALICE", "diff", "--no-ext-diff", "--no-textconv", "--cached"]
     assert harden(["status"])[-1] == "status"
+
+
+@needs_git
+def test_alice_git_neutralizes_planted_filter_ssh_and_credential_config(repo):
+    """.git/config'e konan filter/sshCommand/credential.helper da program çalıştırır: ALICE'in git'inde ezilir."""
+    from alice import gitsafe, team
+    from alice.tools.github import run_git
+
+    work, _ = repo
+    hit = work.parent / "filtre-calisti.txt"
+    (work / ".gitattributes").write_text("*.dat filter=x\n", encoding="utf-8")
+    git(work, "config", "filter.x.clean", f"sh -c 'echo x > \"{hit.as_posix()}\"; cat'")
+    git(work, "config", "filter.x.process", f"sh -c 'echo x > \"{hit.as_posix()}\"'")
+    git(work, "config", "filter.lfs.clean", "git-lfs clean -- %f")
+    git(work, "config", "core.sshCommand", "evil-ssh")
+    git(work, "config", "credential.helper", "evil-helper")
+    (work / "a.dat").write_text("veri\n", encoding="utf-8")
+    run_git(["add", "a.dat"], work)
+    assert team._git(work, "status").returncode == 0
+    assert not hit.exists()
+    args = gitsafe.harden(["fetch"], work)
+    assert "filter.x.clean=" in args and "filter.x.process=" in args and "core.sshcommand=ssh" in args
+    assert "credential.helper=" in args and not any(a.startswith("filter.lfs.") for a in args)
+    assert not any("evil" in a for a in args)
+    assert gitsafe.repo_overrides(None) == [] and gitsafe.repo_overrides(work.parent / "yok") == []

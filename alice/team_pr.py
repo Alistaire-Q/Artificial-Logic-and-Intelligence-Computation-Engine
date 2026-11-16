@@ -23,7 +23,7 @@ def _git(cwd: Path, *args: str, timeout: int = 60) -> subprocess.CompletedProces
     from alice.gitsafe import harden
     from alice.tools.github import NO_WINDOW
 
-    return subprocess.run(["git", *harden(args)], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
+    return subprocess.run(["git", *harden(args, cwd)], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
                           errors="replace", timeout=timeout, stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
 
 

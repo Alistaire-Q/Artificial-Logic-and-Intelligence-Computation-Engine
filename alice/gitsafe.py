@@ -13,7 +13,12 @@ yeniden adlandırıp baştan oluşturabiliyor). Bu yüzden:
 from __future__ import annotations
 
 import hashlib
+import re
+import subprocess
+import sys
 from pathlib import Path
+
+_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 _DIFF_CMDS = {"diff", "show", "log"}
 
@@ -29,9 +34,96 @@ def config_args() -> list[str]:
             "-c", "protocol.ext.allow=never"]
 
 
-def harden(args: list[str] | tuple[str, ...]) -> list[str]:
-    """git'e verilecek argümanların (alt komut dahil, `git`ten sonrası) korumalı hali."""
+# Deponun kendi config'inde (include'lar dahil) program çalıştıran ayarlar. Sandbox'taki komut .git/config'e
+# filter.x.process, core.sshCommand, credential.helper... yazarsa ALICE'in sandbox dışındaki git'i onu tam yetkiyle
+# çalıştırırdı. ALICE'in çağrılarında bunlar zararsız değerle ezilir (boş komut = filtre/sürücü yok).
+_SAFE_DEFAULTS = {"core.sshcommand": "ssh", "core.gitproxy": "", "core.askpass": "", "core.alternaterefscommand": "",
+                  "core.editor": "true", "sequence.editor": "true", "gpg.program": "gpg", "gpg.openpgp.program": "gpg",
+                  "gpg.x509.program": "gpgsm", "gpg.ssh.program": "ssh-keygen",
+                  "gpg.ssh.defaultkeycommand": ""}
+_SUB_RX = re.compile(r"^(filter|diff|merge)\.(.+)\.(clean|smudge|process|command|textconv|driver)$")
+_REMOTE_RX = re.compile(r"^remote\.(.+)\.(uploadpack|receivepack)$")
+_cache: dict[str, tuple[float, list[str]]] = {}
+
+
+def _local_config(cwd: Path) -> list[tuple[str, str]]:
+    """Deponun yerel config'i (include'lar dahil). `git config` hiçbir program çalıştırmaz."""
+    try:
+        r = subprocess.run(["git", "-C", str(cwd), "config", "--local", "--includes", "--list", "-z"],
+                           capture_output=True, timeout=10, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if r.returncode != 0:
+        return []
+    out = []
+    for item in r.stdout.decode("utf-8", errors="replace").split("\0"):
+        if item:
+            key, _, val = item.partition("\n")
+            out.append((key.lower(), val))
+    return out
+
+
+def _global_helpers() -> list[str]:
+    try:
+        r = subprocess.run(["git", "config", "--global", "--get-all", "credential.helper"], capture_output=True,
+                           timeout=10, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
+        sysr = subprocess.run(["git", "config", "--system", "--get-all", "credential.helper"], capture_output=True,
+                              timeout=10, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    lines = sysr.stdout.decode("utf-8", errors="replace").splitlines() + \
+        r.stdout.decode("utf-8", errors="replace").splitlines()
+    return [x for x in lines if x.strip()]
+
+
+def repo_overrides(cwd: Path | str | None) -> list[str]:
+    """Deponun program çalıştıran yerel ayarlarını ezen `-c` argümanları. git-lfs filtresi korunur."""
+    if cwd is None:
+        return []
+    dirs = _git_dirs(Path(cwd))
+    if not dirs:
+        return []
+    cfg = dirs[-1] / "config" if len(dirs) > 1 else dirs[0] / "config"
+    try:
+        mtime = cfg.stat().st_mtime
+    except OSError:
+        return []
+    hit = _cache.get(str(cfg))
+    if hit and hit[0] == mtime:
+        return list(hit[1])
+    out: list[str] = []
+    helpers = False
+    for key, val in _local_config(Path(cwd)):
+        if key in _SAFE_DEFAULTS:
+            out += ["-c", f"{key}={_SAFE_DEFAULTS[key]}"]
+        elif key == "credential.helper" or (key.startswith("credential.") and key.endswith(".helper")):
+            helpers = True
+            out += ["-c", f"{key}="]
+        elif (m := _SUB_RX.match(key)):
+            if m.group(1) == "filter" and val.strip().startswith("git-lfs "):
+                continue
+            out += ["-c", f"{key}="]
+        elif (m := _REMOTE_RX.match(key)):
+            out += ["-c", f"{key}=git-{'upload-pack' if m.group(2) == 'uploadpack' else 'receive-pack'}"]
+    if helpers:  # boş değer listeyi sıfırlar: kullanıcının genel (gh, manager) yardımcıları geri eklenir
+        for h in _global_helpers():
+            out += ["-c", f"credential.helper={h}"]
+    out = list(dict.fromkeys(_pairs(out)))
+    flat = [x for pair in out for x in ("-c", pair)]
+    _cache[str(cfg)] = (mtime, flat)
+    return list(flat)
+
+
+def _pairs(args: list[str]) -> list[str]:
+    return [args[i + 1] for i in range(0, len(args), 2)]
+
+
+def harden(args: list[str] | tuple[str, ...], cwd: Path | str | None = None) -> list[str]:
+    """git'e verilecek argümanların (alt komut dahil, `git`ten sonrası) korumalı hali. cwd verilirse deponun program
+    çalıştıran yerel ayarları da ezilir (`-C yol` argümanlarda varsa o kullanılır)."""
     args = list(args)
+    if cwd is None and "-C" in args[:-1]:
+        cwd = args[args.index("-C") + 1]
     i = 0
     while i < len(args):  # alt komutu bul: "-c a=b" / "-C yol" ikişer, diğer seçenekler birer argüman
         if args[i] in ("-c", "-C"):
@@ -42,7 +134,7 @@ def harden(args: list[str] | tuple[str, ...]) -> list[str]:
             break
     if i < len(args) and args[i] in _DIFF_CMDS:
         args[i + 1:i + 1] = ["--no-ext-diff", "--no-textconv"]
-    return config_args() + args
+    return config_args() + repo_overrides(cwd) + args
 
 
 # ------------------------------------------------------------------------------------------- iz

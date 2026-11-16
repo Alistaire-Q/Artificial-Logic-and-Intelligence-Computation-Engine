@@ -273,7 +273,7 @@ def _git(cwd: Path, *args: str, timeout: int = 60) -> subprocess.CompletedProces
     # içeren fark/dosya içeriği UnicodeDecodeError ile ajanın adımını düşürür. Konsol penceresi de açılmasın.
     from alice.gitsafe import harden  # sandbox'ın .git'e bıraktığı hook/fsmonitor ALICE'in git'iyle çalışmasın
 
-    return subprocess.run(["git", "-C", str(cwd), *harden(args)], capture_output=True, text=True, encoding="utf-8",
+    return subprocess.run(["git", "-C", str(cwd), *harden(args, cwd)], capture_output=True, text=True, encoding="utf-8",
                           errors="replace", timeout=timeout, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
 
 
