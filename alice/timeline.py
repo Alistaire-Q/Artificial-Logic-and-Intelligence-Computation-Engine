@@ -228,6 +228,7 @@ class Recorder:
 
     def __post_init__(self) -> None:
         self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
         self._last_small = None
         self._last_text = ""
         self._pruned = 0.0
@@ -272,11 +273,20 @@ class Recorder:
                 pass
 
     def start(self) -> "Recorder":
-        threading.Thread(target=self.run, daemon=True, name="alice-timeline").start()
+        self._thread = threading.Thread(target=self.run, daemon=True, name="alice-timeline")
+        self._thread.start()
         return self
 
-    def stop(self) -> None:
+    def stop(self, timeout: float = 5.0) -> None:
+        """Kaydı durdur, süren kareyi bekle ve veritabanını kapat (çekirdek kapanırken yarım yazma kalmasın)."""
         self._stop.set()
+        t = self._thread
+        if t is not None and t is not threading.current_thread():
+            t.join(timeout)
+        try:
+            self.timeline.close()
+        except Exception:  # noqa: BLE001 - kapanışta hata çekirdeğin kapanmasını engellemesin
+            pass
 
 
 def fmt(rows: list[dict[str, Any]]) -> str:

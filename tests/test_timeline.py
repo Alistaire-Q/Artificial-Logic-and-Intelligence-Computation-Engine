@@ -136,3 +136,13 @@ def test_default_off():
     from alice.config import default_config_dict
 
     assert default_config_dict()["timeline"]["enabled"] is False
+
+
+def test_recorder_stop_joins_thread_and_closes_timeline(tl):
+    r = recorder(tl, [], [])
+    r.cfg["every"] = 5
+    r.start()
+    r.stop(timeout=2)
+    assert not r._thread.is_alive()
+    tl.add("a", "b", "c", 1.0)  # kapandıktan sonra yazma sessizce düşer
+    r.stop()  # ikinci kez sorun değil
