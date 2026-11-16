@@ -50,16 +50,19 @@ def log(tool: str, summary: str, outcome: str, args: dict[str, Any] | None = Non
 def recent(limit: int = 50, since: float = 0.0) -> list[dict[str, Any]]:
     """En yeniden eskiye."""
     try:
-        lines = path().read_text(encoding="utf-8").splitlines()
+        # Yarım yazılmış (çökme/elektrik kesintisi) satırdaki bozuk bayt UnicodeDecodeError ile bütün kaydı
+        # okunmaz yapıyordu ("bugün kime ne yazdın" sorusu hata veriyordu).
+        lines = path().read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return []
     out = []
     for line in reversed(lines):
         try:
             row = json.loads(line)
-        except ValueError:
+            ts = float(row.get("ts") or 0)
+        except (ValueError, TypeError, AttributeError):
             continue
-        if float(row.get("ts") or 0) < since:
+        if ts < since:
             break
         out.append(row)
         if len(out) >= limit:
