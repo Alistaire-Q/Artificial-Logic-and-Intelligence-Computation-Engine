@@ -613,6 +613,14 @@ def known_folder(path: str) -> Path | None:
         p = Path.home() / cand
         if p.is_dir():
             return p
+    if KNOWN_FOLDERS.get(key) == ["Downloads"]:
+        # Taşınmış İndirilenler (Özellikler > Konum, başka disk) ~/Downloads'ta değil: Windows'un bildiği konum.
+        # Eskiden None dönüp "klasör yok: <çalışma klasörü>/İndirilenler" deniyordu.
+        from alice.tools.fetch_file import downloads_dir
+
+        p = downloads_dir()
+        if p.is_dir():
+            return p
     return None
 
 

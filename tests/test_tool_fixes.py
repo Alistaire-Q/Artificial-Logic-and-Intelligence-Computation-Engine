@@ -144,3 +144,17 @@ def test_process_wait_sees_last_line_written_just_before_exit(ctx, workdir):
     ctx.state["bg_procs"] = {7: BgProc(7, "x", Pop(), log, 0.0)}
     r = ProcessWait().run(ctx, pid=7, pattern="error", timeout=5)
     assert "desen göründü" in r.text and "ERROR boom" in r.text
+
+
+def test_moved_downloads_folder_is_found(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from alice.tools import fetch_file, files, findfiles
+
+    moved = tmp_path / "D" / "Indirmeler"
+    moved.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    monkeypatch.setattr(fetch_file, "downloads_dir", lambda: moved)
+    assert files.known_folder("İndirilenler") == moved
+    assert findfiles.downloads_dir() == moved

@@ -38,12 +38,17 @@ def home() -> Path:
 
 
 def downloads_dir() -> Path:
-    return home() / "Downloads"
+    """Kullanıcının gerçek İndirilenler klasörü: başka diske/klasöre taşınmışsa (Özellikler > Konum) ~/Downloads
+    değil orası; eskiden taşınmış klasörde "bulunamadı" deniyordu."""
+    from alice.tools.fetch_file import downloads_dir as known
+
+    p = home() / "Downloads"
+    return p if p.is_dir() else known()
 
 
 def search_roots() -> list[Path]:
     h = home()
-    roots = [h / "Desktop", h / "Documents", h / "Downloads", h / "Pictures", h / "Videos"]
+    roots = [h / "Desktop", h / "Documents", downloads_dir(), h / "Pictures", h / "Videos"]
     roots += [p for p in h.glob("OneDrive*") if p.is_dir()]
     return [r for r in roots if r.is_dir()]
 
