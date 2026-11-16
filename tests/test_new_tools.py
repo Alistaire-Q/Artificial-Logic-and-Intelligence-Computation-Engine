@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from alice.config import alice_home
 from alice.tools import ToolContext, groups
 from alice.tools import files as files_mod
 from alice.tools.base import DANGER, WRITE, ToolError
@@ -112,17 +113,22 @@ def test_apply_patch_add_update_delete(ctx, workdir):
     (workdir / "src").mkdir()
     (workdir / "src" / "a.py").write_text("def foo():\n    return 1\n\ndef bar():\n    return 1\n", encoding="utf-8")
     (workdir / "old.txt").write_text("eski\n", encoding="utf-8")
+    ReadFile().run(ctx, path="src/a.py")
     r = ApplyPatch().run(ctx, patch="```\n" + PATCH + "\n```")
     assert "M src/a.py" in r.text and "A src/new.py" in r.text and "D old.txt" in r.text
     assert (workdir / "src" / "a.py").read_text(encoding="utf-8") == "def foo():\n    return 10\n\ndef bar():\n    return 1\n"
     assert (workdir / "src" / "new.py").read_text(encoding="utf-8") == "X = 1\nY = 2\n"
     assert not (workdir / "old.txt").exists()
+    trashed = list((alice_home() / "trash").rglob("old.txt"))  # kalıcı silinmedi, ALICE çöpünde
+    assert len(trashed) == 1 and trashed[0].read_text(encoding="utf-8") == "eski\n"
+    assert "çöpünde" in r.text
     assert "+    return 10" in r.diff
     assert str(workdir / "old.txt") in ctx.state["checkpoint"]
 
 
 def test_apply_patch_is_all_or_nothing(ctx, workdir):
     (workdir / "a.txt").write_text("bir\niki\n", encoding="utf-8")
+    ReadFile().run(ctx, path="a.txt")
     patch = ("*** Begin Patch\n*** Update File: a.txt\n-bir\n+BİR\n*** Update File: a.txt\n-yok\n+x\n"
              "*** End Patch")
     with pytest.raises(ToolError, match="bulunamadı"):
@@ -132,12 +138,32 @@ def test_apply_patch_is_all_or_nothing(ctx, workdir):
 
 def test_apply_patch_whitespace_tolerance_crlf_and_move(ctx, workdir):
     (workdir / "w.cs").write_bytes(b"class A {\r\n    int x;  \r\n}\r\n")
+    ReadFile().run(ctx, path="w.cs")
     patch = ("*** Begin Patch\n*** Update File: w.cs\n*** Move to: lib/W.cs\n class A {\n-    int x;\n+    int y;\n }\n"
              "*** End Patch")
     r = ApplyPatch().run(ctx, patch=patch)
     assert "R w.cs -> lib/W.cs" in r.text
     assert not (workdir / "w.cs").exists()
     assert (workdir / "lib" / "W.cs").read_bytes() == b"class A {\r\n    int y;\r\n}\r\n"
+
+
+def test_apply_patch_update_requires_read_like_edit_file(ctx, workdir):
+    # edit_file gibi: okunmamış ya da okunduktan sonra değişmiş dosya yamayla düzenlenmez.
+    f = workdir / "r.txt"
+    f.write_text("bir\n", encoding="utf-8")
+    patch = "*** Begin Patch\n*** Update File: r.txt\n-bir\n+BIR\n*** End Patch"
+    with pytest.raises(ToolError, match="okunmadı"):
+        ApplyPatch().run(ctx, patch=patch)
+    ReadFile().run(ctx, path="r.txt")
+    f.write_text("bir\nek\n", encoding="utf-8")  # okunduktan sonra dışarıdan değişti
+    with pytest.raises(ToolError, match="değişti"):
+        ApplyPatch().run(ctx, patch=patch)
+    assert f.read_text(encoding="utf-8") == "bir\nek\n"
+    ReadFile().run(ctx, path="r.txt")
+    ApplyPatch().run(ctx, patch=patch)
+    # Yamanın yazdığı hâl okunmuş sayılır: hemen ardından tekrar düzenlenebilir.
+    ApplyPatch().run(ctx, patch="*** Begin Patch\n*** Update File: r.txt\n-ek\n+EK\n*** End Patch")
+    assert f.read_text(encoding="utf-8") == "BIR\nEK\n"
 
 
 def test_apply_patch_rejects_bad_input(ctx, workdir):

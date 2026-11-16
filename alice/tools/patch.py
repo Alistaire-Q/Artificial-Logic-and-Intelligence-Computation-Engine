@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from alice.tools.base import WRITE, Tool, ToolContext, ToolError, ToolResult, make_diff, obj
-from alice.tools.files import _read_text, snapshot
+from alice.tools.files import FileOps, _read_text, mark_read, require_read, snapshot
 
 BEGIN, END = "*** Begin Patch", "*** End Patch"
 ADD, DELETE, UPDATE, MOVE, EOF_ = "*** Add File: ", "*** Delete File: ", "*** Update File: ", "*** Move to: ", \
@@ -153,7 +153,8 @@ class ApplyPatch(Tool):
         "*** Begin Patch\n*** Update File: src/a.py\n@@ def foo():\n bağlam satırı\n-eski satır\n+yeni satır\n"
         "*** Add File: src/b.py\n+yeni dosyanın satırı\n*** Delete File: eski.txt\n*** End Patch\n"
         "Update içinde değişikliğin önüne ve arkasına 3 satır bağlam koy (' ' ile); '@@ <satır>' yeri daraltır. "
-        "Taşımak için Update File'ın hemen altına '*** Move to: yeni/yol'.")
+        "Taşımak için Update File'ın hemen altına '*** Move to: yeni/yol'. Update edilecek dosyayı önce read_file ile "
+        "oku (edit_file gibi); Delete File dosyayı ALICE çöpüne taşır.")
     parameters = obj({"patch": {"type": "string", "description": "'*** Begin Patch' ile başlayıp '*** End Patch' ile "
                                 "biten yama metninin tamamı. Yollar çalışma klasörüne göre."}}, ["patch"])
     risk = WRITE
@@ -168,7 +169,9 @@ class ApplyPatch(Tool):
     def run(self, ctx: ToolContext, patch: str) -> ToolResult:
         ops = parse_patch(patch)
         # Önce her şeyi bellekte hazırla; hata olursa diske hiçbir şey yazılmadan dön.
-        writes: list[tuple[Path, str | None, str]] = []  # (yol, yeni içerik ya da None=sil, gösterilen ad)
+        # (yol, yeni içerik ya da None=kaldır, gösterilen ad, çöpe mi). Delete File çöpe gider (file_ops delete
+        # gibi, geri alınabilir); Move to'nun kaynağı ise içeriği hedefe yazıldığı için doğrudan kaldırılır.
+        writes: list[tuple[Path, str | None, str, bool]] = []
         diffs: list[str] = []
         report: list[str] = []
         for op in ops:
@@ -177,40 +180,49 @@ class ApplyPatch(Tool):
                 if p.exists():
                     raise ToolError(f"{op.path} zaten var; değiştirmek için '*** Update File:' kullan")
                 body = "\n".join(op.content) + ("\n" if op.content else "")
-                writes.append((p, body, op.path))
+                writes.append((p, body, op.path, False))
                 diffs.append(make_diff(op.path, "", body))
                 report.append(f"A {op.path}")
             elif op.kind == "delete":
                 if not p.is_file():
                     raise ToolError(f"silinecek dosya yok: {op.path}")
-                writes.append((p, None, op.path))
+                writes.append((p, None, op.path, True))
                 diffs.append(make_diff(op.path, _read_text(p), ""))
                 report.append(f"D {op.path}")
             else:
                 if not p.is_file():
                     raise ToolError(f"düzenlenecek dosya yok: {op.path}")
+                require_read(ctx, p)  # edit_file ile aynı kural: okunmamış/okunduktan sonra değişmiş dosya düzenlenmez
                 before = _read_text(p)
                 after = apply_chunks(before, op.chunks, op.path) if op.chunks else before
                 if op.move_to:
                     dest = ctx.resolve(op.move_to)
                     if dest.exists():
                         raise ToolError(f"taşıma hedefi zaten var: {op.move_to}")
-                    writes += [(dest, after, op.move_to), (p, None, op.path)]
+                    writes += [(dest, after, op.move_to, False), (p, None, op.path, False)]
                     report.append(f"R {op.path} -> {op.move_to}")
                 else:
-                    writes.append((p, after, op.path))
+                    writes.append((p, after, op.path, False))
                     report.append(f"M {op.path}")
                 diffs.append(make_diff(op.move_to or op.path, before.replace("\r\n", "\n"),
                                        after.replace("\r\n", "\n")))
-        for p, _body, _ in writes:
+        for p, _body, _, _ in writes:
             snapshot(ctx, p)
-        for p, body, _ in writes:
+        trashed: list[str] = []
+        for p, body, name, to_trash in writes:
             if body is None:
-                p.unlink()
+                if to_trash:
+                    trashed.append(f"{name} -> {FileOps._trash(ctx, p)}")
+                else:
+                    p.unlink()
             else:
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text(body, encoding="utf-8", newline="")
-        return ToolResult("yama uygulandı:\n" + "\n".join(report), diff="\n".join(d for d in diffs if d))
+                mark_read(ctx, p)  # kendi yazdığı hâli biliyor: ardından tekrar düzenleyebilsin
+        text = "yama uygulandı:\n" + "\n".join(report)
+        if trashed:
+            text += "\nsilinenler ALICE çöpünde:\n" + "\n".join(trashed)
+        return ToolResult(text, diff="\n".join(d for d in diffs if d))
 
 
 TOOLS = [ApplyPatch()]
