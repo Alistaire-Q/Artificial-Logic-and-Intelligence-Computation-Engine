@@ -83,3 +83,14 @@ def test_record_answer_concurrent_writers_keep_every_row(workdir):
     lines = perm.history_path().read_text(encoding="utf-8").splitlines()
     assert len(lines) == 60
     assert not list(perm.history_path().parent.glob("*.tmp"))
+
+
+def test_suggestions_skip_corrupt_rows(workdir):
+    """Bozuk satır ya da "rule"suz kayıt önerilerin hepsini yok etmez."""
+    rc = RunCommand()
+    for _ in range(3):
+        perm.record_answer(rc, {"command": "npm test"}, workdir, "exec", "y")
+    p = perm.history_path()
+    p.write_text(p.read_text(encoding="utf-8") + '{"yarım\n{"tool": "x", "answer": "y"}\n[1, 2]\n'
+                 '{"rule": "r", "ts": "dün"}\n', encoding="utf-8")
+    assert [s["rule"] for s in perm.suggestions(workdir)] == ["run_command(npm test*)"]

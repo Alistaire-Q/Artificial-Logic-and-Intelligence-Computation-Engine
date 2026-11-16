@@ -303,18 +303,26 @@ def suggestions(cwd: Path | None = None, min_yes: int = 3) -> list[dict[str, Any
     import json
 
     try:
-        rows = [json.loads(ln) for ln in history_path().read_text(encoding="utf-8").splitlines() if ln.strip()]
-    except (OSError, ValueError):
+        text = history_path().read_text(encoding="utf-8", errors="replace")
+    except OSError:
         return []
     stats: dict[str, dict[str, Any]] = {}
-    for r in rows:
-        if cwd is not None and r.get("cwd") and Path(r["cwd"]) != Path(cwd):
+    for ln in text.splitlines():
+        # Bozuk bir satır (yarım yazma, elle düzenleme) ya da "rule"suz kayıt önerilerin tamamını yok etmesin: atla.
+        try:
+            r = json.loads(ln) if ln.strip() else None
+            if not isinstance(r, dict) or not isinstance(r.get("rule"), str) or not r["rule"]:
+                continue
+            if cwd is not None and r.get("cwd") and Path(str(r["cwd"])) != Path(cwd):
+                continue
+            ts = int(r.get("ts") or 0)
+        except (ValueError, TypeError):
             continue
-        s = stats.setdefault(r["rule"], {"rule": r["rule"], "tool": r["tool"], "yes": 0, "no": 0, "risky": False,
-                                         "last": 0})
+        s = stats.setdefault(r["rule"], {"rule": r["rule"], "tool": str(r.get("tool") or ""), "yes": 0, "no": 0,
+                                         "risky": False, "last": 0})
         s["yes" if r.get("answer") in ("y", "a", "p") else "no"] += 1
         s["risky"] = s["risky"] or r.get("risk") in (DANGER, SEND)
-        s["last"] = max(s["last"], int(r.get("ts") or 0))
+        s["last"] = max(s["last"], ts)
     have = set(project_rules(cwd).get("allow", [])) if cwd is not None else set()
     out = [s for s in stats.values() if s["yes"] >= min_yes and not s["no"] and not s["risky"] and s["rule"] not in have]
     return sorted(out, key=lambda s: (-s["yes"], -s["last"]))
