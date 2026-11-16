@@ -63,3 +63,28 @@ def test_read_offset_past_end_is_error_not_empty(ctx, workdir):
         ReadFile().run(ctx, path="r.txt", offset=50)
     (workdir / "e.txt").write_text("", encoding="utf-8")
     assert "boş dosya" in ReadFile().run(ctx, path="e.txt").text
+
+
+def _case_insensitive_fs(path) -> bool:
+    probe = path / "CaseProbe.tmp"
+    probe.write_text("x")
+    try:
+        return (path / "caseprobe.tmp").exists()
+    finally:
+        probe.unlink()
+
+
+def test_file_ops_case_only_rename(ctx, workdir):
+    from alice.tools.files import FileOps
+
+    if not _case_insensitive_fs(workdir):
+        pytest.skip("büyük/küçük harf duyarlı dosya sistemi")
+    (workdir / "rapor.txt").write_text("içerik", encoding="utf-8")
+    FileOps().run(ctx, action="move", path="rapor.txt", destination="Rapor.txt")
+    assert [p.name for p in workdir.iterdir()] == ["Rapor.txt"]
+    assert (workdir / "Rapor.txt").read_text(encoding="utf-8") == "içerik"
+    (workdir / "proje").mkdir()
+    (workdir / "proje" / "a.txt").write_text("a")
+    FileOps().run(ctx, action="move", path="proje", destination="Proje")
+    assert sorted(p.name for p in workdir.iterdir()) == ["Proje", "Rapor.txt"]
+    assert (workdir / "Proje" / "a.txt").read_text() == "a"

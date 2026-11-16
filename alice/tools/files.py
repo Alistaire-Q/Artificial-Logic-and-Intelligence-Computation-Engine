@@ -911,6 +911,13 @@ def _glob_match(name: str, pattern: str) -> bool:
     return fnmatch.fnmatch(name, pattern)
 
 
+def _same_file(a: Path, b: Path) -> bool:
+    try:
+        return a.exists() and b.exists() and os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
 class FileOps(Tool):
     name = "file_ops"
     description = ("Dosya ve klasör yönetimi: taşı/yeniden adlandır (move), kopyala (copy), sil (delete), klasör aç "
@@ -968,18 +975,33 @@ class FileOps(Tool):
         if not destination:
             raise ToolError(f"{action} için destination gerekli")
         dest = ctx.resolve(destination)
+        given = Path(destination.rstrip("/\\")).name
+        if given and given != dest.name and given.lower() == dest.name.lower():
+            # Windows'ta resolve() var olan dosyanın diskteki harflerini döndürür: "Rapor.txt" hedefi "rapor.txt"
+            # oluyordu. Kullanıcının yazdığı ad korunur.
+            dest = dest.with_name(given)
         into_dir = dest.is_dir() or len(sources) > 1 or destination.endswith(("/", "\\"))
+        if into_dir and _same_file(sources[0], dest) and len(sources) == 1:
+            into_dir = False  # klasörün kendi adını değiştirme (yalnız harf farkı), içine taşıma değil
         if len(sources) > 1 and dest.exists() and not dest.is_dir():
             raise ToolError(f"birden fazla kaynak için destination bir klasör olmalı: {dest}")
         plan = [(s, dest / s.name if into_dir else dest) for s in sources]
         for s, d in plan:
-            if d == s or s in d.parents:
+            case_rename = action == "move" and d.name != s.name and d.parent == s.parent and _same_file(s, d)
+            if not case_rename and (d == s or s in d.parents):
                 raise ToolError(f"{s} kendi içine {action} edilemez")
-            if d.exists() and not overwrite:
+            if d.exists() and not overwrite and not case_rename:
                 raise ToolError(f"hedef zaten var: {d} (üzerine yazmak için overwrite=true)")
         done = []
         for s, d in plan:
             d.parent.mkdir(parents=True, exist_ok=True)
+            if action == "move" and d.name != s.name and d.parent == s.parent and _same_file(s, d):
+                # Windows'ta yalnız büyük/küçük harf değişen ad ("rapor.txt" -> "Rapor.txt"): hedef "var" görünür
+                # ama kaynağın kendisidir. Eskiden overwrite=true ile kaynak çöpe atılıp taşıma patlıyordu.
+                snapshot(ctx, s)
+                os.rename(s, d)
+                done.append(f"{s} -> {d}")
+                continue
             if d.exists():
                 self._trash(ctx, d)
             if action == "move":
