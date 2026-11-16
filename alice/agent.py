@@ -1153,12 +1153,13 @@ class Agent:
                 continue
             early = self._take_early(calls[i])
             if early is not None:  # cevap akarken başlatılmıştı: sonucu hazır (ya da az kaldı)
-                tool, summary, fut = early
+                tool, args, summary, fut = early
                 self.ui.tool_start(calls[i]["id"], tool.name, summary)
                 try:
                     res = fut.result()
                 except Exception as e:  # noqa: BLE001
                     res = ToolResult(f"{type(e).__name__}: {e}", is_error=True)
+                self._note_read(tool, args, res)
                 self.ui.tool_end(calls[i]["id"], tool.name, res)
                 results[i] = self._fence(tool, res)
                 i += 1
@@ -1189,8 +1190,9 @@ class Agent:
                     self.ui.tool_start(calls[idx]["id"], tool.name, summary)
                 with ThreadPoolExecutor(max_workers=min(8, len(batch))) as pool:
                     futures = {idx: pool.submit(self._run_tool, tool, args) for idx, (tool, args, _) in batch}
-                    for idx, (tool, _, _) in batch:
+                    for idx, (tool, args, _) in batch:
                         results[idx] = futures[idx].result()
+                        self._note_read(tool, args, results[idx])
                         self.ui.tool_end(calls[idx]["id"], tool.name, results[idx])
                         results[idx] = self._fence(tool, results[idx])
             i = j
@@ -1218,7 +1220,7 @@ class Agent:
     def _early_clear(self) -> None:
         self.__dict__["_early"] = {}
 
-    def _take_early(self, call: dict[str, Any]) -> tuple[Tool, str, Any] | None:
+    def _take_early(self, call: dict[str, Any]) -> tuple[Tool, dict[str, Any], str, Any] | None:
         e = self.__dict__.get("_early", {}).pop(call.get("id"), None)
         if e is None:
             return None
@@ -1229,7 +1231,7 @@ class Agent:
             return None
         if final != args or call["function"].get("name") != tool.name:
             return None  # son hâli farklı: normal yoldan yeniden çalışır
-        return tool, summary, fut
+        return tool, args, summary, fut
 
     def _parallel_ok(self, prep: tuple[Tool, dict[str, Any], str]) -> bool:
         tool, args, _ = prep
@@ -1356,14 +1358,8 @@ class Agent:
         self.ui.tool_start(call["id"], tool.name, summary)
         watch = self._watch(tool, args)
         result = self._run_tool(tool, args)
-        if tool.name == "read_file" and not result.is_error and args.get("path"):
-            try:
-                from alice import magicdocs
-
-                magicdocs.note_read(self.ctx.state, self.ctx.resolve(str(args["path"])))
-            except Exception:  # noqa: BLE001 - sihirli belge kaydı aracı bozmasın
-                pass
-        note = self.__dict__.get("_hook_notes", {}).pop(call["id"], "")
+        self._note_read(tool, args, result)
+        note =self.__dict__.get("_hook_notes", {}).pop(call["id"], "")
         if note:
             from dataclasses import replace
 
@@ -1390,6 +1386,18 @@ class Agent:
         self._log_outward(tool, args, summary, "failed" if result.is_error else "sent", result.text)
         self.ui.tool_end(call["id"], tool.name, result)
         return self._fence(tool, result)
+
+    def _note_read(self, tool: Tool, args: dict[str, Any], result: ToolResult) -> None:
+        """Okunan sihirli belgeyi (# MAGIC DOC:) kaydet. Sıralı, paralel ve erken başlatılan yolların hepsinde
+        çağrılır: read_file paralel güvenli olduğu için çoğu zaman o yollardan geçiyor, belge hiç kaydedilmiyordu."""
+        if tool.name != "read_file" or result.is_error or not args.get("path"):
+            return
+        try:
+            from alice import magicdocs
+
+            magicdocs.note_read(self.ctx.state, self.ctx.resolve(str(args["path"])))
+        except Exception:  # noqa: BLE001 - sihirli belge kaydı aracı bozmasın
+            pass
 
     def _watch(self, tool: Tool, args: dict[str, Any]):
         """Ekranı etkileyen eylem (tıklama, tuş, program açma, komut) öncesi pencereleri not al; sonra ne değiştiği
