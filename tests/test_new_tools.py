@@ -72,6 +72,23 @@ def test_grep_brace_glob_and_offset(grep_ctx):
     assert "offset=" not in rest and len(rest.splitlines()) == 2
 
 
+def test_grep_path_glob_matches_relative_path_like_rg(grep_ctx, workdir):
+    # Python yedeği eskiden glob'u yalnız dosya adına uyguluyordu: 'src/**/*.py' hiçbir şey bulmuyordu.
+    (workdir / "src" / "deep").mkdir()
+    (workdir / "src" / "deep" / "c.py").write_text("foo = 1\n", encoding="utf-8")
+    (workdir / "lib" / "src").mkdir(parents=True)
+    (workdir / "lib" / "src" / "d.py").write_text("foo = 2\n", encoding="utf-8")
+
+    def files(glob):
+        out = Grep().run(grep_ctx, pattern="foo", glob=glob, output_mode="files_with_matches").text
+        return sorted(ln.replace("\\", "/") for ln in out.splitlines() if ln.endswith(".py"))
+
+    assert files("src/**/*.py") == ["src/a.py", "src/deep/c.py"]
+    assert files("src/*.py") == ["src/a.py"]
+    assert files("src/**/*.{py,ts}") == ["src/a.py", "src/deep/c.py"]
+    assert files("*.py") == ["lib/src/d.py", "src/a.py", "src/deep/c.py"]
+
+
 def test_grep_missing_path(ctx):
     with pytest.raises(ToolError, match="yol yok"):
         Grep().run(ctx, pattern="x", path="yok")
