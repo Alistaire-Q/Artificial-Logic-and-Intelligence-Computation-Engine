@@ -303,6 +303,23 @@ def test_broken_update_rolls_back_and_is_skipped(repos, monkeypatch, offline):
     assert rb["from"] == bad and rb["to"] == old and updater.consume_rollback("app") is None
 
 
+def test_forced_update_rollback_keeps_uncommitted_changes(repos, monkeypatch, offline):
+    """--force kirli ağaçta çekip duman testi düşünce geri alma kullanıcının kaydedilmemiş işini silmemeli."""
+    clone, origin = repos
+    point_at(monkeypatch, clone)
+    old = git(clone, "rev-parse", "HEAD")
+    (origin / "kirik_mod.py").write_text("def (:\n", encoding="utf-8")
+    git(origin, "add", "-A")
+    git(origin, "commit", "-qm", "kırık")
+    (clone / "alice" / "__init__.py").write_text("# elle değiştirdim\n", encoding="utf-8")
+    monkeypatch.setattr(updater, "SMOKE_MODULES", ("kirik_mod",))
+    cfg = make_config({"brain": ["a:m"]})
+    ok, msg = updater.apply_update(updater.check(cfg), cfg, force=True)
+    assert not ok and "önceki sürüme dönüldü" in msg
+    assert git(clone, "rev-parse", "HEAD") == old
+    assert (clone / "alice" / "__init__.py").read_text(encoding="utf-8") == "# elle değiştirdim\n"
+
+
 def test_crashing_boots_roll_back(repos, monkeypatch, offline):
     clone, origin = repos
     point_at(monkeypatch, clone)

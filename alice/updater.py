@@ -647,8 +647,13 @@ def smoke_test(repo: Path, timeout: float = 180.0) -> str:
 
 
 def rollback(repo: Path, good: str, bad: str, reason: str) -> bool:
-    """Çalışma ağacını iyi commit'e döndür, kötüyü bir daha otomatik çekilmesin diye işaretle."""
-    code, _ = _git(["reset", "--hard", good], repo, timeout=60)
+    """Çalışma ağacını iyi commit'e döndür, kötüyü bir daha otomatik çekilmesin diye işaretle.
+
+    --keep: `alice update --force` kirli ağaçta çekip duman testi düşünce --hard kullanıcının kaydedilmemiş
+    değişikliklerini siliyordu. --keep onları korur (fast-forward zaten çakışan dosyalara dokunmamıştı)."""
+    code, _ = _git(["reset", "--keep", good], repo, timeout=60)
+    if code != 0 and not is_dirty(repo):
+        code, _ = _git(["reset", "--hard", good], repo, timeout=60)
     st = read_state()
     bads = [b for b in (st.get("bad") or []) if b != bad][-20:] + [bad]
     write_state(bad=bads, local=good, pending_health="", bad_boots=0,
