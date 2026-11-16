@@ -183,6 +183,10 @@ class WebFetch(Tool):
             ctype = r.headers.get("content-type", "").lower()
             if "pdf" in ctype or (not ctype and str(r.url).lower().endswith(".pdf")):
                 body = _pdf_text(r.content)
+            elif not _looks_textual(ctype, r.content):
+                # Resim, zip, exe...: r.text anlamsız karakter yığını döndürüp bağlamı dolduruyordu.
+                body = (f"[ikili içerik: {ctype or 'türü belirtilmemiş'}, {len(r.content)} bayt - metin olarak "
+                        "gösterilemez. İndirmek için run_command (ör. Invoke-WebRequest -OutFile) kullan.]")
             else:
                 body = r.text
                 if not raw and "html" in ctype:
@@ -203,6 +207,27 @@ class WebFetch(Tool):
                 return ToolResult(head + answer)
         limit = int(ctx.config.agent.get("tool_output_chars", 12000))
         return ToolResult(head + _paginate(body, start, limit), is_error=status >= 400)
+
+
+_TEXT_CTYPE = ("text/", "json", "xml", "javascript", "ecmascript", "html", "yaml", "toml", "csv",
+               "x-www-form-urlencoded", "graphql", "sql")
+
+
+def _looks_textual(ctype: str, data: bytes) -> bool:
+    """Metin türü bildirilmişse metin; değilse (octet-stream, boş tür) ilk baytlara bak: NUL yoksa ve UTF-8
+    olarak çözülüyorsa metin say."""
+    if any(t in ctype for t in _TEXT_CTYPE):
+        return True
+    head = data[:4096]
+    if b"\0" in head:
+        return False
+    import codecs
+
+    try:
+        codecs.getincrementaldecoder("utf-8")().decode(head, final=False)
+    except UnicodeDecodeError:
+        return False
+    return True
 
 
 def _pdf_text(data: bytes) -> str:
