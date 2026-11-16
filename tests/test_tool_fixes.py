@@ -88,3 +88,37 @@ def test_file_ops_case_only_rename(ctx, workdir):
     FileOps().run(ctx, action="move", path="proje", destination="Proje")
     assert sorted(p.name for p in workdir.iterdir()) == ["Proje", "Rapor.txt"]
     assert (workdir / "Proje" / "a.txt").read_text() == "a"
+
+
+def test_apply_patch_two_updates_same_file_both_kept(ctx, workdir):
+    from alice.tools.patch import ApplyPatch
+
+    (workdir / "a.py").write_text("x = 1\ny = 2\nz = 3\n", encoding="utf-8")
+    patch = ("*** Begin Patch\n*** Update File: a.py\n-x = 1\n+x = 10\n"
+             "*** Update File: a.py\n-z = 3\n+z = 30\n*** End Patch")
+    ApplyPatch().run(ctx, patch=patch)
+    assert (workdir / "a.py").read_text(encoding="utf-8") == "x = 10\ny = 2\nz = 30\n"
+
+
+def test_apply_patch_keeps_encoding_and_marks_read(ctx, workdir):
+    from alice.tools.patch import ApplyPatch
+
+    f = workdir / "s.ps1"
+    f.write_bytes("﻿Write-Host 'ç'\r\n".encode("utf-8"))
+    g = workdir / "u.txt"
+    g.write_bytes("şey\r\n".encode("utf-16"))
+    patch = ("*** Begin Patch\n*** Update File: s.ps1\n-Write-Host 'ç'\n+Write-Host 'ğ'\n"
+             "*** Update File: u.txt\n*** Move to: v.txt\n-şey\n+öz\n*** End Patch")
+    ApplyPatch().run(ctx, patch=patch)
+    assert f.read_bytes() == "﻿Write-Host 'ğ'\r\n".encode("utf-8")
+    assert not g.exists() and (workdir / "v.txt").read_bytes() == "öz\r\n".encode("utf-16")
+    # yamanın yazdığı dosya hemen edit_file ile düzenlenebilmeli
+    EditFile().run(ctx, path="s.ps1", old_string="ğ", new_string="ü")
+
+
+def test_apply_patch_add_then_delete_same_file(ctx, workdir):
+    from alice.tools.patch import ApplyPatch
+
+    patch = "*** Begin Patch\n*** Add File: t.txt\n+a\n*** Delete File: t.txt\n*** End Patch"
+    ApplyPatch().run(ctx, patch=patch)
+    assert not (workdir / "t.txt").exists()
