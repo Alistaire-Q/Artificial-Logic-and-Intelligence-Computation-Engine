@@ -130,8 +130,10 @@ class RuleSet:
         # Sonradan eklenen varsayılan kural eski rules.json'a da girsin; kullanıcı onu silmişse geri gelmesin.
         have = {r.id for r in rules}
         removed = self._removed()
+        # Varsayılanlardan hiçbiri yoksa kullanıcı hepsini silmiş: yenisini de dayatma.
+        had_defaults = bool(have & {r.id for r in DEFAULT_RULES if r.id not in ADDED_LATER})
         added = [Rule.from_dict(asdict(r)) for r in DEFAULT_RULES
-                 if r.id in ADDED_LATER and r.id not in have and r.id not in removed]
+                 if had_defaults and r.id in ADDED_LATER and r.id not in have and r.id not in removed]
         self.rules = rules + added
         if added:
             self.save()
