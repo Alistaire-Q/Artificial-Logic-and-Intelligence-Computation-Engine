@@ -20,8 +20,8 @@ from alice.decider import Decider
 from alice.permissions import Permissions
 from alice.prompts import COMPACT_PROMPT, build_system_prompt
 from alice.providers.openai_compat import ChatResult, StreamCancelled
-from alice.providers.router import (AllProvidersFailed, Router, cached_tokens, estimate_tokens,  # noqa: F401
-                                   strip_images)
+from alice.providers.router import (AllProvidersFailed, Router, cache_write_tokens, cached_tokens,  # noqa: F401
+                                    estimate_tokens, strip_images)
 from alice.tools.base import COMPUTER, DANGER, SEND, Tool, ToolContext, ToolError, ToolResult, check_args, truncate, unknown_params
 
 # Yutulan hatalar için iz: varsayılan olarak sessiz, `logging.basicConfig(level=logging.DEBUG)` ile görünür.
@@ -235,6 +235,7 @@ OLD_OUTPUT_CHARS = 1200  # daha eskilerin uzunları bu kadara kısaltılır
 # her adımda değil, toplu ve ancak gerektiğinde yapılır: önbellek zaten soğuduysa (son istekten bu kadar sn sonra)
 # ya da bağlam özetleme eşiğinin yarısını geçtiyse ve kısaltılacak yeterince eski çıktı biriktiyse.
 CACHE_COLD_S = 300
+CACHE_LONG_S = 55 * 60  # cliproxy 1 saatlik önbellek yazıyor; bitime biraz pay
 TRIM_BATCH = 8
 IMAGE_SLACK = 3  # ekran görüntüleri keep_images + bu kadar olunca topluca budanır
 NUDGE_PREFIX = "[devam kontrolü] "
@@ -361,7 +362,7 @@ class Agent:
         self._error_streak = 0
         # Oturum istatistiği (durum çubuğundaki paneller): tur, adım, model ve araç süresi, ilk kelime süresi, token.
         self.stats: dict[str, float] = {"turns": 0, "steps": 0, "llm_s": 0.0, "tool_s": 0.0, "ttft_s": 0.0,
-                                        "ttft_n": 0, "gen_s": 0.0, "gen_tokens": 0, "input": 0, "cached": 0,
+                                        "ttft_n": 0, "gen_s": 0.0, "gen_tokens": 0, "input": 0, "cached": 0, "written": 0,
                                         "output": 0}
         # Kullanım dökümü: tokenlar hangi modele, bağlam hangi araçların çıktısına gitti
         self.usage_models: dict[str, dict[str, float]] = {}
@@ -562,6 +563,7 @@ class Agent:
         try:
             final = self._run_turn(user_text, max_steps, images, recall)
         finally:
+            self._last_turn_role = self.role  # sonraki turun yönlendirmesi önbelleği sıcak modelde kalabilsin
             self.role = old_role
         self._remember_turn(user_text, final)
         return final
@@ -578,17 +580,27 @@ class Agent:
             return None
         from alice.providers import jev_route
 
+        sticky = self._sticky_role(rc)
+        log = getattr(router, "on_event", None) or (lambda s: None)
+        if sticky is not None and self._sticky_skips_jev(rc, sticky):
+            # Önbellek sıcak ve hafif katmana inmeyeceğiz; ağır katmanlar aynı modele gidiyor: Jev'e sormaya gerek yok.
+            log(f"yönlendirme: önbellek sıcak, {sticky} modelinde kalındı (Jev'e sorulmadı)")
+            return None if sticky == "brain" else sticky
         prev = ""
         for m in reversed(self.messages[1:]):
             if m.get("role") == "assistant" and isinstance(m.get("content"), str) and m["content"].strip():
                 prev = m["content"]
                 break
-        log = getattr(router, "on_event", None) or (lambda s: None)
         r = jev_route.route(self.config, user_text, prev, log=log)
         try:
             log(f"yönlendirme: {r.tier} ({r.reason}) {r.signals} {r.latency:.2f} sn")
         except Exception:  # noqa: BLE001
             pass
+        if r.tier == "light" and sticky is not None:
+            # Uzun sohbetin önbelleği ağır modelde sıcak: hafif modele geçmek bütün bağlamı orada önbelleksiz ödetir,
+            # dönüşte de ağır modelin önbelleği yeniden yazılır. Kolay mesaj da aynı modelde kalır.
+            log(f"yönlendirme: önbellek sıcak, hafif model yerine {sticky} modelinde kalındı")
+            return None if sticky == "brain" else sticky
         role = self.ROUTE_ROLES.get(r.tier)
         if role is None:
             return None
@@ -600,6 +612,43 @@ class Agent:
             return None
         router.role_overrides[role] = chain
         return role
+
+    STICKY_TOKENS = 6000  # bağlam bundan kısaysa model değiştirmenin önbellek maliyeti önemsiz
+
+    def _sticky_role(self, rc: dict[str, Any]) -> str | None:
+        """Önceki tur ağır bir modelde (beyin ya da güçlü katman) koştuysa ve önbelleği hâlâ sıcaksa o rol; değilse None.
+        [routing] cache_sticky = false eski davranışı geri getirir (kolay mesajlar her zaman hafif modele)."""
+        prev = getattr(self, "_last_turn_role", None)
+        if not rc.get("cache_sticky", True) or prev not in ("brain", "route-strong"):
+            return None
+        last = getattr(self, "_last_call_at", 0.0)
+        if not last:
+            return None
+        chain = self.router.role_overrides.get(prev) if prev != "brain" else self.router.chain("brain")
+        if not chain:
+            return None
+        ttl = float(rc["cache_sticky_minutes"]) * 60 if rc.get("cache_sticky_minutes") else \
+            self._cache_ttl(str(chain[0])) - 30
+        if time.monotonic() - last > ttl:
+            return None
+        try:
+            if self.context_tokens() < int(rc.get("cache_sticky_tokens", self.STICKY_TOKENS)):
+                return None
+        except Exception:  # noqa: BLE001 - ölçemiyorsak eski davranış
+            return None
+        return prev
+
+    def _sticky_skips_jev(self, rc: dict[str, Any], sticky: str) -> bool:
+        """Önbellekte kalınacaksa Jev'in cevabı sonucu değiştirir mi? Hafif katman zaten engelli; güçlü katman da
+        aynı modelle başlıyorsa Jev çağrısı (ağ gecikmesi) boşuna."""
+        from alice.providers import jev_route
+
+        try:
+            strong = jev_route.tier_chain(self.router, self.config, "strong")
+            current = (self.router.role_overrides.get(sticky) if sticky != "brain" else self.router.chain("brain"))
+        except Exception:  # noqa: BLE001
+            return False
+        return bool(strong and current) and strong[0] == current[0]
 
     def _run_turn(self, user_text: str, max_steps: int | None, images: list[str] | None, recall: str) -> str:
         from alice.mentions import expand_mentions
@@ -817,6 +866,7 @@ class Agent:
         self.__dict__["_turn_tokens"] = self.__dict__.get("_turn_tokens", 0) + fresh + out
         st["input"] += int(u.get("prompt_tokens") or u.get("input_tokens") or 0)
         st["cached"] += cached_tokens(u)
+        st["written"] = st.get("written", 0) + cache_write_tokens(u)
         st["output"] += out
         if first and out and now - first > 0.2:  # akış hızı: yalnız gerçekten akan cevaplarda
             st["gen_s"] += now - first
@@ -826,6 +876,7 @@ class Agent:
         m["calls"] += 1
         m["input"] += int(u.get("prompt_tokens") or u.get("input_tokens") or 0)
         m["cached"] += cached_tokens(u)
+        m["written"] = m.get("written", 0) + cache_write_tokens(u)
         m["output"] += out
         m["seconds"] += now - started
 
@@ -840,7 +891,8 @@ class Agent:
             "tool_s": round(st["tool_s"], 1),
             "ttft": round(st["ttft_s"] / st["ttft_n"], 2) if st["ttft_n"] else 0.0,
             "tps": round(st["gen_tokens"] / st["gen_s"]) if st["gen_s"] else 0,
-            "input": int(st["input"]), "cached": int(st["cached"]), "output": int(st["output"]),
+            "input": int(st["input"]), "cached": int(st["cached"]),
+            "written": int(st.get("written", 0)), "output": int(st["output"]),
             "ctx": {"system": system, "tools": tools, "messages": max(0, total - system - tools), "total": total},
         }
 
@@ -1487,7 +1539,17 @@ class Agent:
             return f"(görüntü açıklanamadı: {str(e)[:200]})"
 
     def _cache_cold(self) -> bool:
-        return bool(self._last_call_at) and time.monotonic() - self._last_call_at > CACHE_COLD_S
+        return bool(self._last_call_at) and time.monotonic() - self._last_call_at > self._cache_ttl()
+
+    def _cache_ttl(self, ref: str | None = None) -> float:
+        """Son modelin prompt önbelleği kaç sn yaşar. cliproxy Claude'a 1 saatlik önbellek yazıyor; diğerleri ~5 dk.
+        Önbellek gerçekten soğumadan geçmişi kısaltmak (5. dakikada) hâlâ sıcak olan önbelleği boşa yakıyordu."""
+        if ref is None:
+            try:
+                ref = self.router.last_ref.get(self.role) or ""
+            except Exception:  # noqa: BLE001
+                ref = ""
+        return CACHE_LONG_S if str(ref).startswith("cliproxy:") else CACHE_COLD_S
 
     def _prune_images(self) -> None:
         idx = [i for i, m in enumerate(self.messages) if m.get("_image")]
@@ -1656,3 +1718,4 @@ class Agent:
 
     def reset(self) -> None:
         self.messages = self.messages[:1]
+        self._last_turn_role = None

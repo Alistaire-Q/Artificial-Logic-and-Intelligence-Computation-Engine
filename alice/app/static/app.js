@@ -1443,7 +1443,8 @@ function renderStats(s, st) {
     more.addEventListener("click", (e) => { e.stopPropagation(); showTokenUsage(); });
     popRows(tok.querySelector(".st-pop"), "Token kullanımı", `${nf(total)} tok`, [
       ["Önbellekten (cache hit)", s.cached ? `%${hit}` : "—"], ["Önbelleksiz girdi", nf((s.input || 0) - (s.cached || 0))],
-      ["Önbellekten girdi", nf(s.cached)], ["Çıktı", nf(s.output)]]);
+      ["Önbellekten girdi", nf(s.cached)], ["Önbelleğe yazılan", s.written ? nf(s.written) : "—"],
+      ["Çıktı", nf(s.output)]]);
     tok.querySelector(".st-pop").appendChild(more);
   }
   const win = st.ctx_window || st.ctx_limit;
@@ -1493,7 +1494,8 @@ function renderUsage(u) {
   box.appendChild(el("div", "sec", "Modeller (girdi + çıktı)"));
   if (u.models && u.models.length) {
     box.appendChild(usageBars(u.models, (m) => m.model, (m) => m.input + m.output,
-      (m) => `${m.calls} çağrı · girdi ${nf(m.input)} (önbellekten ${nf(m.cached)}) · çıktı ${nf(m.output)} · ${fmtDurShort(m.seconds)}`,
+      (m) => `${m.calls} çağrı · girdi ${nf(m.input)} (önbellekten ${nf(m.cached)}` +
+        (m.written ? `, yazılan ${nf(m.written)}` : "") + `) · çıktı ${nf(m.output)} · ${fmtDurShort(m.seconds)}`,
       "var(--accent)"));
   } else box.appendChild(el("div", "note", "Henüz model çağrısı yok."));
   box.appendChild(el("div", "sec", "Araç çıktıları (bağlama eklenen)"));

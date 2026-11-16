@@ -171,7 +171,8 @@ def from_message(msg: Any) -> tuple[dict[str, Any], dict[str, Any]]:
     prompt = (u.input_tokens or 0) + (getattr(u, "cache_read_input_tokens", 0) or 0) + \
         (getattr(u, "cache_creation_input_tokens", 0) or 0)
     return out, {"prompt_tokens": prompt, "completion_tokens": u.output_tokens or 0,
-                 "cached_tokens": getattr(u, "cache_read_input_tokens", 0) or 0}
+                 "cached_tokens": getattr(u, "cache_read_input_tokens", 0) or 0,
+                 "cache_creation_input_tokens": getattr(u, "cache_creation_input_tokens", 0) or 0}
 
 
 class AnthropicProvider:

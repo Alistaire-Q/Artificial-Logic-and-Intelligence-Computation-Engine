@@ -628,6 +628,20 @@ class AppState:
         self.run_in_worker(self._attach_mcp)
         self._start_cliproxy()
 
+    def _watch_quota(self) -> None:
+        """Abonelik hesabı kotası dolmak üzereyse bir kez haber ver (alice/quota_watch.py). [cliproxy] quota_warn = false
+        kapatır."""
+        try:
+            if not bool((self.cfg.data.get("cliproxy", {}) or {}).get("quota_warn", True)):
+                return
+            if getattr(self, "_quota_watch", None) is None:
+                from alice.quota_watch import QuotaWatch
+
+                self._quota_watch = QuotaWatch(lambda s: self.bus.publish({"type": "info", "text": s}))
+            self._quota_watch.maybe_check()
+        except Exception:  # noqa: BLE001 - uyarı yüzünden tur bitişi bozulmasın
+            pass
+
     def _start_cliproxy(self) -> None:
         """Yerel Claude Code proxy'si (CLIProxyAPI) kuruluysa açılışta kendiliğinden başlat."""
         try:
@@ -832,6 +846,7 @@ class AppState:
 
     def _finished(self, chat: Chat) -> None:
         """Sohbetin turu bitti (kendi thread'inde). Öndeki değilse artık işi yok: kapanır."""
+        self._watch_quota()
         with self._chats_lock:
             chat.queued = False
             if chat is self.chat:
