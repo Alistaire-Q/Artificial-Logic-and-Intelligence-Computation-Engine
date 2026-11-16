@@ -15,6 +15,7 @@ Giriş bilgileri ~/.alice/chatgpt-auth.json'da (yalnız kullanıcı okuyabilir);
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
 import json
 import os
@@ -30,8 +31,9 @@ from urllib.parse import parse_qs, urlencode, urlparse
 import httpx
 
 from alice.config import ProviderConfig, alice_home
-from alice.providers.openai_compat import (_TRANSPORT_ERRORS, ChatResult, OpenAICompatProvider, ProviderError,
-                                           StreamCancelled, _transport_error, classify_error, normalize_message)
+from alice.providers.openai_compat import (_TOO_LARGE_HINTS, _TRANSPORT_ERRORS, ChatResult, OpenAICompatProvider,
+                                           ProviderError, StreamCancelled, _transport_error, classify_error,
+                                           normalize_message)
 
 ISSUER = "https://auth.openai.com"
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"  # Codex CLI'ın herkese açık OAuth istemcisi
@@ -61,10 +63,29 @@ def _jwt_claims(token: str) -> dict[str, Any]:
         return {}
 
 
+# Hesap dosyasının oku-değiştir-yaz adımları tek tek: birkaç sohbet aynı anda limit yazıp anahtar yenileyebiliyor.
+# Kilitsizken bir akışın save_limits'i, yenilemenin kaydettiği yeni (tek kullanımlık) refresh_token'ı eski
+# kopyayla eziyordu; sonraki yenileme reddedilip hesaptan çıkılıyordu.
+_store_lock = threading.RLock()
+# Aynı hesabın süresi dolan anahtarı aynı anda tek kez yenilenir: refresh_token tek kullanımlık, ikinci yenileme
+# aynı (artık geçersiz) anahtarla gidip "oturum yenilenemedi" hatası veriyordu.
+_refresh_lock = threading.RLock()
+
+
+def _locked(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Hesap dosyasını okuyup değiştirip yazan işlev _store_lock altında çalışır."""
+    @functools.wraps(fn)
+    def wrapper(*a: Any, **kw: Any) -> Any:
+        with _store_lock:
+            return fn(*a, **kw)
+    return wrapper
+
+
 def _store() -> dict[str, Any]:
     """{"active": anahtar, "accounts": {anahtar: giriş bilgisi}}. Eski tek hesaplı dosya da okunur."""
     try:
-        data = json.loads(auth_path().read_text(encoding="utf-8"))
+        with _store_lock:
+            data = json.loads(auth_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {"active": "", "accounts": {}}
     if not isinstance(data, dict):
@@ -78,11 +99,22 @@ def _store() -> dict[str, Any]:
 def _write(store: dict[str, Any]) -> None:
     p = auth_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(store), encoding="utf-8")
+    # Geçici dosyaya yaz, sonra yerine koy: yarım yazılmış dosyayı okuyan (başka süreç) boş hesap listesi görüp
+    # onu kaydederek bütün hesapları silmesin.
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(store), encoding="utf-8")
     try:
-        os.chmod(p, 0o600)
+        os.chmod(tmp, 0o600)
     except OSError:
         pass
+    try:
+        os.replace(tmp, p)
+    except OSError:  # Windows: hedef o an başka süreçte açıksa yerine konamıyor
+        p.write_text(json.dumps(store), encoding="utf-8")
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 def load_auth(key: str | None = None) -> dict[str, Any]:
@@ -91,6 +123,7 @@ def load_auth(key: str | None = None) -> dict[str, Any]:
     return dict(st["accounts"].get(key or st["active"]) or {})
 
 
+@_locked
 def save_auth(tokens: dict[str, Any], key: str | None = None) -> dict[str, Any]:
     """Giriş ya da yenilemeden gelen anahtarları kaydet. key yoksa (yeni giriş) hesap anahtarlardan bulunur ve seçili
     hesap olur; aynı hesaba tekrar girilirse üzerine yazılır."""
@@ -111,7 +144,9 @@ def save_auth(tokens: dict[str, Any], key: str | None = None) -> dict[str, Any]:
         "email": claims.get("email") or prev.get("email", ""),
         "expires_at": float(_jwt_claims(access).get("exp") or time.time() + 3600),
     }
-    st["accounts"][key] = data
+    # Yenileme hesabın diğer alanlarını (model listesi, limitler, "dolu" işareti) korur: önceden saatlik her
+    # yenilemede silinip dolu hesap boş görünüyor, model menüsü de yeniden "okunuyor"a düşüyordu.
+    st["accounts"][key] = data if select else {**prev, **data}
     if select or not st["active"]:
         st["active"] = key
     _write(st)
@@ -124,6 +159,7 @@ def accounts() -> list[dict[str, Any]]:
             for k, a in st["accounts"].items()]
 
 
+@_locked
 def use(key: str) -> bool:
     """Kayıtlı başka bir hesaba geç (elle)."""
     st = _store()
@@ -134,6 +170,7 @@ def use(key: str) -> bool:
     return True
 
 
+@_locked
 def remove(key: str | None = None) -> bool:
     """Hesabı kaldır (varsayılan: seçili olan); seçili kaldırılırsa kalan ilk hesap seçilir."""
     st = _store()
@@ -153,6 +190,7 @@ def remove(key: str | None = None) -> bool:
     return True
 
 
+@_locked
 def _update(key: str | None, **fields: Any) -> None:
     """key'li hesabın (None: seçili hesap) alanlarını güncelle."""
     st = _store()
@@ -304,6 +342,7 @@ def _used(acc: dict[str, Any], now: float) -> float:
     return worst
 
 
+@_locked
 def _mark_exhausted(reset_in: float | None = None, key: str | None = None) -> None:
     """Kullanım limiti dolan hesabı (key; None: seçili) dolu işaretle: sıradaki seçimde atlanır. reset_in: sunucunun
     söylediği sıfırlanma süresi (sn); bilinmiyorsa kayıtlı pencereninki, o da yoksa 1 saat."""
@@ -430,7 +469,11 @@ def access(client: httpx.Client | None = None, key: str | None = None) -> dict[s
     if not a.get("access_token") and not a.get("refresh_token"):
         raise ProviderError("auth", "ChatGPT'ye giriş yapılmamış (Sistem → Kurulum → ChatGPT ile giriş)")
     if float(a.get("expires_at") or 0) - REFRESH_EARLY < time.time():
-        a = refresh(client, key)
+        key = key or _store()["active"]
+        with _refresh_lock:
+            a = load_auth(key)  # beklerken başka bir istek yenilemiş olabilir: aynı refresh_token'ı tekrar harcama
+            if float(a.get("expires_at") or 0) - REFRESH_EARLY < time.time():
+                a = refresh(client, key)
     return a
 
 
@@ -728,10 +771,12 @@ class ChatGPTProvider(OpenAICompatProvider):
         t0 = time.monotonic()
         text: list[str] = []
         calls: dict[str, dict[str, Any]] = {}
+        closed: set[str] = set()  # argümanları tamamlanan (output_item.done gelen) çağrılar
         usage: dict[str, Any] = {}
         served = model
         finish = ""
         got_data = False
+        completed = False
         try:
             with self._client.stream("POST", f"{self.cfg.base_url}/responses", headers=self._auth_headers(key),
                                      json=body, timeout=httpx.Timeout(self.FIRST_DATA, connect=15.0)) as r:
@@ -772,6 +817,10 @@ class ChatGPTProvider(OpenAICompatProvider):
                             cid = item.get("call_id") or item.get("id") or f"call_{len(calls)}"
                             calls[cid] = {"id": cid, "type": "function", "function": {
                                 "name": item.get("name") or "", "arguments": item.get("arguments") or ""}}
+                            if item.get("id") and item["id"] != cid:
+                                calls.pop(item["id"], None)  # added call_id'siz geldiyse çift çağrı kalmasın
+                            if kind == "response.output_item.done":
+                                closed.add(cid)
                             if on_tool is not None:
                                 on_tool(item.get("name") or "", len(item.get("arguments") or ""))
                             if on_call is not None and kind == "response.output_item.done":
@@ -780,6 +829,7 @@ class ChatGPTProvider(OpenAICompatProvider):
                                 except Exception:  # noqa: BLE001
                                     pass
                     elif kind in ("response.completed", "response.incomplete"):
+                        completed = True
                         resp = ev.get("response") or {}
                         if (resp.get("incomplete_details") or {}).get("reason") == "max_output_tokens":
                             finish = "length"
@@ -795,9 +845,17 @@ class ChatGPTProvider(OpenAICompatProvider):
                             limit_err = ProviderError("rate_limit", f"ChatGPT limiti doldu: {msg}", 429)
                             limit_err.usage_limit = "usage_limit" in code  # kullanım limiti: hesap dolu sayılır
                             raise limit_err
+                        if any(h in f"{code} {msg}".lower() for h in _TOO_LARGE_HINTS):
+                            # Bağlam taşması akış içinde response.failed (context_length_exceeded) olarak geliyor:
+                            # "server" sayılınca router konuşmayı küçültmek yerine modeli bozuk sayıp soğumaya alıyordu.
+                            raise ProviderError("too_large", f"ChatGPT: {msg}")
                         raise ProviderError("server", f"ChatGPT: {msg}")
         except _TRANSPORT_ERRORS as e:
             raise _transport_error(e) from e
+        if not completed and any(cid not in closed for cid in calls):
+            # Akış bitiş olayı gelmeden kesildi ve bir araç çağrısının argümanları yarım (output_item.added'deki
+            # boş metin): önceden çağrı boş argümanla başarılı cevap sayılıp araç öyle çalıştırılıyordu.
+            raise ProviderError("network", "ChatGPT akışı yarıda kesildi (araç çağrısı tamamlanmadı)")
         msg: dict[str, Any] = {"content": "".join(text)}
         if calls:
             msg["tool_calls"] = list(calls.values())

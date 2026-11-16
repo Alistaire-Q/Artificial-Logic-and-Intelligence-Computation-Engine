@@ -153,6 +153,22 @@ def test_messages_are_converted_to_claude_format():
     assert tools == [{"name": "screen", "description": "d", "input_schema": {"type": "object", "properties": {}}}]
 
 
+def test_tool_ids_from_other_providers_are_made_claude_safe():
+    """Konuşmanın önceki adımını Kimi yapmışsa kimlik "functions.read_file:0": Claude bunu 400 ile reddediyordu."""
+    import re
+
+    from alice.providers.anthropic_api import to_messages
+
+    _, msgs = to_messages([
+        {"role": "user", "content": "oku"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "functions.read_file:0", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "functions.read_file:0", "content": "içerik"},
+    ])
+    use, result = msgs[1]["content"][0], msgs[2]["content"][0]
+    assert re.fullmatch(r"[A-Za-z0-9_-]+", use["id"]) and result["tool_use_id"] == use["id"]
+
+
 def _final(stop="end_turn", text="Merhaba", tool=None):
     content = [NS(type="thinking", thinking="", signature="s"), NS(type="text", text=text)]
     if tool:
@@ -204,7 +220,55 @@ def test_chat_sends_adaptive_thinking_effort_and_fallback():
     assert sent["output_config"] == {"effort": "high"} and sent["fallbacks"] == "default"
     assert "temperature" not in sent and sent["max_tokens"] == 16000
     assert res.text == "Merhaba" and json.loads(res.tool_calls[0]["function"]["arguments"]) == {"q": "ş"}
-    assert res.usage == {"prompt_tokens": 100, "completion_tokens": 5, "cached_tokens": 90}
+    assert res.usage == {"prompt_tokens": 100, "completion_tokens": 5, "cached_tokens": 90,
+                         "cache_creation_input_tokens": 0}
+
+
+def test_error_event_mid_stream_is_classified_by_its_type(monkeypatch):
+    """Akış 200 ile açıldıktan sonra gelen overloaded_error geçici sunucu hatasıdır, "bad_request" değil."""
+    import sys
+    import types
+
+    import httpx
+
+    class APIStatusError(Exception):
+        def __init__(self, msg, response, body):
+            super().__init__(msg)
+            self.response, self.body, self.status_code = response, body, response.status_code
+
+    fake = types.ModuleType("anthropic")
+    fake.APITimeoutError = type("APITimeoutError", (Exception,), {})
+    fake.APIConnectionError = type("APIConnectionError", (Exception,), {})
+    fake.APIStatusError = APIStatusError
+    monkeypatch.setitem(sys.modules, "anthropic", fake)
+
+    def boom(kind):
+        body = {"type": "error", "error": {"type": kind, "message": "x"}}
+        resp = httpx.Response(200, request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"))
+        return APIStatusError(str(body), resp, body)
+
+    class Stream(FakeStream):
+        def __iter__(self):
+            raise self.err
+
+    for kind, want in (("overloaded_error", "server"), ("api_error", "server"), ("rate_limit_error", "rate_limit")):
+        p = _provider({}, _final())
+        stream = Stream([], _final())
+        stream.err = boom(kind)
+        p._client.beta.messages.stream = lambda **kw: stream  # noqa: B023
+        with pytest.raises(ProviderError) as ei:
+            p.chat_stream("claude-opus-5-5", [{"role": "user", "content": "x"}], lambda t: None)
+        assert ei.value.kind == want, kind
+
+
+def test_cache_write_tokens_reach_the_usage_counter():
+    from alice.providers.router import cache_write_tokens, cached_tokens
+
+    final = _final()
+    final.usage = NS(input_tokens=10, output_tokens=5, cache_read_input_tokens=0, cache_creation_input_tokens=400)
+    res = _provider({}, final).chat("claude-opus-5-5", [{"role": "user", "content": "selam"}])
+    assert res.usage["prompt_tokens"] == 410
+    assert cache_write_tokens(res.usage) == 400 and cached_tokens(res.usage) == 0
 
 
 def test_haiku_gets_no_server_fallback_and_json_schema_maps_to_output_format():

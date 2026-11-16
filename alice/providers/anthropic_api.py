@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import time
 from typing import Any, Callable
 
@@ -26,6 +27,10 @@ FALLBACK_BETA = "server-side-fallback-2026-07-01"
 # Sunucu tarafı yedeği destekleyen modeller (Haiku'da yok).
 FALLBACK_MODELS = ("claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5")
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
+# Akış içi "error" olayının türü -> HTTP karşılığı (sınıflandırma için).
+_STREAM_ERROR_STATUS = {"overloaded_error": 529, "rate_limit_error": 429, "request_too_large": 413,
+                        "authentication_error": 401, "permission_error": 403, "not_found_error": 404,
+                        "billing_error": 402, "invalid_request_error": 400, "api_error": 500}
 
 
 def _sdk() -> Any:
@@ -72,6 +77,13 @@ def _text(content: Any) -> str:
     return "".join(p.get("text", "") for p in content or [] if isinstance(p, dict) and p.get("type") == "text")
 
 
+def _tool_id(raw: Any) -> str:
+    """Claude araç kimliğinde yalnız harf, rakam, _ ve - kabul ediyor. Konuşmanın önceki adımlarını başka bir model
+    yapmış olabilir: Kimi gibi sağlayıcıların "functions.read_file:0" kimliği bütün isteği 400 ile reddettiriyordu.
+    Aynı kimlik hem tool_use'ta hem tool_result'ta aynı biçimde çevrildiği için eşleşme bozulmaz."""
+    return re.sub(r"[^A-Za-z0-9_-]", "_", str(raw or "")) or "call"
+
+
 def to_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
     """OpenAI biçimi → (system, Claude mesajları). Baştaki sistem mesajları system'e, aradakiler kullanıcı turuna
     işaretli metin olarak gider. Arka arkaya gelen araç sonuçları tek kullanıcı turunda toplanır."""
@@ -107,12 +119,12 @@ def to_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any
                     args = json.loads(fn.get("arguments") or "{}")
                 except ValueError:
                     args = {}
-                blocks.append({"type": "tool_use", "id": tc.get("id") or "call", "name": fn.get("name") or "",
+                blocks.append({"type": "tool_use", "id": _tool_id(tc.get("id")), "name": fn.get("name") or "",
                                "input": args if isinstance(args, dict) else {"value": args}})
             push("assistant", blocks)
         elif role == "tool":
             c = m.get("content")
-            push("user", [{"type": "tool_result", "tool_use_id": m.get("tool_call_id") or "call",
+            push("user", [{"type": "tool_result", "tool_use_id": _tool_id(m.get("tool_call_id")),
                            "content": c if isinstance(c, str) else _text(c) or json.dumps(c, ensure_ascii=False)}])
     if out and out[0]["role"] != "user":  # ilk tur kullanıcıdan olmalı
         out.insert(0, {"role": "user", "content": [{"type": "text", "text": "(devam)"}]})
@@ -168,11 +180,13 @@ def from_message(msg: Any) -> tuple[dict[str, Any], dict[str, Any]]:
     if calls:
         out["tool_calls"] = calls
     u = msg.usage
-    prompt = (u.input_tokens or 0) + (getattr(u, "cache_read_input_tokens", 0) or 0) + \
-        (getattr(u, "cache_creation_input_tokens", 0) or 0)
+    written = getattr(u, "cache_creation_input_tokens", 0) or 0
+    prompt = (u.input_tokens or 0) + (getattr(u, "cache_read_input_tokens", 0) or 0) + written
+    # Önbelleğe yazılan token ayrıca verilir: router'ın kullanım sayacı (cache_write_tokens) bu adı okuyor; önceden
+    # düşürülüyordu ve Claude API'de önbellek yazımı (normal girdiden pahalı) hep 0 görünüyordu.
     return out, {"prompt_tokens": prompt, "completion_tokens": u.output_tokens or 0,
                  "cached_tokens": getattr(u, "cache_read_input_tokens", 0) or 0,
-                 "cache_creation_input_tokens": getattr(u, "cache_creation_input_tokens", 0) or 0}
+                 "cache_creation_input_tokens": written}
 
 
 class AnthropicProvider:
@@ -244,7 +258,18 @@ class AnthropicProvider:
                 body = e.response.text
             except Exception:  # noqa: BLE001
                 body = str(e)
-            err = classify_error(e.status_code, body, dict(e.response.headers))
+            status = e.status_code
+            if status < 400:
+                # Akış 200 ile açıldıktan sonra gelen "error" olayı (overloaded_error, api_error...): paket bunu
+                # 200 durumlu APIStatusError yapıyor ve classify_error 200'ü "bad_request" sayıyordu; geçici
+                # yoğunluk hatası kalıcı istek hatası gibi işleniyordu. Durum kodu hata türünden çıkarılır.
+                raw = getattr(e, "body", None)
+                etype = ((raw.get("error") or {}).get("type") if isinstance(raw, dict)
+                         and isinstance(raw.get("error"), dict) else None) or ""
+                text = f"{e} {body}"
+                status = _STREAM_ERROR_STATUS.get(etype) or next(
+                    (code for name, code in _STREAM_ERROR_STATUS.items() if name in text), 500)
+            err = classify_error(status, body or str(e), dict(e.response.headers))
         else:
             err = ProviderError("server", str(e))
         err.args = tuple(redact(a, self.cfg.api_key) if isinstance(a, str) else a for a in err.args)

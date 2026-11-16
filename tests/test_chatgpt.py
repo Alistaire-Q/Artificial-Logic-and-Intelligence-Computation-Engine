@@ -419,3 +419,108 @@ def test_request_keeps_its_own_account_when_another_chat_switches():
     # süresi dolmuş anahtar yenilenirken seçili hesap değişmez
     chatgpt.save_auth({"access_token": tokens()["access_token"]}, key="acc2")
     assert chatgpt._store()["active"] == "acc1"
+
+
+def test_stream_cut_mid_tool_call_is_an_error_not_an_empty_call():
+    """Bitiş olayı gelmeden kesilen akışta argümanları gelmemiş araç çağrısı boş argümanla çalıştırılmamalı."""
+    chatgpt.save_auth(tokens())
+
+    def handler(req):
+        return httpx.Response(200, content=sse(
+            {"type": "response.output_item.added", "item": {"type": "function_call", "id": "fc1", "call_id": "c1",
+                                                             "name": "delete_file", "arguments": ""}},
+            {"type": "response.function_call_arguments.delta", "item_id": "fc1", "delta": "{\"pa"}))
+
+    p = ChatGPTProvider(pc(), client=httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(ProviderError) as ei:
+        p.chat("gpt-5.5", [{"role": "user", "content": "x"}], tools=[
+            {"type": "function", "function": {"name": "delete_file", "parameters": {}}}])
+    assert ei.value.kind == "network"
+
+
+def test_concurrent_limit_write_does_not_lose_refreshed_token(monkeypatch):
+    """Bir akışın save_limits'i ile anahtar yenilemenin kaydı aynı anda olunca biri diğerini ezmemeli."""
+    chatgpt.save_auth(tokens())
+    real_write = chatgpt._write
+
+    def slow_write(store):
+        time.sleep(0.15)  # oku-değiştir-yaz arasındaki pencereyi büyüt
+        real_write(store)
+
+    monkeypatch.setattr(chatgpt, "_write", slow_write)
+    t = threading.Thread(target=chatgpt.save_limits, args=({"primary": {"used_percent": 40.0}},))
+    t.start()
+    time.sleep(0.05)
+    chatgpt.save_auth(tokens(refresh="r2"), key="acc1")
+    t.join()
+    acc = chatgpt._store()["accounts"]["acc1"]
+    assert acc["refresh_token"] == "r2" and acc["limits"]["primary"]["used_percent"] == 40.0
+
+
+def test_expired_token_is_refreshed_once_by_concurrent_requests():
+    """refresh_token tek kullanımlık: aynı anda süresi dolan iki istek tek yenileme yapmalı."""
+    chatgpt.save_auth(tokens(exp_in=-10))
+    posts = []
+
+    def handler(req):
+        posts.append(json.loads(req.content)["refresh_token"])
+        time.sleep(0.2)
+        if len(posts) > 1:
+            return httpx.Response(400, json={"error": "refresh_token_reused"})
+        return httpx.Response(200, json=tokens(refresh="r2"))
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    out, errs = [], []
+
+    def run():
+        try:
+            out.append(chatgpt.access(client))
+        except ProviderError as e:
+            errs.append(e)
+
+    threads = [threading.Thread(target=run) for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert posts == ["r1"] and not errs and len(out) == 3
+    assert chatgpt.load_auth()["refresh_token"] == "r2"
+
+
+def test_token_refresh_keeps_models_and_used_up_mark():
+    chatgpt.save_auth(tokens())
+    chatgpt._update(None, models=["gpt-5.5"])
+    chatgpt._mark_exhausted(3600)
+    chatgpt.save_auth({"access_token": tokens()["access_token"], "refresh_token": "r2"}, key="acc1")
+    acc = chatgpt.load_auth("acc1")
+    assert acc["refresh_token"] == "r2" and acc["models"] == ["gpt-5.5"]
+    assert acc["limits"]["primary"]["used_percent"] == 100.0
+    assert chatgpt._next_account(set()) is None  # dolu hesap yenilemeden sonra da dolu
+
+
+def test_context_overflow_in_stream_is_too_large_not_server():
+    chatgpt.save_auth(tokens())
+
+    def handler(req):
+        return httpx.Response(200, content=sse({"type": "response.failed", "response": {"error": {
+            "code": "context_length_exceeded", "message": "Your input exceeds the context window of this model."}}}))
+
+    p = ChatGPTProvider(pc(), client=httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(ProviderError) as ei:
+        p.chat("gpt-5.5", [{"role": "user", "content": "x"}])
+    assert ei.value.kind == "too_large"
+
+
+def test_added_without_call_id_and_done_with_it_gives_one_call():
+    chatgpt.save_auth(tokens())
+
+    def handler(req):
+        return httpx.Response(200, content=sse(
+            {"type": "response.output_item.added", "item": {"type": "function_call", "id": "fc1", "name": "f",
+                                                             "arguments": ""}},
+            {"type": "response.output_item.done", "item": {"type": "function_call", "id": "fc1", "call_id": "c1",
+                                                            "name": "f", "arguments": "{\"a\": 1}"}}))
+
+    p = ChatGPTProvider(pc(), client=httpx.Client(transport=httpx.MockTransport(handler)))
+    r = p.chat("gpt-5.5", [{"role": "user", "content": "x"}], tools=[{"type": "function", "function": {"name": "f"}}])
+    assert [(c["id"], c["function"]["arguments"]) for c in r.message["tool_calls"]] == [("c1", "{\"a\": 1}")]
