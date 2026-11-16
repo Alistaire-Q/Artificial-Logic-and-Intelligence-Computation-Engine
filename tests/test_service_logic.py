@@ -97,6 +97,26 @@ def test_write_state_is_atomic_and_complete(tmp_path):
     assert not state_path().with_suffix(".tmp").exists()
 
 
+def test_write_state_retries_brief_lock_and_prime_survives_failure(tmp_path, monkeypatch):
+    core, _ = make_core(tmp_path)
+    real, fails = os.replace, [2]
+
+    def flaky(src, dst):
+        if fails[0]:
+            fails[0] -= 1
+            raise PermissionError("kilitli")
+        return real(src, dst)
+
+    monkeypatch.setattr(service.os, "replace", flaky)
+    monkeypatch.setattr(service.time, "sleep", lambda s: None)
+    core.write_state(1.0)
+    assert json.loads(state_path().read_text(encoding="utf-8"))["ts"] == 1.0
+    fails[0] = 99  # hiç bırakmıyor: açılış (prime) yine de çökmemeli
+    core.prime()
+    with pytest.raises(PermissionError):
+        core.write_state(2.0)
+
+
 # ----------------------------------------------------------------------- tur
 def test_core_config_values(tmp_path):
     core, _ = make_core(tmp_path, interval=5, retention_days=2)

@@ -300,7 +300,10 @@ class Core:
         except Exception:  # noqa: BLE001
             pass
         self._update_mode(now)
-        self.write_state(now)
+        try:
+            self.write_state(now)
+        except OSError as e:  # açılış çökmesin; ilk tur yeniden yazar
+            print(f"çekirdek durumu yazılamadı: {e!r}", file=sys.stderr)
 
     def _update_mode(self, now: float) -> None:
         try:
@@ -646,7 +649,14 @@ class Core:
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.with_suffix(".tmp")
         tmp.write_text(json.dumps(data), encoding="utf-8")
-        os.replace(tmp, p)
+        for attempt in range(5):
+            try:
+                os.replace(tmp, p)
+                return
+            except PermissionError:  # Windows: okuyan süreç (ses modülü, uygulama) dosyayı o an açık tutuyor
+                if attempt == 4:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
 
     # ---------------------------------------------------------------- döngü
     def run_forever(self) -> None:
