@@ -179,6 +179,8 @@ def make_diff(path: str, before: str, after: str, context: int = 3, max_lines: i
 def truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
+    if limit <= 0:  # text[-0:] bütün metni döndürüyordu
+        return f"... [{len(text)} karakter kesildi] ..."
     head = int(limit * 0.6)
     tail = limit - head
     return f"{text[:head]}\n\n... [{len(text) - limit} karakter kesildi] ...\n\n{text[-tail:]}"
