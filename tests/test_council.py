@@ -287,7 +287,8 @@ def test_plan_council_blocks_only_plan_breaking_issues_and_routes_notes(workdir)
     sys_prompt, material = next((s, p) for r, s, p in state["prompts"] if r == "critic")
     assert "Plan incelemesi" in sys_prompt and "Yasak: uygulama ayrıntıları" in sys_prompt
     assert "Proje klasörü" in material and "index.html" in material and "DESIGN.md" in material
-    second = [p for r, s, p in state["prompts"] if r == "critic"][-1]
+    # Ajan hemen başlayınca iş incelemesi de gelebiliyor: son *plan* incelemesine bak.
+    second = [p for r, s, p in state["prompts"] if r == "critic" and "Plan incelemesi" in s][-1]
     assert "Önceki kurulun bulguları" in second  # düzeltilmiş plan öncekine göre incelenir
     assert team.plan_rejects == 0
 
