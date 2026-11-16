@@ -113,3 +113,25 @@ def test_reset_discards_early_results(workdir):
     agent._early_start(call("c2", "look", "z"))
     agent._early_clear()
     assert agent._take_early(call("c2", "look", "z")) is None
+
+
+class Slow(Look):
+    name = "slow"
+
+    def run(self, ctx, x: str) -> ToolResult:
+        time.sleep(5)
+        return ToolResult(f"bitti {x}")
+
+
+def test_stop_does_not_wait_for_parallel_tools(workdir):
+    """Durdur'a basılınca paralel çalışan salt okuma araçlarının bitmesi beklenmez."""
+    import threading
+
+    cfg = make_config({"brain": ["a:m"]})
+    agent = Agent(cfg, None, [Slow()], ToolContext(cwd=workdir, config=cfg), Permissions("auto"), NullUI("y"),
+                  system_prompt="s")
+    threading.Timer(0.3, agent.cancel.set).start()
+    t = time.monotonic()
+    res = agent._execute_calls([call("c1", "slow", "a"), call("c2", "slow", "b")])
+    assert time.monotonic() - t < 3
+    assert all(r.is_error and "durduruldu" in r.text for r in res)

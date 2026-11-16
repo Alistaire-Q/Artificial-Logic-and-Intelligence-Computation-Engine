@@ -1155,10 +1155,7 @@ class Agent:
             if early is not None:  # cevap akarken başlatılmıştı: sonucu hazır (ya da az kaldı)
                 tool, args, summary, fut = early
                 self.ui.tool_start(calls[i]["id"], tool.name, summary)
-                try:
-                    res = fut.result()
-                except Exception as e:  # noqa: BLE001
-                    res = ToolResult(f"{type(e).__name__}: {e}", is_error=True)
+                res = self._await(fut)
                 self._note_read(tool, args, res)
                 self.ui.tool_end(calls[i]["id"], tool.name, res)
                 results[i] = self._fence(tool, res)
@@ -1188,15 +1185,34 @@ class Agent:
             else:
                 for idx, (tool, _args, summary) in batch:
                     self.ui.tool_start(calls[idx]["id"], tool.name, summary)
-                with ThreadPoolExecutor(max_workers=min(8, len(batch))) as pool:
+                pool = ThreadPoolExecutor(max_workers=min(8, len(batch)))
+                try:
                     futures = {idx: pool.submit(self._run_tool, tool, args) for idx, (tool, args, _) in batch}
                     for idx, (tool, args, _) in batch:
-                        results[idx] = futures[idx].result()
+                        results[idx] = self._await(futures[idx])
                         self._note_read(tool, args, results[idx])
                         self.ui.tool_end(calls[idx]["id"], tool.name, results[idx])
                         results[idx] = self._fence(tool, results[idx])
+                finally:
+                    # Durdurulduysa arkada süren salt okuma araçları beklenmez (with bloğu shutdown(wait=True) ile
+                    # hepsinin bitmesini bekliyordu).
+                    pool.shutdown(wait=False)
             i = j
         return [r if r is not None else ToolResult("çalıştırılmadı", is_error=True) for r in results]
+
+    def _await(self, fut: Any) -> ToolResult:
+        """Paralel ya da erken başlatılan aracın sonucunu bekle; Durdur'a basılırsa beklemeden dön. Önceden
+        fut.result() süresiz bekliyordu: uzun bir grep ya da yavaş web_fetch durdurulan turu açık tutuyordu."""
+        from concurrent.futures import TimeoutError as FutTimeout
+
+        while True:
+            try:
+                return fut.result(timeout=0.1)
+            except FutTimeout:
+                if self.cancel.is_set():
+                    return ToolResult("durduruldu (kullanıcı kesti)", is_error=True)
+            except Exception as e:  # noqa: BLE001
+                return ToolResult(f"{type(e).__name__}: {e}", is_error=True)
 
     def _early_start(self, call: dict[str, Any]) -> None:
         """Akış sürerken tamamlanan araç çağrısı: paralel güvenliyse (salt okuma, izin gerekmez, hook yok, ekranı
