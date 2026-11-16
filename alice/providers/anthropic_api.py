@@ -168,10 +168,13 @@ def from_message(msg: Any) -> tuple[dict[str, Any], dict[str, Any]]:
     if calls:
         out["tool_calls"] = calls
     u = msg.usage
-    prompt = (u.input_tokens or 0) + (getattr(u, "cache_read_input_tokens", 0) or 0) + \
-        (getattr(u, "cache_creation_input_tokens", 0) or 0)
+    written = getattr(u, "cache_creation_input_tokens", 0) or 0
+    prompt = (u.input_tokens or 0) + (getattr(u, "cache_read_input_tokens", 0) or 0) + written
+    # Önbelleğe yazılan token ayrıca verilir: router'ın kullanım sayacı (cache_write_tokens) bu adı okuyor; önceden
+    # düşürülüyordu ve Claude API'de önbellek yazımı (normal girdiden pahalı) hep 0 görünüyordu.
     return out, {"prompt_tokens": prompt, "completion_tokens": u.output_tokens or 0,
-                 "cached_tokens": getattr(u, "cache_read_input_tokens", 0) or 0}
+                 "cached_tokens": getattr(u, "cache_read_input_tokens", 0) or 0,
+                 "cache_creation_input_tokens": written}
 
 
 class AnthropicProvider:

@@ -204,7 +204,18 @@ def test_chat_sends_adaptive_thinking_effort_and_fallback():
     assert sent["output_config"] == {"effort": "high"} and sent["fallbacks"] == "default"
     assert "temperature" not in sent and sent["max_tokens"] == 16000
     assert res.text == "Merhaba" and json.loads(res.tool_calls[0]["function"]["arguments"]) == {"q": "ş"}
-    assert res.usage == {"prompt_tokens": 100, "completion_tokens": 5, "cached_tokens": 90}
+    assert res.usage == {"prompt_tokens": 100, "completion_tokens": 5, "cached_tokens": 90,
+                         "cache_creation_input_tokens": 0}
+
+
+def test_cache_write_tokens_reach_the_usage_counter():
+    from alice.providers.router import cache_write_tokens, cached_tokens
+
+    final = _final()
+    final.usage = NS(input_tokens=10, output_tokens=5, cache_read_input_tokens=0, cache_creation_input_tokens=400)
+    res = _provider({}, final).chat("claude-opus-5-5", [{"role": "user", "content": "selam"}])
+    assert res.usage["prompt_tokens"] == 410
+    assert cache_write_tokens(res.usage) == 400 and cached_tokens(res.usage) == 0
 
 
 def test_haiku_gets_no_server_fallback_and_json_schema_maps_to_output_format():
