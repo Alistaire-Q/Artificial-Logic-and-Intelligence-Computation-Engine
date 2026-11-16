@@ -303,6 +303,25 @@ def test_broken_update_rolls_back_and_is_skipped(repos, monkeypatch, offline):
     assert rb["from"] == bad and rb["to"] == old and updater.consume_rollback("app") is None
 
 
+def test_write_state_never_exposes_partial_file(monkeypatch):
+    """Yazma sırasında öbür süreç dosyayı okursa eski tam durumu görmeli (boş/yarım değil)."""
+    import os
+
+    updater.write_state(bad=["abc"], pending_health="def")
+    seen = []
+    real = os.replace
+
+    def spy(src, dst):
+        seen.append(updater.read_state())
+        return real(src, dst)
+
+    monkeypatch.setattr(updater.os, "replace", spy)
+    updater.write_state(last_check=1.0)
+    assert seen == [{"bad": ["abc"], "pending_health": "def"}]
+    assert updater.read_state() == {"bad": ["abc"], "pending_health": "def", "last_check": 1.0}
+    assert [p.name for p in updater._state_path().parent.iterdir() if p.suffix == ".tmp"] == []
+
+
 def test_remote_head_ignores_branches_ending_with_same_name(repos, monkeypatch, offline):
     """ls-remote "main" deseni "refs/heads/feature/main"i de döndürür; alfabetik önce geldiği için o dalın
     commit'i yeni sürüm sanılmamalı."""

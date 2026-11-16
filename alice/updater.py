@@ -401,12 +401,30 @@ def read_state() -> dict[str, Any]:
 
 
 def write_state(**kw: Any) -> None:
+    """Geçici dosyaya yazıp yerine koyar. Uygulama ve çekirdek aynı dosyayı yazıyor: doğrudan write_text sırasında
+    öbür süreç dosyayı yarım/boş okuyup {} sanıyor, kendi yazışında "bad" listesini ve bekleyen sağlık kontrolünü
+    siliyordu (geri alınmış bozuk sürüm yeniden çekilebilirdi)."""
+    import threading
+
     data = {**read_state(), **kw}
+    p = _state_path()
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
-        _state_path().parent.mkdir(parents=True, exist_ok=True)
-        _state_path().write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        for i in range(5):
+            try:
+                os.replace(tmp, p)
+                break
+            except PermissionError:  # Windows: öbür süreç tam o an okuyor
+                if i == 4:
+                    raise
+                time.sleep(0.05)
     except OSError:
-        pass
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 # --------------------------------------------------------------------------------- süreçler arası
