@@ -8,6 +8,7 @@ eski sürüm bu isteği tanımıyorsa süreç sonlandırılır).
 from __future__ import annotations
 
 import importlib.util
+import os
 import threading
 import time
 from typing import Any, Callable
@@ -156,11 +157,22 @@ class MicTest:
 
 
 class SystemPanel:
-    def __init__(self, cfg: Any):
+    def __init__(self, cfg: Any, restart_core: Callable[[], bool] | None = None):
+        """restart_core: uygulama çekirdeğin içindeyse çekirdeği kendi yolundan yeniden başlatır (başladıysa True)."""
         self.cfg = cfg
         self.mic_test = MicTest(cfg)
+        self.restart_core = restart_core
         self._busy = ""  # sürmekte olan çekirdek işlemi (başlatılıyor / durduruluyor)
         self._lock = threading.Lock()
+
+    def _restart_in_core(self) -> bool:
+        """Uygulama çalışan çekirdeğin kendi sürecindeyse durdur+başlat olmaz: stop_core bu süreci kapatır ve
+        start_detached'e hiç sıra gelmez (Yeniden başlat, sesli asistan ya da telefon düğmesi ALICE'i tamamen
+        kapatıyordu). O zaman çekirdek kendi yeniden başlatma yolunu kullanır."""
+        st = service.read_state()
+        if not st.get("running") or str(st.get("pid")) != str(os.getpid()) or self.restart_core is None:
+            return False
+        return bool(self.restart_core())
 
     def view(self) -> dict[str, Any]:
         from alice.voice.audio import mic_available
@@ -208,6 +220,8 @@ class SystemPanel:
         if action == "stop":
             return self._background("durduruluyor", lambda: stop_core())
         if action == "restart":
+            if self._restart_in_core():
+                return {"ok": True, "restarting": True}
             return self._background("yeniden başlatılıyor",
                                     lambda: (stop_core(), service.start_detached(), time.sleep(3)))
         if action == "autostart":
@@ -233,6 +247,8 @@ class SystemPanel:
             running = service.read_state().get("running")
             if not running and not on:
                 return {"ok": True}
+            if running and self._restart_in_core():
+                return {"ok": True, "restarting": True}
             return self._background("yeniden başlatılıyor" if running else "başlatılıyor",
                                     lambda: (stop_core(), service.start_detached(), time.sleep(3)))
         if action == "mic_test":

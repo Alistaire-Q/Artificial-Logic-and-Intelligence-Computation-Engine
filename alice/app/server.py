@@ -1301,8 +1301,15 @@ class AppState:
         if self._system is None:
             from alice.app.system import SystemPanel
 
-            self._system = SystemPanel(self.cfg)
+            self._system = SystemPanel(self.cfg, restart_core=self._restart_core)
         return self._system
+
+    def _restart_core(self) -> bool:
+        """Sistem paneli: uygulama çekirdeğin içindeyse çekirdeği yeniden başlat (güncellemedeki yol)."""
+        if self.restart_hook is None:
+            return False
+        threading.Thread(target=self._restart_soon, daemon=True, name="alice-restart").start()
+        return True
 
     _enroll = None
 
