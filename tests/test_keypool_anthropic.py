@@ -224,6 +224,22 @@ def test_chat_sends_adaptive_thinking_effort_and_fallback():
                          "cache_creation_input_tokens": 0}
 
 
+def test_non_streaming_call_gets_a_long_read_timeout():
+    """Akışsız cevap ancak bitince gelir: 300 sn'lik akış okuma süresi uzun düşünen cevabı kesiyordu."""
+    sent: dict = {}
+    p = _provider(sent, _final())
+    p.chat("claude-opus-5-5", [{"role": "user", "content": "selam"}])
+    t = sent["timeout"]
+    secs = t if isinstance(t, (int, float)) else t.read
+    assert secs >= 900 > p.STREAM_READ
+    p.chat("claude-opus-5-5", [{"role": "user", "content": "selam"}], max_tokens=64000)
+    t = sent["timeout"]
+    assert (t if isinstance(t, (int, float)) else t.read) == 1800  # max_tokens ile ölçeklenir
+    sent.clear()
+    p.chat_stream("claude-opus-5-5", [{"role": "user", "content": "selam"}], lambda d: None)
+    assert "timeout" not in sent  # akış istemcinin okuma süresini kullanır
+
+
 def test_error_event_mid_stream_is_classified_by_its_type(monkeypatch):
     """Akış 200 ile açıldıktan sonra gelen overloaded_error geçici sunucu hatasıdır, "bad_request" değil."""
     import sys

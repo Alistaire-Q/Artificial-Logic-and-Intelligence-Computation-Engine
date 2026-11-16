@@ -191,6 +191,14 @@ def from_message(msg: Any) -> tuple[dict[str, Any], dict[str, Any]]:
 
 class AnthropicProvider:
     STREAM_READ = 300.0  # sn: akış bu kadar veri göndermezse kesilir (uzun düşünmede bile özet ve ping gelir)
+    # Akışsız çağrıda cevap tek parça, ancak bitince gelir: uzun düşünen bir cevap 300 sn'yi rahatça aşıyor ve
+    # okuma zaman aşımı onu kesiyordu. Paketin kendi önerisi gibi süre max_tokens ile ölçeklenir (128k token ~ 1 sa).
+    NONSTREAM_MIN = 900.0
+    NONSTREAM_MAX = 3600.0
+
+    @classmethod
+    def nonstream_timeout(cls, max_tokens: int) -> float:
+        return min(cls.NONSTREAM_MAX, max(cls.NONSTREAM_MIN, 3600.0 * max_tokens / 128_000))
 
     def __init__(self, cfg: ProviderConfig, timeout: float = 180.0, client: Any = None):
         self.cfg = cfg
@@ -291,8 +299,13 @@ class AnthropicProvider:
              response_format: dict[str, Any] | None = None, extra: dict[str, Any] | None = None) -> ChatResult:
         kw = self._params(model, messages, tools, max_tokens, response_format, extra, stream=False)
         t0 = time.monotonic()
+        secs = self.nonstream_timeout(kw["max_tokens"])
         try:
-            msg = self.client.beta.messages.create(**kw)
+            timeout: Any = _sdk().Timeout(secs, connect=15.0)
+        except ProviderError:
+            timeout = secs  # paket yoksa (sahte istemci) düz süre
+        try:
+            msg = self.client.beta.messages.create(**kw, timeout=timeout)
         except ProviderError:
             raise
         except Exception as e:  # noqa: BLE001 - paket hatası sağlayıcı hatasına çevrilir
