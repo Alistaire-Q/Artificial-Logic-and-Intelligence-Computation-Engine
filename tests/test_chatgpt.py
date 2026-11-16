@@ -438,6 +438,17 @@ def test_stream_cut_mid_tool_call_is_an_error_not_an_empty_call():
     assert ei.value.kind == "network"
 
 
+def test_token_refresh_keeps_models_and_used_up_mark():
+    chatgpt.save_auth(tokens())
+    chatgpt._update(None, models=["gpt-5.5"])
+    chatgpt._mark_exhausted(3600)
+    chatgpt.save_auth({"access_token": tokens()["access_token"], "refresh_token": "r2"}, key="acc1")
+    acc = chatgpt.load_auth("acc1")
+    assert acc["refresh_token"] == "r2" and acc["models"] == ["gpt-5.5"]
+    assert acc["limits"]["primary"]["used_percent"] == 100.0
+    assert chatgpt._next_account(set()) is None  # dolu hesap yenilemeden sonra da dolu
+
+
 def test_context_overflow_in_stream_is_too_large_not_server():
     chatgpt.save_auth(tokens())
 

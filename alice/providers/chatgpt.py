@@ -112,7 +112,9 @@ def save_auth(tokens: dict[str, Any], key: str | None = None) -> dict[str, Any]:
         "email": claims.get("email") or prev.get("email", ""),
         "expires_at": float(_jwt_claims(access).get("exp") or time.time() + 3600),
     }
-    st["accounts"][key] = data
+    # Yenileme hesabın diğer alanlarını (model listesi, limitler, "dolu" işareti) korur: önceden saatlik her
+    # yenilemede silinip dolu hesap boş görünüyor, model menüsü de yeniden "okunuyor"a düşüyordu.
+    st["accounts"][key] = data if select else {**prev, **data}
     if select or not st["active"]:
         st["active"] = key
     _write(st)
