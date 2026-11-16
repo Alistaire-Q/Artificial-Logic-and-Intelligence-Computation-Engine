@@ -1027,7 +1027,9 @@ class Team:
         if m is None:
             raise ToolError(f"projede '{name}' yok")
         parts = []
-        for path, before in m.originals.items():
+        # Kopya üzerinde: ajan çalışırken (kurula sor, final kurulu) yeni dosyaya dokunursa sözlük büyüyor ve fark
+        # "dictionary changed size during iteration" ile kurulu düşürüyordu.
+        for path, before in list(m.originals.items()):
             p = Path(path)
             rel = _rel(p, m.cwd)
             after = _read_original(p)
@@ -1232,7 +1234,7 @@ class Team:
         now = self._git_dirty(m.cwd)
         if not now:
             return
-        others = {k for o in list(self.members.values()) if o is not m for k in o.originals}
+        others = {k for o in list(self.members.values()) if o is not m for k in list(o.originals)}
         top = _git(m.cwd, "rev-parse", "--show-toplevel", timeout=10).stdout.strip()
         for path in sorted(now - set(base0) - set(m.originals) - others)[:50]:
             rel = Path(path).resolve().relative_to(Path(top).resolve()).as_posix() if top else path

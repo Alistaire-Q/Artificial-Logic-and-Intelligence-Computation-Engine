@@ -524,3 +524,25 @@ def test_plan_council_counter_changes_under_lock(workdir):
     team._council = lambda *a, **k: {"state": "stopped"}
     res = LeadPlan(team).run(ctx, "yaklaşım", [{"name": "backend", "task": "a"}])
     assert res.is_error and team.council_busy == 0 and not bad
+
+
+def test_diff_survives_member_touching_new_file(workdir, monkeypatch):
+    # Kurul farkı okurken çalışan ajan yeni bir dosyaya dokunursa originals büyüyor ve diff düşüyordu.
+    from alice import team as team_mod
+    from alice.team import Member
+
+    _, _, ctx = make(simple, workdir)
+    team = Team(ctx, "hedef")
+    m = team.members["a"] = Member(name="a", task="t", cwd=workdir)
+    for n in ("x.py", "y.py"):
+        (workdir / n).write_text("yeni\n", encoding="utf-8")
+        m.originals[str((workdir / n).resolve())] = "eski\n"
+    real = team_mod._read_original
+
+    def reading(p):
+        m.originals.setdefault(str((workdir / "z.py").resolve()), None)  # ajan tam bu arada z.py'ye dokundu
+        return real(p)
+
+    monkeypatch.setattr(team_mod, "_read_original", reading)
+    text = team.diff("a")
+    assert "x.py" in text and "y.py" in text
