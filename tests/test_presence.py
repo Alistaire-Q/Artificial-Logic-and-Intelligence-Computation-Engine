@@ -100,3 +100,16 @@ def test_morning_summary_on_startup_once_per_day(tmp_path):
                        morning=lambda c, n: info, state_path=st).tick()  # öğleden sonra açılış: sabah özeti yok
     b = compose({"greeting": "Günaydın", "away": "", "followups": [], "events": [], "mail": [], "morning": info})
     assert "yağmurlu" in b
+
+
+def test_background_greeting_swallows_errors():
+    from alice.presence import Greeter
+
+    class Boom(Greeter):
+        def __init__(self):
+            pass
+
+        def greet(self, away):
+            raise RuntimeError("hafıza kapalı")
+
+    Boom()._greet_bg(10.0)  # iş parçacığında yakalanmamış hata kalmasın

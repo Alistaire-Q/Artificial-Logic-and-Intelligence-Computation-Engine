@@ -264,7 +264,7 @@ class Greeter:
             today = self.clock()
             if (idle < 300 and self.last_day != today.strftime("%Y-%m-%d") and 6 <= today.hour < int(s["morning_until"])
                     and self._allowed(s, now)):
-                threading.Thread(target=self.greet, args=(8 * 3600,), daemon=True, name="alice-greeting").start()
+                threading.Thread(target=self._greet_bg, args=(8 * 3600,), daemon=True, name="alice-greeting").start()
                 return True
         if idle >= float(s["away_minutes"]) * 60:
             if self.away_since is None:
@@ -275,7 +275,7 @@ class Greeter:
         away, self.away_since = now - self.away_since, None
         if not self._allowed(s, now):
             return False
-        threading.Thread(target=self.greet, args=(away,), daemon=True, name="alice-greeting").start()
+        threading.Thread(target=self._greet_bg, args=(away,), daemon=True, name="alice-greeting").start()
         return True
 
     def _allowed(self, s: dict[str, Any], now: float) -> bool:
@@ -285,6 +285,14 @@ class Greeter:
 
         span = parse_hours(str(s.get("quiet_hours") or ""))
         return not (span and in_hours(self.clock(), span))
+
+    def _greet_bg(self, away: float) -> None:
+        """Arka plandaki karşılama: hafıza kapanmışken (çekirdek kapanıyor) ya da özet hazırlanamazken iş parçacığı
+        izsiz çökmesin; karşılama bu sefer atlanır."""
+        try:
+            self.greet(away)
+        except Exception:  # noqa: BLE001
+            pass
 
     def greet(self, away: float) -> str:
         if not self._busy.acquire(blocking=False):
