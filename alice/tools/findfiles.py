@@ -218,7 +218,10 @@ class FindFiles(Tool):
     def run(self, ctx: ToolContext, action: str, query: str = "", kind: str = "", days: float | None = None,
             path: str = "", apply: bool = False) -> ToolResult:
         if action == "open":
-            p = Path(path).expanduser()
+            if not path:
+                raise ToolError("open için path gerekli")
+            # Göreli yol sohbetin çalışma klasörüne göre çözülür (eskiden sürecin cwd'sine göreydi).
+            p = ctx.resolve(path)
             if not p.exists():
                 raise ToolError(f"dosya yok: {p}")
             if sys.platform == "win32":
