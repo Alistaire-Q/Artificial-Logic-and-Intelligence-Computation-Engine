@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import time
 from typing import Any, Callable
 
@@ -76,6 +77,13 @@ def _text(content: Any) -> str:
     return "".join(p.get("text", "") for p in content or [] if isinstance(p, dict) and p.get("type") == "text")
 
 
+def _tool_id(raw: Any) -> str:
+    """Claude araç kimliğinde yalnız harf, rakam, _ ve - kabul ediyor. Konuşmanın önceki adımlarını başka bir model
+    yapmış olabilir: Kimi gibi sağlayıcıların "functions.read_file:0" kimliği bütün isteği 400 ile reddettiriyordu.
+    Aynı kimlik hem tool_use'ta hem tool_result'ta aynı biçimde çevrildiği için eşleşme bozulmaz."""
+    return re.sub(r"[^A-Za-z0-9_-]", "_", str(raw or "")) or "call"
+
+
 def to_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
     """OpenAI biçimi → (system, Claude mesajları). Baştaki sistem mesajları system'e, aradakiler kullanıcı turuna
     işaretli metin olarak gider. Arka arkaya gelen araç sonuçları tek kullanıcı turunda toplanır."""
@@ -111,12 +119,12 @@ def to_messages(messages: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any
                     args = json.loads(fn.get("arguments") or "{}")
                 except ValueError:
                     args = {}
-                blocks.append({"type": "tool_use", "id": tc.get("id") or "call", "name": fn.get("name") or "",
+                blocks.append({"type": "tool_use", "id": _tool_id(tc.get("id")), "name": fn.get("name") or "",
                                "input": args if isinstance(args, dict) else {"value": args}})
             push("assistant", blocks)
         elif role == "tool":
             c = m.get("content")
-            push("user", [{"type": "tool_result", "tool_use_id": m.get("tool_call_id") or "call",
+            push("user", [{"type": "tool_result", "tool_use_id": _tool_id(m.get("tool_call_id")),
                            "content": c if isinstance(c, str) else _text(c) or json.dumps(c, ensure_ascii=False)}])
     if out and out[0]["role"] != "user":  # ilk tur kullanıcıdan olmalı
         out.insert(0, {"role": "user", "content": [{"type": "text", "text": "(devam)"}]})

@@ -153,6 +153,22 @@ def test_messages_are_converted_to_claude_format():
     assert tools == [{"name": "screen", "description": "d", "input_schema": {"type": "object", "properties": {}}}]
 
 
+def test_tool_ids_from_other_providers_are_made_claude_safe():
+    """Konuşmanın önceki adımını Kimi yapmışsa kimlik "functions.read_file:0": Claude bunu 400 ile reddediyordu."""
+    import re
+
+    from alice.providers.anthropic_api import to_messages
+
+    _, msgs = to_messages([
+        {"role": "user", "content": "oku"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "functions.read_file:0", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "functions.read_file:0", "content": "içerik"},
+    ])
+    use, result = msgs[1]["content"][0], msgs[2]["content"][0]
+    assert re.fullmatch(r"[A-Za-z0-9_-]+", use["id"]) and result["tool_use_id"] == use["id"]
+
+
 def _final(stop="end_turn", text="Merhaba", tool=None):
     content = [NS(type="thinking", thinking="", signature="s"), NS(type="text", text=text)]
     if tool:
