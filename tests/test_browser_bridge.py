@@ -307,3 +307,37 @@ def test_bridge_survives_one_late_heartbeat():
         return alive
 
     assert asyncio.run(main()) and up.n >= 3
+
+
+def test_bridge_rejects_web_pages_and_rebinding():
+    """Herhangi bir web sayfası ws://127.0.0.1:9339'a bağlanıp kullanıcının tarayıcısını (çerezler, sekmeler)
+    sürememeli: tarayıcılar Origin gönderir, Playwright göndermez."""
+    class Conn:
+        def respond(self, status, body):
+            return (status, body)
+
+    def req(**headers):
+        return SimpleNamespace(path=bb.PATH, headers=headers)
+
+    assert bb._health(Conn(), req(Host="127.0.0.1:9339", Origin="https://evil.example"))[0] == 403
+    assert bb._health(Conn(), req(Host="127.0.0.1:9339", Origin="null"))[0] == 403
+    assert bb._health(Conn(), req(Host="evil.example:9339"))[0] == 403
+    assert bb._health(Conn(), req(Host="127.0.0.1:9339")) is None
+    assert bb._health(Conn(), req(Host="localhost:9339")) is None
+
+
+def test_bridge_handshake_with_origin_is_refused():
+    pytest.importorskip("websockets")
+    from websockets.asyncio.client import connect
+    from websockets.asyncio.server import serve
+    from websockets.exceptions import InvalidStatus
+
+    async def main():
+        bridge = bb.Bridge(find_upstream=lambda: pytest.fail("tarayıcıya bağlanmamalı"))
+        async with serve(bridge.handle, "127.0.0.1", 0, process_request=bb._health) as srv:
+            url = f"ws://127.0.0.1:{srv.sockets[0].getsockname()[1]}{bb.PATH}"
+            with pytest.raises(InvalidStatus):
+                async with connect(url, origin="https://evil.example"):
+                    pass
+
+    asyncio.run(main())
