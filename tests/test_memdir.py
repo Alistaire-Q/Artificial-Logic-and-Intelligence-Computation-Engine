@@ -115,3 +115,22 @@ def test_relevance_falls_back_to_keywords_when_the_model_fails(tmp_path):
     assert [n.name for n in picked] == ["reference-grafana"]
     picked = memdir.select_relevant("kahve", b.scan(), lambda p: '{"selected": ["genel:user-kahve", "uydurma"]}')
     assert [n.name for n in picked] == ["user-kahve"]  # olmayan ad yok sayılır
+
+
+def test_books_of_the_same_folder_share_one_lock_and_lose_no_index_lines(tmp_path):
+    import threading
+
+    root = tmp_path / "proje"
+    assert NoteBook(root)._lock is NoteBook(root, scope="proje")._lock
+
+    def work(prefix):
+        b = NoteBook(root, scope="proje")  # proje defteri her çağrıda yeniden kuruluyor
+        for i in range(25):
+            b.save(f"{prefix}-{i}", f"not {prefix} {i}", "project", "gövde")
+
+    threads = [threading.Thread(target=work, args=(p,)) for p in ("a", "b", "c")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(NoteBook(root).index_raw().strip().splitlines()) == 75

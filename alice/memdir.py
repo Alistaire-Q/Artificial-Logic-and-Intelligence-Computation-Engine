@@ -209,13 +209,28 @@ class Note:
 
 
 # ---------------------------------------------------------------------------------------------------- defter
+_root_locks: dict[str, threading.RLock] = {}
+_root_locks_guard = threading.Lock()
+
+
+def _root_lock(root: Path) -> threading.RLock:
+    key = os.path.normcase(os.path.abspath(str(root)))
+    with _root_locks_guard:
+        lock = _root_locks.get(key)
+        if lock is None:
+            lock = _root_locks[key] = threading.RLock()
+        return lock
+
+
 class NoteBook:
     """Bir hafıza klasörü (genel ya da bir projenin)."""
 
     def __init__(self, root: Path | str, scope: str = "genel"):
         self.root = Path(root)
         self.scope = scope
-        self._lock = threading.RLock()
+        # Aynı klasörün defteri her çağrıda yeniden kuruluyor (proje defteri, all_books): kilit klasöre bağlı olmalı,
+        # yoksa arka plan çıkarımı ile araç aynı anda yazınca MEMORY.md satırları kayboluyordu.
+        self._lock = _root_lock(self.root)
 
     # -------------------------------------------------------------- dosyalar
     def ensure(self) -> Path:
