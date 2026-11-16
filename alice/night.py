@@ -15,7 +15,9 @@ söyler (uçuş modunda susar, sonra söyler). Elle: alice night.
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 import time
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
@@ -60,9 +62,27 @@ def _state() -> dict[str, Any]:
 
 
 def _save_state(**kw: Any) -> None:
+    """Atomik yazım: yarıda kesilen yazım (çökme/kapanma) durumu boşaltıp gece döngüsünü aynı gece yeniden
+    çalıştırıyor ya da sabah raporunu tekrar söyletiyordu. Geçici dosya benzersiz; Windows'ta hedef o an başka
+    biri tarafından açıksa os.replace kısa bir süre yeniden denenir."""
     s = {**_state(), **kw}
-    state_path().parent.mkdir(parents=True, exist_ok=True)
-    state_path().write_text(json.dumps(s, ensure_ascii=False), encoding="utf-8")
+    p = state_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=p.name + ".", suffix=".tmp", dir=p.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(s, ensure_ascii=False))
+        for attempt in range(10):
+            try:
+                os.replace(tmp, p)
+                return
+            except PermissionError:
+                if attempt == 9:
+                    raise
+                time.sleep(0.05)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
 
 
 def _pattern(text: str) -> str:

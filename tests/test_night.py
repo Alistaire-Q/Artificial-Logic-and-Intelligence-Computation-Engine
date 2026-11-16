@@ -169,3 +169,32 @@ def test_tomorrow_does_not_close_followups_that_are_still_current():
     m.add_followup("Dişçi randevusunu hatırlat.", now + 20 * 3600, "remind")
     assert night.tomorrow(m, now) == ["Dişçi randevusunu hatırlat."]
     assert fid in [f.id for f in m.due_followups(now)]  # gece raporu takibi kapatmadı
+
+
+def test_state_is_written_atomically_and_retries_locked_target(monkeypatch):
+    import os
+    import pytest
+
+    night._save_state(ran="2026-11-15")
+    real, calls = os.replace, []
+
+    def flaky(src, dst):
+        calls.append(dst)
+        if len(calls) == 1:
+            raise PermissionError("kilitli")
+        real(src, dst)
+
+    monkeypatch.setattr(night.os, "replace", flaky)
+    monkeypatch.setattr(night.time, "sleep", lambda s: None)
+    night._save_state(told="2026-11-15")
+    assert len(calls) == 2
+    assert json.loads(night.state_path().read_text(encoding="utf-8")) == {"ran": "2026-11-15", "told": "2026-11-15"}
+
+    def broken(src, dst):
+        raise OSError("disk")
+
+    monkeypatch.setattr(night.os, "replace", broken)
+    with pytest.raises(OSError):
+        night._save_state(told="x")
+    assert json.loads(night.state_path().read_text(encoding="utf-8"))["told"] == "2026-11-15"  # eski hali sağlam
+    assert [p.name for p in night.state_path().parent.iterdir() if p.name.endswith(".tmp")] == []
