@@ -155,6 +155,7 @@ class Member:
     recoveries: int = 0  # kaç kez otomatik kurtarıldı
     resume_note: str = ""  # bir sonraki devamda ajana söylenecek not
     picked: str = ""  # auto seçimde: "tasarım · glm-5.3"
+    stop_requested: bool = False  # ajanı daha kurulmadan durdurulmak istendi: başlarken bakar ve durur
 
     def snapshot(self) -> dict[str, Any]:
         now = self.ended or time.time()
@@ -612,6 +613,7 @@ class Team:
                 return
             m.status = "running"
             m.resume_wanted = False
+            m.stop_requested = False
             m.started = m.started or time.time()
             m.ended = 0.0
         m.last_at, m.stall_warned = time.time(), False
@@ -643,10 +645,10 @@ class Team:
             else:
                 prompt = "Görevine başla."
             m.limit_hit, m.provider_failed = False, ""
-            if self.stopped:  # tam başlarken proje durduruldu
+            if self.stopped or m.stop_requested:  # tam başlarken proje ya da bu ajan durduruldu
                 raise _Stopped()
             text = m.agent.run_turn(prompt, max_steps=m.max_steps) or ""
-            if self.stopped or m.agent.cancel.is_set():
+            if self.stopped or m.stop_requested or m.agent.cancel.is_set():
                 final = "stopped"
             elif m.provider_failed and not text.strip():
                 final = "failed"  # hiçbir model cevap vermedi (kota/erişim): incelemeye değil hataya düşsün
@@ -1863,6 +1865,8 @@ Nasıl yapılır:
         threading.Thread(target=run, daemon=True, name="project-notify").start()
 
     def stop(self, name: str | None = None) -> None:
+        if name and name not in self.members:
+            raise ToolError(f"projede '{name}' yok")
         targets = [self.members[name]] if name else list(self.members.values())
         self.mark(USER, "stop", f"{name} durduruldu" if name else "proje durduruldu")
         if not name:
@@ -1876,8 +1880,12 @@ Nasıl yapılır:
             if m.status == "queued":
                 m.status = "stopped"
             m.resume_wanted = False
-            if m.agent is not None and m.status in ACTIVE:
-                m.agent.stop()
+            if m.status in ACTIVE:
+                # Ajanı henüz kurulmamış (model seçimi/worktree sürüyor) üye de dursun: başlarken bu bayrağa bakar.
+                m.stop_requested = True
+                m.recovering = False  # kullanıcının durdurması takılma kurtarmasıyla yeniden başlatılmasın
+                if m.agent is not None:
+                    m.agent.stop()
         with self.cond:
             self.cond.notify_all()
         self._changed(save=True)

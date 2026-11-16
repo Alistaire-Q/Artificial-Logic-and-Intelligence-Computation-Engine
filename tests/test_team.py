@@ -546,3 +546,31 @@ def test_diff_survives_member_touching_new_file(workdir, monkeypatch):
     monkeypatch.setattr(team_mod, "_read_original", reading)
     text = team.diff("a")
     assert "x.py" in text and "y.py" in text
+
+
+def test_stop_member_before_its_agent_exists(workdir):
+    gate = threading.Event()
+    calls = []
+
+    def script(model, messages, tools, **kw):
+        calls.append(who(messages))
+        return "rapor"
+
+    agent, _, ctx = make(script, workdir)
+    team = Team(ctx, "hedef", review=False)
+    m = team.add({"name": "backend", "task": "a"})
+    real = team._make_agent
+
+    def slow_make(member):
+        gate.wait(10)  # model seçimi / worktree kurulumu sürüyor
+        return real(member)
+
+    team._make_agent = slow_make
+    team._launch(m)
+    assert m.status == "running" and m.agent is None
+    team.stop("backend")
+    gate.set()
+    assert team.wait_until(lambda: m.status not in ("running", "waiting", "asking"), 10)
+    assert m.status == "stopped" and "backend" not in calls
+    with pytest.raises(ToolError):
+        team.stop("kimse")
