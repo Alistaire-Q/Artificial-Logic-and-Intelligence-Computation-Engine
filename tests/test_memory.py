@@ -521,3 +521,24 @@ def test_pending_sessions_do_not_split_a_conversation_at_the_page_boundary(monke
     m2 = mem(session_gap_minutes=20)
     turns(m2, base, 15)  # sayfadan uzun tek konuşma: ilerlemek için parça özetlenir
     assert [len(g) for g in m2.pending_sessions()] == [10]
+
+
+def test_learn_turn_counter_is_thread_safe(monkeypatch):
+    import sys
+    import threading
+
+    m = LongMemory(":memory:", {"extract_every": 4, "digest": False}, lambda p: "{}")
+    calls = []
+    monkeypatch.setattr(m, "_extract", lambda cwd: calls.append(1))
+    old = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)  # iş parçacıkları sık sık yer değiştirsin
+    try:
+        threads = [threading.Thread(target=lambda: [m.learn("tamam", background=False) for _ in range(100)])
+                   for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    finally:
+        sys.setswitchinterval(old)
+    assert len(calls) == 800 // 4 and m._turns_since_extract == 0

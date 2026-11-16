@@ -313,6 +313,7 @@ class LongMemory:
         self.dream_hours = float(o.get("dream_hours", 24))
         self.dream_sessions = int(o.get("dream_sessions", 5))
         self._turns_since_extract = 0
+        self._turns_lock = threading.Lock()  # sayaç birden çok kanaldan (ses, sohbet, Discord) aynı anda artar
         self._last_dream_scan: float | None = None  # monotonic; None = hiç taranmadı (açılıştan hemen sonra monotonic < 600 olabilir)
         self._dream_lock = threading.Lock()
         self._in_profile: dict[str, set[str]] = {}  # cwd -> sistem isteminde tamamı duran notlar (anahtar@zaman)
@@ -1264,7 +1265,8 @@ class LongMemory:
         user = clean_user_text(user)
         self.maybe_digest()  # önceki (bitmiş) konuşma henüz özetlenmediyse şimdi arka planda
         if wrote:
-            self._turns_since_extract = 0
+            with self._turns_lock:
+                self._turns_since_extract = 0
             self._advance_cursor()
             return
         note = explicit_note(user)
@@ -1277,10 +1279,13 @@ class LongMemory:
             return
         if self.extractor is None or not self.auto_extract:
             return
-        self._turns_since_extract += 1
-        if not (has_signal(user) or has_feedback(user) or self._turns_since_extract >= self.extract_every):
-            return
-        self._turns_since_extract = 0
+        # Oku-artır-sıfırla tek kilit altında: kilitsizken eşzamanlı turlarda artışlar kayboluyor ya da aynı eşikte
+        # iki çıkarım birden başlıyordu.
+        with self._turns_lock:
+            self._turns_since_extract += 1
+            if not (has_signal(user) or has_feedback(user) or self._turns_since_extract >= self.extract_every):
+                return
+            self._turns_since_extract = 0
         if background:
             threading.Thread(target=self._extract, args=(cwd,), daemon=True, name="alice-memory").start()
         else:
