@@ -445,6 +445,33 @@ def test_git_yoksa_dogru_sebep_soylenir(repos, monkeypatch, tmp_path):
     assert "Git bulunamadı" in updater.check(make_config({"brain": ["a:m"]})).error
 
 
+def test_git_kurulumu_acilisi_bekletmez(repos, monkeypatch):
+    """winget Git kurarken (15 dk'ya kadar) `alice app` açılışı donuyordu: kurulum arka planda, beklenmez."""
+    import threading
+    import time as _t
+
+    clone, _origin = repos
+    gate, started = threading.Event(), []
+
+    def slow_run(cmd, **kw):
+        started.append(cmd)
+        gate.wait(10)
+
+    monkeypatch.setattr(updater, "WINDOWS", True)
+    monkeypatch.setattr(updater, "git_exe", lambda: None)
+    monkeypatch.setattr(updater.shutil, "which", lambda name: "winget" if name == "winget" else None)
+    monkeypatch.setattr(updater.subprocess, "run", slow_run)
+    monkeypatch.setattr(updater, "install_root", lambda: clone)
+    monkeypatch.setattr(updater, "repo_dir", lambda: None)
+    t0 = _t.monotonic()
+    info = updater.check(make_config({"brain": ["a:m"]}))
+    assert _t.monotonic() - t0 < 3 and "arka planda kuruluyor" in info.error
+    assert updater.ensure_git() is None and len(started) == 1  # ikinci kurulum başlatılmaz
+    gate.set()
+    updater._git_install.join(5)
+    assert not updater.git_installing()
+
+
 def test_path_disindaki_git_bulunur(monkeypatch, tmp_path):
     """winget Git'i yeni kurduysa kurulumun hemen ardından açılan ALICE'in PATH'inde henüz yok."""
     exe = tmp_path / "Programs" / "Git" / "cmd" / "git.exe"

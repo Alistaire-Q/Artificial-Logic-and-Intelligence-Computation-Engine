@@ -44,6 +44,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -144,21 +145,46 @@ def git_exe() -> str | None:
     return None
 
 
-def ensure_git() -> str | None:
-    """Git yoksa (Windows, winget varsa) kullanıcıya özel kur; günde en çok bir deneme."""
-    exe = git_exe()
-    if exe or not WINDOWS:
-        return exe
-    winget = shutil.which("winget")
-    if not winget or time.time() - float(read_state().get("git_install_tried") or 0) < GIT_INSTALL_RETRY:
-        return None
-    write_state(git_install_tried=time.time())
+_git_install: threading.Thread | None = None
+_git_install_lock = threading.Lock()
+
+
+def git_installing() -> bool:
+    """winget ile Git şu an arka planda kuruluyor mu."""
+    t = _git_install
+    return t is not None and t.is_alive()
+
+
+def _install_git(winget: str) -> None:
     try:
         subprocess.run([winget, "install", "-e", "--id", "Git.Git", "--scope", "user", "--silent",
                         "--accept-package-agreements", "--accept-source-agreements"], capture_output=True,
                        timeout=900, creationflags=NO_WINDOW)
     except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def ensure_git(wait: bool = False) -> str | None:
+    """Git yoksa (Windows, winget varsa) kullanıcıya özel kur; günde en çok bir deneme. Kurulum arka planda yapılır
+    ve beklenmez (wait=False): winget 15 dakikaya kadar sürebiliyor, `alice app` açılışı bu sırada donuyordu. Kurulum
+    bitince sonraki kontrol Git'i bulur."""
+    global _git_install
+    exe = git_exe()
+    if exe or not WINDOWS:
+        return exe
+    with _git_install_lock:
+        t = _git_install
+        if t is None or not t.is_alive():
+            winget = shutil.which("winget")
+            if not winget or time.time() - float(read_state().get("git_install_tried") or 0) < GIT_INSTALL_RETRY:
+                return None
+            write_state(git_install_tried=time.time())
+            t = _git_install = threading.Thread(target=_install_git, args=(winget,), daemon=True,
+                                                name="alice-git-install")
+            t.start()
+    if not wait:
         return None
+    t.join(910)
     return git_exe()
 
 
@@ -224,6 +250,8 @@ def _find_repo(branch: str = "main") -> tuple[Path | None, str]:
     if root is None:
         return None, f"ALICE git deposundan kurulmamış; güncelleme için depoyu klonla (git clone https://github.com/{REPO})"
     if ensure_git() is None:
+        if git_installing():
+            return None, "Git arka planda kuruluyor; kurulum bitince güncelleme kendiliğinden denenecek"
         return None, ("Git bulunamadı; otomatik güncelleme için Git gerekiyor. Git'i kur (winget install Git.Git "
                       "ya da git-scm.com) ve ALICE'i yeniden aç")
     # Uygulama ve çekirdek aynı anda buraya girebilir: biri .git'i kurarken öbürü yarım depoyu silmesin.
