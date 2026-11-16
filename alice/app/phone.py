@@ -30,11 +30,23 @@ def lan_ip() -> str:
         return "127.0.0.1"
 
 
+def _hide(p: Path) -> None:
+    """Sandbox'taki (düşük bütünlüklü) komutlar anahtarı okuyamasın: okusa 127.0.0.1'deki telefon sunucusundan
+    bilgisayarı tam yetkiyle yönetebilirdi."""
+    try:
+        from alice.sandbox import hide_from_sandbox
+
+        hide_from_sandbox(p)
+    except Exception:  # noqa: BLE001 - etiket konamadıysa anahtar yine çalışır
+        pass
+
+
 def token(new: bool = False) -> str:
     p = alice_home() / "phone-token"
     if not new and p.exists():
         t = p.read_text(encoding="utf-8").strip()
         if len(t) >= 24:
+            _hide(p)  # eski sürümün yazdığı dosya da etiketlensin
             return t
     t = secrets.token_urlsafe(24)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -43,6 +55,7 @@ def token(new: bool = False) -> str:
         p.chmod(0o600)
     except OSError:
         pass
+    _hide(p)
     return t
 
 
