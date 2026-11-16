@@ -295,7 +295,17 @@ class NoteBook:
             name = name.split(":", 1)[1]
         if name.endswith(".md"):
             name = name[:-3]
-        return name if NAME_RX.match(name) else slugify(name)
+        if NAME_RX.match(name):
+            out = name
+        elif name not in ("", ".", "..") and not re.search(r"[\\/:*?\"<>|]", name) and self.path_for(name).is_file():
+            # Elle eklenmiş "Sunucu Notları.md" gibi bir dosya: listede bu adla görünüyor ama ad sadeleştirilince
+            # ("sunucu-notlari") bulunamıyor, okunamıyor/silinemiyordu. Klasörde birebir duran dosyanın adı geçerli.
+            out = name
+        else:
+            out = slugify(name)
+        # "memory.md" Windows'ta (büyük/küçük harf duyarsız) MEMORY.md'nin ta kendisi: böyle adlı not dizinin üstüne
+        # yazılıyor, ardından dizin yazımı da notu siliyordu.
+        return "memory-not" if out.lower() == INDEX[:-3].lower() else out
 
     # -------------------------------------------------------------- yazma
     def save(self, name: str, description: str, type: str, body: str, title: str = "",
