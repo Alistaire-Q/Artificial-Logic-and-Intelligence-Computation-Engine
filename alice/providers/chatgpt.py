@@ -647,6 +647,24 @@ def _tool_output(c: Any) -> tuple[str, list[dict[str, Any]]]:
     return "\n".join(texts), imgs
 
 
+def text_format(response_format: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Chat Completions response_format -> Responses API text.format."""
+    if not isinstance(response_format, dict):
+        return None
+    kind = response_format.get("type")
+    if kind == "json_schema":
+        js = response_format.get("json_schema") or {}
+        if not isinstance(js.get("schema"), dict):
+            return None
+        out: dict[str, Any] = {"type": "json_schema", "name": js.get("name") or "output", "schema": js["schema"]}
+        if "strict" in js:
+            out["strict"] = bool(js["strict"])
+        return out
+    if kind == "json_object":
+        return {"type": "json_object"}
+    return None
+
+
 def to_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     out = []
     for t in tools or []:
@@ -732,7 +750,10 @@ class ChatGPTProvider(OpenAICompatProvider):
         raise ProviderError("server", f"model listesi boş geldi (sunucu cevabı: {seen or 'boş'})", 200)
 
     def chat(self, model, messages, tools=None, temperature=None, max_tokens=None, response_format=None, extra=None):
-        return self.chat_stream(model, messages, lambda _t: None, tools=tools, extra=extra)
+        # max_tokens/temperature bilerek gönderilmiyor: Codex arka ucu max_output_tokens ve temperature'ı
+        # "Unsupported parameter" ile reddediyor (Codex CLI de göndermiyor). response_format text.format'a çevrilir.
+        return self.chat_stream(model, messages, lambda _t: None, tools=tools, max_tokens=max_tokens,
+                                response_format=response_format, extra=extra)
 
     def chat_stream(self, model, messages, on_delta, tools=None, temperature=None, max_tokens=None,
                     response_format=None, extra=None, cancel=None, on_reasoning=None, on_first=None, on_tool=None,
@@ -756,7 +777,7 @@ class ChatGPTProvider(OpenAICompatProvider):
             started = [False]  # veri gelmeye başladıysa hesap değiştirilmez: ekrana yarım cevap basılmış olur
             try:
                 return self._chat_one(model, messages, on_delta, tools, extra, cancel, on_reasoning, on_first, on_tool,
-                                      started, key, on_call=on_call)
+                                      started, key, on_call=on_call, response_format=response_format)
             except ProviderError as e:
                 if e.kind not in ("rate_limit", "quota", "auth") or started[0]:
                     raise
@@ -782,7 +803,7 @@ class ChatGPTProvider(OpenAICompatProvider):
                                     max(wait, 60.0)) from e
 
     def _chat_one(self, model, messages, on_delta, tools, extra, cancel, on_reasoning, on_first, on_tool,
-                  started: list[bool] | None = None, key: str | None = None, on_call=None):
+                  started: list[bool] | None = None, key: str | None = None, on_call=None, response_format=None):
         started = started if started is not None else [False]
 
         def first() -> None:
@@ -797,18 +818,18 @@ class ChatGPTProvider(OpenAICompatProvider):
         try:
             try:
                 return self._stream(model, messages, delta, tools, extra, cancel, on_reasoning, first, on_tool, key,
-                                    on_call=on_call)
+                                    on_call=on_call, response_format=response_format)
             except ProviderError as e:
                 if self.use_codex_prompt or e.kind != "bad_request" or "instruction" not in str(e).lower():
                     raise
                 self.use_codex_prompt = True  # arka uç kendi istemini istiyor: onunla tekrar dene
                 return self._stream(model, messages, delta, tools, extra, cancel, on_reasoning, first, on_tool, key,
-                                    on_call=on_call)
+                                    on_call=on_call, response_format=response_format)
         except ProviderError as e:
             raise self._scrub(e) from e.__cause__
 
     def _stream(self, model, messages, on_delta, tools, extra, cancel, on_reasoning, on_first, on_tool,
-                key: str | None = None, on_call=None) -> ChatResult:
+                key: str | None = None, on_call=None, response_format=None) -> ChatResult:
         instructions, items = to_responses(messages, codex_prompt(self._client) if self.use_codex_prompt else None)
         body: dict[str, Any] = {"model": model, "instructions": instructions, "input": items, "tools": to_tools(tools),
                                 "tool_choice": "auto", "parallel_tool_calls": bool(tools), "store": False,
@@ -816,6 +837,14 @@ class ChatGPTProvider(OpenAICompatProvider):
         effort = (extra or {}).get("reasoning_effort") or ((extra or {}).get("reasoning") or {}).get("effort")
         if effort:
             body["reasoning"] = {"effort": effort, "summary": "auto"}
+        fmt = text_format(response_format)
+        if fmt:
+            body["text"] = {"format": fmt}
+            if fmt["type"] == "json_object" and "json" not in json.dumps(body["input"], ensure_ascii=False).lower() \
+                    and "json" not in str(instructions).lower():
+                # Responses API json_object'te girdide "JSON" geçmesini şart koşuyor; yoksa istek 400 ile döner.
+                body["input"] = [*items, {"type": "message", "role": "developer",
+                                          "content": [{"type": "input_text", "text": "Cevabı JSON olarak ver."}]}]
         t0 = time.monotonic()
         text: list[str] = []
         calls: dict[str, dict[str, Any]] = {}

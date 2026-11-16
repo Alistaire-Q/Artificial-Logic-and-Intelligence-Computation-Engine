@@ -134,6 +134,32 @@ def test_stream_text_tool_call_usage_and_headers():
     assert b["reasoning"] == {"effort": "low", "summary": "auto"} and b["tools"][0]["name"] == "weather"
 
 
+def test_chat_maps_response_format_and_does_not_send_max_tokens():
+    chatgpt.save_auth(tokens())
+    bodies = []
+
+    def handler(req):
+        bodies.append(json.loads(req.content))
+        return httpx.Response(200, content=sse({"type": "response.output_text.delta", "delta": "{}"}))
+
+    p = ChatGPTProvider(pc(), client=httpx.Client(transport=httpx.MockTransport(handler)))
+    schema = {"type": "object", "properties": {"a": {"type": "integer"}}}
+    p.chat("gpt-5.5", [{"role": "user", "content": "x"}], max_tokens=50, temperature=0.2,
+           response_format={"type": "json_schema", "json_schema": {"name": "cevap", "schema": schema, "strict": True}})
+    b = bodies[-1]
+    assert b["text"] == {"format": {"type": "json_schema", "name": "cevap", "schema": schema, "strict": True}}
+    # Codex arka ucu max_output_tokens/temperature'ı reddediyor: gönderilmez.
+    assert "max_output_tokens" not in b and "temperature" not in b
+    p.chat("gpt-5.5", [{"role": "user", "content": "x"}], response_format={"type": "json_object"})
+    b = bodies[-1]
+    assert b["text"] == {"format": {"type": "json_object"}}
+    assert b["input"][-1]["role"] == "developer" and "JSON" in b["input"][-1]["content"][0]["text"]
+    p.chat("gpt-5.5", [{"role": "user", "content": "JSON ver"}], response_format={"type": "json_object"})
+    assert len(bodies[-1]["input"]) == 1  # girdide JSON geçiyorsa ek mesaj yok
+    p.chat("gpt-5.5", [{"role": "user", "content": "x"}])
+    assert "text" not in bodies[-1]
+
+
 def test_rejected_instructions_retry_with_codex_prompt(isolated_home):
     chatgpt.save_auth(tokens())
     (isolated_home / "codex-prompt.md").write_text("CODEX PROMPT", encoding="utf-8")
