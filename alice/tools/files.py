@@ -260,18 +260,26 @@ def restore_reads(ctx: ToolContext, messages: list[dict[str, Any]], saved_at: fl
     for m in messages:
         for tc in m.get("tool_calls") or []:
             fn = tc.get("function") or {}
-            if fn.get("name") not in _READS or tc.get("id") not in ok:
+            if (fn.get("name") not in _READS and fn.get("name") != "apply_patch") or tc.get("id") not in ok:
                 continue
             try:
-                path = json.loads(fn.get("arguments") or "{}").get("path")
-                p = ctx.resolve(str(path)) if path else None
-            except (ValueError, TypeError, OSError, AttributeError):
+                args = json.loads(fn.get("arguments") or "{}")
+                if fn.get("name") == "apply_patch":  # yamanın yazdığı dosyalar (eklenen, düzenlenen, taşınan)
+                    from alice.tools.patch import parse_patch
+
+                    paths = [o.move_to or o.path for o in parse_patch(str(args.get("patch") or ""))
+                             if o.kind != "delete"]
+                else:
+                    paths = [args.get("path")]
+                targets = [ctx.resolve(str(x)) for x in paths if x]
+            except Exception:  # noqa: BLE001 - bozuk geçmiş kaydı: atla
                 continue
-            if p is None or not p.is_file():
-                continue
-            if _mtime(p) / 1e9 <= saved_at:  # kayıttan sonra (aynı saniye içinde bile) değişen dosya okunmuş sayılmaz
-                mark_read(ctx, p)
-                n += 1
+            for p in targets:
+                if not p.is_file():
+                    continue
+                if _mtime(p) / 1e9 <= saved_at:  # kayıttan sonra (aynı saniye içinde bile) değişen dosya okunmuş sayılmaz
+                    mark_read(ctx, p)
+                    n += 1
     return n
 
 
