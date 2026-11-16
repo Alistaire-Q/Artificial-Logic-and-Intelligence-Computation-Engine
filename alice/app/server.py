@@ -1437,9 +1437,11 @@ class AppState:
             b, n = mem.find_note(key, cwd) if key else (None, None)
             if n is None:
                 return {"ok": False, "error": "not bulunamadı"}
+            # Yalnız gönderilen alanlar değişir: gövdesiz kayıt (ör. sadece açıklama) notun gövdesini silmesin.
+            body = str(d.get("body") or "") if "body" in d else n.body
             try:
                 b.save(n.name, str(d.get("description") or n.description), str(d.get("type") or n.type),
-                       str(d.get("body") or ""), title=n.title, source="kullanıcı")
+                       body, title=n.title, source="kullanıcı")
             except (MemoryFull, ValueError) as e:
                 return {"ok": False, "error": str(e)}
             mem._bump()
