@@ -101,14 +101,39 @@ def _read_text(path: Path) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
-def _write_like(path: Path, text: str) -> None:
-    """Düzenlenen dosyayı aynı kodlamayla geri yaz: UTF-16 bir .ps1/.reg sessizce UTF-8'e dönmesin."""
+def file_encoding(path: Path) -> str:
+    """Dosyanın _read_text'in çözdüğü kodlaması (yazarken aynısı kullanılsın). Okunamazsa utf-8."""
     try:
-        with open(path, "rb") as f:
-            utf16 = f.read(2) in _UTF16_BOMS
+        raw = path.read_bytes()
     except OSError:
-        utf16 = False
-    path.write_text(text, encoding="utf-16" if utf16 else "utf-8", newline="")
+        return "utf-8"
+    if raw.startswith(_UTF16_BOMS):
+        return "utf-16"
+    if raw.startswith(b"\xef\xbb\xbf"):
+        return "utf-8-sig"
+    for enc in ("utf-8", "cp1254"):
+        try:
+            raw.decode(enc)
+            return enc
+        except UnicodeDecodeError:
+            continue
+    return "latin-1"
+
+
+def write_encoded(path: Path, text: str, encoding: str) -> None:
+    """Metni verilen kodlamayla yaz; eski tek baytlık kodlamaya sığmayan karakter varsa UTF-8'e geç."""
+    try:
+        data = text.encode(encoding)
+    except UnicodeEncodeError:
+        data = text.encode("utf-8")
+    path.write_bytes(data)
+
+
+def _write_like(path: Path, text: str) -> None:
+    """Düzenlenen dosyayı aynı kodlamayla geri yaz: UTF-16 bir .ps1/.reg sessizce UTF-8'e dönmesin, UTF-8 BOM'lu
+    bir .ps1'in BOM'u düşmesin (Windows PowerShell 5.1 BOM'suz dosyayı ANSI okur, Türkçe karakterler bozulur),
+    cp1254 bir .bat UTF-8'e çevrilmesin."""
+    write_encoded(path, text, file_encoding(path))
 
 
 def snapshot(ctx: ToolContext, p: Path) -> None:
