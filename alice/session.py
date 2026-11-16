@@ -37,16 +37,37 @@ def save(session_id: str, messages: list[dict[str, Any]], cwd: Path, extra: dict
     """extra: mesajlar dışında yeniden açılışta geri kurulacak sohbet bilgisi (istatistik, kullanım dökümü, alt
     ajanlar, oturumun başlangıcı). Uygulama kapanıp açılınca bunlar sıfırlanıyordu."""
     path = sessions_dir() / f"{session_id}.json"
-    # Görüntüler diske yazılmaz, oturum dosyaları küçük kalsın.
-    body = {"cwd": str(cwd), "saved": datetime.now().isoformat(timespec="seconds"),
-            "messages": strip_images(messages[1:])}
-    if extra:
-        body["extra"] = extra
-    # Önce geçici dosyaya yaz: her adımda kaydederken yarıda kalan bir yazma oturumu bozmasın.
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(body, ensure_ascii=False, indent=1), encoding="utf-8")
-    tmp.replace(path)
+    # Ajan thread'i her adımda, arayüz istekleri (durdur, sohbet değiştir, özetle) kendi thread'lerinden aynı oturumu
+    # kaydediyor. Ortak .json.tmp'ye aynı anda yazınca dosya karışıyor (bozuk oturum açılışta atlanır: sohbet
+    # kaybolur) ya da ikinci replace FileNotFoundError/PermissionError veriyordu. Kayıtlar sıraya girer; anlık
+    # görüntü kilit içinde alınır (sonra gelen eski hâli yazmasın), geçici dosya da yazana özeldir.
+    with _save_lock:
+        # Görüntüler diske yazılmaz, oturum dosyaları küçük kalsın.
+        body = {"cwd": str(cwd), "saved": datetime.now().isoformat(timespec="seconds"),
+                "messages": strip_images(messages[1:])}
+        if extra:
+            body["extra"] = extra
+        # Önce geçici dosyaya yaz: her adımda kaydederken yarıda kalan bir yazma oturumu bozmasın.
+        _atomic_write(path, json.dumps(body, ensure_ascii=False, indent=1))
     return path
+
+
+_save_lock = threading.RLock()
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    import os
+
+    tmp = path.with_name(f"{path.name}.{os.getpid()}-{threading.get_ident()}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 ARCHIVE_TOOL_CHARS = 4000  # arşivde araç çıktısı bu kadar tutulur (yalnız ekranda göstermek için)
@@ -234,10 +255,8 @@ def save_checkpoints(session_id: str, checkpoints: dict[int, dict[str, bytes | N
             row[path] = None if data is None else base64.b64encode(data).decode("ascii")
         if row:
             out[str(idx)] = row
-    p = checkpoints_path(session_id)
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(json.dumps(out), encoding="utf-8")
-    tmp.replace(p)
+    with _save_lock:
+        _atomic_write(checkpoints_path(session_id), json.dumps(out))
 
 
 def load_checkpoints(session_id: str) -> dict[int, dict[str, bytes | None]]:

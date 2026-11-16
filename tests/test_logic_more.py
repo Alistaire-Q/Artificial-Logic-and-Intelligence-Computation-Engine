@@ -46,6 +46,30 @@ def test_session_save_strips_system_and_images_and_lists(tmp_path):
     assert len(session.list_sessions(limit=1)) == 1
 
 
+def test_session_save_concurrent_writers_keep_file_valid(tmp_path):
+    """Ajan thread'i ve arayüz istekleri aynı oturumu aynı anda kaydedince ortak geçici dosya karışıyor ya da
+    replace hata veriyordu; şimdi hepsi başarılı ve dosya geçerli JSON."""
+    errors: list[BaseException] = []
+    msgs = [{"role": "system"}] + [{"role": "user", "content": "x" * 2000} for _ in range(200)]
+
+    def work() -> None:
+        try:
+            for _ in range(15):
+                session.save("20260103-000000", msgs, tmp_path)
+        except BaseException as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=work) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    p = session.sessions_dir() / "20260103-000000.json"
+    assert len(json.loads(p.read_text(encoding="utf-8"))["messages"]) == 200
+    assert not [f for f in session.sessions_dir().iterdir() if f.name.endswith(".tmp")]
+
+
 def test_session_load_latest_or_by_id():
     assert session.load() is None
     session.save("20260101-000000", [{"role": "system"}, {"role": "user", "content": "a"}], Path("."))
