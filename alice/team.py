@@ -33,6 +33,7 @@ import logging
 import re
 import secrets
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -263,8 +264,14 @@ def _read_original(p: Path) -> str | None:
         return "\0okunamadı"
 
 
+_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
+
+
 def _git(cwd: Path, *args: str, timeout: int = 60) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, timeout=timeout)
+    # git çıktısı UTF-8: kodlama verilmezse Windows'ta yerel kod sayfasıyla (cp1254) çözülür ve "Ğ", "Ş" ya da emoji
+    # içeren fark/dosya içeriği UnicodeDecodeError ile ajanın adımını düşürür. Konsol penceresi de açılmasın.
+    return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", timeout=timeout, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
 
 
 log = logging.getLogger(__name__)

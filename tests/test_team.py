@@ -397,3 +397,19 @@ def test_list_projects_survives_file_being_replaced(monkeypatch):
     monkeypatch.setattr(team_store.time, "sleep", lambda s: None)
     rows = team_store.list_projects()
     assert [r["id"] for r in rows] == ["p1"] and rows[0]["status"] == "done"
+
+
+def test_git_output_is_decoded_as_utf8(tmp_path):
+    # Windows'ta yerel kod sayfası (cp1254) "Ğ"/"Ş" baytlarını (0x9E) çözemiyordu: git show/diff UnicodeDecodeError
+    # ile ajanın adımını düşürüyordu.
+    from alice import team as team_mod
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True)
+
+    git("init", "-q")
+    (tmp_path / "t.txt").write_bytes("Ğ Ş ı 😀\n".encode("utf-8"))
+    git("add", "t.txt")
+    git("-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "-m", "ilk")
+    r = team_mod._git(tmp_path, "show", "HEAD:t.txt")
+    assert r.returncode == 0 and r.stdout == "Ğ Ş ı 😀\n"
