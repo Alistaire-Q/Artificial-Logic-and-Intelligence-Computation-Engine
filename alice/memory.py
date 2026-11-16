@@ -115,6 +115,13 @@ _FEEDBACK = re.compile(
     r"güzel olmuş|guzel olmus|eline sağlık|eline saglik|böyle devam|boyle devam|doğru yaptın|dogru yaptin|"
     r"beğendim|begendim|istemiyorum|isterim|tercih|don'?t|stop|exactly|perfect|keep doing)\b", re.I)
 
+DIGEST_BAD_TRIES = 3  # modelin kullanılamaz özet cevabı aynı konuşmada bu kadar olursa konuşma atlanır
+
+
+class _BadDigest(ValueError):
+    """Özet modeli cevap verdi ama cevap JSON değil/boş (ağ ya da kota hatası değil)."""
+
+
 RECALL_ITEM_CHARS, RECALL_TOTAL_CHARS = 1800, 6000
 RECENT_TURNS_HOURS = 3  # sistem istemine giren "son turlar" bundan eskiyse girmez (yeni sohbet devam sanılmasın)
 
@@ -306,6 +313,7 @@ class LongMemory:
         self.dream_hours = float(o.get("dream_hours", 24))
         self.dream_sessions = int(o.get("dream_sessions", 5))
         self._turns_since_extract = 0
+        self._turns_lock = threading.Lock()  # sayaç birden çok kanaldan (ses, sohbet, Discord) aynı anda artar
         self._last_dream_scan: float | None = None  # monotonic; None = hiç taranmadı (açılıştan hemen sonra monotonic < 600 olabilir)
         self._dream_lock = threading.Lock()
         self._in_profile: dict[str, set[str]] = {}  # cwd -> sistem isteminde tamamı duran notlar (anahtar@zaman)
@@ -500,19 +508,37 @@ class LongMemory:
         return len(ids)
 
     def migrate_facts(self) -> int:
-        """Eski tek cümlelik bilgileri (facts tablosu) bir kez notlara taşı. Tablo silinmez (yedek)."""
+        """Eski tek cümlelik bilgileri (facts tablosu) notlara taşı. Tablo silinmez (yedek).
+
+        Taşınan her bilginin kimliği kaydedilir; biri taşınamadıysa (dizin dolu vb.) taşıma "bitti" sayılmaz ve
+        sonraki açılışta yalnız taşınmamış olanlar denenir. Eskiden ilk denemede bitti işaretleniyordu (kalanlar
+        hiç taşınmıyordu); hepsini yeniden taşımak da sonradan düzenlenmiş notların üzerine yazardı."""
         if self._meta("notes_migrated"):
             return 0
-        n = 0
-        for f in reversed(self.facts()):
-            src = self._source(f.id)
-            try:
-                self.remember(f.text, f.kind, source="kullanıcı" if src in ("kullanıcı", "araç", "memory.md") else src,
-                              when=f.updated)
+        try:
+            done = {int(i) for i in json.loads(self._meta("notes_migrated_ids") or "[]")}
+        except (ValueError, TypeError):
+            done = set()
+        n, failed = 0, 0
+        try:
+            for f in reversed(self.facts()):
+                if f.id in done:
+                    continue
+                src = self._source(f.id)
+                try:
+                    self.remember(f.text, f.kind,
+                                  source="kullanıcı" if src in ("kullanıcı", "araç", "memory.md") else src,
+                                  when=f.updated)
+                except Exception:  # noqa: BLE001 - dizin doluysa kalanı sonra
+                    failed += 1
+                    log.debug("bilgi nota taşınamadı: %s", f.text, exc_info=True)
+                    continue
+                done.add(f.id)
                 n += 1
-            except Exception:  # noqa: BLE001 - dizin doluysa kalanı sonra
-                log.debug("bilgi nota taşınamadı: %s", f.text, exc_info=True)
-        self._meta("notes_migrated", datetime.now().isoformat(timespec="seconds"))
+        finally:
+            self._meta("notes_migrated_ids", json.dumps(sorted(done)))
+        if not failed:
+            self._meta("notes_migrated", datetime.now().isoformat(timespec="seconds"))
         return n
 
     def close(self) -> None:
@@ -524,6 +550,13 @@ class LongMemory:
             with self._lock:
                 self.db.execute("DELETE FROM episodes WHERE ts < ?", (time.time() - self.keep_days * 86400,))
                 self.db.commit()
+        with self._lock:
+            # Silinen turların/özetlerin vektörleri kalıyordu: tablo durmadan büyüyor, anlam aramasının ilk sıralarını
+            # artık var olmayan kayıtlar kapıyordu (gerçek eşleşmeler k sınırının dışında kalıyordu).
+            self.db.execute("DELETE FROM vectors WHERE kind = 'episode' AND ref NOT IN (SELECT id FROM episodes)")
+            self.db.execute("DELETE FROM vectors WHERE kind = 'summary' AND ref NOT IN (SELECT id FROM summaries)")
+            self.db.execute("DELETE FROM vectors WHERE kind = 'fact' AND ref NOT IN (SELECT id FROM facts)")
+            self.db.commit()
 
     def _meta(self, key: str, value: str | None = None) -> str | None:
         with self._lock:
@@ -539,7 +572,10 @@ class LongMemory:
         return int(self._meta("version") or 0)
 
     def _bump(self) -> None:
-        self._meta("version", str(self.version + 1))
+        # Oku-yaz tek kilit altında: iki iş parçacığı aynı sürümü okuyup aynı sayıyı yazınca bir değişiklik
+        # görünmez kalıyordu (sürümü izleyen taraf ikincisini hiç fark etmiyordu).
+        with self._lock:
+            self._meta("version", str(self.version + 1))
 
     def import_markdown(self, path: Path) -> int:
         """Eski düz hafıza dosyasını (memory.md, "* not  _(tarih)_" satırları) bir kez içeri al."""
@@ -731,10 +767,10 @@ class LongMemory:
                     left = True
                     break
                 with self._lock:
-                    # Embedding sürerken güncellenen/silinen bilgi eski metnin vektörüyle kaydedilmesin.
-                    facts = dict(self.db.execute("SELECT id, text FROM facts").fetchall())
+                    # Embedding sürerken güncellenen/silinen kayıt eski metnin vektörüyle kaydedilmesin (silinen
+                    # sohbetin turu sahipsiz vektör olarak kalıyordu; add_reply sonrası eski cevabın vektörü yazılıyordu).
                     rows = [(k, ref, pack(v)) for (k, ref, text), v in zip(part, vecs)
-                            if k != "fact" or facts.get(ref) == text]
+                            if self._embed_text(k, ref) == text]
                     self.db.executemany("INSERT OR REPLACE INTO vectors(kind, ref, vec) VALUES (?, ?, ?)", rows)
                     self.db.commit()
                 done += len(part)
@@ -743,6 +779,17 @@ class LongMemory:
         if left and isinstance(self.path, Path):
             self._index_later()
         return done
+
+    def _embed_text(self, kind: str, ref: int) -> str | None:
+        """Kaydın şu anki vektörlenecek metni (index_pending'deki biçimle aynı); kayıt yoksa None."""
+        if kind == "fact":
+            row = self.db.execute("SELECT text FROM facts WHERE id = ?", (ref,)).fetchone()
+            return row[0] if row else None
+        if kind == "summary":
+            row = self.db.execute("SELECT text FROM summaries WHERE id = ?", (ref,)).fetchone()
+            return row[0] if row else None
+        row = self.db.execute("SELECT user, reply FROM episodes WHERE id = ?", (ref,)).fetchone()
+        return f"Kullanıcı: {row[0]}\nALICE: {row[1][:400]}" if row else None
 
     def _index_later(self) -> None:
         """Birikmiş kayıtlar var (kota doldu ya da çok fazla): kota açılınca devam et."""
@@ -988,9 +1035,11 @@ class LongMemory:
             rows = self.db.execute(sql + " ORDER BY COALESCE(due, created)").fetchall()
         return [Followup(*r) for r in rows]
 
-    def due_followups(self, now: float | None = None) -> list[Followup]:
+    def due_followups(self, now: float | None = None, prune: bool = True) -> list[Followup]:
         """Bugün ya da daha önce günü gelmiş takipler + yarım kalan işler. Çok eskiyenler kendiliğinden düşer
-        (sınavdan 4 gün sonra "nasıl geçti" sorulmaz; iki hafta önce yarım kalan iş artık güncel değil)."""
+        (sınavdan 4 gün sonra "nasıl geçti" sorulmaz; iki hafta önce yarım kalan iş artık güncel değil).
+        prune=False: eskiyenler yalnız listeden çıkar, kalıcı olarak kapatılmaz (ileri bir an için bakarken: gece
+        raporu "yarın"a bakarken takipleri bir buçuk gün erken kapatıyordu)."""
         now = now or time.time()
         end_of_day = datetime.fromtimestamp(now).replace(hour=23, minute=59, second=59).timestamp()
         out, stale = [], []
@@ -1002,7 +1051,7 @@ class LongMemory:
                 stale.append(f.id)
                 continue
             out.append(f)
-        if stale:
+        if stale and prune:
             with self._lock:
                 self.db.executemany("UPDATE followups SET done = 2 WHERE id = ?", [(i,) for i in stale])
                 self.db.commit()
@@ -1020,6 +1069,8 @@ class LongMemory:
         return Followup(*row)
 
     # ------------------------------------------------------------------ özetleme
+    PENDING_PAGE = 400  # bir geçişte okunan en çok tur
+
     def pending_sessions(self, now: float | None = None, force: bool = False) -> list[list[Episode]]:
         """Henüz özetlenmemiş, bitmiş konuşmalar (aralarında session_gap'ten uzun sessizlik olan tur grupları)."""
         now = now or time.time()
@@ -1027,7 +1078,7 @@ class LongMemory:
         since = float(raw) if raw else now - 3 * 86400  # ilk açılışta bütün geçmiş değil, son üç gün
         with self._lock:
             rows = self.db.execute("SELECT id, ts, channel, user, reply FROM episodes WHERE ts > ? "
-                                   "ORDER BY ts LIMIT 400", (since,)).fetchall()
+                                   "ORDER BY ts LIMIT ?", (since, self.PENDING_PAGE)).fetchall()
         groups: list[list[Episode]] = []
         for r in rows:
             e = Episode(*r)
@@ -1035,7 +1086,13 @@ class LongMemory:
                 groups[-1].append(e)
             else:
                 groups.append([e])
-        if groups and not force and now - groups[-1][-1].ts < self.session_gap:
+        if len(rows) >= self.PENDING_PAGE:
+            # Sayfa doldu: son grup sayfa sınırında kesilmiş olabilir (devamı sonraki sayfada). Özetlenirse bir
+            # konuşma iki ayrı özete bölünüyordu; sonraki geçişte bütün olarak gelir. Tek grup varsa (sayfadan
+            # uzun tek konuşma) başka yol yok: ilerlemek için bu parça özetlenir.
+            if len(groups) > 1:
+                groups.pop()
+        elif groups and not force and now - groups[-1][-1].ts < self.session_gap:
             groups.pop()  # konuşma sürüyor
         return groups
 
@@ -1061,10 +1118,23 @@ class LongMemory:
                 if sum(len(e.user) for e in group) >= 40:  # "saat kaç" gibi tek kısa tur özetlenmez
                     try:
                         self._digest_one(group)
+                    except _BadDigest:
+                        # Model cevap verdi ama kullanılamaz: aynı konuşmada hep böyle olursa sonraki bütün
+                        # konuşmalar sonsuza dek özetsiz kalıyordu. Birkaç denemeden sonra bu konuşma atlanır.
+                        key = repr(group[-1].ts)
+                        fails = (int(self._meta("digest_bad_count") or 0) + 1
+                                 if self._meta("digest_bad_group") == key else 1)
+                        self._meta("digest_bad_group", key)
+                        self._meta("digest_bad_count", str(fails))
+                        if fails < DIGEST_BAD_TRIES:
+                            self._meta("digest_fail_until", repr(time.time() + 900))
+                            break
+                        log.debug("konuşma özetlenemedi, atlanıyor (%s deneme)", fails)
                     except Exception:  # noqa: BLE001 - model yok/kota: sonra tekrar denenir
                         self._meta("digest_fail_until", repr(time.time() + 900))
                         break
-                    done += 1
+                    else:
+                        done += 1
                 self._meta("digested_until", repr(group[-1].ts))
         finally:
             self._digest_lock.release()
@@ -1084,7 +1154,7 @@ class LongMemory:
         prompt = DIGEST_PROMPT.format(date=f"{start:%Y-%m-%d %A}", open=open_items, transcript=transcript)
         data = parse_json(self.extractor(prompt) if self.extractor else "")
         if not data:
-            raise ValueError("özet cevabı boş")
+            raise _BadDigest("özet cevabı boş")
         # Kalıcı notları özet değil, tur sonu çıkarımı ve Dream yazar (Dream bu özetleri okuyup damıtır).
         summary = strip_filler(data.get("summary") or "") if isinstance(data.get("summary"), str) else ""
         if summary:
@@ -1195,7 +1265,8 @@ class LongMemory:
         user = clean_user_text(user)
         self.maybe_digest()  # önceki (bitmiş) konuşma henüz özetlenmediyse şimdi arka planda
         if wrote:
-            self._turns_since_extract = 0
+            with self._turns_lock:
+                self._turns_since_extract = 0
             self._advance_cursor()
             return
         note = explicit_note(user)
@@ -1208,10 +1279,13 @@ class LongMemory:
             return
         if self.extractor is None or not self.auto_extract:
             return
-        self._turns_since_extract += 1
-        if not (has_signal(user) or has_feedback(user) or self._turns_since_extract >= self.extract_every):
-            return
-        self._turns_since_extract = 0
+        # Oku-artır-sıfırla tek kilit altında: kilitsizken eşzamanlı turlarda artışlar kayboluyor ya da aynı eşikte
+        # iki çıkarım birden başlıyordu.
+        with self._turns_lock:
+            self._turns_since_extract += 1
+            if not (has_signal(user) or has_feedback(user) or self._turns_since_extract >= self.extract_every):
+                return
+            self._turns_since_extract = 0
         if background:
             threading.Thread(target=self._extract, args=(cwd,), daemon=True, name="alice-memory").start()
         else:
@@ -1286,13 +1360,16 @@ class LongMemory:
                 target = book or self.book(str(s.get("scope") or "genel"), cwd)
             except ValueError:
                 target = self.notes
-            old = target.get(str(s.get("name") or ""))
+            # Kaydedilecek adla aynı ad: ad boşken get("") "not" adlı başka bir notu buluyordu (silinmiş not kontrolü
+            # atlanıyor, kaynağı o nottan alınıyordu).
+            key = str(s.get("name") or s.get("title") or desc)
+            old = target.get(key)
             if old is None and source in ("otomatik", "dream") and \
                     self._forgotten_like(f"{s.get('title') or ''} {desc} {content}"):
                 done.append(f"atlandı (kullanıcı silmişti): {desc[:60]}")
                 continue
             try:
-                note, new = target.save(str(s.get("name") or s.get("title") or desc), desc, typ, content,
+                note, new = target.save(key, desc, typ, content,
                                         title=str(s.get("title") or ""),
                                         source=(old.source if old is not None and old.source else source))
             except (MemoryFull, ValueError) as e:
@@ -1325,13 +1402,22 @@ class LongMemory:
             return False
         if self._last_dream_scan is not None and time.monotonic() - self._last_dream_scan < 600:
             return False
+        if time.monotonic() < getattr(self, "_dream_retry_at", 0.0):
+            return False  # son Dream'ler başarısız oldu: güçlü modeli 10 dakikada bir boşuna çağırma
         self._last_dream_scan = time.monotonic()
         groups = self.sessions(after=last or time.time() - 7 * 86400)
         if groups and time.time() - groups[-1][-1].ts < self.session_gap:
             groups = groups[:-1]  # süren konuşma sayılmaz
         if len(groups) < self.dream_sessions:
             return False
-        self.dream()
+        report = self.dream()
+        if any("toparlanamadı" in r for r in report):
+            # Başarısız Dream zaman kapısını geri sarıyor (bir sonraki fırsatta tekrar denensin diye); model sürekli
+            # hata veriyorsa bu her 10 dakikada bir güçlü model çağrısı demekti. Art arda hatada bekleme katlanır.
+            self._dream_fails = getattr(self, "_dream_fails", 0) + 1
+            self._dream_retry_at = time.monotonic() + min(3600.0 * 2 ** (self._dream_fails - 1), 24 * 3600.0)
+        else:
+            self._dream_fails, self._dream_retry_at = 0, 0.0
         return True
 
     def dream(self, force: bool = False, cwd: Path | str | None = None) -> list[str]:

@@ -1011,8 +1011,16 @@ function assistantPane(pane, data) {
     const row = el("div", "list-row");
     const l = el("span", "l");
     l.append(el("b", "", r.rule), el("small", "", (r.kind === "allow" ? "izin ver" : r.kind === "deny" ? "yasak" : "sor") +
-      " · " + (r.source === "project" ? "bu proje (.alice/permissions.toml)" : "config.toml (dosyadan düzenle)")));
+      " · " + (r.source === "project" ? "bu proje (.alice/permissions.toml)" : "config.toml (dosyadan düzenle)") +
+      (r.untrusted ? " · onaylanmadı, uygulanmıyor" : "")));
     row.appendChild(l);
+    if (r.untrusted) {
+      const t = el("button", "btn", "Onayla");
+      t.title = "Bu kural dosyası ALICE dışında yazılmış ya da değişmiş (ör. klonlanan repo). Onaylarsan uygulanır.";
+      t.addEventListener("click", () => api("/api/assistant/action", { action: "rules_trust" })
+        .then((x) => { if (x && x.ok) { t.remove(); } }));
+      row.appendChild(t);
+    }
     if (r.source === "project") {
       const b = el("button", "btn", "Sil");
       b.addEventListener("click", () => api("/api/assistant/action", { action: "rule_delete", kind: r.kind, rule: r.rule })
@@ -2860,8 +2868,19 @@ async function showSettings(tab) {
       memoryPane(pane, data.memory);
     } else if (tab === "usage") {
       pane.append(el("h2", "", "Bugünkü kullanım"));
-      const entries = Object.entries(data.usage || {});
+      const entries = Object.entries((data.usage && data.usage.today) || {});
       if (!entries.length) pane.appendChild(el("p", "", "Bugün henüz istek yok."));
+      const pct = (r) => (r.prompt_tokens ? Math.round((100 * (r.cached_tokens || 0)) / r.prompt_tokens) : 0);
+      const sum = entries.reduce((a, [, r]) => ({ prompt_tokens: a.prompt_tokens + (r.prompt_tokens || 0),
+        cached_tokens: a.cached_tokens + (r.cached_tokens || 0), cache_write_tokens: a.cache_write_tokens + (r.cache_write_tokens || 0) }),
+      { prompt_tokens: 0, cached_tokens: 0, cache_write_tokens: 0 });
+      if (sum.prompt_tokens) {
+        // Önbellek oranı: girdinin ne kadarı önbellekten okundu (ucuz ve hızlı). Yazılan, sonraki istekler için önbelleğe alınan.
+        const head = el("p", "use-cache", `Önbellek isabeti bugün %${pct(sum)} · ${(sum.cached_tokens / 1000).toFixed(1)}k okundu` +
+          (sum.cache_write_tokens ? ` · ${(sum.cache_write_tokens / 1000).toFixed(1)}k yazıldı` : ""));
+        head.title = "Girdinin önbellekten okunan kısmı. Uzun sohbetlerde yüksek olması beklenir; model sık değişirse düşer.";
+        pane.appendChild(head);
+      }
       const max = Math.max(1, ...entries.map(([, r]) => r.requests));
       for (const [ref, r] of entries) {
         const row = el("div", "use-row");
@@ -2870,7 +2889,8 @@ async function showSettings(tab) {
         fill.style.width = (100 * r.requests) / max + "%";
         bar.appendChild(fill);
         row.append(el("span", "l", ref), bar,
-          el("span", "r", `${r.requests} istek · ${r.errors} hata · ${(r.prompt_tokens / 1000).toFixed(1)}k girdi · ${(r.completion_tokens / 1000).toFixed(1)}k çıktı`));
+          el("span", "r", `${r.requests} istek · ${r.errors} hata · ${(r.prompt_tokens / 1000).toFixed(1)}k girdi` +
+            (r.cached_tokens ? ` (önbellek %${pct(r)})` : "") + ` · ${(r.completion_tokens / 1000).toFixed(1)}k çıktı`));
         pane.appendChild(row);
       }
     } else {

@@ -50,6 +50,9 @@ taint_guard = true
 # Windows: düşük bütünlük seviyesi; Linux: bubblewrap (apt install bubblewrap); macOS: sandbox-exec.
 sandbox = "auto"
 sandbox_network = true
+# Sandbox'taki komut ~/.alice'teki anahtar dosyalarını okuyamaz, .env'den gelen ve adı anahtar gibi olan ortam
+# değişkenlerini (*_API_KEY, *_TOKEN, CLIPROXY_*...) almaz. Bir komut gerçekten birine muhtaçsa adını buraya yaz.
+# sandbox_env_allow = ["HF_TOKEN"]
 # İş bitmeden durursa ("şimdi testleri çalıştıracağım" deyip susmak) en fazla kaç kez devam hatırlatılsın. 0 = kapalı.
 finish_nudges = 2
 # "Yaptım/indirildi/yok" gibi sonuç söyleyen cevap bu turdaki araç sonuçlarıyla desteklenmiyorsa (hızlı modelle
@@ -97,6 +100,8 @@ browser_bridge_port = 9339
 # ALICE tarayıcı eklentisi (alice/extension, opera://extensions'ta "paketlenmemiş yükle") bu porta bağlanır. Bağlıyken
 # yukarıdaki uzaktan hata ayıklama hiç kullanılmaz: izin penceresi yok, indirmeler/tema ellenmez. 0 = kapalı.
 browser_ext_port = 9340
+# Bu porta yalnız ilk eşlenen eklenti bağlanabilir (kimliği ~/.alice/browser-ext-id); eklentiyi başka klasörden
+# yükledinse o dosyayı sil ya da kimliği buraya yaz: browser_ext_ids = ["..."]
 # true: rol zincirinde "auto" yazmasan da ölçülen en iyi ücretsiz modeller zincirin sonuna eklenir.
 auto_models = true
 # Arayüzde gizlenen modeller ya da sağlayıcılar ("groq" ya da "groq:model"): otomatik zincirlerde kullanılmaz.
@@ -927,11 +932,20 @@ def _deep_merge(base: dict, over: dict) -> dict:
     return out
 
 
+# .env dosyalarından ortama yüklenen anahtar adları: sandbox'taki komutlara verilmezler (sandbox.scrub_env).
+LOADED_ENV_KEYS: set[str] = set()
+
+
 def load_env_file(path: Path) -> None:
     """Basit KEY=VALUE parser. Zaten tanımlı ortam değişkenlerinin üstüne yazmaz."""
     if not path.is_file():
         return
-    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    # utf-8-sig: Not Defteri'nin eklediği BOM ilk anahtarın adına yapışıp ("﻿GEMINI_API_KEY") onu yok ediyordu.
+    try:
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:  # sandbox'taki süreç (ALICE'i içe aktaran bir test) gizli .env'i okuyamaz
+        return
+    for raw in text.splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -940,6 +954,7 @@ def load_env_file(path: Path) -> None:
         value = value.strip().strip('"').strip("'")
         if key and value and key not in os.environ:
             os.environ[key] = value
+            LOADED_ENV_KEYS.add(key)
 
 
 KNOWN_VISION = ("*gemma-3-*", "*gemma-4-*", "*llama-4-*", "*-vl-*", "*-vl", "*vision*", "*pixtral*")
@@ -1047,6 +1062,9 @@ class ProviderConfig:
                 and not any(fnmatch.fnmatch(low, p) for p in NOT_VISION))
 
 
+_warned_providers: set[str] = set()  # base_url'siz sağlayıcı uyarısı süreç başına bir kez
+
+
 @dataclass
 class Config:
     data: dict[str, Any]
@@ -1064,9 +1082,27 @@ class Config:
     def decider(self) -> dict[str, Any]:
         return self.data.get("decider", {})
 
+    def provider_errors(self) -> dict[str, str]:
+        """Kullanılamayan [providers.x] tanımları ve sebebi (providers() bunları atlar)."""
+        out = {}
+        for name, p in (self.data.get("providers", {}) or {}).items():
+            if not isinstance(p, dict):
+                out[name] = "bir tablo olmalı ([providers.ad] altında base_url = ...)"
+            elif not str(p.get("base_url") or "").strip():
+                out[name] = "base_url yok"
+        return out
+
     def providers(self) -> dict[str, ProviderConfig]:
         out = {}
-        for name, p in self.data.get("providers", {}).items():
+        bad = self.provider_errors()
+        for name, p in (self.data.get("providers", {}) or {}).items():
+            if name in bad:
+                # base_url'siz özel sağlayıcı her yerde KeyError veriyordu (uygulama, doctor, yönlendirme): atla, bir
+                # kez uyar.
+                if name not in _warned_providers:
+                    _warned_providers.add(name)
+                    print(f"UYARI: [providers.{name}] kullanılmıyor: {bad[name]}", file=sys.stderr)
+                continue
             out[name] = ProviderConfig(
                 name=name,
                 base_url=_expand_env(str(p["base_url"])).rstrip("/"),
@@ -1086,24 +1122,48 @@ class Config:
         return dict(self.data.get("models", {}).get(ref, {}).get("extra", {}))
 
 
+def _section_header(text: str, section: str) -> re.Match[str] | None:
+    """[section] başlık satırı. Başlığın sonunda yorum olabilir ("[kairos]   # arka plan nöbeti"): eskiden bu
+    eşleşmiyordu, bölüm sona ikinci kez ekleniyor ve config.toml geçersiz TOML olup tüm ayarlar varsayılana dönüyordu."""
+    return re.search(rf"(?m)^[ \t]*\[[ \t]*{re.escape(section)}[ \t]*\][ \t]*(?:#[^\n]*)?$", text)
+
+
+def _value_end(body: str, start: int) -> int:
+    """body[start:]'taki `key = değer` atamasının bittiği yer: değer birden çok satıra yayılıyorsa (çok satırlı dizi,
+    üç tırnaklı metin) hepsi. Sadece ilk satırı değiştirmek kalan satırları sahipsiz bırakıp dosyayı bozuyordu."""
+    pos = start
+    while True:
+        nl = body.find("\n", pos)
+        end = len(body) if nl < 0 else nl
+        try:
+            tomllib.loads(body[start:end])
+            return end
+        except tomllib.TOMLDecodeError:
+            if nl < 0:
+                return body.find("\n", start) if "\n" in body[start:] else len(body)
+            pos = nl + 1
+
+
 def set_config_value(section: str, key: str, value: Any) -> Path:
     """~/.alice/config.toml'da [section] altındaki key'i yaz (yoksa ekle). value TOML'a çevrilir."""
     import json
-    import re
 
     init_home()
     path = alice_home() / "config.toml"
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8-sig")  # Not Defteri BOM'u ilk başlığın eşleşmesini engellemesin
     line = f"{key} = {json.dumps(value, ensure_ascii=False)}"
-    sec = re.search(rf"(?m)^\[{re.escape(section)}\]\s*$", text)
+    sec = _section_header(text, section)
     if not sec:
         text = text.rstrip() + f"\n\n[{section}]\n{line}\n"
     else:
         nxt = re.search(r"(?m)^\[", text[sec.end():])
         end = sec.end() + (nxt.start() if nxt else len(text) - sec.end())
         body = text[sec.end():end]
-        rx = re.compile(rf"(?m)^{re.escape(key)}\s*=.*$")
-        body = rx.sub(lambda _m: line, body, count=1) if rx.search(body) else f"\n{line}" + body
+        m = re.compile(rf"(?m)^[ \t]*{re.escape(key)}[ \t]*=").search(body)
+        if m:
+            body = body[:m.start()] + line + body[_value_end(body, m.start()):]
+        else:
+            body = f"\n{line}" + body
         text = text[:sec.end()] + body + text[end:]
     path.write_text(text, encoding="utf-8")
     return path
@@ -1111,14 +1171,12 @@ def set_config_value(section: str, key: str, value: Any) -> Path:
 
 def remove_config_section(section: str) -> bool:
     """~/.alice/config.toml'dan [section] bölümünü (bir sonraki bölüm başlığına kadar) sil. Yoksa False."""
-    import re
-
     path = alice_home() / "config.toml"
     try:
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8-sig")
     except OSError:
         return False
-    sec = re.search(rf"(?m)^\[{re.escape(section)}\]\s*$", text)
+    sec = _section_header(text, section)
     if not sec:
         return False
     nxt = re.search(r"(?m)^\[", text[sec.end():])
@@ -1321,6 +1379,7 @@ def set_env_value(key: str, value: str, path: Path | None = None) -> Path:
     tmp.replace(path)
     if value:
         os.environ[key] = value
+        LOADED_ENV_KEYS.add(key)
     else:
         os.environ.pop(key, None)
     return path

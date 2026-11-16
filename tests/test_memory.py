@@ -175,6 +175,33 @@ def test_old_facts_migrate_to_notes_once():
     assert "gh oturumunun" in by["feedback"].body and by["user"].source == "kullanıcı"
 
 
+def test_partial_fact_migration_is_retried_without_overwriting_migrated_notes(monkeypatch):
+    m = mem()
+    now = time.time()
+    with m._lock:
+        for i, text in enumerate(["Kullanıcının kedisinin adı Pamuk.", "Kullanıcı sabahları kahve içer."]):
+            m.db.execute("INSERT INTO facts(created, updated, kind, text, terms, source) VALUES (?, ?, ?, ?, '', ?)",
+                         (now + i, now + i, "fact", text, "otomatik"))
+        m.db.commit()
+    real = m.remember
+
+    def flaky(text, *a, **kw):
+        if "kahve" in text:
+            raise RuntimeError("dizin dolu")
+        return real(text, *a, **kw)
+
+    monkeypatch.setattr(m, "remember", flaky)
+    assert m.migrate_facts() == 1
+    assert not m._meta("notes_migrated")  # biri taşınamadı: bitti sayılmaz
+    cat = next(n for n in notes(m) if "Pamuk" in n.body)
+    m.notes.save(cat.name, cat.description, cat.type, "Kullanıcının kedisinin adı Pamuk, 3 yaşında.")  # elle düzenleme
+    monkeypatch.setattr(m, "remember", real)
+    assert m.migrate_facts() == 1  # yalnız kalan taşındı
+    assert m._meta("notes_migrated") and m.migrate_facts() == 0
+    bodies = {n.body for n in notes(m)}
+    assert "Kullanıcının kedisinin adı Pamuk, 3 yaşında." in bodies and "Kullanıcı sabahları kahve içer." in bodies
+
+
 def test_episodes_pruned_by_age():
     m = mem(keep_days=1)
     m.record("eski konuşma", "cevap")
@@ -290,6 +317,56 @@ def test_vektorler_parti_parti_kaydedilir_kota_dolunca_kalan_beklenir():
     assert m.db.execute("SELECT COUNT(*) FROM vectors").fetchone()[0] == 20
 
 
+def test_silinen_kaydin_vektoru_kalmaz(tmp_path):
+    from alice.memvec import normalize
+
+    class Emb:
+        available = True
+
+        def __init__(self, hook=None):
+            self.hook = hook
+
+        def embed(self, texts):
+            if self.hook:
+                self.hook()
+            return [normalize([1.0, 0.5]) for _ in texts]
+
+    m = LongMemory(tmp_path / "m.db", {"keep_days": 30}, None, None, notes_root=tmp_path / "notes")
+    old = time.time() - 60 * 86400
+    _chat(m, old, "eski konuşma", "cevap")
+    _chat(m, time.time() - 5, "yeni konuşma", "cevap")
+    gone = m.db.execute("SELECT id FROM episodes WHERE ts = ?", (old,)).fetchone()[0]
+    keep = m.db.execute("SELECT id FROM episodes WHERE ts != ?", (old,)).fetchone()[0]
+    # Embedding sürerken sohbet silinirse sahipsiz vektör yazılmasın.
+    m.embedder = Emb(hook=lambda: m.forget_episode(keep))
+    m.index_pending()
+    refs = {r[0] for r in m.db.execute("SELECT ref FROM vectors WHERE kind = 'episode'")}
+    assert keep not in refs and gone in refs
+    m.close()
+    # Eski turlar budanınca vektörleri de gider (anlam aramasının ilk sıralarını kapmasın).
+    m2 = LongMemory(tmp_path / "m.db", {"keep_days": 30}, None, None, notes_root=tmp_path / "notes")
+    assert m2.db.execute("SELECT COUNT(*) FROM vectors").fetchone()[0] == 0
+    m2.close()
+
+
+def test_surum_artisi_es_zamanli_cagrilarda_kaybolmaz():
+    import threading
+
+    m = mem()
+    start = m.version
+
+    def work():
+        for _ in range(40):
+            m._bump()
+
+    threads = [threading.Thread(target=work) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert m.version == start + 240
+
+
 def test_aractan_sonra_gelen_canli_cevap_soruya_eklenir():
     from types import SimpleNamespace
 
@@ -403,3 +480,65 @@ def test_dream_lock_blocks_a_second_process_and_failure_rolls_back_the_clock():
     finally:
         md._pid_alive = real
         os.utime(m.notes.lock_path, (0, 0))
+
+
+def test_failing_dream_backs_off_instead_of_retrying_every_scan():
+    calls = []
+
+    def broken(p):
+        calls.append(1)
+        return "bozuk cevap"
+
+    m, _ = _dream_mem(broken, sessions=1)
+    m.save_note("user-x", "x", "user", "x")
+    _chat(m, time.time() - 5 * 3600, "konuşma", "cevap")
+    assert m.maybe_dream() and len(calls) == 1
+    m._last_dream_scan = None  # 10 dakika geçti gibi
+    assert not m.maybe_dream() and len(calls) == 1  # hata sonrası bekleme: model tekrar çağrılmadı
+    m._dream_retry_at = 0.0  # bekleme bitti
+    m._last_dream_scan = None
+    assert m.maybe_dream() and len(calls) == 2 and m._dream_fails == 2
+
+
+def test_pending_sessions_do_not_split_a_conversation_at_the_page_boundary(monkeypatch):
+    m = mem(session_gap_minutes=20)
+    monkeypatch.setattr(LongMemory, "PENDING_PAGE", 10)
+    base = time.time() - 86400
+
+    def turns(m, start, n):
+        with m._lock:
+            for i in range(n):
+                m.db.execute("INSERT INTO episodes(ts, user, reply) VALUES (?, ?, 'tamam')", (start + i * 60, f"tur {i}"))
+            m.db.commit()
+
+    turns(m, base, 4)                # 1. konuşma: 4 tur
+    turns(m, base + 3600, 9)         # 2. konuşma: 9 tur, sayfa (10) ortasından kesilir
+    groups = m.pending_sessions()
+    assert [len(g) for g in groups] == [4]  # yarım kalan ikinci konuşma bu geçişte özetlenmez
+    m._meta("digested_until", repr(groups[0][-1].ts))
+    assert [len(g) for g in m.pending_sessions()] == [9]  # sonraki geçişte bütün olarak gelir
+
+    m2 = mem(session_gap_minutes=20)
+    turns(m2, base, 15)  # sayfadan uzun tek konuşma: ilerlemek için parça özetlenir
+    assert [len(g) for g in m2.pending_sessions()] == [10]
+
+
+def test_learn_turn_counter_is_thread_safe(monkeypatch):
+    import sys
+    import threading
+
+    m = LongMemory(":memory:", {"extract_every": 4, "digest": False}, lambda p: "{}")
+    calls = []
+    monkeypatch.setattr(m, "_extract", lambda cwd: calls.append(1))
+    old = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)  # iş parçacıkları sık sık yer değiştirsin
+    try:
+        threads = [threading.Thread(target=lambda: [m.learn("tamam", background=False) for _ in range(100)])
+                   for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    finally:
+        sys.setswitchinterval(old)
+    assert len(calls) == 800 // 4 and m._turns_since_extract == 0

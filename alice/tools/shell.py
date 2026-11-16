@@ -157,7 +157,13 @@ class RunCommand(Tool):
             except (RuntimeError, OSError, subprocess.SubprocessError) as e:
                 raise ToolError(f"sandbox kurulamadı, komut çalıştırılmadı: {e}. Gerekiyorsa unsandboxed=true ile "
                                 "(kullanıcı onayıyla) çalıştır.") from e
+            env = sandbox.scrub_env(env, ctx)  # .env'deki API anahtarları sandbox'a geçmesin
             env.update(extra)
+        from alice import gitsafe
+
+        # Sandbox .git'e yazabilir: hook ya da config değişirse (ALICE ya da kullanıcı sonra sandbox dışında git
+        # çalıştırınca devreye girer) sonuca uyarı eklenir.
+        git_before = gitsafe.snapshot(wd) if boxed and not background else None
         limit = int(ctx.config.agent.get("tool_output_chars", 12000))
         if background:
             # Ad zaman damgasıydı: aynı milisaniyede başlayan iki süreç aynı dosyaya yazıp çıktıları karışıyordu.
@@ -187,8 +193,15 @@ class RunCommand(Tool):
                     returncode = pop.wait(timeout=timeout)
                     timed_out = False
                 except subprocess.TimeoutExpired:
-                    pop.kill()  # sadece kabuğu öldür; açtığı pencereli program açık kalsın
-                    pop.wait()
+                    # Kabuk ve konsol alt süreçleri (takılan pytest, node...) ölür; komutun açtığı pencereli program
+                    # (Not Defteri, Blender penceresi) ve onun alt süreçleri açık kalır. Eskiden yalnız kabuk
+                    # öldürülüyordu, takılan alt süreçler arkada çalışmaya devam ediyordu.
+                    kill_console_tree(pop.pid)
+                    try:
+                        pop.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        pop.kill()
+                        pop.wait()
                     returncode, timed_out = -1, True
             fo.seek(0)
             fe.seek(0)
@@ -197,7 +210,9 @@ class RunCommand(Tool):
         if timed_out:
             return ToolResult(f"ZAMAN AŞIMI ({timeout} sn). Uzun işler için background=true kullan. Pencereli bir "
                               "program açıyorsan run_command yerine windows action=open kullan; Blender için blender aracını "
-                              f"kullan.\n{truncate(out + err, limit)}", is_error=True)
+                              f"kullan.\n{truncate(out + err, limit)}"
+                              + (gitsafe.warning(gitsafe.changes(git_before, gitsafe.snapshot(wd)))
+                                 if git_before is not None else ""), is_error=True)
         body = out
         if err.strip():
             body += ("\n[stderr]\n" if out.strip() else "[stderr]\n") + err
@@ -223,6 +238,8 @@ class RunCommand(Tool):
             # engellendi" sanıyordu (olmayan Sonora-Setup.exe'ye bakan Get-Item, 2026-11-02).
             body += (f"\n[sandbox: komut sadece {wd} ve geçici klasöre yazabildi. Bu erişim hatası bu yüzdense ve proje "
                      "dışına yazmak gerçekten gerekiyorsa unsandboxed=true ile tekrar dene.]")
+        if git_before is not None:
+            body += gitsafe.warning(gitsafe.changes(git_before, gitsafe.snapshot(wd)))
         return ToolResult(f"çıkış kodu {returncode}\n{body}", is_error=returncode != 0)
 
 
@@ -254,7 +271,8 @@ class ProcessOutput(Tool):
                    "- ALICE'in başlatmadığı programlar için process_list.")
     parameters = obj({
         "pid": {"type": "integer", "description": "run_command'ın döndürdüğü pid. Boş: tüm arka plan süreçleri."},
-        "tail_chars": {"type": "integer", "description": "Çıktının sonundan kaç karakter. Varsayılan 4000."},
+        "tail_chars": {"type": "integer", "description": "Çıktının sonundan kaç karakter. Varsayılan 4000; "
+                       "0: çıktı yok, yalnız durum."},
     })
 
     def run(self, ctx: ToolContext, pid: int | None = None, tail_chars: int = 4000) -> ToolResult:
@@ -270,7 +288,11 @@ class ProcessOutput(Tool):
             raise ToolError(f"pid {pid} ALICE tarafından başlatılmamış")
         data = p.log.read_bytes().decode("utf-8", errors="replace") if p.log.exists() else ""
         state = "çalışıyor" if p.popen.poll() is None else f"bitti (kod {p.popen.returncode})"
-        return ToolResult(f"pid={pid} {state}\n{data[-tail_chars:]}")
+        # data[-0:] bütün logu döndürüyordu: 0 ve negatif "çıktı yok, yalnız durum" demek.
+        n = int(tail_chars or 0)
+        if n <= 0:
+            return ToolResult(f"pid={pid} {state}")
+        return ToolResult(f"pid={pid} {state}\n{data[-n:]}")
 
 
 class ProcessStop(Tool):
@@ -321,6 +343,91 @@ def kill_tree(pid: int) -> None:
     except psutil.NoSuchProcess:
         return
     for child in parent.children(recursive=True):
+        try:
+            child.kill()
+        except psutil.Error:
+            pass
+    try:
+        parent.kill()
+    except psutil.Error:
+        pass
+
+
+def _visible_window_pids() -> set[int]:
+    """Görünür üst düzey penceresi olan süreçlerin pid'leri (yalnız Windows)."""
+    if not IS_WIN:
+        return set()
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+    pids: set[int] = set()
+    proto = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def cb(hwnd, _lparam):  # noqa: ANN001
+        if user32.IsWindowVisible(hwnd):
+            pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            pids.add(int(pid.value))
+        return True
+
+    try:
+        user32.EnumWindows(proto(cb), 0)
+    except OSError:
+        pass
+    return pids
+
+
+def _is_gui_exe(path: str) -> bool:
+    """PE başlığındaki alt sistem alanı: 2 = Windows GUI (pencereli program), 3 = konsol."""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(4096)
+        if head[:2] != b"MZ":
+            return False
+        pe = int.from_bytes(head[0x3C:0x40], "little")
+        if head[pe:pe + 4] != b"PE\0\0":
+            return False
+        return int.from_bytes(head[pe + 0x5C:pe + 0x5E], "little") == 2
+    except (OSError, ValueError):
+        return False
+
+
+def _is_gui_process(proc: Any, window_pids: set[int]) -> bool:
+    if not IS_WIN:
+        return False  # POSIX'te güvenilir ayrım yok; zaman aşımında bütün ağaç ölür
+    if proc.pid in window_pids:
+        return True
+    try:
+        return _is_gui_exe(proc.exe())
+    except Exception:  # noqa: BLE001 - erişilemeyen süreç konsol sayılır
+        return False
+
+
+def kill_console_tree(pid: int) -> None:
+    """Zaman aşımında: kabuğu ve konsol alt süreçlerini öldür, pencereli programları (ve onların alt
+    süreçlerini) açık bırak. Pencereli = görünür penceresi var ya da exe'si GUI alt sistemli."""
+    import psutil
+
+    try:
+        parent = psutil.Process(pid)
+        children = parent.children(recursive=True)
+    except psutil.Error:
+        return
+    window_pids = _visible_window_pids()
+    keep: set[int] = set()
+    for child in children:
+        if child.pid in keep:
+            continue
+        if _is_gui_process(child, window_pids):
+            keep.add(child.pid)
+            try:
+                keep.update(c.pid for c in child.children(recursive=True))
+            except psutil.Error:
+                pass
+    for child in children:
+        if child.pid in keep:
+            continue
         try:
             child.kill()
         except psutil.Error:
@@ -385,6 +492,9 @@ class ProcessWait(Tool):
         start = len(read())
         end = time.monotonic() + max(1, min(int(timeout or 60), 600))
         while True:
+            # Önce bitti mi bak, sonra oku: tersinde süreç son satırını yazıp okuma ile poll arasında çıkınca o satır
+            # (çoğu zaman aranan "error"/"done") hiç görülmeden "desen görünmedi" deniyordu.
+            code = p.popen.poll()
             data = read()
             new = data[start:]
             if rx is not None:
@@ -392,7 +502,6 @@ class ProcessWait(Tool):
                 if hits:
                     return ToolResult(f"pid={pid} desen göründü:\n" + "\n".join(hits[-20:]) +
                                       f"\n--- çıktının sonu ---\n{data[-2000:]}")
-            code = p.popen.poll()
             if code is not None:
                 return ToolResult(f"pid={pid} bitti (kod {code})" + (" — desen görünmedi" if rx else "") +
                                   f"\n{data[-4000:]}", is_error=bool(rx) or code != 0)

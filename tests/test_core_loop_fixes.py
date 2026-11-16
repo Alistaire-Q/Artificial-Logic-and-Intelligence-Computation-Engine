@@ -216,6 +216,12 @@ def test_mention_of_big_file_reads_only_the_limit(workdir):
     assert "(50 byte kesildi)" in out
 
 
+def test_mention_with_nul_character_does_not_crash(workdir):
+    (workdir / "a.txt").write_text("içerik", encoding="utf-8")
+    out = expand_mentions("bak @ka\x00put ve @a.txt", workdir)
+    assert out.startswith("bak @ka\x00put") and "içerik" in out
+
+
 # -------------------------------------------------------------- multistep
 def test_parse_plan_tolerates_odd_step_shapes():
     p = parse_plan("g", '{"steps": "Chrome\'u aç"}')

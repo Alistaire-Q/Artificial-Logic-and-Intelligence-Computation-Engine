@@ -971,6 +971,7 @@ kbd {
 .use-row { display: grid; grid-template-columns: 1fr 120px; gap: 4px 12px; padding: 9px 2px; border-bottom: 1px solid var(--line); font-size: 13px; }
 .use-row .l { font: 12.5px var(--mono); overflow-wrap: anywhere; }
 .use-row .r { grid-column: 1 / -1; color: var(--faint); font-size: 12px; }
+.use-cache { margin: 0 0 8px; font-size: 13px; color: var(--muted, var(--faint)); }
 .use-bar { display: block; height: 6px; border-radius: var(--r-xs); background: var(--line); overflow: hidden; align-self: center; }
 .use-bar i { display: block; height: 100%; background: var(--accent); }
 .prose.mem { font-size: 14.5px; }

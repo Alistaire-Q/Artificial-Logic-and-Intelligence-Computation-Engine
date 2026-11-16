@@ -82,6 +82,7 @@ def _fake_psutil(**over):
         sensors_battery=lambda: SimpleNamespace(percent=77.4, power_plugged=False),
         net_io_counters=lambda: SimpleNamespace(bytes_sent=300 * MB, bytes_recv=1200 * MB),
         Error=psutil.Error,
+        NoSuchProcess=psutil.NoSuchProcess,
     )
     base.update(over)
     return SimpleNamespace(**base)
@@ -139,6 +140,12 @@ class FakeProc:
                      "memory_info": SimpleNamespace(rss=rss_mb * MB) if rss_mb is not None else None}
         self.terminate_error = terminate_error
         self.terminated = False
+        self.stubborn = False  # terminate'i yok sayar, kill ile kapanır
+        self.killed = False
+
+    def kill(self):
+        self.killed = True
+        self.stubborn = False
 
     def terminate(self):
         if self.terminate_error:
@@ -155,7 +162,9 @@ def _patch_procs(monkeypatch, procs, waited=None):
     monkeypatch.setattr(system, "psutil", _fake_psutil(
         process_iter=lambda attrs=None: iter(procs),
         Process=lambda pid: next(p for p in procs if p.pid == pid),
-        wait_procs=lambda targets, timeout=None: waited.append((list(targets), timeout))))
+        wait_procs=lambda targets, timeout=None: (waited.append((list(targets), timeout)),
+                                                    ([p for p in targets if not p.stubborn],
+                                                     [p for p in targets if p.stubborn]))[1]))
     return waited
 
 
@@ -227,9 +236,26 @@ def test_process_kill_reports_terminate_errors(ctx, monkeypatch):
     procs = [FakeProc(5, "x", terminate_error=psutil.AccessDenied(5)), FakeProc(6, "x")]
     _patch_procs(monkeypatch, procs)
     r = system.ProcessKill().run(ctx, name="x")
-    assert r.text.startswith("sonlandırıldı: 5 (hata:")
-    assert r.text.endswith(", 6")
+    # kapatılamayan süreç "sonlandırıldı" diye raporlanmaz
+    assert r.text.startswith("sonlandırıldı: 6\n5: kapatılamadı (") and not r.is_error
     assert procs[1].terminated
+
+
+def test_process_kill_forces_stubborn_and_accepts_name_without_exe(ctx, monkeypatch):
+    procs = [FakeProc(7, "notepad.exe")]
+    procs[0].stubborn = True
+    monkeypatch.setattr(system, "sys", SimpleNamespace(platform="win32"))
+    _patch_procs(monkeypatch, procs)
+    r = system.ProcessKill().run(ctx, name="notepad")
+    assert r.text == "sonlandırıldı: 7" and procs[0].killed
+    assert system.ProcessKill().risk_for({"name": "explorer"}) == DANGER
+
+
+def test_process_kill_all_failed_is_error(ctx, monkeypatch):
+    procs = [FakeProc(5, "x", terminate_error=psutil.AccessDenied(5))]
+    _patch_procs(monkeypatch, procs)
+    r = system.ProcessKill().run(ctx, name="x")
+    assert r.is_error and "sonlandırıldı" not in r.text
 
 
 def test_process_kill_no_target(ctx, monkeypatch):

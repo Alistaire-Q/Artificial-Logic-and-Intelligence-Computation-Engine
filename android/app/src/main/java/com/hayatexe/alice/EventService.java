@@ -158,7 +158,8 @@ public class EventService extends Service {
             HttpURLConnection h = null;
             try {
                 Prefs.pick(this);  // ağ değiştiyse (ev Wi-Fi'ı / mobil veri) doğru adres
-                h = (HttpURLConnection) new URL(Prefs.base(this) + "/api/events?t=" + Prefs.token(this)).openConnection();
+                h = (HttpURLConnection) new URL(Prefs.base(this) + "/api/events").openConnection();
+                h.setRequestProperty("X-Alice-Token", Prefs.token(this));  // anahtar adreste (sunucu günlüğünde) değil
                 h.setConnectTimeout(6000);
                 h.setReadTimeout(60000);  // sunucu boşta 15 sn'de bir canlılık satırı yollar
                 h.setRequestProperty("Accept", "text/event-stream");

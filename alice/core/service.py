@@ -259,12 +259,22 @@ class Core:
                 hook(self.modes.policy)
             except Exception as e:  # noqa: BLE001 - bir kanca çökse de tur sürsün
                 self.store.add_event("error", "çekirdek kancası hata verdi", repr(e)[:300], topic="core")
-        self._reload_if_changed()
-        self.engine.evaluate(now)
-        self._run_due(now)
-        self._maybe_update(now)
-        self._maybe_memory()
-        self._maybe_prwatch(now)
+        # Adımlar birbirinden bağımsız: biri (bozuk bir kural, kilitli dosya) her turda hata verince geri kalanı
+        # (görevler, güncelleme, durum dosyası) hiç çalışmıyordu; durum dosyası eskiyince uygulama çekirdeği kapalı
+        # sanıyordu. Aynı hata günde bir kez yazılır.
+        steps: tuple[tuple[str, Callable[[], Any]], ...] = (
+            ("kural/görev dosyası yükleme", self._reload_if_changed),
+            ("kural değerlendirme", lambda: self.engine.evaluate(now)),
+            ("zamanlanmış görevler", lambda: self._run_due(now)),
+            ("güncelleme kontrolü", lambda: self._maybe_update(now)),
+            ("hafıza işi", self._maybe_memory),
+            ("PR takibi", lambda: self._maybe_prwatch(now)),
+        )
+        for name, step in steps:
+            try:
+                step()
+            except Exception as e:  # noqa: BLE001 - bir adım turu durdurmasın
+                self._step_error(name, e)
         try:
             self.greeter.tick()
         except Exception as e:  # noqa: BLE001 - karşılama çekirdeği durdurmasın
@@ -275,7 +285,10 @@ class Core:
             self.store.add_event("error", "KAIROS hata verdi", repr(e)[:300], topic="core")
         if now - self._last_prune > 3600:
             self._last_prune = now
-            self.store.prune(self.retention_days, now)
+            try:
+                self.store.prune(self.retention_days, now)
+            except Exception as e:  # noqa: BLE001 - veritabanı kilitliyse sonraki saatte yine denenir
+                self._step_error("eski veriyi temizleme", e)
         self.write_state(now)
 
     def prime(self) -> None:
@@ -287,7 +300,10 @@ class Core:
         except Exception:  # noqa: BLE001
             pass
         self._update_mode(now)
-        self.write_state(now)
+        try:
+            self.write_state(now)
+        except OSError as e:  # açılış çökmesin; ilk tur yeniden yazar
+            print(f"çekirdek durumu yazılamadı: {e!r}", file=sys.stderr)
 
     def _update_mode(self, now: float) -> None:
         try:
@@ -440,10 +456,16 @@ class Core:
     def _prep_game_update(self) -> None:
         from alice import anticipate
 
-        st = anticipate.load_state()
+        # Bildirim ve Steam'i açmak yavaş olabilir: kilidi tutmadan bir kopya üzerinde çalış, sonra yalnız değişen
+        # anahtarları kilit altında taze duruma yaz (bu arada QuietGame'in yazdığı dnd_prev silinmesin).
+        before = anticipate.load_state()
+        st = dict(before)
         msg = anticipate.prep_game_update(self._processes(), lambda t, b: self.notifier.send(
             Notification(t, b, "info", "now", kind="info")), st)
-        anticipate.save_state(st)
+        changed = {k: v for k, v in st.items() if before.get(k, object()) != v}
+        if changed:
+            with anticipate.state_edit() as cur:
+                cur.update(changed)
         if msg:
             self.store.add_event("info", "Önsezi: oyun güncellemesi", msg, "info", "now")
 
@@ -452,7 +474,13 @@ class Core:
             return
         answers = self.morning.check()
         if answers:
-            self.store.add_event("info", "Önsezi: sabah cevapları hazır", "; ".join(answers), "info", "now")
+            # Yalnız konu adları değil hazırlanan cevaplar da (kısaltılmış) görünsün.
+            def short(v: Any) -> str:
+                t = " ".join(str(v or "").split())
+                return t if len(t) <= 160 else t[:157].rstrip() + "…"
+
+            text = "; ".join(f"{k}: {s}" if s else str(k) for k, s in ((k, short(v)) for k, v in answers.items()))
+            self.store.add_event("info", "Önsezi: sabah cevapları hazır", text, "info", "now")
 
     def _health_report(self) -> None:
         from alice import health_report
@@ -627,7 +655,14 @@ class Core:
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.with_suffix(".tmp")
         tmp.write_text(json.dumps(data), encoding="utf-8")
-        os.replace(tmp, p)
+        for attempt in range(5):
+            try:
+                os.replace(tmp, p)
+                return
+            except PermissionError:  # Windows: okuyan süreç (ses modülü, uygulama) dosyayı o an açık tutuyor
+                if attempt == 4:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
 
     # ---------------------------------------------------------------- döngü
     def run_forever(self) -> None:

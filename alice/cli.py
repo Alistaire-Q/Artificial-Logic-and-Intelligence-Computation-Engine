@@ -618,6 +618,8 @@ def _doctor_update(cfg: Config) -> None:
 def doctor(cfg: Config) -> int:
     router = Router(cfg, max_wait=0)
     console.print(f"[bold]ALICE home:[/] {alice_home()}  config: {cfg.path or '(varsayılan)'}")
+    for name, why in cfg.provider_errors().items():
+        console.print(f"[yellow]{escape(f'[providers.{name}] kullanılmıyor: {why}')}[/]")
     _doctor_update(cfg)
     _doctor_connect(cfg)
     from alice.doctor import probe_providers, run_all
@@ -702,19 +704,15 @@ def models_cmd(cfg: Config, refresh: bool, write: bool) -> int:
 
 def write_roles(chains: dict[str, list[str]]) -> Path:
     """config.toml'daki ilgili rol satırlarını değiştir (boş öneri olan rollere dokunma)."""
+    # Yalnız [roles] bölümüne yazar (başka bölümdeki aynı adlı anahtara dokunmaz); "[roles]  # yorum" başlığında ve
+    # eksik rolde de çalışır. Önceden düz metin aranıyordu: yorumlu başlıkta yeni rol sessizce eklenmiyordu.
+    from alice.config import set_config_value
+
     init_home()
     path = alice_home() / "config.toml"
-    text = path.read_text(encoding="utf-8")
     for role, refs in chains.items():
-        if not refs:
-            continue
-        block = f"{role} = [" + ", ".join(f'"{r}"' for r in refs) + "]"
-        rx = re.compile(rf"(?ms)^{role}\s*=\s*\[.*?\]")
-        if rx.search(text):
-            text = rx.sub(lambda _m, b=block: b, text, count=1)
-        else:
-            text = text.replace("[roles]\n", f"[roles]\n{block}\n", 1)
-    path.write_text(text, encoding="utf-8")
+        if refs:
+            path = set_config_value("roles", role, list(refs))
     return path
 
 

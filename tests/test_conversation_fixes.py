@@ -153,6 +153,25 @@ def test_reads_are_restored_after_restart_unless_the_file_changed(workdir):
         require_read(ctx, b.resolve())
 
 
+
+def test_apply_patch_writes_are_restored_as_read_after_restart(workdir):
+    from alice.tools.files import require_read, restore_reads
+
+    (workdir / "n.py").write_text("x = 2\n", encoding="utf-8")
+    (workdir / "m.py").write_text("y = 2\n", encoding="utf-8")
+    patch = ("*** Begin Patch\n*** Add File: n.py\n+x = 2\n*** Update File: old.py\n*** Move to: m.py\n-y = 1\n"
+             "+y = 2\n*** Delete File: gone.py\n*** End Patch")
+    msgs = [{"role": "assistant", "content": "", "tool_calls": [
+        {"id": "1", "function": {"name": "apply_patch", "arguments": json.dumps({"patch": patch})}},
+        {"id": "2", "function": {"name": "apply_patch", "arguments": "{bozuk"}}]},
+        {"role": "tool", "tool_call_id": "1", "content": "yama uygulandı"},
+        {"role": "tool", "tool_call_id": "2", "content": "yama uygulandı"}]
+    ctx = ToolContext(cwd=workdir, config=make_config({"brain": ["a:m"]}))
+    assert restore_reads(ctx, msgs, time.time() + 1) == 2
+    require_read(ctx, (workdir / "n.py").resolve())
+    require_read(ctx, (workdir / "m.py").resolve())
+
+
 # --------------------------------------------------------------------------------- Google girişi
 def test_dead_refresh_token_is_tried_once_then_reported_without_network(monkeypatch):
     from alice.connect import oauth, store

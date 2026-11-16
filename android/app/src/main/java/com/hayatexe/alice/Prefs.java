@@ -30,15 +30,16 @@ final class Prefs {
      *  Ağ isteği yapar: ana iş parçacığında çağrılmaz. */
     static String pick(Context c) {
         String lan = lan(c), relay = relay(c);
-        if (relay.isEmpty() || reachable(lan + "/api/state?t=" + Uri.encode(token(c)), 1500)) active = lan;
+        if (relay.isEmpty() || reachable(lan + "/api/state", token(c), 1500)) active = lan;
         else active = relay;
         return active;
     }
 
-    private static boolean reachable(String url, int ms) {
+    private static boolean reachable(String url, String tok, int ms) {
         HttpURLConnection h = null;
         try {
             h = (HttpURLConnection) new URL(url).openConnection();
+            h.setRequestProperty("X-Alice-Token", tok);  // anahtar adreste değil başlıkta
             h.setConnectTimeout(ms);
             h.setReadTimeout(ms + 1500);
             return h.getResponseCode() == 200;

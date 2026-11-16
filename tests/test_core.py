@@ -14,6 +14,7 @@ from alice.core.service import Core, force_mode, read_state
 from alice.core.store import MODE_KEY, Store, parse_time
 from alice.decider import Answer, Decision
 from alice.tools import ToolContext
+from alice.tools.base import ToolError
 from alice.tools.core import Metrics, Rules, Schedule
 
 
@@ -348,6 +349,11 @@ def test_tools(tmp_path, isolated_home):
     tid = TaskStore().tasks[0].id
     s.run(ctx, action="run_now", id=tid)
     assert TaskStore().due()[0][0].id == tid
+    # Bilinmeyen id ile remove hata olmalı (eskiden başarılı sonuç dönüyordu).
+    with pytest.raises(ToolError, match="görev yok"):
+        s.run(ctx, action="remove", id="olmayan-gorev")
+    assert s.run(ctx, action="remove", id=tid).text == "silindi"
+    assert TaskStore().get(tid) is None
 
 
 def test_desktop_toasts_skip_flight_and_repeats(monkeypatch, tmp_path):
@@ -433,3 +439,28 @@ def test_missed_one_time_task_without_catch_up_is_removed(tmp_path):
     assert store.due(ts("2026-10-08T10:00")) == []
     assert store.get(once.id) is None and store.get(keep.id) is not None
     assert TaskStore(tmp_path / "tasks.json").get(once.id) is None
+
+
+def test_disk_low_rule_by_free_gb(store, tmp_path):
+    from alice.core.rules import DEFAULT_RULES
+
+    rule = next(r for r in DEFAULT_RULES if r.id == "disk-low")
+    eng, _ = engine(store, tmp_path, [rule])
+    store.add("pc.disk.c.free_gb", 0.02, ts=1000)
+    store.add("pc.disk.f.free_gb", 76.0, ts=1000)  # büyük veri diski yüzdece dolu ama yeri var: susmalı
+    assert [f.key for f in eng.evaluate(1010)] == ["pc.disk.c.free_gb"]
+
+
+def test_later_default_rule_added_to_old_rules_file(tmp_path):
+    import json
+
+    from alice.core.rules import RuleSet
+
+    p = tmp_path / "rules.json"
+    p.write_text(json.dumps([{"metric": "pc.disk.*.percent", "op": ">", "threshold": 95, "message": "x",
+                              "id": "disk-full", "enabled": False}]), encoding="utf-8")
+    rs = RuleSet(p)
+    assert {r.id for r in rs.rules} == {"disk-full", "disk-low"}
+    assert not rs.get("disk-full").enabled  # kullanıcının kapattığı kural kapalı kalır
+    assert rs.remove("disk-low")
+    assert RuleSet(p).get("disk-low") is None  # silinen varsayılan geri gelmez

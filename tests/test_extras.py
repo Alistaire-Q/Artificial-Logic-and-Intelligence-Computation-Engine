@@ -87,13 +87,14 @@ def test_custom_commands(workdir, isolated_home):
 
 def test_mcp_client_roundtrip(workdir):
     cfg = make_config({"brain": ["a:m"]})
-    cfg.data["mcp"] = {"servers": {"fake": {"command": sys.executable, "args": [str(FIXTURE)]},
+    cfg.data["mcp"] = {"servers": {"fake": {"command": sys.executable, "args": [str(FIXTURE)],
+                                            "trust_annotations": True},
                                    "bozuk": {"command": "olmayan-komut-xyz"}}}
     events = []
     servers, tools = load_mcp(cfg, events.append)
     try:
         assert [t.name for t in tools] == ["mcp__fake__echo", "mcp__fake__fail"]  # sayfalama birleşti
-        assert tools[0].risk == "read" and tools[1].risk == "exec"
+        assert tools[0].risk == "read" and tools[1].risk == "exec"  # trust_annotations: readOnlyHint geçerli
         ctx = ToolContext(cwd=workdir, config=cfg)
         assert tools[0].run(ctx, text="merhaba").text == "echo: merhaba"
         assert tools[1].run(ctx).is_error

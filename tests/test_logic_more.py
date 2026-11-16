@@ -46,6 +46,30 @@ def test_session_save_strips_system_and_images_and_lists(tmp_path):
     assert len(session.list_sessions(limit=1)) == 1
 
 
+def test_session_save_concurrent_writers_keep_file_valid(tmp_path):
+    """Ajan thread'i ve arayüz istekleri aynı oturumu aynı anda kaydedince ortak geçici dosya karışıyor ya da
+    replace hata veriyordu; şimdi hepsi başarılı ve dosya geçerli JSON."""
+    errors: list[BaseException] = []
+    msgs = [{"role": "system"}] + [{"role": "user", "content": "x" * 2000} for _ in range(200)]
+
+    def work() -> None:
+        try:
+            for _ in range(15):
+                session.save("20260103-000000", msgs, tmp_path)
+        except BaseException as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=work) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    p = session.sessions_dir() / "20260103-000000.json"
+    assert len(json.loads(p.read_text(encoding="utf-8"))["messages"]) == 200
+    assert not [f for f in session.sessions_dir().iterdir() if f.name.endswith(".tmp")]
+
+
 def test_session_load_latest_or_by_id():
     assert session.load() is None
     session.save("20260101-000000", [{"role": "system"}, {"role": "user", "content": "a"}], Path("."))
@@ -65,6 +89,21 @@ def test_session_load_skips_corrupt_latest_file():
     session.save("20260101-000000", [{"role": "system"}, {"role": "user", "content": "a"}], Path("."))
     (session.sessions_dir() / "20260102-000000.json").write_text("{yarım", encoding="utf-8")
     assert session.load() == ("20260101-000000", [{"role": "user", "content": "a"}])
+
+
+def test_session_files_with_valid_but_wrong_shaped_json_do_not_crash():
+    session.save("20260101-000000", [{"role": "system"}, {"role": "user", "content": "a"}], Path("."))
+    d = session.sessions_dir()
+    (d / "20260103-000000.json").write_text("[1, 2]", encoding="utf-8")
+    (d / "20260102-000000.json").write_text('{"messages": 5}', encoding="utf-8")
+    assert session.load() == ("20260101-000000", [{"role": "user", "content": "a"}])
+    assert session.load("20260103-000000") is None
+    assert [r[0] for r in session.list_sessions()] == ["20260101-000000"]
+    assert session.load_extra("20260103-000000") == {} and session.saved_cwd("20260103-000000") is None
+    session.checkpoints_path("x").write_text("[1]", encoding="utf-8")
+    assert session.load_checkpoints("x") == {}
+    session.checkpoints_path("y").write_text('{"1": [1], "2": {"a.txt": null}, "z": {}}', encoding="utf-8")
+    assert session.load_checkpoints("y") == {2: {"a.txt": None}}
 
 
 # ===================================================================== hotkeys
@@ -391,7 +430,8 @@ def test_schedule_tool_paths(core_ctx):
         s.run(core_ctx, action="run_now")
     with pytest.raises(ToolError, match="görev yok"):
         s.run(core_ctx, action="run_now", id="yok")
-    assert s.run(core_ctx, action="remove", id="yok").text == "görev yok: yok"
+    with pytest.raises(ToolError, match="görev yok"):
+        s.run(core_ctx, action="remove", id="yok")
     s.run(core_ctx, action="add", cron="0 8 * * *", prompt="hava durumu", description="sabah")
     from alice.core.schedule import TaskStore
 

@@ -88,3 +88,48 @@ def test_session_lines_use_first_user_message(tmp_path):
         {"role": "user", "content": "hava nasıl"}, {"role": "assistant", "content": "x"}]}), encoding="utf-8")
     (tmp_path / "bozuk.json").write_text("{", encoding="utf-8")
     assert a.session_lines(tmp_path) == ["2026-10-03 07:15:00 sohbet duyulan: hava nasıl"]
+
+
+def test_game_update_prep_does_not_erase_dnd_note_written_meanwhile(tmp_path, monkeypatch):
+    # Oyun öncesi hazırlık sürerken uçuş başlayıp QuietGame dnd_prev yazarsa, hazırlığın kaydı onu silmemeli
+    # (silinirse uçuştan sonra Rahatsız etmeyin açık kalıyordu).
+    from types import SimpleNamespace
+
+    from alice.core import service
+
+    path = tmp_path / "anticipate.json"
+    monkeypatch.setattr(a, "state_path", lambda: path)
+    dnd = {"v": 0}
+    q = a.QuietGame(wnf=(lambda: dnd["v"], lambda v: dnd.update(v=v) or True))
+
+    def prep(processes, notify, st, **kw):
+        notify("başlık", "gövde")  # bu sırada başka thread uçuşa geçti
+        st["update_told"] = "7"
+        return "güncelleme bekliyor"
+
+    monkeypatch.setattr(a, "prep_game_update", prep)
+    events = []
+    core = object.__new__(service.Core)
+    core._processes = lambda: set()
+    core.notifier = SimpleNamespace(send=lambda n: q.mode("flight"))
+    core.store = SimpleNamespace(add_event=lambda *x: events.append(x))
+    core._prep_game_update()
+    st = json.loads(path.read_text(encoding="utf-8"))
+    assert st["update_told"] == "7" and st["dnd_prev"] == 0 and events
+    assert q.mode("normal") and dnd["v"] == 0
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_morning_event_lists_prepared_answers():
+    from types import SimpleNamespace
+
+    from alice.core import service
+
+    events = []
+    core = object.__new__(service.Core)
+    core.morning = SimpleNamespace(check=lambda: {"hava": "Ankara 12 °C,\n parçalı bulutlu", "posta": "x" * 300})
+    core.store = SimpleNamespace(add_event=lambda *x: events.append(x))
+    core._morning()
+    body = events[0][2]
+    assert body.startswith("hava: Ankara 12 °C, parçalı bulutlu; posta: xxx") and body.endswith("…")
+    assert len(body) < 220

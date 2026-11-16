@@ -351,7 +351,13 @@ class BrowserSession:
         self._cdp = None
         if endpoint:
             # Tarayıcı bağlantı için kullanıcıdan bir kez onay isteyebilir: ona zaman tanı.
-            browser = self._pw.chromium.connect_over_cdp(endpoint, timeout=60000)
+            headers = None
+            if getattr(self, "_bridge_port", None):
+                from alice.tools.browser_bridge import TOKEN_HEADER, read_token
+
+                token = read_token()  # eski sürüm köprü anahtar yazmamışsa başlıksız (o köprü istemez)
+                headers = {TOKEN_HEADER: token} if token else None
+            browser = self._pw.chromium.connect_over_cdp(endpoint, timeout=60000, headers=headers)
             self._browser = browser
             self.ctx = browser.contexts[0] if browser.contexts else browser.new_context()
             self.attached = True

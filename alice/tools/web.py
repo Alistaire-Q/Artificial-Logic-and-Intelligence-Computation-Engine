@@ -183,6 +183,10 @@ class WebFetch(Tool):
             ctype = r.headers.get("content-type", "").lower()
             if "pdf" in ctype or (not ctype and str(r.url).lower().endswith(".pdf")):
                 body = _pdf_text(r.content)
+            elif not _looks_textual(ctype, r.content):
+                # Resim, zip, exe...: r.text anlamsız karakter yığını döndürüp bağlamı dolduruyordu.
+                body = (f"[ikili içerik: {ctype or 'türü belirtilmemiş'}, {len(r.content)} bayt - metin olarak "
+                        "gösterilemez. İndirmek için run_command (ör. Invoke-WebRequest -OutFile) kullan.]")
             else:
                 body = r.text
                 if not raw and "html" in ctype:
@@ -203,6 +207,27 @@ class WebFetch(Tool):
                 return ToolResult(head + answer)
         limit = int(ctx.config.agent.get("tool_output_chars", 12000))
         return ToolResult(head + _paginate(body, start, limit), is_error=status >= 400)
+
+
+_TEXT_CTYPE = ("text/", "json", "xml", "javascript", "ecmascript", "html", "yaml", "toml", "csv",
+               "x-www-form-urlencoded", "graphql", "sql")
+
+
+def _looks_textual(ctype: str, data: bytes) -> bool:
+    """Metin türü bildirilmişse metin; değilse (octet-stream, boş tür) ilk baytlara bak: NUL yoksa ve UTF-8
+    olarak çözülüyorsa metin say."""
+    if any(t in ctype for t in _TEXT_CTYPE):
+        return True
+    head = data[:4096]
+    if b"\0" in head:
+        return False
+    import codecs
+
+    try:
+        codecs.getincrementaldecoder("utf-8")().decode(head, final=False)
+    except UnicodeDecodeError:
+        return False
+    return True
 
 
 def _pdf_text(data: bytes) -> str:
@@ -467,6 +492,8 @@ class HttpRequest(Tool):
         elif body is not None:
             kw["content"] = body.encode("utf-8")
         method = method.upper()
+        # Adreste ${env:..} varsa sonuçta açılmış adres (r.url) değil şablon gösterilir: anahtar modele sızmasın.
+        where = (lambda r: url) if _ENV_RX.search(url) else (lambda r: r.url)
         try:
             if save_to:
                 dest = ctx.resolve(save_to)
@@ -475,13 +502,21 @@ class HttpRequest(Tool):
                 with httpx.stream(method, _expand_env(url), **kw) as r:
                     if r.status_code >= 400:
                         r.read()
-                        return ToolResult(f"HTTP {r.status_code} {r.url}\n\n{truncate(r.text, 2000)}", is_error=True)
-                    with open(dest, "wb") as f:
-                        for part in r.iter_bytes():
-                            if ctx.cancelled():
-                                raise ToolError("kullanıcı durdurdu; dosya yarım kaldı")
-                            f.write(part)
-                            size += len(part)
+                        return ToolResult(f"HTTP {r.status_code} {where(r)}\n\n{truncate(r.text, 2000)}", is_error=True)
+                    # Önce yan dosyaya: eskiden hedef baştan "wb" ile açılıyordu, indirme yarıda kesilince (ağ hatası,
+                    # Durdur) var olan dosya silinmiş, yerinde yarım bir dosya kalıyordu.
+                    tmp = dest.with_name(dest.name + ".part")
+                    try:
+                        with open(tmp, "wb") as f:
+                            for part in r.iter_bytes():
+                                if ctx.cancelled():
+                                    raise ToolError("kullanıcı durdurdu; dosya kaydedilmedi")
+                                f.write(part)
+                                size += len(part)
+                        tmp.replace(dest)
+                    except BaseException:
+                        tmp.unlink(missing_ok=True)
+                        raise
                 return ToolResult(f"HTTP {r.status_code}: {size} byte kaydedildi -> {dest}")
             r = httpx.request(method, _expand_env(url), **kw)
         except httpx.HTTPError as e:
@@ -495,7 +530,7 @@ class HttpRequest(Tool):
             except ValueError:
                 pass
         limit = int(ctx.config.agent.get("tool_output_chars", 12000))
-        return ToolResult(truncate(f"HTTP {r.status_code} {r.url}\n{shown}\n\n{text}", limit),
+        return ToolResult(truncate(f"HTTP {r.status_code} {where(r)}\n{shown}\n\n{text}", limit),
                           is_error=r.status_code >= 400)
 
 

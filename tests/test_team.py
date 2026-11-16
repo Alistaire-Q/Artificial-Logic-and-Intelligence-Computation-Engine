@@ -397,3 +397,180 @@ def test_list_projects_survives_file_being_replaced(monkeypatch):
     monkeypatch.setattr(team_store.time, "sleep", lambda s: None)
     rows = team_store.list_projects()
     assert [r["id"] for r in rows] == ["p1"] and rows[0]["status"] == "done"
+
+
+def test_git_output_is_decoded_as_utf8(tmp_path):
+    # Windows'ta yerel kod sayfası (cp1254) "Ğ"/"Ş" baytlarını (0x9E) çözemiyordu: git show/diff UnicodeDecodeError
+    # ile ajanın adımını düşürüyordu.
+    from alice import team as team_mod
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True)
+
+    git("init", "-q")
+    (tmp_path / "t.txt").write_bytes("Ğ Ş ı 😀\n".encode("utf-8"))
+    git("add", "t.txt")
+    git("-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "-m", "ilk")
+    r = team_mod._git(tmp_path, "show", "HEAD:t.txt")
+    assert r.returncode == 0 and r.stdout == "Ğ Ş ı 😀\n"
+
+
+def test_git_dirty_handles_non_ascii_and_renamed_paths(tmp_path):
+    # Düz porcelain çıktısı "dü.py"yi "d\303\274.py" diye kaçışlıyordu: komutla değişen dosya bulunamıyordu.
+    from types import SimpleNamespace
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True)
+
+    git("init", "-q")
+    (tmp_path / "eski.py").write_text("x\n", encoding="utf-8")
+    git("add", "eski.py")
+    git("-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "-m", "ilk")
+    (tmp_path / "dü şey.py").write_text("y\n", encoding="utf-8")
+    git("mv", "eski.py", "yeni.py")
+    dirty = _Team._git_dirty(SimpleNamespace(cwd=tmp_path))
+    assert str((tmp_path / "dü şey.py").resolve()) in dirty
+    assert str((tmp_path / "yeni.py").resolve()) in dirty
+    assert str((tmp_path / "eski.py").resolve()) not in dirty
+
+
+def test_check_command_timeout_kills_grandchildren(tmp_path):
+    # Kabuğun açtığı süreç boruyu tutarken subprocess.run zaman aşımında sonsuza dek bekliyordu (kurul takılıyordu).
+    import sys
+    import time
+    from types import SimpleNamespace
+
+    fake = SimpleNamespace(check=f'"{sys.executable}" -c "import time; time.sleep(60)"', cwd=tmp_path,
+                           parent_ctx=SimpleNamespace(config=SimpleNamespace(agent={"team_check_timeout": 1})),
+                           mark=lambda *a: None)
+    t0 = time.monotonic()
+    res = _Team.run_check(fake)
+    assert res["code"] == -1 and "zaman aşımı" in res["out"]
+    assert time.monotonic() - t0 < 20
+
+
+def test_stopped_lead_loop_exits_even_if_resumed_meanwhile(workdir):
+    # Döngü "durdu, çıkıyorum" dedikten hemen sonra Sürdür yeni bir döngü başlatırsa eski döngü lead_thread'i dolu
+    # görüp çalışmaya devam ediyordu: aynı yönetici ajanında iki döngü.
+    _, _, ctx = make(simple, workdir)
+    team = Team(ctx, "hedef")
+    from types import SimpleNamespace
+
+    team.lead_agent = SimpleNamespace(messages=[{"role": "system", "content": ""}])  # kurulmuş sayılsın
+    team.stopped = True
+    other = threading.Thread(target=lambda: None)  # Sürdür'ün başlattığı döngü yerine
+
+    class Hooked(threading.Condition):
+        fired = False
+
+        def __exit__(self, *a):
+            res = super().__exit__(*a)
+            if not Hooked.fired:
+                Hooked.fired = True
+                team.stopped, team.lead_thread = False, other  # tam bu arada sürdürüldü
+            return res
+
+    team.cond = Hooked()
+    t = threading.Thread(target=team._lead_loop, daemon=True)
+    t.start()
+    t.join(3)
+    alive = t.is_alive()
+    team.finished = True  # eski kodda döngü sürüyorsa kapansın
+    t.join(5)
+    assert not alive and team.lead_thread is other
+
+
+def test_next_survives_member_added_while_launching(workdir):
+    # Ajan bitince _next() üyeleri gezerken (her _launch thread açıp kaydediyor) yönetici assign/plan ile yeni ajan
+    # eklerse "dictionary changed size during iteration" ile biten ajanın thread'i düşüyor, sıradakiler başlamıyordu.
+    from alice.team import Member
+
+    _, _, ctx = make(simple, workdir)
+    team = Team(ctx, "hedef")
+    for n in ("a", "b"):
+        team.members[n] = Member(name=n, task="t")
+    launched = []
+
+    def launch(m, resume=False):
+        launched.append(m.name)
+        if "c" not in team.members:  # tam bu arada yönetici yeni ajan ekledi
+            team.members["c"] = Member(name="c", task="t", status="running")
+
+    team._launch = launch
+    team._next()
+    assert launched == ["a", "b"]
+
+
+def test_plan_council_counter_changes_under_lock(workdir):
+    # Plan aracı council_busy'yi kilitsiz artırıyordu; kurul thread'leri kilit altında azaltırken artış kaybolursa
+    # sayaç sıfıra dönmüyor, finish ve final kurulu sonsuza dek "kurul toplanıyor" diye bekliyordu.
+    from alice.team_tools import LeadPlan
+
+    bad = []
+
+    class Checked(_Team):
+        @property
+        def council_busy(self):
+            return self._busy
+
+        @council_busy.setter
+        def council_busy(self, v):
+            if hasattr(self, "cond") and not self.cond._is_owned():
+                bad.append(v)
+            self._busy = v
+
+    _, _, ctx = make(simple, workdir)
+    team = Checked(ctx, "hedef", council=True)
+    team._council = lambda *a, **k: {"state": "stopped"}
+    res = LeadPlan(team).run(ctx, "yaklaşım", [{"name": "backend", "task": "a"}])
+    assert res.is_error and team.council_busy == 0 and not bad
+
+
+def test_diff_survives_member_touching_new_file(workdir, monkeypatch):
+    # Kurul farkı okurken çalışan ajan yeni bir dosyaya dokunursa originals büyüyor ve diff düşüyordu.
+    from alice import team as team_mod
+    from alice.team import Member
+
+    _, _, ctx = make(simple, workdir)
+    team = Team(ctx, "hedef")
+    m = team.members["a"] = Member(name="a", task="t", cwd=workdir)
+    for n in ("x.py", "y.py"):
+        (workdir / n).write_text("yeni\n", encoding="utf-8")
+        m.originals[str((workdir / n).resolve())] = "eski\n"
+    real = team_mod._read_original
+
+    def reading(p):
+        m.originals.setdefault(str((workdir / "z.py").resolve()), None)  # ajan tam bu arada z.py'ye dokundu
+        return real(p)
+
+    monkeypatch.setattr(team_mod, "_read_original", reading)
+    text = team.diff("a")
+    assert "x.py" in text and "y.py" in text
+
+
+def test_stop_member_before_its_agent_exists(workdir):
+    gate = threading.Event()
+    calls = []
+
+    def script(model, messages, tools, **kw):
+        calls.append(who(messages))
+        return "rapor"
+
+    agent, _, ctx = make(script, workdir)
+    team = Team(ctx, "hedef", review=False)
+    m = team.add({"name": "backend", "task": "a"})
+    real = team._make_agent
+
+    def slow_make(member):
+        gate.wait(10)  # model seçimi / worktree kurulumu sürüyor
+        return real(member)
+
+    team._make_agent = slow_make
+    team._launch(m)
+    assert m.status == "running" and m.agent is None
+    team.stop("backend")
+    gate.set()
+    assert team.wait_until(lambda: m.status not in ("running", "waiting", "asking"), 10)
+    assert m.status == "stopped" and "backend" not in calls
+    with pytest.raises(ToolError):
+        team.stop("kimse")

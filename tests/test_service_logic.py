@@ -97,6 +97,26 @@ def test_write_state_is_atomic_and_complete(tmp_path):
     assert not state_path().with_suffix(".tmp").exists()
 
 
+def test_write_state_retries_brief_lock_and_prime_survives_failure(tmp_path, monkeypatch):
+    core, _ = make_core(tmp_path)
+    real, fails = os.replace, [2]
+
+    def flaky(src, dst):
+        if fails[0]:
+            fails[0] -= 1
+            raise PermissionError("kilitli")
+        return real(src, dst)
+
+    monkeypatch.setattr(service.os, "replace", flaky)
+    monkeypatch.setattr(service.time, "sleep", lambda s: None)
+    core.write_state(1.0)
+    assert json.loads(state_path().read_text(encoding="utf-8"))["ts"] == 1.0
+    fails[0] = 99  # hiç bırakmıyor: açılış (prime) yine de çökmemeli
+    core.prime()
+    with pytest.raises(PermissionError):
+        core.write_state(2.0)
+
+
 # ----------------------------------------------------------------------- tur
 def test_core_config_values(tmp_path):
     core, _ = make_core(tmp_path, interval=5, retention_days=2)
@@ -233,6 +253,25 @@ def test_run_task_uses_original_when_removed_meanwhile(tmp_path):
     core.tasks.remove(t.id)
     core._run_task(t, late=False)
     assert t.last_result == "ok"
+
+
+def test_failing_rule_step_does_not_skip_tasks_or_state(tmp_path, monkeypatch):
+    """Kural değerlendirmesi her turda patlasa da görevler çalışmalı ve durum dosyası yazılmalı (yoksa uygulama
+    çekirdeği kapalı sanıyordu); aynı hata günde bir kez kaydedilir."""
+    core, _ = make_core(tmp_path, run_agent=lambda p: "ok")
+    ran = []
+
+    def boom(now):
+        raise RuntimeError("bozuk kural")
+
+    monkeypatch.setattr(core.engine, "evaluate", boom)
+    monkeypatch.setattr(core, "_run_due", lambda now: ran.append(now))
+    core.tick(NOW)
+    core.tick(NOW + 15)
+    assert ran == [NOW, NOW + 15]
+    assert json.loads(state_path().read_text(encoding="utf-8"))["ts"] == NOW + 15
+    errs = [e for e in core.store.events(kind="error") if "kural değerlendirme" in e.title]
+    assert len(errs) == 1 and "bozuk kural" in errs[0].body
 
 
 # -------------------------------------------------------------------- döngü

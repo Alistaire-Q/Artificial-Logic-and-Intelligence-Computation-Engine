@@ -53,6 +53,34 @@ def test_prune_and_wipe(tl):
     assert tl.wipe() == 1 and tl.count() == 0
 
 
+def test_close_waits_for_writer_and_later_writes_are_dropped(tmp_path):
+    import threading
+
+    t = Timeline(tmp_path / "timeline.db", enc=fake_enc, dec=fake_enc)
+    errors: list[BaseException] = []
+    stop = threading.Event()
+
+    def writer():
+        while not stop.is_set():
+            try:
+                t.add("a.exe", "t", "kare")
+                t.prune(30)
+            except BaseException as e:  # noqa: BLE001
+                errors.append(e)
+                return
+
+    th = threading.Thread(target=writer)
+    th.start()
+    t.add("a.exe", "t", "ilk")
+    t.close()
+    t.close()  # ikinci kapatma zararsız
+    stop.set()
+    th.join(5)
+    assert errors == []
+    t.add("a.exe", "t", "sonra")  # kapandıktan sonra sessizce düşer
+    assert t.prune(30) == 0
+
+
 def test_exclusions():
     assert excluded("KeePassXC.exe", "veritabanı")
     assert excluded("opera.exe", "Yeni InPrivate penceresi")
@@ -108,3 +136,13 @@ def test_default_off():
     from alice.config import default_config_dict
 
     assert default_config_dict()["timeline"]["enabled"] is False
+
+
+def test_recorder_stop_joins_thread_and_closes_timeline(tl):
+    r = recorder(tl, [], [])
+    r.cfg["every"] = 5
+    r.start()
+    r.stop(timeout=2)
+    assert not r._thread.is_alive()
+    tl.add("a", "b", "c", 1.0)  # kapandıktan sonra yazma sessizce düşer
+    r.stop()  # ikinci kez sorun değil

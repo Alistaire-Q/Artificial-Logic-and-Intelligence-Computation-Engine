@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -127,26 +128,71 @@ def wrap(argv: list[str], cwd: Path, ctx: Any) -> tuple[list[str], dict[str, str
     cwd = Path(cwd).resolve()
     if name == "lowil":
         label_low(cwd)
+        hide_secrets()
         tmp = low_temp()
         return [sys.executable, "-m", "alice.sandbox_run", "--", *argv], {"TEMP": str(tmp), "TMP": str(tmp)}
     if name == "sandbox-exec":
-        return ["sandbox-exec", "-p", mac_profile(cwd, network(ctx)), *argv], {}
+        return ["sandbox-exec", "-p", mac_profile(cwd, network(ctx), secret_paths()), *argv], {}
     bw = shutil.which("bwrap") or "bwrap"
     out = [bw, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp",
            "--bind", str(cwd), str(cwd), "--chdir", str(cwd), "--die-with-parent", "--new-session"]
+    for p in secret_paths():  # gizli dosyaların yerine boş dosya/klasör: okunamasınlar
+        out += ["--tmpfs", str(p)] if p.is_dir() else ["--ro-bind", "/dev/null", str(p)]
     if not network(ctx):
         out.append("--unshare-net")
     return out + argv, {}
 
 
-def mac_profile(cwd: Path, net: bool) -> str:
+def mac_profile(cwd: Path, net: bool, secrets: list[Path] | None = None) -> str:
     q = json.dumps(str(cwd))
     rules = ["(version 1)", "(allow default)", "(deny file-write*)",
              f"(allow file-write* (subpath {q}) (subpath \"/private/tmp\") (subpath \"/private/var/folders\") "
              "(literal \"/dev/null\") (literal \"/dev/tty\"))"]
+    if secrets:
+        rules.append("(deny file-read* " + " ".join(f"(subpath {json.dumps(str(p))})" for p in secrets) + ")")
     if not net:
         rules.append("(deny network*)")
     return "".join(rules)
+
+
+# ------------------------------------------------------------------------------------------- gizli bilgiler
+# ~/.alice altındaki anahtar dosyaları. Sandbox her yeri okuyabilir ve (Windows'ta) ağı açık: kandırılmış bir komut
+# API anahtarlarını, abonelik oturumlarını ya da yerel servislerin anahtarlarını okuyup dışarı gönderebilirdi.
+SECRET_NAMES = (".env", ".env.bak", "chatgpt-auth.json", "connect.json", "phone-token", "relay.json",
+                "browser-bridge-token", "browser-ext-id", "cliproxy/keys.txt", "cliproxy/config.yaml", "cliproxy/auths",
+                "cliproxy/auths-disabled")
+# Ortamdan da gizli değer taşıyan değişkenler sandbox'taki sürece verilmez (ALICE .env'i kendi ortamına yükler).
+_SECRET_ENV_RX = re.compile(r"(?i)(?:_API_?KEY|_KEY|_TOKEN|_SECRET|_PASSWORD|_PASSWD|_PASS|_PAT|_CREDENTIALS?)$|"
+                            r"^(?:CLIPROXY_|GH_TOKEN$|GITHUB_TOKEN$|ALICE_.*(?:TOKEN|KEY|SECRET))")
+
+
+def secret_paths() -> list[Path]:
+    from alice.config import alice_home
+
+    home = alice_home()
+    return [p for p in (home / n for n in SECRET_NAMES) if p.exists()]
+
+
+def hide_secrets() -> None:
+    """Gizli dosyaları sandbox'tan sakla. Her sandbox komutunda yeniden yapılır: .env gibi dosyalar geçici dosya +
+    yeniden adlandırmayla yazılınca etiket kayboluyor."""
+    for p in secret_paths():
+        try:
+            hide_from_sandbox(p)
+        except Exception:  # noqa: BLE001 - etiket konamazsa komut yine çalışır
+            pass
+
+
+def scrub_env(env: dict[str, str], ctx: Any = None) -> dict[str, str]:
+    """Sandbox'taki sürece gidecek ortamdan anahtarları çıkar: .env'den yüklenenler ve adı anahtar gibi olanlar.
+    [agent] sandbox_env_allow = ["AD", ...] ile açıkça gerekenler bırakılabilir."""
+    from alice import config as cfg
+
+    agent = getattr(getattr(ctx, "config", None), "agent", None)
+    allow = {str(k).upper() for k in ((agent.get("sandbox_env_allow") or []) if isinstance(agent, dict) else [])}
+    loaded = {k.upper() for k in cfg.LOADED_ENV_KEYS} | {k.upper() for k in cfg.read_env()}
+    return {k: v for k, v in env.items()
+            if k.upper() in allow or not (k.upper() in loaded or _SECRET_ENV_RX.search(k))}
 
 
 # ------------------------------------------------------------------------------------------- Windows
@@ -177,6 +223,41 @@ def label_low(folder: Path) -> None:
         _labels_path().write_text(json.dumps(sorted(done)), encoding="utf-8")
     except OSError:
         pass
+
+
+def hide_from_sandbox(path: Path) -> bool:
+    """Gizli bir dosyayı (telefon anahtarı, aktarma anahtarı) düşük bütünlüklü süreçlerin OKUYAMAYACAĞI şekilde
+    etiketle. Low seviye varsayılan olarak her dosyayı okuyabilir: kandırılmış bir sandbox komutu telefon anahtarını
+    okuyup 127.0.0.1'deki telefon sunucusundan bilgisayarı tam yetkiyle yönetebilirdi (sandbox kaçışı). Etiket: Medium,
+    no-read-up + no-write-up. Klasörde etiket içindeki (ve sonradan oluşacak) dosyalara da geçer. Windows dışında ya
+    da başarısızsa False (dosya yine çalışır)."""
+    if not IS_WIN:
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.ULONG)]
+    advapi32.GetSecurityDescriptorSacl.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL),
+                                                   ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.BOOL)]
+    advapi32.SetNamedSecurityInfoW.argtypes = [wintypes.LPWSTR, ctypes.c_int, wintypes.DWORD, ctypes.c_void_p,
+                                               ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    advapi32.SetNamedSecurityInfoW.restype = wintypes.DWORD
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    sd = ctypes.c_void_p()
+    sddl = "S:(ML;OICI;NWNR;;;ME)" if Path(path).is_dir() else "S:(ML;;NWNR;;;ME)"
+    if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, 1, ctypes.byref(sd), None):
+        return False
+    try:
+        present, defaulted, sacl = wintypes.BOOL(), wintypes.BOOL(), ctypes.c_void_p()
+        if not advapi32.GetSecurityDescriptorSacl(sd, ctypes.byref(present), ctypes.byref(sacl), ctypes.byref(defaulted)):
+            return False
+        # SE_FILE_OBJECT = 1, LABEL_SECURITY_INFORMATION = 0x10
+        return advapi32.SetNamedSecurityInfoW(str(path), 1, 0x10, None, None, None, sacl) == 0
+    finally:
+        kernel32.LocalFree(sd)
 
 
 def low_temp() -> Path:

@@ -122,3 +122,22 @@ def test_deleted_note_is_not_recreated_by_extraction_or_dream_until_user_saves_i
     # Kullanıcı aynı şeyi açıkça yeniden kaydettirirse iz kalkar.
     m.remember("Kullanıcı YouTube ve sosyal medya sitelerinde çok vakit geçirir.", "fact", source="kullanıcı")
     assert m.forgotten() == []
+
+
+def test_unnamed_model_save_is_checked_against_its_own_name_not_a_note_called_not():
+    m = LongMemory(":memory:", {})
+    m.save_note("not", "Kullanıcının elle yazdığı not", "user", "Elle yazılmış not.", source="kullanıcı")
+    m.save_note("user-sosyal-medya", "Kullanıcı YouTube ve sosyal medyada çok vakit geçirir", "user",
+                "Kullanıcı YouTube ve diğer sosyal medya sitelerinde çok vakit geçirir.", source="otomatik")
+    m.delete_note("genel:user-sosyal-medya")
+    # Model ad vermeden kaydediyor: silinmiş not kontrolü yine yapılmalı ("not" adlı not bulunup atlanmamalı).
+    again = {"save": [{"type": "user", "title": "YouTube alışkanlığı",
+                       "description": "Kullanıcı YouTube'da çok vakit geçirir",
+                       "content": "Kullanıcı YouTube ve sosyal medya sitelerinde çok vakit geçirir."}]}
+    done = m.apply_notes(again, source="otomatik")
+    assert "kullanıcı silmişti" in done[0]
+    assert [n.name for n in m.notes.scan()] == ["not"]
+    fresh = {"save": [{"type": "user", "title": "Kahve", "description": "Kullanıcı kahveyi şekersiz içer",
+                       "content": "Kullanıcı kahveyi şekersiz içer."}]}
+    m.apply_notes(fresh, source="otomatik")
+    assert m.notes.get("kahve").source == "otomatik"  # kaynağı "not" adlı nottan ("kullanıcı") alınmadı

@@ -176,15 +176,21 @@ class Store:
             if end <= start:
                 return 0
             before = db.execute("SELECT COUNT(*) FROM samples WHERE ts >= ? AND ts < ?", (start, end)).fetchone()[0]
-            # Tek MAX() olan sorguda SQLite yalın sütunları (text) en son satırdan alır.
-            db.execute("CREATE TEMP TABLE IF NOT EXISTS _thin (ts REAL, key TEXT, value REAL, text TEXT)")
-            db.execute("DELETE FROM _thin")
-            db.execute("INSERT INTO _thin SELECT MAX(ts), key, AVG(value), text FROM samples WHERE ts >= ? AND ts < ? "
-                       "GROUP BY key, CAST(ts / 60 AS INTEGER)", (start, end))
-            db.execute("DELETE FROM samples WHERE ts >= ? AND ts < ?", (start, end))
-            db.execute("INSERT INTO samples SELECT * FROM _thin")
-            db.execute("INSERT OR REPLACE INTO meta VALUES ('thinned_until', ?)", (str(end),))
-            db.commit()
+            try:
+                # Tek MAX() olan sorguda SQLite yalın sütunları (text) en son satırdan alır.
+                db.execute("CREATE TEMP TABLE IF NOT EXISTS _thin (ts REAL, key TEXT, value REAL, text TEXT)")
+                db.execute("DELETE FROM _thin")
+                db.execute("INSERT INTO _thin SELECT MAX(ts), key, AVG(value), text FROM samples WHERE ts >= ? "
+                           "AND ts < ? GROUP BY key, CAST(ts / 60 AS INTEGER)", (start, end))
+                db.execute("DELETE FROM samples WHERE ts >= ? AND ts < ?", (start, end))
+                db.execute("INSERT INTO samples SELECT * FROM _thin")
+                db.execute("INSERT OR REPLACE INTO meta VALUES ('thinned_until', ?)", (str(end),))
+                db.commit()
+            except sqlite3.Error:
+                # Yarıda kalırsa açık işlem sonraki add_many'nin commit'iyle yazılıyordu: ölçümler silinmiş,
+                # yerine özetleri hiç konmamış olurdu (ve işlem açıkken kilit öbür süreci bekletir).
+                db.rollback()
+                raise
             after = db.execute("SELECT COUNT(*) FROM _thin").fetchone()[0]
             # VACUUM yapılmaz: 130 MB'lık dosyada depo kilidini onlarca saniye tutuyor, o sırada uçuş anonsları bile
             # bekliyordu. Boşalan sayfaları yeni ölçümler kullanır, dosya bir daha büyümez.

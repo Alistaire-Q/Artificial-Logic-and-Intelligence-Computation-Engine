@@ -607,7 +607,10 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "C:/Users/hayat/Projele
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-github"]
 env = { GITHUB_PERSONAL_ACCESS_TOKEN = "..." }
+# trust_annotations = true
 ```
+
+Sunucunun araçlarına koyduğu "salt okuma" (`readOnlyHint`) etiketine varsayılan olarak güvenilmez: o araçlar yazma sayılır (auto modda sormadan çalışır, ask modunda onay ister, plan modunda kapalıdır). Sunucuya güveniyorsan `trust_annotations = true` ile etiketli araçlar okuma sayılır.
 
 Sunucu başlamazsa hata uygulamada not olarak görünüyor, ayrıntısı `~/.alice/mcp-<isim>.log` dosyasında.
 

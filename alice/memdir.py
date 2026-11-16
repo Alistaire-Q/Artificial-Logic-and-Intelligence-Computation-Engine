@@ -209,13 +209,28 @@ class Note:
 
 
 # ---------------------------------------------------------------------------------------------------- defter
+_root_locks: dict[str, threading.RLock] = {}
+_root_locks_guard = threading.Lock()
+
+
+def _root_lock(root: Path) -> threading.RLock:
+    key = os.path.normcase(os.path.abspath(str(root)))
+    with _root_locks_guard:
+        lock = _root_locks.get(key)
+        if lock is None:
+            lock = _root_locks[key] = threading.RLock()
+        return lock
+
+
 class NoteBook:
     """Bir hafıza klasörü (genel ya da bir projenin)."""
 
     def __init__(self, root: Path | str, scope: str = "genel"):
         self.root = Path(root)
         self.scope = scope
-        self._lock = threading.RLock()
+        # Aynı klasörün defteri her çağrıda yeniden kuruluyor (proje defteri, all_books): kilit klasöre bağlı olmalı,
+        # yoksa arka plan çıkarımı ile araç aynı anda yazınca MEMORY.md satırları kayboluyordu.
+        self._lock = _root_lock(self.root)
 
     # -------------------------------------------------------------- dosyalar
     def ensure(self) -> Path:
@@ -280,7 +295,17 @@ class NoteBook:
             name = name.split(":", 1)[1]
         if name.endswith(".md"):
             name = name[:-3]
-        return name if NAME_RX.match(name) else slugify(name)
+        if NAME_RX.match(name):
+            out = name
+        elif name not in ("", ".", "..") and not re.search(r"[\\/:*?\"<>|]", name) and self.path_for(name).is_file():
+            # Elle eklenmiş "Sunucu Notları.md" gibi bir dosya: listede bu adla görünüyor ama ad sadeleştirilince
+            # ("sunucu-notlari") bulunamıyor, okunamıyor/silinemiyordu. Klasörde birebir duran dosyanın adı geçerli.
+            out = name
+        else:
+            out = slugify(name)
+        # "memory.md" Windows'ta (büyük/küçük harf duyarsız) MEMORY.md'nin ta kendisi: böyle adlı not dizinin üstüne
+        # yazılıyor, ardından dizin yazımı da notu siliyordu.
+        return "memory-not" if out.lower() == INDEX[:-3].lower() else out
 
     # -------------------------------------------------------------- yazma
     def save(self, name: str, description: str, type: str, body: str, title: str = "",
@@ -322,7 +347,13 @@ class NoteBook:
                 return None
             trash = self.root / ".trash"
             trash.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(note.path), str(trash / f"{datetime.now():%Y%m%d-%H%M%S}-{note.name}.md"))
+            # Mikrosaniye + gerekirse sayaç: aynı not aynı saniyede iki kez silinince (yaz-sil-yaz-sil) saniye
+            # çözünürlüklü ad önceki çöp kopyasının üzerine yazıyordu. Ad zamana göre sıralı kalır.
+            stamp = f"{datetime.now():%Y%m%d-%H%M%S-%f}"
+            dest, i = trash / f"{stamp}-{note.name}.md", 1
+            while dest.exists():
+                dest, i = trash / f"{stamp}.{i}-{note.name}.md", i + 1
+            shutil.move(str(note.path), str(dest))
             for old in sorted(trash.glob("*.md"))[:-KEEP_TRASH]:
                 old.unlink(missing_ok=True)
             if self.index_path.is_file():
@@ -552,7 +583,9 @@ def project_root(cwd: Path | str | None) -> Path | None:
         return _roots[key]
     root: Path | None = None
     try:
-        r = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=str(cwd),
+        from alice.gitsafe import harden
+
+        r = subprocess.run(["git", *harden(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd)], cwd=str(cwd),
                            capture_output=True, text=True, timeout=5)
         out = r.stdout.strip()
         if r.returncode == 0 and out:

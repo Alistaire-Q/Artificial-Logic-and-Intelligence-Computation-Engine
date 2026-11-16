@@ -303,6 +303,53 @@ def test_broken_update_rolls_back_and_is_skipped(repos, monkeypatch, offline):
     assert rb["from"] == bad and rb["to"] == old and updater.consume_rollback("app") is None
 
 
+def test_write_state_never_exposes_partial_file(monkeypatch):
+    """Yazma sırasında öbür süreç dosyayı okursa eski tam durumu görmeli (boş/yarım değil)."""
+    import os
+
+    updater.write_state(bad=["abc"], pending_health="def")
+    seen = []
+    real = os.replace
+
+    def spy(src, dst):
+        seen.append(updater.read_state())
+        return real(src, dst)
+
+    monkeypatch.setattr(updater.os, "replace", spy)
+    updater.write_state(last_check=1.0)
+    assert seen == [{"bad": ["abc"], "pending_health": "def"}]
+    assert updater.read_state() == {"bad": ["abc"], "pending_health": "def", "last_check": 1.0}
+    assert [p.name for p in updater._state_path().parent.iterdir() if p.suffix == ".tmp"] == []
+
+
+def test_remote_head_ignores_branches_ending_with_same_name(repos, monkeypatch, offline):
+    """ls-remote "main" deseni "refs/heads/feature/main"i de döndürür; alfabetik önce geldiği için o dalın
+    commit'i yeni sürüm sanılmamalı."""
+    clone, origin = repos
+    main = git(origin, "rev-parse", "HEAD")
+    git(origin, "checkout", "-qb", "feature/main")
+    push(origin, "başka dal")
+    git(origin, "checkout", "-q", "main")
+    assert updater.remote_head(clone, "main") == (main, "")
+
+
+def test_forced_update_rollback_keeps_uncommitted_changes(repos, monkeypatch, offline):
+    """--force kirli ağaçta çekip duman testi düşünce geri alma kullanıcının kaydedilmemiş işini silmemeli."""
+    clone, origin = repos
+    point_at(monkeypatch, clone)
+    old = git(clone, "rev-parse", "HEAD")
+    (origin / "kirik_mod.py").write_text("def (:\n", encoding="utf-8")
+    git(origin, "add", "-A")
+    git(origin, "commit", "-qm", "kırık")
+    (clone / "alice" / "__init__.py").write_text("# elle değiştirdim\n", encoding="utf-8")
+    monkeypatch.setattr(updater, "SMOKE_MODULES", ("kirik_mod",))
+    cfg = make_config({"brain": ["a:m"]})
+    ok, msg = updater.apply_update(updater.check(cfg), cfg, force=True)
+    assert not ok and "önceki sürüme dönüldü" in msg
+    assert git(clone, "rev-parse", "HEAD") == old
+    assert (clone / "alice" / "__init__.py").read_text(encoding="utf-8") == "# elle değiştirdim\n"
+
+
 def test_crashing_boots_roll_back(repos, monkeypatch, offline):
     clone, origin = repos
     point_at(monkeypatch, clone)
@@ -396,6 +443,33 @@ def test_git_yoksa_dogru_sebep_soylenir(repos, monkeypatch, tmp_path):
     monkeypatch.setattr(updater, "repo_dir", lambda: None)
     monkeypatch.setattr(updater, "ensure_git", lambda: None)
     assert "Git bulunamadı" in updater.check(make_config({"brain": ["a:m"]})).error
+
+
+def test_git_kurulumu_acilisi_bekletmez(repos, monkeypatch):
+    """winget Git kurarken (15 dk'ya kadar) `alice app` açılışı donuyordu: kurulum arka planda, beklenmez."""
+    import threading
+    import time as _t
+
+    clone, _origin = repos
+    gate, started = threading.Event(), []
+
+    def slow_run(cmd, **kw):
+        started.append(cmd)
+        gate.wait(10)
+
+    monkeypatch.setattr(updater, "WINDOWS", True)
+    monkeypatch.setattr(updater, "git_exe", lambda: None)
+    monkeypatch.setattr(updater.shutil, "which", lambda name: "winget" if name == "winget" else None)
+    monkeypatch.setattr(updater.subprocess, "run", slow_run)
+    monkeypatch.setattr(updater, "install_root", lambda: clone)
+    monkeypatch.setattr(updater, "repo_dir", lambda: None)
+    t0 = _t.monotonic()
+    info = updater.check(make_config({"brain": ["a:m"]}))
+    assert _t.monotonic() - t0 < 3 and "arka planda kuruluyor" in info.error
+    assert updater.ensure_git() is None and len(started) == 1  # ikinci kurulum başlatılmaz
+    gate.set()
+    updater._git_install.join(5)
+    assert not updater.git_installing()
 
 
 def test_path_disindaki_git_bulunur(monkeypatch, tmp_path):

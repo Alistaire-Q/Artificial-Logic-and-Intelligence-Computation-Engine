@@ -282,55 +282,63 @@ def report(findings: list[Finding]) -> str:
     return f"{len(findings)} bulgu (önem sırasıyla):\n\n" + "\n\n".join(f.text() for f in findings)
 
 
-def diff_lines(diff: str) -> dict[str, set[int]]:
-    """Farkta yorum yazılabilen satırlar (yeni dosyadaki satır numaraları: eklenen ve bağlam satırları). GitHub satır
-    yorumunu yalnız bunlara kabul eder; birinin dışında olması bütün incelemeyi reddettirir."""
-    out: dict[str, set[int]] = {}
-    cur: set[int] | None = None
-    line = 0
+_HUNK_RX = re.compile(r"@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+
+def _diff_rows(diff: str) -> dict[str, list[tuple[int, str, str]]]:
+    """Farkı dosya -> [(yeni dosyadaki satır no, "+" ya da " ", metin)] olarak çöz. Parça (hunk) başlığındaki satır
+    sayıları izlenir: parçanın içinde "++ x" diye eklenen bir satır ("+++ x" görünür) dosya başlığı sanılmaz. Sayılar
+    tükenince (ya da hiç parça başlığı yoksa) eski hoşgörülü davranış sürer."""
+    out: dict[str, list[tuple[int, str, str]]] = {}
+    cur: list[tuple[int, str, str]] | None = None
+    line = old_left = new_left = 0
     for raw in diff.splitlines():
+        if old_left > 0 or new_left > 0:
+            if raw.startswith("\\"):
+                continue
+            if raw.startswith("+"):
+                if cur is not None:
+                    cur.append((line, "+", raw[1:]))
+                line, new_left = line + 1, new_left - 1
+                continue
+            if raw.startswith("-"):
+                old_left -= 1
+                continue
+            if raw.startswith(" ") or raw == "":
+                if cur is not None:
+                    cur.append((line, " ", raw[1:]))
+                line, old_left, new_left = line + 1, old_left - 1, new_left - 1
+                continue
+            old_left = new_left = 0  # sayılar tutmuyor: başlık gibi çöz
         if raw.startswith("+++ "):
             path = raw[4:].strip()
-            cur = None if path == "/dev/null" else out.setdefault(path[2:] if path.startswith("b/") else path, set())
+            cur = None if path == "/dev/null" else out.setdefault(path[2:] if path.startswith("b/") else path, [])
             continue
         if raw.startswith("--- ") or raw.startswith("diff --git"):
             continue
-        m = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", raw)
+        m = _HUNK_RX.match(raw)
         if m:
-            line = int(m.group(1))
+            line = int(m.group(2))
+            old_left = int(m.group(1)) if m.group(1) is not None else 1
+            new_left = int(m.group(3)) if m.group(3) is not None else 1
             continue
-        if cur is None or raw.startswith("\\"):
-            continue
-        if raw.startswith("-"):
+        if cur is None or raw.startswith("\\") or raw.startswith("-"):
             continue
         if raw.startswith("+") or raw.startswith(" ") or raw == "":
-            cur.add(line)
+            cur.append((line, raw[:1] or " ", raw[1:]))
             line += 1
     return out
 
 
+def diff_lines(diff: str) -> dict[str, set[int]]:
+    """Farkta yorum yazılabilen satırlar (yeni dosyadaki satır numaraları: eklenen ve bağlam satırları). GitHub satır
+    yorumunu yalnız bunlara kabul eder; birinin dışında olması bütün incelemeyi reddettirir."""
+    return {path: {n for n, _, _ in rows} for path, rows in _diff_rows(diff).items()}
+
+
 def _added_lines(diff: str) -> dict[str, dict[int, str]]:
     """Farkta eklenen satırlar: dosya -> {yeni dosyadaki satır no: metin}."""
-    out: dict[str, dict[int, str]] = {}
-    cur: dict[int, str] | None = None
-    line = 0
-    for raw in diff.splitlines():
-        if raw.startswith("+++ "):
-            path = raw[4:].strip()
-            cur = None if path == "/dev/null" else out.setdefault(path[2:] if path.startswith("b/") else path, {})
-            continue
-        if raw.startswith("--- ") or raw.startswith("diff --git"):
-            continue
-        m = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", raw)
-        if m:
-            line = int(m.group(1))
-            continue
-        if cur is None or raw.startswith("\\") or raw.startswith("-"):
-            continue
-        if raw.startswith("+"):
-            cur[line] = raw[1:]
-        line += 1
-    return out
+    return {path: {n: text for n, kind, text in rows if kind == "+"} for path, rows in _diff_rows(diff).items()}
 
 
 def _anchor(f: Finding, lines: dict[str, set[int]]) -> int:

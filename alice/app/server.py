@@ -47,7 +47,9 @@ STATIC_FILES = {"app.js": "text/javascript", "projects.js": "text/javascript", "
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
        "media-src 'self' data: blob:; "
        "connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; "
-       "frame-src 'self'")
+       "frame-src 'self' blob:")
+# frame-src blob: dosya önizlemesindeki PDF bir blob: adresinden çerçevede açılır; 'self' blob:'u kapsamaz, PDF
+# önizlemesi boş kalıyordu. blob: adresini yalnız sayfanın kendisi üretebilir.
 # Önizlenen site korumalı çerçevede (ayrı köken) çalışır: ALICE'in sayfasına ve API'sine dokunamaz.
 PREVIEW_CSP = "sandbox allow-scripts allow-forms allow-popups allow-modals"
 # İstek gövdesi sınırı: 6 ekran görüntüsü (1600 px PNG, base64) ya da uzun bir ses kaydı sığsın.
@@ -65,6 +67,19 @@ class BadRequest(Exception):
     def __init__(self, code: int, msg: str):
         super().__init__(msg)
         self.code = code
+
+
+def int_field(d: dict[str, Any], key: str, default: int = 0) -> int:
+    """İstek gövdesindeki tamsayı alan; sayı değilse 500 yerine 400 (BadRequest)."""
+    v = d.get(key)
+    if v is None or v == "":
+        return default
+    if isinstance(v, bool):
+        raise BadRequest(400, f"{key} tamsayı olmalı")
+    try:
+        return int(v)
+    except (TypeError, ValueError, OverflowError):
+        raise BadRequest(400, f"{key} tamsayı olmalı") from None
 
 
 # ----------------------------------------------------------------------- olaylar
@@ -628,6 +643,20 @@ class AppState:
         self.run_in_worker(self._attach_mcp)
         self._start_cliproxy()
 
+    def _watch_quota(self) -> None:
+        """Abonelik hesabı kotası dolmak üzereyse bir kez haber ver (alice/quota_watch.py). [cliproxy] quota_warn = false
+        kapatır."""
+        try:
+            if not bool((self.cfg.data.get("cliproxy", {}) or {}).get("quota_warn", True)):
+                return
+            if getattr(self, "_quota_watch", None) is None:
+                from alice.quota_watch import QuotaWatch
+
+                self._quota_watch = QuotaWatch(lambda s: self.bus.publish({"type": "info", "text": s}))
+            self._quota_watch.maybe_check()
+        except Exception:  # noqa: BLE001 - uyarı yüzünden tur bitişi bozulmasın
+            pass
+
     def _start_cliproxy(self) -> None:
         """Yerel Claude Code proxy'si (CLIProxyAPI) kuruluysa açılışta kendiliğinden başlat."""
         try:
@@ -806,6 +835,8 @@ class AppState:
         return None
 
     def resume(self, sid: str) -> bool:
+        if not sid:  # sess.load("") en son sohbeti açar: boş kimlik "o sohbet" değil
+            return False
         with self._chats_lock:
             if sid == self.chat.sid:
                 return True
@@ -832,6 +863,7 @@ class AppState:
 
     def _finished(self, chat: Chat) -> None:
         """Sohbetin turu bitti (kendi thread'inde). Öndeki değilse artık işi yok: kapanır."""
+        self._watch_quota()
         with self._chats_lock:
             chat.queued = False
             if chat is self.chat:
@@ -843,8 +875,13 @@ class AppState:
     def stop(self, sid: str = "") -> None:
         """Durdur düğmesi (öndeki sohbet; sid verilirse o sohbet). Araç her şeye rağmen bırakmıyorsa (cevap vermeyen
         bir pencere/COM çağrısı) sohbetin thread'i sonsuza dek meşgul kalırdı: o zaman sohbet o thread'den ayrılır
-        (bkz. _abandon)."""
-        chat = (self.find_chat(sid) if sid else None) or self.chat
+        (bkz. _abandon).
+
+        sid verilip o sohbet canlı değilse (telefonun sohbeti bitmiş ya da hiç başlamamış) hiçbir şey durmaz: önceden
+        öndeki sohbete düşülüyor, telefondaki Durdur bilgisayarda süren işi kesiyordu."""
+        chat = self.find_chat(sid) if sid else self.chat
+        if chat is None:
+            return
         chat.agent.stop()
         if chat.busy:
             threading.Thread(target=self._unstick, args=(chat,), daemon=True, name="alice-unstick").start()
@@ -931,7 +968,9 @@ class AppState:
             "session": self.sid,
             "started": self.chat.started,
             "running": self.running(),
-            "pending": [p for ui in self.all_uis() for p in ui.pending.values()],
+            # Hangi sohbetin sorusu olduğu da gelir: arayüz arkadaki sohbetin kartını öndekine çizmesin. list(): soru
+            # ajan thread'inde eklenip silinirken sözlüğü gezmek RuntimeError atıyordu.
+            "pending": [{**p, "sid": ui.sid} for ui in self.all_uis() for p in list(ui.pending.values())],
             "brain_chain": self.router.chain("brain"),
             "brain_pinned": "brain" in self.router.role_overrides,
             "thinking": self.router.thinking_level("brain"),
@@ -1119,15 +1158,17 @@ class AppState:
     def assistant(self) -> dict[str, Any]:
         from alice.connect import store
         from alice.doctor import run_all
-        from alice.permissions import project_rules
+        from alice.permissions import project_rules, project_rules_trusted
         from alice.skills import load_agents, load_skills
         from alice.tools import gmail
 
         cfg_rules = self.cfg.data.get("permissions") or {}
-        proj = project_rules(self.ctx.cwd)
+        proj = project_rules(self.ctx.cwd, include_untrusted=True)
+        trusted = project_rules_trusted(self.ctx.cwd)
         rules = [{"kind": k, "rule": r, "source": "config"} for k in ("allow", "ask", "deny")
                  for r in cfg_rules.get(k, []) or []]
-        rules += [{"kind": k, "rule": r, "source": "project"} for k in ("allow", "ask", "deny") for r in proj.get(k, [])]
+        rules += [{"kind": k, "rule": r, "source": "project", "untrusted": k == "allow" and not trusted}
+                  for k in ("allow", "ask", "deny") for r in proj.get(k, [])]
         values = {f"{sec}.{key}": (self.cfg.data.get(sec) or {}).get(key) for sec, key in self.ASSISTANT_SETTINGS}
         return {
             "checks": [c.__dict__ for c in run_all(self.cfg, self.ctx.cwd, network=False)],
@@ -1190,6 +1231,10 @@ class AppState:
         from alice.connect import store
         from alice.tools import gmail
 
+        if action == "rules_trust":
+            from alice.permissions import trust_project_rules
+
+            return {"ok": trust_project_rules(self.ctx.cwd)}
         if action == "rule_delete":
             from alice.permissions import remove_project_rule
 
@@ -1301,8 +1346,15 @@ class AppState:
         if self._system is None:
             from alice.app.system import SystemPanel
 
-            self._system = SystemPanel(self.cfg)
+            self._system = SystemPanel(self.cfg, restart_core=self._restart_core)
         return self._system
+
+    def _restart_core(self) -> bool:
+        """Sistem paneli: uygulama çekirdeğin içindeyse çekirdeği yeniden başlat (güncellemedeki yol)."""
+        if self.restart_hook is None:
+            return False
+        threading.Thread(target=self._restart_soon, daemon=True, name="alice-restart").start()
+        return True
 
     _enroll = None
 
@@ -1387,9 +1439,11 @@ class AppState:
             b, n = mem.find_note(key, cwd) if key else (None, None)
             if n is None:
                 return {"ok": False, "error": "not bulunamadı"}
+            # Yalnız gönderilen alanlar değişir: gövdesiz kayıt (ör. sadece açıklama) notun gövdesini silmesin.
+            body = str(d.get("body") or "") if "body" in d else n.body
             try:
                 b.save(n.name, str(d.get("description") or n.description), str(d.get("type") or n.type),
-                       str(d.get("body") or ""), title=n.title, source="kullanıcı")
+                       body, title=n.title, source="kullanıcı")
             except (MemoryFull, ValueError) as e:
                 return {"ok": False, "error": str(e)}
             mem._bump()
@@ -1908,6 +1962,7 @@ class AppState:
         if text.split(" ", 1)[0].lower() == "/btw":
             question = text[4:].strip()
             if not question:
+                self._drop_if_idle(chat)
                 return False, "kullanım: /btw <soru>"
             threading.Thread(target=self._side_question, args=(chat, question), daemon=True, name="alice-btw").start()
             return True, None
@@ -1933,9 +1988,19 @@ class AppState:
             if prompt is None:
                 prompt = builtin_prompt(text)
                 if prompt is None:
+                    self._drop_if_idle(chat)
                     return False, f"bilinmeyen komut: {text.split()[0]}"
         self._start_turn(chat, text, prompt, images or [])
         return True, None
+
+    def _drop_if_idle(self, chat: Chat) -> None:
+        """chat_for'un bu istek için açtığı arka plan sohbeti tur başlatmadan kaldıysa (bilinmeyen komut, /btw) kapat.
+        Arkadaki sohbetler yalnız tur bitince kapanıyordu: tur hiç başlamayınca thread'i ve ajanı sonsuza dek kalıyordu."""
+        with self._chats_lock:
+            if chat is self.chat or chat.busy or self.background.get(chat.sid) is not chat:
+                return
+            self.background.pop(chat.sid, None)
+        chat.close()
 
     def _suggest(self, chat: Any) -> list[str]:
         """Tur bitince kullanıcının muhtemel sonraki mesajı (en fazla 2 kısa öneri). Arayüzde düğme olur; tıklayınca
@@ -2004,6 +2069,7 @@ class AppState:
         except Exception as e:  # noqa: BLE001 - yan soru başarısızsa iş etkilenmesin
             answer = f"cevaplanamadı: {str(e)[:300]}"
         pub({"type": "btw", "q": question, "a": answer, "pending": False})
+        self._drop_if_idle(chat)
 
     def deliver(self, sid: str, text: str, tries: int = 30) -> str:
         """Arka plandan bir sohbete mesaj (izleme olayı, ayrı oturumun sonucu): sohbet çalışıyorsa işe iletilir,
@@ -2389,7 +2455,8 @@ def make_handler(state: AppState):
                 except ToolError as e:
                     return self._json({"ok": False, "error": str(e)}, 404)
             if u.path == "/api/usage":
-                return self._json(state.agent.usage_breakdown())
+                # Oturum dökümü (Kullanım dökümü penceresi) + bugünün model başına istek sayıları (Ayarlar > Kullanım).
+                return self._json({**state.agent.usage_breakdown(), "today": state.router.usage.today()})
             if u.path == "/api/prs":
                 return self._json(state.pr_panel(force=(q.get("force") or [""])[0] == "1"))
             if u.path == "/api/subagents":
@@ -2465,8 +2532,6 @@ def make_handler(state: AppState):
             if u.path == "/api/update":
                 return self._json(state.check_update() if (q.get("refresh") or [""])[0] == "1"
                                   else (state.update.as_dict() if state.update is not None else {"available": False}))
-            if u.path == "/api/usage":
-                return self._json(state.router.usage.today())
             if u.path == "/api/tools":
                 return self._json([{"name": t.name, "risk": t.risk, "description": t.description.split("\n")[0][:160]}
                                    for t in state.agent.tools.values()])
@@ -2731,13 +2796,15 @@ def make_handler(state: AppState):
                     err = state.new_session()
                     return self._json({"ok": not err, "error": err, **state.status()}, 409 if err else 200)
                 if p == "/api/resume":
+                    sid = str(d.get("id") or "").strip()
+                    if not sid:  # boş kimlik en son sohbeti açıyordu (sess.load("")): istenen sohbet değil
+                        return self._json({"ok": False, "error": "sohbet kimliği gerekli"}, 400)
                     if d.get("detached"):  # telefon: sohbeti aç ama bilgisayarın öndeki sohbetini değiştirme
-                        sid = str(d.get("id", ""))
                         hist = state.history_for(sid)
                         found = bool(hist) or state.find_chat(sid) is not None
                         return self._json({"ok": found, "sid": sid, "history": hist,
                                            "error": None if found else "sohbet bulunamadı", **state.status()})
-                    ok = state.resume(str(d.get("id", "")))
+                    ok = state.resume(sid)
                     return self._json({"ok": ok, "error": None if ok else "sohbet açılamadı (arkada çok fazla iş var "
                                        "ya da sohbet bulunamadı)",
                                        "history": state.history_for(),
@@ -2765,7 +2832,10 @@ def make_handler(state: AppState):
                         return self._json({"ok": False, "error": str(e)}, 400)
                     return self._json({"ok": True, "note": note, **state.status()})
                 if p == "/api/rewind":
-                    out = state.rewind(int(d.get("mi", -1)))
+                    try:
+                        out = state.rewind(int_field(d, "mi", -1))
+                    except ValueError as e:  # geçersiz mesaj sırası: istemci hatası
+                        return self._json({"ok": False, "error": str(e)}, 400)
                     return self._json({"ok": True, **out, "history": state.history_for(),
                                        **state.status()})
                 if p == "/api/changes/revert":
@@ -2779,7 +2849,7 @@ def make_handler(state: AppState):
                     from alice import prwatch
                     from alice.tools.base import ToolError
 
-                    repo, number = str(d.get("repo", "")), int(d.get("number") or 0)
+                    repo, number = str(d.get("repo", "")), int_field(d, "number")
                     if not repo or not number:
                         return self._json({"ok": False, "error": "repo ve number gerekli"}, 400)
                     try:
@@ -2866,7 +2936,9 @@ def make_handler(state: AppState):
                     return self._json({"ok": True, "note": note, **state.status()})
                 if p == "/api/session/delete":
                     sid = str(d.get("id", ""))
-                    if sid in state.running():  # arkada çalışan sohbet bitince kendini yeniden kaydederdi
+                    live = state.find_chat(sid)
+                    # Çalışan sohbet (arkadaki ya da öndeki: telefondan silinebilir) bitince kendini yeniden kaydederdi.
+                    if live is not None and live.busy:
                         return self._json({"ok": False, "error": "bu sohbet arkada çalışıyor; önce bitsin"}, 409)
                     return self._json(state.delete_session(sid))
                 if p in ("/api/session/rename", "/api/session/pin"):
@@ -2919,6 +2991,8 @@ def make_handler(state: AppState):
                         except OSError:
                             pass
                     return self._json({"ok": True})
+            except BadRequest as e:
+                return self._json({"ok": False, "error": str(e)}, e.code)
             except Exception as e:  # noqa: BLE001
                 log_error()
                 return self._json({"ok": False, "error": str(e)}, 500)

@@ -51,3 +51,38 @@ def test_taint_rules_in_permissions(workdir):
     assert p.decide(wf, {"path": str(workdir.parent / "dışarı.txt"), "content": "x"}, ctx) == "ask"
     cfg.agent["taint_guard"] = False
     assert p.decide(rc, {"command": "echo x"}, ctx) == "allow"
+
+
+def test_taint_sibling_folder_patch_and_session_allow(workdir):
+    """Kirli turda: adı çalışma klasörüyle başlayan kardeş klasör "içeride" sayılmaz, apply_patch'in yazdığı dosyalara
+    da bakılır, oturumluk "hep izin ver" komut onayını delmez."""
+    cfg = make_config({"brain": ["a:m"]}, sandbox="off")
+    ctx = ToolContext(cwd=workdir, config=cfg)
+    p = Permissions("auto")
+    rc, wf, ap = TOOLS["run_command"], TOOLS["write_file"], TOOLS["apply_patch"]
+    sibling = workdir.parent / (workdir.name + "2") / "x.txt"
+    outside_patch = f"*** Begin Patch\n*** Add File: {workdir.parent / 'disari.txt'}\n+x\n*** End Patch"
+    inside_patch = "*** Begin Patch\n*** Add File: notlar.txt\n+x\n*** End Patch"
+    p.always_allow.add("run_command")
+    assert p.decide(wf, {"path": str(sibling), "content": "x"}, ctx) == "allow"  # temizken serbest
+    assert p.decide(rc, {"command": "echo x"}, ctx) == "allow"
+    guard.mark(ctx, "web_fetch")
+    assert p.decide(wf, {"path": str(sibling), "content": "x"}, ctx) == "ask"
+    assert p.decide(ap, {"patch": outside_patch}, ctx) == "ask"
+    assert p.decide(ap, {"patch": inside_patch}, ctx) == "allow"
+    assert p.decide(rc, {"command": "echo x"}, ctx) == "ask"
+
+
+def test_taint_bare_allow_rule_does_not_bypass(workdir):
+    """config'teki desensiz "run_command" kuralı kirli turda komutu sormadan geçirmez; desenli kural geçirir."""
+    cfg = make_config({"brain": ["a:m"]}, sandbox="off")
+    ctx = ToolContext(cwd=workdir, config=cfg)
+    rc, wf = TOOLS["run_command"], TOOLS["write_file"]
+    bare = Permissions("ask", rules={"allow": ["run_command", "write_file"], "ask": [], "deny": []})
+    narrow = Permissions("ask", rules={"allow": ["run_command(git status*)"], "ask": [], "deny": []})
+    assert bare.decide(rc, {"command": "echo x"}, ctx) == "allow"
+    guard.mark(ctx, "web_fetch")
+    assert bare.decide(rc, {"command": "echo x"}, ctx) == "ask"
+    assert bare.decide(wf, {"path": str(workdir.parent / "disari.txt"), "content": "x"}, ctx) == "ask"
+    assert bare.decide(wf, {"path": "notlar.txt", "content": "x"}, ctx) == "allow"  # proje içi serbest kalır
+    assert narrow.decide(rc, {"command": "git status"}, ctx) == "allow"

@@ -37,16 +37,37 @@ def save(session_id: str, messages: list[dict[str, Any]], cwd: Path, extra: dict
     """extra: mesajlar dışında yeniden açılışta geri kurulacak sohbet bilgisi (istatistik, kullanım dökümü, alt
     ajanlar, oturumun başlangıcı). Uygulama kapanıp açılınca bunlar sıfırlanıyordu."""
     path = sessions_dir() / f"{session_id}.json"
-    # Görüntüler diske yazılmaz, oturum dosyaları küçük kalsın.
-    body = {"cwd": str(cwd), "saved": datetime.now().isoformat(timespec="seconds"),
-            "messages": strip_images(messages[1:])}
-    if extra:
-        body["extra"] = extra
-    # Önce geçici dosyaya yaz: her adımda kaydederken yarıda kalan bir yazma oturumu bozmasın.
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(body, ensure_ascii=False, indent=1), encoding="utf-8")
-    tmp.replace(path)
+    # Ajan thread'i her adımda, arayüz istekleri (durdur, sohbet değiştir, özetle) kendi thread'lerinden aynı oturumu
+    # kaydediyor. Ortak .json.tmp'ye aynı anda yazınca dosya karışıyor (bozuk oturum açılışta atlanır: sohbet
+    # kaybolur) ya da ikinci replace FileNotFoundError/PermissionError veriyordu. Kayıtlar sıraya girer; anlık
+    # görüntü kilit içinde alınır (sonra gelen eski hâli yazmasın), geçici dosya da yazana özeldir.
+    with _save_lock:
+        # Görüntüler diske yazılmaz, oturum dosyaları küçük kalsın.
+        body = {"cwd": str(cwd), "saved": datetime.now().isoformat(timespec="seconds"),
+                "messages": strip_images(messages[1:])}
+        if extra:
+            body["extra"] = extra
+        # Önce geçici dosyaya yaz: her adımda kaydederken yarıda kalan bir yazma oturumu bozmasın.
+        _atomic_write(path, json.dumps(body, ensure_ascii=False, indent=1))
     return path
+
+
+_save_lock = threading.RLock()
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    import os
+
+    tmp = path.with_name(f"{path.name}.{os.getpid()}-{threading.get_ident()}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 ARCHIVE_TOOL_CHARS = 4000  # arşivde araç çıktısı bu kadar tutulur (yalnız ekranda göstermek için)
@@ -180,6 +201,8 @@ def list_sessions(limit: int = 15) -> list[tuple[str, str, str]]:
                 data = json.loads(p.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
+            if not isinstance(data, dict) or not isinstance(data.get("messages", []), list):
+                continue
             cwd, first = str(data.get("cwd", "")), session_prompt(p.stem, data.get("messages", []))
             with _list_lock:
                 _list_cache[str(p)] = (sig, (cwd, first))
@@ -197,7 +220,10 @@ def load(session_id: str | None = None) -> tuple[str, list[dict[str, Any]]] | No
             data = json.loads(f.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        return f.stem, data.get("messages", [])
+        messages = data.get("messages") if isinstance(data, dict) else None
+        if not isinstance(messages, list):
+            continue  # geçerli JSON ama oturum biçiminde değil (ör. liste ya da sayı): bozuk dosya gibi atla
+        return f.stem, [m for m in messages if isinstance(m, dict)]
     return None
 
 
@@ -205,6 +231,8 @@ def load_extra(session_id: str) -> dict[str, Any]:
     try:
         data = json.loads((sessions_dir() / f"{session_id}.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
         return {}
     extra = data.get("extra")
     return extra if isinstance(extra, dict) else {}
@@ -234,10 +262,8 @@ def save_checkpoints(session_id: str, checkpoints: dict[int, dict[str, bytes | N
             row[path] = None if data is None else base64.b64encode(data).decode("ascii")
         if row:
             out[str(idx)] = row
-    p = checkpoints_path(session_id)
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(json.dumps(out), encoding="utf-8")
-    tmp.replace(p)
+    with _save_lock:
+        _atomic_write(checkpoints_path(session_id), json.dumps(out))
 
 
 def load_checkpoints(session_id: str) -> dict[int, dict[str, bytes | None]]:
@@ -247,8 +273,12 @@ def load_checkpoints(session_id: str) -> dict[int, dict[str, bytes | None]]:
         raw = json.loads(checkpoints_path(session_id).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
+    if not isinstance(raw, dict):
+        return {}
     out: dict[int, dict[str, bytes | None]] = {}
     for k, row in raw.items():
+        if not isinstance(row, dict):
+            continue
         try:
             out[int(k)] = {p: (None if v is None else base64.b64decode(v)) for p, v in row.items()}
         except (ValueError, TypeError):
@@ -262,6 +292,8 @@ def saved_cwd(session_id: str) -> Path | None:
     try:
         data = json.loads((sessions_dir() / f"{session_id}.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
         return None
     cwd = Path(data.get("cwd") or "")
     return cwd if data.get("cwd") and cwd.is_dir() else None

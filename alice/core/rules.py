@@ -91,6 +91,8 @@ DEFAULT_RULES = [
          description="RAM uzun süre dolu kalırsa söyle", id="mem-full"),
     Rule("pc.disk.*.percent", ">", 95, "{match} diski %{value:.0f} dolu.", cooldown=6 * 3600,
          description="disk dolmak üzereyse söyle", id="disk-full"),
+    Rule("pc.disk.*.free_gb", "<", 10, "{match} diskinde {value:.1f} GB boş yer kaldı. Ne yer kaplıyor bakayım mı?",
+         cooldown=6 * 3600, description="bir diskte 10 GB'tan az yer kalırsa söyle", id="disk-low"),
     Rule("pc.proc.*.mem_mb", ">", 8000, "{match} {value:.0f} MB bellek kullanıyor ve düşmüyor.", duration=600,
          cooldown=3 * 3600, description="bir program belleği şişirirse söyle", id="proc-bloat"),
     Rule("watch.hr", ">", 125, "Nabzın {value:.0f}, bir süredir yüksek. İyi misin?", duration=600, cooldown=2 * 3600,
@@ -99,6 +101,9 @@ DEFAULT_RULES = [
                  "worth a gentle check-in?",
          description="nabzım uzun süre yüksek kalırsa beni uyar", id="hr-high"),
 ]
+
+# rules.json ilk yazıldıktan sonra eklenen varsayılanlar: yüklerken eksikse eklenir.
+ADDED_LATER = {"disk-low"}
 
 
 class RuleSet:
@@ -122,7 +127,24 @@ class RuleSet:
                 rules.append(Rule.from_dict(d))
             except (TypeError, ValueError, AttributeError):
                 continue
-        self.rules = rules
+        # Sonradan eklenen varsayılan kural eski rules.json'a da girsin; kullanıcı onu silmişse geri gelmesin.
+        have = {r.id for r in rules}
+        removed = self._removed()
+        # Varsayılanlardan hiçbiri yoksa kullanıcı hepsini silmiş: yenisini de dayatma.
+        had_defaults = bool(have & {r.id for r in DEFAULT_RULES if r.id not in ADDED_LATER})
+        added = [Rule.from_dict(asdict(r)) for r in DEFAULT_RULES
+                 if had_defaults and r.id in ADDED_LATER and r.id not in have and r.id not in removed]
+        self.rules = rules + added
+        if added:
+            self.save()
+
+    def _removed_path(self) -> Path:
+        return self.path.with_name(self.path.stem + "-removed.json")
+
+    def _removed(self) -> set[str]:
+        from alice.core.schedule import read_json_list
+
+        return {str(x) for x in (read_json_list(self._removed_path()) or [])}
 
     def save(self) -> None:
         from alice.core.schedule import write_json_atomic
@@ -142,6 +164,10 @@ class RuleSet:
         self.rules = [r for r in self.rules if r.id != rule_id]
         if len(self.rules) != before:
             self.save()
+            if rule_id in ADDED_LATER:
+                from alice.core.schedule import write_json_atomic
+
+                write_json_atomic(self._removed_path(), sorted(self._removed() | {rule_id}))
             return True
         return False
 

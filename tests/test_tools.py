@@ -116,6 +116,16 @@ def test_config_init_and_load(isolated_home, monkeypatch, tmp_path):
     monkeypatch.delenv("GROQ_API_KEY")
 
 
+def test_custom_provider_without_base_url_is_skipped(capsys):
+    cfg = make_config({"brain": ["a:m"]}, providers={
+        "a": {"base_url": "http://a"}, "benim": {"api_key_env": "X", "custom": True}, "bozuk": "metin"})
+    assert set(cfg.providers()) == {"a"}
+    assert set(cfg.provider_errors()) == {"benim", "bozuk"}
+    assert "providers.benim" in capsys.readouterr().err
+    cfg.providers()
+    assert "providers.benim" not in capsys.readouterr().err  # süreç başına bir kez uyarır
+
+
 def test_provider_vision_glob():
     pc = ProviderConfig("x", "http://x", vision_models=["gemini-*"])
     assert pc.supports_vision("gemini-flash-latest") and not pc.supports_vision("gpt-oss")

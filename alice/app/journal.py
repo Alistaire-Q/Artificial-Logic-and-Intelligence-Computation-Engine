@@ -112,9 +112,11 @@ class Journal:
             import json
 
             last = json.loads(evals.results_path().read_text(encoding="utf-8"))
-            last = {"when": time.strftime("%d.%m %H:%M", time.localtime(last.get("ts", 0))), "passed": last.get("passed"),
-                    "total": last.get("total")}
-        except (OSError, ValueError):
+            if not isinstance(last, dict):  # elle bozulmuş/yarım kayıt: hiç çalıştırılmamış say, sekme açılsın
+                raise ValueError("sonuç dosyası nesne değil")
+            last = {"when": time.strftime("%d.%m %H:%M", time.localtime(float(last.get("ts") or 0))),
+                    "passed": last.get("passed"), "total": last.get("total")}
+        except (OSError, ValueError, TypeError, OverflowError):
             last = None
         try:
             cases = len(evals.load_cases())

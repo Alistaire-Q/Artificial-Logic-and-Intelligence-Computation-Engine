@@ -64,3 +64,20 @@ def test_no_tool_schema_has_empty_enum_value():
 
     for t in builtin_tools():
         walk(t.parameters, t.name)
+
+
+def test_open_resolves_relative_path_against_chat_cwd(tmp_path, monkeypatch):
+    # Göreli yol sohbetin çalışma klasörüne göre çözülmeli, sürecin cwd'sine göre değil.
+    from unittest.mock import MagicMock
+
+    from alice.tools.base import ToolContext
+    (tmp_path / "rapor.pdf").write_bytes(b"x")
+    elsewhere = tmp_path / "baska"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    opened = []
+    monkeypatch.setattr(ff.os, "startfile", lambda p: opened.append(p), raising=False)
+    monkeypatch.setattr(ff.sys, "platform", "win32")
+    res = ff.FindFiles().run(ToolContext(cwd=tmp_path, config=MagicMock()), action="open", path="rapor.pdf")
+    assert "rapor.pdf" in res.text
+    assert opened == [str((tmp_path / "rapor.pdf").resolve())]

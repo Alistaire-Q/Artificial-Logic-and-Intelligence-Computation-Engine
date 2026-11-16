@@ -307,3 +307,109 @@ def test_bridge_survives_one_late_heartbeat():
         return alive
 
     assert asyncio.run(main()) and up.n >= 3
+
+
+def test_bridge_rejects_web_pages_and_rebinding():
+    """Herhangi bir web sayfası ws://127.0.0.1:9339'a bağlanıp kullanıcının tarayıcısını (çerezler, sekmeler)
+    sürememeli: tarayıcılar Origin gönderir, Playwright göndermez."""
+    class Conn:
+        def respond(self, status, body):
+            return (status, body)
+
+    def req(**headers):
+        return SimpleNamespace(path=bb.PATH, headers=headers)
+
+    assert bb._health(Conn(), req(Host="127.0.0.1:9339", Origin="https://evil.example"))[0] == 403
+    assert bb._health(Conn(), req(Host="127.0.0.1:9339", Origin="null"))[0] == 403
+    assert bb._health(Conn(), req(Host="evil.example:9339"))[0] == 403
+    assert bb._health(Conn(), req(Host="127.0.0.1:9339")) is None
+    assert bb._health(Conn(), req(Host="localhost:9339")) is None
+
+
+def test_bridge_handshake_with_origin_is_refused():
+    pytest.importorskip("websockets")
+    from websockets.asyncio.client import connect
+    from websockets.asyncio.server import serve
+    from websockets.exceptions import InvalidStatus
+
+    async def main():
+        bridge = bb.Bridge(find_upstream=lambda: pytest.fail("tarayıcıya bağlanmamalı"))
+        async with serve(bridge.handle, "127.0.0.1", 0, process_request=bb._health) as srv:
+            url = f"ws://127.0.0.1:{srv.sockets[0].getsockname()[1]}{bb.PATH}"
+            with pytest.raises(InvalidStatus):
+                async with connect(url, origin="https://evil.example"):
+                    pass
+
+    asyncio.run(main())
+
+
+def test_bridge_requires_token_from_local_programs(monkeypatch):
+    """Sandbox'taki bir program Origin göndermeden ws://127.0.0.1:9339'a bağlanıp kullanıcının tarayıcısını
+    sürebiliyordu. Köprü artık her başlayışta anahtar üretir; anahtarsız el sıkışma reddedilir."""
+    pytest.importorskip("websockets")
+    from websockets.asyncio.client import connect
+    from websockets.exceptions import InvalidStatus
+
+    from alice import sandbox
+
+    hidden = []
+    monkeypatch.setattr(sandbox, "hide_from_sandbox", lambda p: hidden.append(p) or True)
+
+    class Up:
+        async def send(self, raw):
+            pass
+
+        async def close(self):
+            pass
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await asyncio.sleep(3600)
+
+    async def fake_connect(url, **kw):
+        return Up()
+
+    async def main():
+        import socket
+
+        with socket.socket() as so:
+            so.bind(("127.0.0.1", 0))
+            port = so.getsockname()[1]
+        old = bb.write_token()  # önceki köprünün anahtarı
+        bridge = bb.Bridge(find_upstream=lambda: "ws://x", connect=fake_connect, heartbeat=0)
+        task = asyncio.create_task(bb.serve(port, log=lambda s: None, bridge=bridge))
+        for _ in range(100):
+            await asyncio.sleep(0.02)
+            if bb.read_token() != old:
+                break
+        token = bb.read_token()
+        assert token and token != old  # her çalışmada yeni anahtar
+        with pytest.raises(InvalidStatus):
+            async with connect(bb.endpoint(port)):
+                pass
+        with pytest.raises(InvalidStatus):
+            async with connect(bb.endpoint(port), additional_headers={bb.TOKEN_HEADER: "yanlis"}):
+                pass
+        async with connect(bb.endpoint(port), additional_headers={bb.TOKEN_HEADER: token}):
+            pass
+        bridge.closed.set()
+        await task
+
+    asyncio.run(main())
+    assert hidden and all(p.parent == bb.token_path().parent for p in hidden)
+    assert bb.token_path().is_file() and not list(bb.token_path().parent.glob(".browser-bridge-token*"))
+
+
+def test_health_check_needs_no_token():
+    class Conn:
+        def respond(self, status, body):
+            return (status, body)
+
+    req = SimpleNamespace(path="/alice-bridge", headers={"Host": "127.0.0.1:9339"})
+    assert bb._health(Conn(), req, None, "anahtar")[0] == 200
+    ws = SimpleNamespace(path=bb.PATH, headers={"Host": "127.0.0.1:9339"})
+    assert bb._health(Conn(), ws, None, "anahtar")[0] == 403
+    ws.headers[bb.TOKEN_HEADER] = "anahtar"
+    assert bb._health(Conn(), ws, None, "anahtar") is None

@@ -22,6 +22,7 @@ WINDOW = 15.0          # son canlı andan önceki bu kadar saniye
 SIX_BEFORE = 45.0
 SAM_BEFORE = 90.0
 HIT_BEFORE = 30.0
+HIT_AFTER = 30.0       # War Thunder "seni X vurdu" yazısı uçağın hızı düştükten sonra da gelebiliyor
 ALIVE_KT = 50.0
 MIN_SHARE, MIN_COUNT = 0.4, 3   # desen: son ölümlerin en az %40'ı ve en az 3 tanesi
 
@@ -48,6 +49,18 @@ def load_flights(folder: Path | None = None, limit: int = 40) -> list[dict[str, 
     return out
 
 
+# War Thunder'daki hava savunması araçları (SPAA/SAM). Vuran bunlardan biri değilse ölüm SAM'e yazılmaz.
+AIR_DEFENSE_RX = re.compile(
+    r"\b(?:SAM|SAMP/T|TEL|SPAA|pantsir|tor|osa|strela|tunguska|zsu|shilka|buk|kub|2S6|gepard|ozelot|flarakpz|roland|adats|"
+    r"chaparral|avenger|vulcan|m163|m247|sergeant york|crotale|rapier|stormer|lvkv|ito|veak|sidam|otomatic|"
+    r"skyguard|tan-sam|type 81|type 87|type 93|pgz|hq-?\d+|fk-?\d+|lav-ad|wiesel 2|iris-t|machbet|spyder|"
+    r"ystervark|bosvark|marksman)\b", re.I)
+
+
+def is_air_defense(name: str) -> bool:
+    return bool(AIR_DEFENSE_RX.search(name or ""))
+
+
 def death_context(f: dict[str, Any], events: list[Any]) -> dict[str, Any] | None:
     """İnişsiz biten bir uçuşun son anı. İnişle bittiyse ya da seri yoksa None."""
     if f.get("touchdown_vv_ms") is not None:
@@ -65,6 +78,7 @@ def death_context(f: dict[str, Any], events: list[Any]) -> dict[str, Any] | None
            "low": min(float(alt[i] or 0) for i in win) < LOW_FT,
            "turning": max(float(g[i] or 0) for i in win) >= TURN_G,
            "six": False, "sam": False, "killer": ""}
+    downed = ""
     for e in events:
         dt = end - e.ts
         body = e.body or ""
@@ -72,9 +86,17 @@ def death_context(f: dict[str, Any], events: list[Any]) -> dict[str, Any] | None
             ctx["six"] = True
         if 0 <= dt <= SAM_BEFORE and "menzilindesin" in body:
             ctx["sam"] = True
-        m = re.match(r"^(?:Yanıyorsun! (.+) vurdu|Ağır hasar aldın, (.+) vurdu)", body)
-        if m and -5 <= dt <= HIT_BEFORE:
-            ctx["killer"] = (m.group(1) or m.group(2) or "").strip(" .!")
+        m = re.match(r"^(?:Seni (.+) düşürdü|Yanıyorsun! (.+) vurdu|Ağır hasar aldın, (.+) vurdu)", body)
+        if m and -HIT_AFTER <= dt <= HIT_BEFORE:
+            who = next(g for g in m.groups() if g).strip(" .!")
+            if m.group(1):
+                downed = who  # düşüren, hasar verenden kesin
+            ctx["killer"] = who
+    if downed:
+        ctx["killer"] = downed
+    # Menzilde olmak sebep değil: seni bir uçak vurduysa ölüm SAM'den değil, hava savunması vurduysa menzil bilinmese de SAM.
+    if ctx["killer"]:
+        ctx["sam"] = is_air_defense(ctx["killer"])
     return ctx
 
 
@@ -102,8 +124,10 @@ def patterns(ctxs: list[dict[str, Any]]) -> dict[str, str]:
         out["six"] = f"Son {n} ölümünün {ek(six)}nde düşmeden önce arkanda düşman vardı. Arkanı daha sık kontrol et."
     sam = sum(1 for c in ctxs if c["sam"])
     if often(sam):
-        out["sam"] = (f"Son {n} ölümünün {ek(sam)} hava savunması menzilindeyken oldu. Menzile girince alçal ya da "
-                      "hemen çık.")
+        # Vuran görülmediyse sadece "menzildeydin" bilinir: kesin konuşma.
+        sure = sum(1 for c in ctxs if c["sam"] and c["killer"])
+        where = "hava savunmasından" if sure == sam else "hava savunması menzilindeyken oldu"
+        out["sam"] = f"Son {n} ölümünün {ek(sam)} {where}. Menzile girince alçal ya da hemen çık."
     killers = Counter(c["killer"] for c in ctxs if c["killer"])
     if killers:
         who, k = killers.most_common(1)[0]
@@ -113,6 +137,6 @@ def patterns(ctxs: list[dict[str, Any]]) -> dict[str, str]:
 
 
 # Maç içinde anonsa eklenen kısa öğüt (desen -> ek). Uçuş kodu bunu bir kez kullanır.
-HINTS = {"sam": "Geçen ölümlerinin çoğu SAM menzilindeydi, alçal ya da çık.",
+HINTS = {"sam": "Geçen ölümlerinin çoğu hava savunmasındandı, alçal ya da çık.",
          "low_turn_six": "Alçakta uzun dönme, irtifa kazan.",
          "six": "Arkanı kontrol et."}

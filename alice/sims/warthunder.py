@@ -154,8 +154,14 @@ def _type_name(t: str) -> str:
     return re.sub(r"^[^0-9A-Za-z]+", "", t or "").strip() or "düşman"
 
 
+def _attacker(d: dict[str, str]) -> str:
+    """Vuranın tipi. Yapay zekâ hava savunmasında tip "TEL" (fırlatıcı) gibi genel olur; o zaman adı ("SAMP/T") daha açık."""
+    t = _type_name(d["at"])
+    return d["a"].strip() if t.upper() in ("TEL", "DÜŞMAN", "AI") and d["a"].strip() else t
+
+
 def hud_events(msgs: list[dict[str, Any]], nick: str) -> list[tuple[str, str]]:
-    """Oyuncuyu ilgilendiren savaş kayıtları -> [(tür, karşı taraf tipi)]: kill | hit | fire."""
+    """Oyuncuyu ilgilendiren savaş kayıtları -> [(tür, karşı taraf tipi)]: kill | hit | fire | killed (seni düşürdü)."""
     out: list[tuple[str, str]] = []
     if not nick:
         return out
@@ -166,10 +172,12 @@ def hud_events(msgs: list[dict[str, Any]], nick: str) -> list[tuple[str, str]]:
         if d["a"] == nick and d["verb"] in ("shot down", "destroyed") and d["b"] != nick:
             out.append(("kill", _type_name(d["bt"] or d["b"])))
         elif d["b"] == nick and d["a"] != nick:
-            if d["verb"] in ("critically damaged", "severely damaged"):
-                out.append(("hit", _type_name(d["at"])))
+            if d["verb"] in ("shot down", "destroyed"):
+                out.append(("killed", _attacker(d)))  # ölümün asıl sebebi: önceden hiç okunmuyordu
+            elif d["verb"] in ("critically damaged", "severely damaged"):
+                out.append(("hit", _attacker(d)))
             elif d["verb"] == "set afire":
-                out.append(("fire", _type_name(d["at"])))
+                out.append(("fire", _attacker(d)))
     return out
 
 

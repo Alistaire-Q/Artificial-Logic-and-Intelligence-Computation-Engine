@@ -76,6 +76,28 @@ def load() -> list[Watch]:
         rows = json.loads(store_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
+    return _rows(rows)
+
+
+def _load_for_write() -> list[Watch]:
+    """Değiştirip geri yazmak için oku. Dosya yoksa boş; okunamıyorsa (Windows'ta çekirdek ile uygulama aynı anda
+    yazarken replace kilidi, bozuk içerik) hata verir: load() gibi boş dönseydi ardından gelen kayıt bütün izleme
+    listesini silerdi."""
+    p = store_path()
+    for i in range(10):
+        try:
+            text = p.read_text(encoding="utf-8")
+            break
+        except FileNotFoundError:
+            return []
+        except PermissionError:
+            if i == 9:
+                raise
+            time.sleep(0.05)
+    return _rows(json.loads(text))
+
+
+def _rows(rows: Any) -> list[Watch]:
     out = []
     for r in rows if isinstance(rows, list) else []:
         try:
@@ -90,13 +112,20 @@ def save(watches: list[Watch]) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".json.tmp")
     tmp.write_text(json.dumps([asdict(w) for w in watches], ensure_ascii=False, indent=1), encoding="utf-8")
-    tmp.replace(p)
+    for i in range(6):  # Windows: okuyan başka süreç ya da virüs tarayıcı dosyayı bir an kilitleyebilir
+        try:
+            tmp.replace(p)
+            return
+        except PermissionError:
+            if i == 5:
+                raise
+            time.sleep(0.05 * (i + 1))
 
 
 def watch(repo: str, number: int, path: str = "", auto_fix: bool = True, address_comments: bool = True,
           auto_merge: bool = False, auto_review: bool = True, session: str = "") -> str:
     with _lock:
-        rows = [w for w in load() if not (w.repo == repo and w.number == int(number))]
+        rows = [w for w in _load_for_write() if not (w.repo == repo and w.number == int(number))]
         w = Watch(repo, int(number), path, auto_fix, address_comments, auto_merge, auto_review, session,
                   added=time.time())
         w.log("izlemeye alındı")
@@ -112,7 +141,7 @@ def watch(repo: str, number: int, path: str = "", auto_fix: bool = True, address
 
 def unwatch(repo: str, number: int) -> str:
     with _lock:
-        rows = load()
+        rows = _load_for_write()
         left = [w for w in rows if not (w.repo == repo and w.number == int(number))]
         save(left)
     return f"{repo}#{number} artık izlenmiyor" if len(left) != len(rows) else f"{repo}#{number} zaten izlenmiyordu"
@@ -180,7 +209,10 @@ def describe() -> str:
 def _update(key: str, fn: Callable[[Watch], None]) -> None:
     """Tek bir kaydı diskteki güncel hâli üzerinden değiştir (bu arada kullanıcı başka PR eklemiş olabilir)."""
     with _lock:
-        rows = load()
+        try:
+            rows = _load_for_write()
+        except (OSError, ValueError):
+            return  # okunamadı: bir durum satırı kaybolsun, izleme listesi silinmesin
         for w in rows:
             if w.key == key:
                 fn(w)

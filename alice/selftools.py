@@ -223,7 +223,7 @@ def run_tests(name: str, source: str, test: str, ctx: Any, timeout: float = TEST
     except RuntimeError as e:
         return False, f"kum havuzu kurulamadı, test çalıştırılmadı: {e}"
     root = str(Path(__file__).resolve().parent.parent)
-    env = {**os.environ, **env_extra, "PYTHONDONTWRITEBYTECODE": "1",
+    env = {**sandbox.scrub_env(dict(os.environ), ctx), **env_extra, "PYTHONDONTWRITEBYTECODE": "1",
            "PYTHONPATH": os.pathsep.join([str(d), root, os.environ.get("PYTHONPATH", "")]).rstrip(os.pathsep)}
     try:
         r = subprocess.run(argv, cwd=str(d), env=env, capture_output=True, text=True, encoding="utf-8",
@@ -331,6 +331,11 @@ def _wrap(plugin: str, tool: Any, ask: bool) -> None:
     orig = tool.run
 
     def run(ctx, **kw):
+        # Kapatma (3 hata) ve make_tool remove yalnız sonraki yüklemede etkiliydi: araç aynı oturumda listede kalıp
+        # çalışmaya devam ediyordu. Her çağrıda kayda bakılır.
+        if (load_registry().get(plugin) or {}).get("disabled"):
+            raise ToolError(f"{plugin} aracı kapatıldı ya da kaldırıldı (make_tool action=list); yeniden yazmadan "
+                            "kullanılamaz")
         try:
             res = orig(ctx, **kw)
         except ToolError:

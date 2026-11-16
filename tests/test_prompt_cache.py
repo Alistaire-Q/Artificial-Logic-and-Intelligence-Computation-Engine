@@ -142,3 +142,17 @@ def test_system_prompt_stable_mid_chat_until_user_edits(workdir):
     agent.memory.save_note("oto2", "Kullanıcı kahve sever", "user", "Kullanıcı kahve sever", source="otomatik")
     agent.refresh_memory()
     assert agent.messages[0]["content"] != fresh
+
+
+def test_cache_ttl_follows_provider_and_tracks_written_tokens(workdir):
+    import time
+
+    agent, _, _ = make_agent(["tamam"], workdir)
+    assert agent._cache_ttl("cliproxy:claude-opus-5-5") > 3000 and agent._cache_ttl("gemini:flash") == 300
+    agent.router.last_ref[agent.role] = "cliproxy:claude-opus-5-5"
+    agent._last_call_at = time.monotonic() - 600  # 10 dk: 5 dk'lık önbellek soğurdu, cliproxy'ninki hâlâ sıcak
+    assert not agent._cache_cold()
+    agent.router.last_ref[agent.role] = "gemini:flash"
+    assert agent._cache_cold()
+    agent.run_turn("selam")
+    assert "written" in agent.stats_view()

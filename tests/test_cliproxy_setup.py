@@ -68,6 +68,32 @@ def test_install_downloads_verifies_and_extracts(tmp_path, monkeypatch):
     r = cliproxy_setup.install("v9.9.9")
     assert r["ok"] and (home / cliproxy.binary_name()).read_bytes() == b"MZfake"
     assert (home / "config.yaml").exists()
+    assert "api_key" not in r  # anahtar arayüze dönmez
+    assert "api_key" not in cliproxy_setup.install("v9.9.9")  # kuruluyken de
+
+
+def test_extract_rejects_tar_path_traversal(tmp_path):
+    import tarfile
+
+    archive = tmp_path / "kotu.tar.gz"
+    with tarfile.open(archive, "w:gz") as t:
+        data = b"x"
+        info = tarfile.TarInfo("../disari.txt")
+        info.size = len(data)
+        t.addfile(info, io.BytesIO(data))
+    dest = tmp_path / "hedef"
+    with pytest.raises((tarfile.TarError, ValueError)):
+        cliproxy_setup._extract(archive, dest)
+    assert not (tmp_path / "disari.txt").exists()
+
+
+@pytest.mark.skipif(__import__("os").name == "nt", reason="POSIX izinleri")
+def test_keys_file_is_private(tmp_path, monkeypatch):
+    home = tmp_path / "cliproxy"
+    monkeypatch.setattr(cliproxy, "home", lambda: home)
+    cliproxy_setup.ensure_config()
+    assert (home / "keys.txt").stat().st_mode & 0o777 == 0o600
+    assert (home / "config.yaml").stat().st_mode & 0o777 == 0o600
 
 
 def test_install_rejects_bad_checksum(tmp_path, monkeypatch):

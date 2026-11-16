@@ -15,13 +15,15 @@ Kalıcı kurallar (Claude Code'daki allow/deny gibi), config.toml ve projede .al
 Biçim: "araç" ya da "araç(desen)". Araç adında * olabilir. Desen (büyük/küçük harf duyarsız, fnmatch) aracın asıl
 argümanına bakar: command, path, url, target, app, action ya da query (ilk bulunan). deny her modda (yolo dahil)
 geçerlidir; ask yolo dışında her zaman sorar; allow sormadan izin verir (plan modunu delmez; tehlikeli bir işe
-ancak desenli bir kural izin verir, "run_command" tek başına rm -r'yi serbest bırakmaz).
+ancak desenli bir kural izin verir, "run_command" tek başına rm -r'yi serbest bırakmaz; dış içerik okunmuş bir turda
+desensiz kural komut çalıştırmayı, proje dışına yazmayı ve mesaj göndermeyi de sormadan geçirmez).
 """
 
 from __future__ import annotations
 
 import fnmatch
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -67,18 +69,89 @@ def parse_rule(rule: str) -> tuple[str, str | None]:
     return rule, None
 
 
-def rule_matches(rule: str, tool_name: str, args: dict[str, Any]) -> bool:
+def _path_forms(raw: str, cwd: Path | None) -> list[str]:
+    """Yol argümanının kuralla karşılaştırılacak biçimleri: çözülmüş tam yol ve (proje içindeyse) projeye göre yolu.
+    Ham metin yalnız ".." içermiyorsa eklenir. Önceden yalnız ham metne bakılıyordu: "edit_file(gizli/*)" yasağı
+    "./gizli/a" ya da tam yolla deliniyor, "edit_file(src/*)" izni "src/../../dışarı" yazmaya izin veriyordu; "bu
+    projede hep izin ver" ile yazılan göreli kural da tam yolla gelen çağrıda hiç eşleşmiyordu."""
+    out = []
+    if ".." not in Path(raw).parts:
+        out.append(raw)
+    if cwd is not None:
+        try:
+            base = Path(cwd).resolve()
+            p = Path(raw).expanduser()
+            full = (p if p.is_absolute() else base / p).resolve()
+            out.append(str(full))
+            if full != base and _inside(full, base):
+                out.append(str(full.relative_to(base)))
+        except (OSError, ValueError, RuntimeError):
+            pass
+    return out
+
+
+def rule_matches(rule: str, tool_name: str, args: dict[str, Any], cwd: Path | None = None) -> bool:
     name, spec = parse_rule(rule)
     if not fnmatch.fnmatchcase(tool_name, name):
         return False
     if spec is None:
         return True
-    value = primary_arg(args).replace("\\", "/").lower()
-    return fnmatch.fnmatchcase(value, spec.replace("\\", "/").lower())
+    raw = primary_arg(args)
+    is_path = args.get("command") in (None, "") and args.get("path") not in (None, "")  # asıl argüman yol mu
+    values = _path_forms(raw, cwd) if is_path else [raw]
+    pattern = spec.replace("\\", "/").lower()
+    return any(fnmatch.fnmatchcase(v.replace("\\", "/").lower(), pattern) for v in values)
 
 
-def project_rules(cwd: Path | None) -> dict[str, list[str]]:
-    """<proje>/.alice/permissions.toml ([permissions] başlıklı ya da başlıksız allow/ask/deny)."""
+def _trust_path() -> Path:
+    from alice.config import alice_home
+
+    return alice_home() / "trusted-permissions.json"
+
+
+def _digest(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _trusted(path: Path, text: str) -> bool:
+    import json
+
+    try:
+        data = json.loads(_trust_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and data.get(str(path.resolve())) == _digest(text)
+
+
+def _trust(path: Path, text: str) -> None:
+    """Bu içerik ALICE'in kendisi tarafından (kullanıcının onayıyla) yazıldı: allow kuralları geçerli."""
+    import json
+
+    tp = _trust_path()
+    try:
+        data = json.loads(tp.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            data = {}
+    except (OSError, ValueError):
+        data = {}
+    data[str(path.resolve())] = _digest(text)
+    try:
+        tp.parent.mkdir(parents=True, exist_ok=True)
+        tp.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def project_rules(cwd: Path | None, include_untrusted: bool = False) -> dict[str, list[str]]:
+    """<proje>/.alice/permissions.toml ([permissions] başlıklı ya da başlıksız allow/ask/deny).
+
+    Dosya projenin içinde: klonlanan bir repo ya da sandbox'taki bir komut `allow = ["*(*)"]` yazıp bütün onayları
+    atlatabiliyordu. Bu yüzden allow kuralları yalnız dosya ALICE'in yazdığı (kullanıcının "bu projede hep izin ver"
+    dediği) haliyle duruyorsa geçerli; içeriğin özeti ~/.alice/trusted-permissions.json'da. Elle ya da dışarıdan
+    değişen dosyanın allow'ları yok sayılır (include_untrusted ile listelenir); ask ve deny yalnız sıkılaştırdığı
+    için her zaman geçerli."""
     if cwd is None:
         return {}
     path = Path(cwd) / ".alice" / "permissions.toml"
@@ -88,19 +161,57 @@ def project_rules(cwd: Path | None) -> dict[str, list[str]]:
         return {}
     hit = _project_cache.get(str(path))
     if hit and hit[0] == mtime:
-        return hit[1]
-    try:
+        rules, trusted = hit[1], hit[2]
+    else:
         try:
-            import tomllib
-        except ImportError:  # pragma: no cover
-            import tomli as tomllib
-        data = tomllib.loads(path.read_text(encoding="utf-8-sig"))
-    except Exception:  # noqa: BLE001 - bozuk dosya izinleri gevşetmesin: yok say
-        data = {}
-    data = data.get("permissions", data) if isinstance(data, dict) else {}
-    rules = {k: [str(r) for r in data.get(k, []) or []] for k in ("allow", "ask", "deny")}
-    _project_cache[str(path)] = (mtime, rules)
-    return rules
+            try:
+                import tomllib
+            except ImportError:  # pragma: no cover
+                import tomli as tomllib
+            text = path.read_text(encoding="utf-8-sig")
+            data = tomllib.loads(text)
+        except Exception:  # noqa: BLE001 - bozuk dosya izinleri gevşetmesin: yok say
+            text, data = "", {}
+        data = data.get("permissions", data) if isinstance(data, dict) else {}
+        rules = {k: [str(r) for r in data.get(k, []) or []] for k in ("allow", "ask", "deny")}
+        trusted = bool(text) and _trusted(path, text)
+        _project_cache[str(path)] = (mtime, rules, trusted)
+    if trusted or include_untrusted:
+        return rules
+    return {**rules, "allow": []}
+
+
+def project_rules_trusted(cwd: Path | None) -> bool:
+    """Projedeki allow kuralları geçerli mi (dosya yoksa ya da ALICE yazdıysa True)."""
+    rules = project_rules(cwd, include_untrusted=True)
+    return not rules.get("allow") or project_rules(cwd).get("allow") == rules.get("allow")
+
+
+def _write_project_rules(cwd: Path, rules: dict[str, list[str]]) -> Path:
+    import json
+
+    def arr(items: list[str]) -> str:
+        return "[" + ", ".join(json.dumps(i, ensure_ascii=False) for i in items) + "]"
+
+    path = Path(cwd) / ".alice" / "permissions.toml"
+    text = ("# ALICE izin kuralları (bu proje). Biçim: alice/permissions.py\n"
+            "# Elle değiştirilirse allow kuralları ALICE'te tekrar onaylanana kadar yok sayılır.\n[permissions]\n"
+            f"allow = {arr(rules.get('allow', []))}\nask = {arr(rules.get('ask', []))}\n"
+            f"deny = {arr(rules.get('deny', []))}\n")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    _trust(path, path.read_text(encoding="utf-8-sig"))
+    _project_cache.pop(str(path), None)
+    return path
+
+
+def trust_project_rules(cwd: Path) -> bool:
+    """Kullanıcı projedeki (elle ya da dışarıdan yazılmış) kuralları onayladı: olduğu gibi geçerli say."""
+    rules = project_rules(cwd, include_untrusted=True)
+    if not rules:
+        return False
+    _write_project_rules(cwd, rules)
+    return True
 
 
 def suggest_rule(tool: Tool, args: dict[str, Any], cwd: Path | None = None) -> str:
@@ -126,27 +237,17 @@ def suggest_rule(tool: Tool, args: dict[str, Any], cwd: Path | None = None) -> s
 
 def persist_allow(cwd: Path, rule: str) -> Path:
     """Kuralı <proje>/.alice/permissions.toml'un allow listesine ekle (varsa tekrar eklemez)."""
-    path = Path(cwd) / ".alice" / "permissions.toml"
+    # Onaylanmamış (dışarıdan gelen) allow kuralları burada da düşer: kullanıcının tek bir onayı onları aklamasın.
     rules = dict(project_rules(cwd)) or {"allow": [], "ask": [], "deny": []}
     for k in ("allow", "ask", "deny"):
         rules.setdefault(k, [])
     if rule not in rules["allow"]:
         rules["allow"] = rules["allow"] + [rule]
-
-    def arr(items: list[str]) -> str:
-        import json
-
-        return "[" + ", ".join(json.dumps(i, ensure_ascii=False) for i in items) + "]"
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("# ALICE izin kuralları (bu proje). Biçim: alice/permissions.py\n[permissions]\n"
-                    f"allow = {arr(rules['allow'])}\nask = {arr(rules['ask'])}\ndeny = {arr(rules['deny'])}\n",
-                    encoding="utf-8")
-    _project_cache.pop(str(path), None)
-    return path
+    return _write_project_rules(cwd, rules)
 
 
 HISTORY_MAX = 2000  # satır: izin cevapları kaydı bu kadarla sınırlı
+_HISTORY_LOCK = threading.Lock()
 
 
 def history_path() -> Path:
@@ -164,11 +265,36 @@ def record_answer(tool: Tool, args: dict[str, Any], cwd: Path | None, risk: str,
            "answer": answer, "cwd": str(cwd or "")}
     p = history_path()
     p.parent.mkdir(parents=True, exist_ok=True)
+    # Aynı anda iki sohbet cevap yazınca oku-değiştir-yaz birinin satırını siliyordu: kilit + geçici dosyadan
+    # os.replace (yarım yazılmış dosya okunmaz).
+    with _HISTORY_LOCK:
+        try:
+            lines = p.read_text(encoding="utf-8").splitlines()[-(HISTORY_MAX - 1):]
+        except OSError:
+            lines = []
+        _atomic_write(p, "\n".join(lines + [json.dumps(row, ensure_ascii=False)]) + "\n")
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    import os
+    import tempfile
+    import time
+
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}-", suffix=".tmp", dir=str(path.parent))
     try:
-        lines = p.read_text(encoding="utf-8").splitlines()[-(HISTORY_MAX - 1):]
-    except OSError:
-        lines = []
-    p.write_text("\n".join(lines + [json.dumps(row, ensure_ascii=False)]) + "\n", encoding="utf-8")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        for attempt in range(5):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:  # Windows: hedef o an başka bir süreçte açık
+                if attempt == 4:
+                    raise
+                time.sleep(0.05)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
 
 
 def suggestions(cwd: Path | None = None, min_yes: int = 3) -> list[dict[str, Any]]:
@@ -177,18 +303,26 @@ def suggestions(cwd: Path | None = None, min_yes: int = 3) -> list[dict[str, Any
     import json
 
     try:
-        rows = [json.loads(ln) for ln in history_path().read_text(encoding="utf-8").splitlines() if ln.strip()]
-    except (OSError, ValueError):
+        text = history_path().read_text(encoding="utf-8", errors="replace")
+    except OSError:
         return []
     stats: dict[str, dict[str, Any]] = {}
-    for r in rows:
-        if cwd is not None and r.get("cwd") and Path(r["cwd"]) != Path(cwd):
+    for ln in text.splitlines():
+        # Bozuk bir satır (yarım yazma, elle düzenleme) ya da "rule"suz kayıt önerilerin tamamını yok etmesin: atla.
+        try:
+            r = json.loads(ln) if ln.strip() else None
+            if not isinstance(r, dict) or not isinstance(r.get("rule"), str) or not r["rule"]:
+                continue
+            if cwd is not None and r.get("cwd") and Path(str(r["cwd"])) != Path(cwd):
+                continue
+            ts = int(r.get("ts") or 0)
+        except (ValueError, TypeError):
             continue
-        s = stats.setdefault(r["rule"], {"rule": r["rule"], "tool": r["tool"], "yes": 0, "no": 0, "risky": False,
-                                         "last": 0})
+        s = stats.setdefault(r["rule"], {"rule": r["rule"], "tool": str(r.get("tool") or ""), "yes": 0, "no": 0,
+                                         "risky": False, "last": 0})
         s["yes" if r.get("answer") in ("y", "a", "p") else "no"] += 1
         s["risky"] = s["risky"] or r.get("risk") in (DANGER, SEND)
-        s["last"] = max(s["last"], int(r.get("ts") or 0))
+        s["last"] = max(s["last"], ts)
     have = set(project_rules(cwd).get("allow", [])) if cwd is not None else set()
     out = [s for s in stats.values() if s["yes"] >= min_yes and not s["no"] and not s["risky"] and s["rule"] not in have]
     return sorted(out, key=lambda s: (-s["yes"], -s["last"]))
@@ -196,18 +330,14 @@ def suggestions(cwd: Path | None = None, min_yes: int = 3) -> list[dict[str, Any
 
 def remove_project_rule(cwd: Path, kind: str, rule: str) -> bool:
     """Projedeki .alice/permissions.toml'dan bir kuralı sil (uygulamadaki Asistan sekmesi)."""
-    rules = dict(project_rules(cwd))
+    trusted = project_rules_trusted(cwd)
+    rules = dict(project_rules(cwd, include_untrusted=True))
     if kind not in ("allow", "ask", "deny") or rule not in (rules.get(kind) or []):
         return False
     rules[kind] = [r for r in rules[kind] if r != rule]
-    path = Path(cwd) / ".alice" / "permissions.toml"
-    import json
-
-    arr = {k: "[" + ", ".join(json.dumps(i, ensure_ascii=False) for i in rules.get(k, [])) + "]"
-           for k in ("allow", "ask", "deny")}
-    path.write_text("# ALICE izin kuralları (bu proje). Biçim: alice/permissions.py\n[permissions]\n"
-                    f"allow = {arr['allow']}\nask = {arr['ask']}\ndeny = {arr['deny']}\n", encoding="utf-8")
-    _project_cache.pop(str(path), None)
+    if not trusted:
+        rules["allow"] = []  # silme işlemi onaylanmamış allow'ları geçerli hale getirmesin
+    _write_project_rules(cwd, rules)
     return True
 
 
@@ -249,18 +379,20 @@ class Permissions:
             return not sandbox.usable(ctx, args)  # sandbox'ta çalışacaksa sormaya gerek yok: proje dışına yazamaz
         if risk == SEND or tool.name == "process_kill" or "command" in args:
             return True
-        if risk == WRITE and args.get("path"):
+        if risk == WRITE:
+            # "path" ve yama metnindeki dosyalar (apply_patch'in "path"i yok: önceden hiç bakılmıyordu). Önek
+            # karşılaştırması C:\proje2'yi C:\proje'nin içinde sayıyordu; klasör sınırına göre bakılır.
             try:
-                target = ctx.resolve(str(args["path"]))
-                return not str(target).startswith(str(Path(ctx.cwd).resolve()))
-            except (OSError, ValueError, AttributeError):
+                root = Path(ctx.cwd).resolve()
+                return any(not _inside(ctx.resolve(p), root) for p in _write_targets(args))
+            except (OSError, ValueError, AttributeError, TypeError):
                 return True
         return False
 
     def matching_rule(self, tool: Tool, args: dict[str, Any], ctx: ToolContext, kind: str) -> str | None:
         for rule in self.rules_for(ctx).get(kind, []):
             try:
-                if rule_matches(rule, tool.name, args):
+                if rule_matches(rule, tool.name, args, getattr(ctx, "cwd", None)):
                     return rule
             except Exception:  # noqa: BLE001 - garip argüman kuralı bozmasın
                 continue
@@ -279,9 +411,20 @@ class Permissions:
             return "allow"
         if self.mode == "plan":
             return "allow" if risk == NETWORK else "deny"
+        from alice import guard
+
         allowed = self.matching_rule(tool, args, ctx, "allow")
         if allowed and (risk != DANGER or parse_rule(allowed)[1] is not None):
-            return "allow"
+            # Desensiz kural ("run_command" tek başına) kirli turda komut çalıştırmayı/proje dışına yazmayı/mesaj
+            # göndermeyi sormadan geçirmez: dış içerikten gelen talimat o aracın her kullanımını açmış olurdu.
+            # Desenli kurallar ("run_command(git status*)") dar olduğu için geçerli kalır.
+            if parse_rule(allowed)[1] is not None or not (
+                    guard.tainted(ctx) and self._risky_after_untrusted(tool, args, risk, ctx)):
+                return "allow"
+        # Bu turda dış içerik okundu: talimat oradan gelmiş olabilir. Oturumluk "hep izin ver" (always_allow) bunu
+        # delmez: kullanıcı o onayı enjeksiyonu düşünerek vermedi (desenli allow kuralları yukarıda geçerli).
+        if guard.tainted(ctx) and self._risky_after_untrusted(tool, args, risk, ctx):
+            return "ask"
         if tool.name in self.always_allow and risk != DANGER:
             return "allow"
         if self.mode == "ask":
@@ -289,10 +432,6 @@ class Permissions:
         # auto
         if risk == DANGER:
             return "ask"
-        from alice import guard
-
-        if guard.tainted(ctx) and self._risky_after_untrusted(tool, args, risk, ctx):
-            return "ask"  # bu turda dış içerik okundu: talimat oradan gelmiş olabilir
         if risk == SEND and _confirm_outward(ctx):
             return "ask"
         if risk == WRITE:
@@ -302,6 +441,15 @@ class Permissions:
             except (OSError, ValueError):
                 return "ask"
         return "allow"
+
+
+def _inside(target: Path, root: Path) -> bool:
+    """target, root klasörünün içinde mi (Windows'ta büyük/küçük harf duyarsız)."""
+    t, r = str(target), str(root)
+    if sys.platform == "win32":
+        t, r = t.lower(), r.lower()
+    sep = "\\" if sys.platform == "win32" else "/"
+    return t == r or t.startswith(r.rstrip("\\/") + sep)
 
 
 def _write_targets(args: dict[str, Any]) -> list[str]:

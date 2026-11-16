@@ -94,3 +94,22 @@ def test_buyuyunce_doner(monkeypatch):
         actionlog.log("t", f"mesaj {i}", "sent", {"i": i})
     assert actionlog.path().with_suffix(".jsonl.1").exists()
     assert actionlog.recent(1)[0]["summary"] == "mesaj 19"
+
+
+def test_bozuk_satir_kaydi_okunmaz_yapmaz():
+    actionlog.log("t", "ilk mesaj", "sent")
+    with open(actionlog.path(), "ab") as f:
+        f.write(b'{"ts": 1, "summary": "yar\xc4')  # çökme: yarım kalmış UTF-8 satırı
+        f.write(b'\n[1, 2]\n"metin"\n{"ts": "dun"}\n')  # sözlük olmayan/bozuk satırlar
+    actionlog.log("t", "son mesaj", "sent")
+    assert [r["summary"] for r in actionlog.recent(10)] == ["son mesaj", "ilk mesaj"]
+
+
+def test_donusten_sonra_onceki_kayitlar_da_okunur(monkeypatch):
+    monkeypatch.setattr(actionlog, "MAX_BYTES", 300)
+    for i in range(6):
+        actionlog.log("t", f"mesaj {i}", "sent", {"i": i})
+    assert actionlog.path().with_suffix(".jsonl.1").exists()
+    assert [r["summary"] for r in actionlog.recent(50)] == [f"mesaj {i}" for i in reversed(range(6))]
+    assert len(actionlog.recent(2)) == 2
+    assert actionlog.recent(50, since=time.time() + 60) == []

@@ -33,6 +33,7 @@ import logging
 import re
 import secrets
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -154,6 +155,7 @@ class Member:
     recoveries: int = 0  # kaç kez otomatik kurtarıldı
     resume_note: str = ""  # bir sonraki devamda ajana söylenecek not
     picked: str = ""  # auto seçimde: "tasarım · glm-5.3"
+    stop_requested: bool = False  # ajanı daha kurulmadan durdurulmak istendi: başlarken bakar ve durur
 
     def snapshot(self) -> dict[str, Any]:
         now = self.ended or time.time()
@@ -263,8 +265,16 @@ def _read_original(p: Path) -> str | None:
         return "\0okunamadı"
 
 
+_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
+
+
 def _git(cwd: Path, *args: str, timeout: int = 60) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, timeout=timeout)
+    # git çıktısı UTF-8: kodlama verilmezse Windows'ta yerel kod sayfasıyla (cp1254) çözülür ve "Ğ", "Ş" ya da emoji
+    # içeren fark/dosya içeriği UnicodeDecodeError ile ajanın adımını düşürür. Konsol penceresi de açılmasın.
+    from alice.gitsafe import harden  # sandbox'ın .git'e bıraktığı hook/fsmonitor ALICE'in git'iyle çalışmasın
+
+    return subprocess.run(["git", "-C", str(cwd), *harden(args, cwd)], capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", timeout=timeout, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW)
 
 
 log = logging.getLogger(__name__)
@@ -378,7 +388,7 @@ class Team:
 
     def all_done(self) -> bool:
         """Ajanların hepsi son durumda (yönetici bitirmemiş olabilir)."""
-        return bool(self.members) and all(m.status in FINAL and not m.resume_wanted for m in self.members.values())
+        return bool(self.members) and all(m.status in FINAL and not m.resume_wanted for m in list(self.members.values()))
 
     # ------------------------------------------------------------- mesajlar
     def send(self, sender: str, to: str, text: str) -> str:
@@ -387,7 +397,7 @@ class Team:
             raise ToolError("mesaj boş")
         to = (to or "").strip().lower()
         if to == "all":
-            targets = [n for n in self.members if n != sender] + ([LEAD] if sender != LEAD else [])
+            targets = [n for n in list(self.members) if n != sender] + ([LEAD] if sender != LEAD else [])
         else:
             targets = [to]
         unknown = [t for t in targets if t != LEAD and t not in self.members]
@@ -569,7 +579,7 @@ class Team:
         self.mark(USER if self.origin == "user" else LEAD, "start", f"proje başladı: {self.title}")
         self.prepare_pr()
         self._dirty0 = self._git_dirty()
-        for m in self.members.values():
+        for m in list(self.members.values()):
             self._launch(m)
         if plan or not self.members:
             self.event("Proje başladı ve henüz ajan yok. Kodu kısaca incele, işi çakışmayan parçalara böl ve planı "
@@ -581,7 +591,7 @@ class Team:
         self._changed(save=True)
 
     def _running(self) -> int:
-        return sum(1 for m in self.members.values() if m.status in ACTIVE)
+        return sum(1 for m in list(self.members.values()) if m.status in ACTIVE)
 
     def _deps_ok(self, m: Member) -> bool:
         return all(self.members[a].status == "done" for a in m.after if a in self.members)
@@ -603,6 +613,7 @@ class Team:
                 return
             m.status = "running"
             m.resume_wanted = False
+            m.stop_requested = False
             m.started = m.started or time.time()
             m.ended = 0.0
         m.last_at, m.stall_warned = time.time(), False
@@ -612,7 +623,7 @@ class Team:
         self._changed()
 
     def _next(self) -> None:
-        for m in self.members.values():
+        for m in list(self.members.values()):
             if self._running() >= self.max_parallel:
                 return
             if m.status == "queued" and self._deps_ok(m):
@@ -634,10 +645,11 @@ class Team:
             else:
                 prompt = "Görevine başla."
             m.limit_hit, m.provider_failed = False, ""
-            if self.stopped:  # tam başlarken proje durduruldu
+            if self.stopped or m.stop_requested:  # tam başlarken proje ya da bu ajan durduruldu
                 raise _Stopped()
+            m.agent.stop_check = lambda m=m: self.stopped or m.stop_requested  # bu satırla tur arası da kapansın
             text = m.agent.run_turn(prompt, max_steps=m.max_steps) or ""
-            if self.stopped or m.agent.cancel.is_set():
+            if self.stopped or m.stop_requested or m.agent.cancel.is_set():
                 final = "stopped"
             elif m.provider_failed and not text.strip():
                 final = "failed"  # hiçbir model cevap vermedi (kota/erişim): incelemeye değil hataya düşsün
@@ -746,30 +758,37 @@ class Team:
         slot = len(store)
         store.append({"kind": kind, "state": "running", "title": subject[:80], "result": {}, "votes": [],
                       "findings": [], "round": 0, "rounds": 0})
-        if kind in ("work", "recheck", "final") and self.check:
-            chk = self.run_check(cwd)
-            if chk:
-                context += (f"\n\n# Kontrol komutu: `{chk['cmd']}` → çıkış {chk['code']} "
-                            f"({'GEÇTİ' if chk['code'] == 0 else 'BAŞARISIZ'})\n```\n{chk['out'][-3000:]}\n```")
-        if kind in ("work", "recheck", "final", "adhoc"):
-            slop = self.slop_report(cwd)
-            if slop:
-                context += ("\n\n# Otomatik kalıp denetimi: sitede yapay zekâ yapımı görünen kalıplar\nBunlar koddan "
-                            "sayıldı, tahmin değil. Her biri 'major' tasarım sorunudur (iş hedefi 'AI yapımı gibi "
-                            "durmasın'); küçük kod ayrıntılarından önce bunlara bak:\n" + slop)
-        c = Council(self.parent_ctx, kind, subject, context, cwd=cwd or self.cwd, previous=previous,
-                    critical=critical or self._critical(subject), rules=self.review_rules(),
-                    lessons=self.lessons[-10:], check=self.check, images=self._screens(kind, subject + context, cwd))
+        try:
+            if kind in ("work", "recheck", "final") and self.check:
+                chk = self.run_check(cwd)
+                if chk:
+                    context += (f"\n\n# Kontrol komutu: `{chk['cmd']}` → çıkış {chk['code']} "
+                                f"({'GEÇTİ' if chk['code'] == 0 else 'BAŞARISIZ'})\n```\n{chk['out'][-3000:]}\n```")
+            if kind in ("work", "recheck", "final", "adhoc"):
+                slop = self.slop_report(cwd)
+                if slop:
+                    context += ("\n\n# Otomatik kalıp denetimi: sitede yapay zekâ yapımı görünen kalıplar\nBunlar koddan "
+                                "sayıldı, tahmin değil. Her biri 'major' tasarım sorunudur (iş hedefi 'AI yapımı gibi "
+                                "durmasın'); küçük kod ayrıntılarından önce bunlara bak:\n" + slop)
+            c = Council(self.parent_ctx, kind, subject, context, cwd=cwd or self.cwd, previous=previous,
+                        critical=critical or self._critical(subject), rules=self.review_rules(),
+                        lessons=self.lessons[-10:], check=self.check, images=self._screens(kind, subject + context, cwd))
 
-        def live() -> None:
-            store[slot] = c.snapshot()
-            self._changed()
+            def live() -> None:
+                store[slot] = c.snapshot()
+                self._changed()
 
-        c.on_change = live
-        c.on_usage = lambda u: self._use(COUNCIL, u)
-        self._live_councils.add(c)
-        if self.stopped:
-            c.stop()
+            c.on_change = live
+            c.on_usage = lambda u: self._use(COUNCIL, u)
+            self._live_councils.add(c)
+            if self.stopped:
+                c.stop()
+        except Exception as e:
+            # Kurul kurulamadıysa (kontrol komutu, ekran görüntüsü, Council) kayıt arayüzde "running" kalmasın.
+            store[slot] = {**store[slot], "state": "failed", "result": {
+                "decision": "contested", "score": 0.0, "veto": [], "conditions": [], "error": f"{type(e).__name__}: {e}"}}
+            self._changed(save=True)
+            raise
         try:
             snap = c.run()
         finally:
@@ -869,7 +888,7 @@ class Team:
         from alice.council import report
 
         parts = []
-        for m in self.members.values():
+        for m in list(self.members.values()):
             parts.append(f"## {m.name} ({m.status})\nGörev: {m.task}\nRapor: {m.result[:1500]}\n"
                          f"Dosyalar: {', '.join(m.files) or '-'}\nFark:\n{self.diff(m.name, limit=6000) or '-'}")
         snap = self._council("final", f"Projenin tamamı: {self.goal}", "\n\n".join(parts)[:40_000], self.councils,
@@ -907,7 +926,7 @@ class Team:
                 from alice.council import report
 
                 parts = [f"## {m.name}: {m.task}\n{m.result[:1500]}\n{self.diff(m.name, limit=5000)}"
-                         for m in self.members.values()]
+                         for m in list(self.members.values())]
                 snap = self._council("adhoc", f"Projenin şu anki hali: {self.goal}", "\n\n".join(parts)[:40_000],
                                      self.councils)
                 if snap.get("state") == "stopped":
@@ -1020,7 +1039,9 @@ class Team:
         if m is None:
             raise ToolError(f"projede '{name}' yok")
         parts = []
-        for path, before in m.originals.items():
+        # Kopya üzerinde: ajan çalışırken (kurula sor, final kurulu) yeni dosyaya dokunursa sözlük büyüyor ve fark
+        # "dictionary changed size during iteration" ile kurulu düşürüyordu.
+        for path, before in list(m.originals.items()):
             p = Path(path)
             rel = _rel(p, m.cwd)
             after = _read_original(p)
@@ -1195,13 +1216,23 @@ class Team:
             top = _git(cwd, "rev-parse", "--show-toplevel", timeout=10)
             if top.returncode != 0:
                 return None
-            r = _git(cwd, "status", "--porcelain", "-uall", timeout=20)
+            # -z: yollar tırnaksız ve kaçışsız gelir. Düz çıktıda git Türkçe harfli yolları "d\303\274.py" diye
+            # kaçışlıyordu; o yol hiç var olmadığından komutla değişen dosya ajanın farkına girmiyordu.
+            r = _git(cwd, "status", "--porcelain", "-uall", "-z", timeout=20)
         except (OSError, subprocess.SubprocessError):
             return None
         root = Path(top.stdout.strip())
         out = set()
-        for line in r.stdout.splitlines():
-            path = line[3:].split(" -> ")[-1].strip().strip('"')
+        recs = r.stdout.split("\0")
+        i = 0
+        while i < len(recs):
+            rec = recs[i]
+            i += 1
+            if len(rec) < 4:
+                continue
+            if rec[0] in "RC":
+                i += 1  # yeniden adlandırma: ardından gelen kayıt eski yol
+            path = rec[3:]
             if path and not path.startswith(".alice-team/"):
                 out.add(str((root / path).resolve()))
         return out
@@ -1215,7 +1246,7 @@ class Team:
         now = self._git_dirty(m.cwd)
         if not now:
             return
-        others = {k for o in self.members.values() if o is not m for k in o.originals}
+        others = {k for o in list(self.members.values()) if o is not m for k in list(o.originals)}
         top = _git(m.cwd, "rev-parse", "--show-toplevel", timeout=10).stdout.strip()
         for path in sorted(now - set(base0) - set(m.originals) - others)[:50]:
             rel = Path(path).resolve().relative_to(Path(top).resolve()).as_posix() if top else path
@@ -1231,12 +1262,23 @@ class Team:
             return None
         t0 = time.time()
         try:
-            r = subprocess.run(self.check, shell=True, cwd=str(cwd or self.cwd), capture_output=True, text=True,
-                               timeout=int(self.parent_ctx.config.agent.get("team_check_timeout", 600)),
-                               encoding="utf-8", errors="replace")
-            out, code = (r.stdout + r.stderr), r.returncode
-        except subprocess.TimeoutExpired:
-            out, code = "zaman aşımı", -1
+            pop = subprocess.Popen(self.check, shell=True, cwd=str(cwd or self.cwd), stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True, encoding="utf-8",
+                                   errors="replace", creationflags=_NO_WINDOW)
+            try:
+                so, se = pop.communicate(timeout=int(self.parent_ctx.config.agent.get("team_check_timeout", 600)))
+                out, code = (so or "") + (se or ""), pop.returncode
+            except subprocess.TimeoutExpired:
+                # subprocess.run burada yalnız kabuğu öldürüp boruların kapanmasını süresiz bekliyordu: kabuğun
+                # açtığı test süreci boruyu tuttuğu için kurul thread'i (ve proje) sonsuza dek takılıyordu.
+                from alice.tools.shell import kill_tree
+
+                kill_tree(pop.pid)
+                try:
+                    pop.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+                out, code = "zaman aşımı", -1
         except OSError as e:
             out, code = str(e), -1
         res = {"cmd": self.check, "code": code, "out": out[-4000:], "secs": int(time.time() - t0)}
@@ -1264,7 +1306,7 @@ class Team:
 
     def brief(self, m: Member) -> str:
         roster = "\n".join(f"- {o.name}: {o.task[:160]}" + (f" (yazar: {', '.join(o.scope)})" if o.scope else "")
-                           for o in self.members.values() if o.name != m.name) or "- (tek başınasın)"
+                           for o in list(self.members.values()) if o.name != m.name) or "- (tek başınasın)"
         where = {"shared": "Diğerleriyle aynı klasörde çalışıyorsun; başkasının dosyasına dokunma.",
                  "worktree": f"Kendi git worktree'ndesin (dal {m.branch}); değişikliklerin bu dalda kalır, yönetici "
                              "onaylayınca birleştirilir.",
@@ -1368,9 +1410,12 @@ Kurallar:
             while True:
                 if self.stopped and not self.finished:
                     with self.cond:  # olaylar gelen kutusunda kalır; Sürdür ya da kullanıcının mesajı yeniden başlatır
-                        if self.stopped:  # kilit altında yeniden bak: tam bu arada sürdürüldüyse çıkma
+                        exiting = self.stopped  # kilit altında yeniden bak: tam bu arada sürdürüldüyse çıkma
+                        if exiting:
                             self.lead_thread = None
-                    if self.lead_thread is None:
+                    # Karar kilit altında verilir: kilitten sonra lead_thread'e yeniden bakmak, bu arada Sürdür'ün
+                    # başlattığı yeni döngüyü görüp bu döngüyü de sürdürüyordu (aynı yönetici ajanında iki döngü).
+                    if exiting:
                         self.lead_state = "idle"
                         self._changed()
                         return
@@ -1406,7 +1451,7 @@ Kurallar:
     def _lead_exit(self) -> bool:
         """Yöneticinin bekleyeceği bir şey kalmadıysa döngüden çık (yeni olay gelince _ensure_lead yeniden başlatır).
         Gelen kutusu kilit altında son kez kontrol edilir: çıkarken gelen olay kaybolmasın."""
-        idle = all(m.status in FINAL + ("review",) and not m.resume_wanted for m in self.members.values()) and \
+        idle = all(m.status in FINAL + ("review",) and not m.resume_wanted for m in list(self.members.values())) and \
             not self.council_busy
         if not (self.stopped or self.finished or (self.members and idle and self._nudges >= 2)):
             return False
@@ -1486,10 +1531,10 @@ Kurallar:
         if not self.members:
             return self._plan_nudge()
         if any(not q.get("answer") for q in self.questions) or self._nudges >= 3 or self.council_busy or \
-                any(m.council_running for m in self.members.values()):
+                any(m.council_running for m in list(self.members.values())):
             return ""
-        pending = [m.name for m in self.members.values() if m.status == "review"]
-        if pending and all(m.status in FINAL + ("review",) for m in self.members.values()):
+        pending = [m.name for m in list(self.members.values()) if m.status == "review"]
+        if pending and all(m.status in FINAL + ("review",) for m in list(self.members.values())):
             self._nudges += 1
             if self._nudges <= 2:
                 return f"İnceleme bekleyen ajanlar var: {', '.join(pending)}. diff ile bak ve review ile karar ver."
@@ -1615,7 +1660,7 @@ Nasıl yapılır:
         icon = {"queued": "…", "running": "▶", "waiting": "⏸", "asking": "?", "review": "◎", "done": "✓",
                 "failed": "✗", "stopped": "■"}
         rows = []
-        for m in self.members.values():
+        for m in list(self.members.values()):
             s = m.snapshot()
             rows.append(f"{icon.get(m.status, '?')} {m.name} [{m.status}, {m.model}"
                         f"{', düşünme ' + m.thinking if m.thinking != 'default' else ''}, {m.steps} adım, {s['secs']} sn]"
@@ -1627,7 +1672,7 @@ Nasıl yapılır:
         return "\n".join(rows) or "(henüz ajan yok)"
 
     def snapshot(self) -> dict[str, Any]:
-        done = sum(1 for m in self.members.values() if m.status == "done")
+        done = sum(1 for m in list(self.members.values()) if m.status == "done")
         return {"type": "team", "id": self.id, "title": self.title, "goal": self.goal, "origin": self.origin,
                 "cwd": str(self.cwd), "created": self.created, "status": self.status(), "review": self.review,
                 "summary": self.summary, "lead": {"state": self.lead_state, "model": self.lead_model,
@@ -1639,7 +1684,7 @@ Nasıl yapılır:
                 "pr": {"on": self.pr, "branch": self.pr_branch, "base": self.pr_base, "url": self.pr_url,
                        "number": self.pr_number},
                 "usage": {"total": self.usage_total(), "by": self.usage},
-                "members": [m.snapshot() for m in self.members.values()],
+                "members": [m.snapshot() for m in list(self.members.values())],
                 "log": [{"from": x.sender, "to": x.to, "text": x.text[:400], "at": x.at} for x in self.log[-40:]],
                 "active": self.active()}
 
@@ -1773,7 +1818,7 @@ Nasıl yapılır:
         self.stopped = self.finished = False
         self._nudges = 0
         if announce and len(self.members) > 1:
-            others = [n for n in self.members if n != m.name]
+            others = [n for n in list(self.members) if n != m.name]
             note = f"takıma yeni ajan katıldı: {m.name}: {m.task[:200]}" + (f" (yazar: {', '.join(m.scope)})" if m.scope else "")
             with self.cond:
                 msg = Message(SYSTEM, "all", note)
@@ -1828,6 +1873,8 @@ Nasıl yapılır:
         threading.Thread(target=run, daemon=True, name="project-notify").start()
 
     def stop(self, name: str | None = None) -> None:
+        if name and name not in self.members:
+            raise ToolError(f"projede '{name}' yok")
         targets = [self.members[name]] if name else list(self.members.values())
         self.mark(USER, "stop", f"{name} durduruldu" if name else "proje durduruldu")
         if not name:
@@ -1841,8 +1888,12 @@ Nasıl yapılır:
             if m.status == "queued":
                 m.status = "stopped"
             m.resume_wanted = False
-            if m.agent is not None and m.status in ACTIVE:
-                m.agent.stop()
+            if m.status in ACTIVE:
+                # Ajanı henüz kurulmamış (model seçimi/worktree sürüyor) üye de dursun: başlarken bu bayrağa bakar.
+                m.stop_requested = True
+                m.recovering = False  # kullanıcının durdurması takılma kurtarmasıyla yeniden başlatılmasın
+                if m.agent is not None:
+                    m.agent.stop()
         with self.cond:
             self.cond.notify_all()
         self._changed(save=True)
@@ -1852,14 +1903,14 @@ Nasıl yapılır:
         self.mark(USER, "resume", "proje sürdürüldü")
         self.stopped = False
         self._nudges = 0
-        for m in self.members.values():
+        for m in list(self.members.values()):
             if m.status == "stopped":
                 if m.agent is None and not m.saved_messages:
                     m.status = "queued"
                     self._launch(m)
                 else:
                     self._launch(m, resume=True)
-        for m in self.members.values():  # durdurulurken yarıda kalan iş kurulları yeniden toplanır
+        for m in list(self.members.values()):  # durdurulurken yarıda kalan iş kurulları yeniden toplanır
             if m.status == "review" and self.council and m.councils and m.councils[-1].get("state") == "stopped" \
                     and not m.council_running:
                 self._spawn(self._member_council, m)
@@ -1875,7 +1926,7 @@ Nasıl yapılır:
                "pr": self.pr, "cwd": str(self.pr_top or self.cwd),
                "agents": [{"name": m.name, "task": m.task, "constraints": m.constraints, "scope": m.scope,
                            "model": m.model, "thinking": m.thinking, "isolation": m.isolation, "after": m.after,
-                           "max_steps": m.max_steps} for m in self.members.values()]}
+                           "max_steps": m.max_steps} for m in list(self.members.values())]}
         _tpl_file(name).write_text(json.dumps(tpl, ensure_ascii=False, indent=1), encoding="utf-8")
         return tpl
 

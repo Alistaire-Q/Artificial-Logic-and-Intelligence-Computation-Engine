@@ -20,8 +20,8 @@ from alice.decider import Decider
 from alice.permissions import Permissions
 from alice.prompts import COMPACT_PROMPT, build_system_prompt
 from alice.providers.openai_compat import ChatResult, StreamCancelled
-from alice.providers.router import (AllProvidersFailed, Router, cached_tokens, estimate_tokens,  # noqa: F401
-                                   strip_images)
+from alice.providers.router import (AllProvidersFailed, Router, cache_write_tokens, cached_tokens,  # noqa: F401
+                                    estimate_tokens, strip_images)
 from alice.tools.base import COMPUTER, DANGER, SEND, Tool, ToolContext, ToolError, ToolResult, check_args, truncate, unknown_params
 
 # Yutulan hatalar için iz: varsayılan olarak sessiz, `logging.basicConfig(level=logging.DEBUG)` ile görünür.
@@ -235,6 +235,7 @@ OLD_OUTPUT_CHARS = 1200  # daha eskilerin uzunları bu kadara kısaltılır
 # her adımda değil, toplu ve ancak gerektiğinde yapılır: önbellek zaten soğuduysa (son istekten bu kadar sn sonra)
 # ya da bağlam özetleme eşiğinin yarısını geçtiyse ve kısaltılacak yeterince eski çıktı biriktiyse.
 CACHE_COLD_S = 300
+CACHE_LONG_S = 55 * 60  # cliproxy 1 saatlik önbellek yazıyor; bitime biraz pay
 TRIM_BATCH = 8
 IMAGE_SLACK = 3  # ekran görüntüleri keep_images + bu kadar olunca topluca budanır
 NUDGE_PREFIX = "[devam kontrolü] "
@@ -351,6 +352,9 @@ class Agent:
 
             self.hooks = Hooks([], ctx.cwd)
         self.cancel = threading.Event()
+        # Durdurma isteği dışarıda da tutuluyorsa (takım üyesi): run_turn bayrağı temizledikten sonra buna bakar.
+        # Kontrol ile tur başlangıcı arasına düşen bir Durdur böylece kaybolmaz.
+        self.stop_check: Any = None
         self.busy = False
         # Çalışırken gelen kullanıcı mesajları (steer): bir sonraki model adımından önce konuşmaya girer.
         self._inbox: list[tuple[str, list[str]]] = []
@@ -361,7 +365,7 @@ class Agent:
         self._error_streak = 0
         # Oturum istatistiği (durum çubuğundaki paneller): tur, adım, model ve araç süresi, ilk kelime süresi, token.
         self.stats: dict[str, float] = {"turns": 0, "steps": 0, "llm_s": 0.0, "tool_s": 0.0, "ttft_s": 0.0,
-                                        "ttft_n": 0, "gen_s": 0.0, "gen_tokens": 0, "input": 0, "cached": 0,
+                                        "ttft_n": 0, "gen_s": 0.0, "gen_tokens": 0, "input": 0, "cached": 0, "written": 0,
                                         "output": 0}
         # Kullanım dökümü: tokenlar hangi modele, bağlam hangi araçların çıktısına gitti
         self.usage_models: dict[str, dict[str, float]] = {}
@@ -552,6 +556,11 @@ class Agent:
             self.messages[0]["content"] = new
 
     def run_turn(self, user_text: str, max_steps: int | None = None, images: list[str] | None = None) -> str:
+        # Durdurma bayrağı her şeyden önce temizlenir: hatırlama ve kurulum sırasında basılan Durdur kaybolmasın
+        # (önceden _run_turn içinde temizleniyordu; o arada gelen durdurma isteği silinip tur sürüyordu).
+        self.cancel.clear()
+        if self.stop_check is not None and self.stop_check():
+            self.cancel.set()
         self.refresh_memory()
         self.sync_catalog()
         recall = self._recall(user_text)
@@ -559,11 +568,14 @@ class Agent:
         routed = self._route_role(user_text)
         if routed:
             self.role = routed
+        self._turn_blocked = False
         try:
             final = self._run_turn(user_text, max_steps, images, recall)
         finally:
+            self._last_turn_role = self.role  # sonraki turun yönlendirmesi önbelleği sıcak modelde kalabilsin
             self.role = old_role
-        self._remember_turn(user_text, final)
+        if not self._turn_blocked:  # hook'un engellediği mesaj hafızaya boş bir tur olarak yazılmasın
+            self._remember_turn(user_text, final)
         return final
 
     ROUTE_ROLES = {"strong": "route-strong", "light": "route-light"}
@@ -578,17 +590,27 @@ class Agent:
             return None
         from alice.providers import jev_route
 
+        sticky = self._sticky_role(rc)
+        log = getattr(router, "on_event", None) or (lambda s: None)
+        if sticky is not None and self._sticky_skips_jev(rc, sticky):
+            # Önbellek sıcak ve hafif katmana inmeyeceğiz; ağır katmanlar aynı modele gidiyor: Jev'e sormaya gerek yok.
+            log(f"yönlendirme: önbellek sıcak, {sticky} modelinde kalındı (Jev'e sorulmadı)")
+            return None if sticky == "brain" else sticky
         prev = ""
         for m in reversed(self.messages[1:]):
             if m.get("role") == "assistant" and isinstance(m.get("content"), str) and m["content"].strip():
                 prev = m["content"]
                 break
-        log = getattr(router, "on_event", None) or (lambda s: None)
         r = jev_route.route(self.config, user_text, prev, log=log)
         try:
             log(f"yönlendirme: {r.tier} ({r.reason}) {r.signals} {r.latency:.2f} sn")
         except Exception:  # noqa: BLE001
             pass
+        if r.tier == "light" and sticky is not None:
+            # Uzun sohbetin önbelleği ağır modelde sıcak: hafif modele geçmek bütün bağlamı orada önbelleksiz ödetir,
+            # dönüşte de ağır modelin önbelleği yeniden yazılır. Kolay mesaj da aynı modelde kalır.
+            log(f"yönlendirme: önbellek sıcak, hafif model yerine {sticky} modelinde kalındı")
+            return None if sticky == "brain" else sticky
         role = self.ROUTE_ROLES.get(r.tier)
         if role is None:
             return None
@@ -600,6 +622,43 @@ class Agent:
             return None
         router.role_overrides[role] = chain
         return role
+
+    STICKY_TOKENS = 6000  # bağlam bundan kısaysa model değiştirmenin önbellek maliyeti önemsiz
+
+    def _sticky_role(self, rc: dict[str, Any]) -> str | None:
+        """Önceki tur ağır bir modelde (beyin ya da güçlü katman) koştuysa ve önbelleği hâlâ sıcaksa o rol; değilse None.
+        [routing] cache_sticky = false eski davranışı geri getirir (kolay mesajlar her zaman hafif modele)."""
+        prev = getattr(self, "_last_turn_role", None)
+        if not rc.get("cache_sticky", True) or prev not in ("brain", "route-strong"):
+            return None
+        last = getattr(self, "_last_call_at", 0.0)
+        if not last:
+            return None
+        chain = self.router.role_overrides.get(prev) if prev != "brain" else self.router.chain("brain")
+        if not chain:
+            return None
+        ttl = float(rc["cache_sticky_minutes"]) * 60 if rc.get("cache_sticky_minutes") else \
+            self._cache_ttl(str(chain[0])) - 30
+        if time.monotonic() - last > ttl:
+            return None
+        try:
+            if self.context_tokens() < int(rc.get("cache_sticky_tokens", self.STICKY_TOKENS)):
+                return None
+        except Exception:  # noqa: BLE001 - ölçemiyorsak eski davranış
+            return None
+        return prev
+
+    def _sticky_skips_jev(self, rc: dict[str, Any], sticky: str) -> bool:
+        """Önbellekte kalınacaksa Jev'in cevabı sonucu değiştirir mi? Hafif katman zaten engelli; güçlü katman da
+        aynı modelle başlıyorsa Jev çağrısı (ağ gecikmesi) boşuna."""
+        from alice.providers import jev_route
+
+        try:
+            strong = jev_route.tier_chain(self.router, self.config, "strong")
+            current = (self.router.role_overrides.get(sticky) if sticky != "brain" else self.router.chain("brain"))
+        except Exception:  # noqa: BLE001
+            return False
+        return bool(strong and current) and strong[0] == current[0]
 
     def _run_turn(self, user_text: str, max_steps: int | None, images: list[str] | None, recall: str) -> str:
         from alice.mentions import expand_mentions
@@ -618,6 +677,7 @@ class Agent:
                 blocked = feedback(res)
                 if blocked:
                     self.ui.info(f"hook mesajı engelledi: {blocked}")
+                    self._turn_blocked = True
                     return ""
                 extra.append(context(res))
             extra = [e for e in extra if e]
@@ -645,7 +705,6 @@ class Agent:
         self._enable_groups_for(content_text)
         final = ""
         steps = max_steps or self.max_steps
-        self.cancel.clear()
         self.busy = True
         self._call_counts.clear()
         self._fail_counts.clear()
@@ -817,6 +876,7 @@ class Agent:
         self.__dict__["_turn_tokens"] = self.__dict__.get("_turn_tokens", 0) + fresh + out
         st["input"] += int(u.get("prompt_tokens") or u.get("input_tokens") or 0)
         st["cached"] += cached_tokens(u)
+        st["written"] = st.get("written", 0) + cache_write_tokens(u)
         st["output"] += out
         if first and out and now - first > 0.2:  # akış hızı: yalnız gerçekten akan cevaplarda
             st["gen_s"] += now - first
@@ -826,6 +886,7 @@ class Agent:
         m["calls"] += 1
         m["input"] += int(u.get("prompt_tokens") or u.get("input_tokens") or 0)
         m["cached"] += cached_tokens(u)
+        m["written"] = m.get("written", 0) + cache_write_tokens(u)
         m["output"] += out
         m["seconds"] += now - started
 
@@ -840,7 +901,8 @@ class Agent:
             "tool_s": round(st["tool_s"], 1),
             "ttft": round(st["ttft_s"] / st["ttft_n"], 2) if st["ttft_n"] else 0.0,
             "tps": round(st["gen_tokens"] / st["gen_s"]) if st["gen_s"] else 0,
-            "input": int(st["input"]), "cached": int(st["cached"]), "output": int(st["output"]),
+            "input": int(st["input"]), "cached": int(st["cached"]),
+            "written": int(st.get("written", 0)), "output": int(st["output"]),
             "ctx": {"system": system, "tools": tools, "messages": max(0, total - system - tools), "total": total},
         }
 
@@ -1153,12 +1215,10 @@ class Agent:
                 continue
             early = self._take_early(calls[i])
             if early is not None:  # cevap akarken başlatılmıştı: sonucu hazır (ya da az kaldı)
-                tool, summary, fut = early
+                tool, args, summary, fut = early
                 self.ui.tool_start(calls[i]["id"], tool.name, summary)
-                try:
-                    res = fut.result()
-                except Exception as e:  # noqa: BLE001
-                    res = ToolResult(f"{type(e).__name__}: {e}", is_error=True)
+                res = self._await(fut)
+                self._note_read(tool, args, res)
                 self.ui.tool_end(calls[i]["id"], tool.name, res)
                 results[i] = self._fence(tool, res)
                 i += 1
@@ -1187,14 +1247,34 @@ class Agent:
             else:
                 for idx, (tool, _args, summary) in batch:
                     self.ui.tool_start(calls[idx]["id"], tool.name, summary)
-                with ThreadPoolExecutor(max_workers=min(8, len(batch))) as pool:
+                pool = ThreadPoolExecutor(max_workers=min(8, len(batch)))
+                try:
                     futures = {idx: pool.submit(self._run_tool, tool, args) for idx, (tool, args, _) in batch}
-                    for idx, (tool, _, _) in batch:
-                        results[idx] = futures[idx].result()
+                    for idx, (tool, args, _) in batch:
+                        results[idx] = self._await(futures[idx])
+                        self._note_read(tool, args, results[idx])
                         self.ui.tool_end(calls[idx]["id"], tool.name, results[idx])
                         results[idx] = self._fence(tool, results[idx])
+                finally:
+                    # Durdurulduysa arkada süren salt okuma araçları beklenmez (with bloğu shutdown(wait=True) ile
+                    # hepsinin bitmesini bekliyordu).
+                    pool.shutdown(wait=False)
             i = j
         return [r if r is not None else ToolResult("çalıştırılmadı", is_error=True) for r in results]
+
+    def _await(self, fut: Any) -> ToolResult:
+        """Paralel ya da erken başlatılan aracın sonucunu bekle; Durdur'a basılırsa beklemeden dön. Önceden
+        fut.result() süresiz bekliyordu: uzun bir grep ya da yavaş web_fetch durdurulan turu açık tutuyordu."""
+        from concurrent.futures import TimeoutError as FutTimeout
+
+        while True:
+            try:
+                return fut.result(timeout=0.1)
+            except FutTimeout:
+                if self.cancel.is_set():
+                    return ToolResult("durduruldu (kullanıcı kesti)", is_error=True)
+            except Exception as e:  # noqa: BLE001
+                return ToolResult(f"{type(e).__name__}: {e}", is_error=True)
 
     def _early_start(self, call: dict[str, Any]) -> None:
         """Akış sürerken tamamlanan araç çağrısı: paralel güvenliyse (salt okuma, izin gerekmez, hook yok, ekranı
@@ -1218,7 +1298,7 @@ class Agent:
     def _early_clear(self) -> None:
         self.__dict__["_early"] = {}
 
-    def _take_early(self, call: dict[str, Any]) -> tuple[Tool, str, Any] | None:
+    def _take_early(self, call: dict[str, Any]) -> tuple[Tool, dict[str, Any], str, Any] | None:
         e = self.__dict__.get("_early", {}).pop(call.get("id"), None)
         if e is None:
             return None
@@ -1229,7 +1309,7 @@ class Agent:
             return None
         if final != args or call["function"].get("name") != tool.name:
             return None  # son hâli farklı: normal yoldan yeniden çalışır
-        return tool, summary, fut
+        return tool, args, summary, fut
 
     def _parallel_ok(self, prep: tuple[Tool, dict[str, Any], str]) -> bool:
         tool, args, _ = prep
@@ -1356,14 +1436,8 @@ class Agent:
         self.ui.tool_start(call["id"], tool.name, summary)
         watch = self._watch(tool, args)
         result = self._run_tool(tool, args)
-        if tool.name == "read_file" and not result.is_error and args.get("path"):
-            try:
-                from alice import magicdocs
-
-                magicdocs.note_read(self.ctx.state, self.ctx.resolve(str(args["path"])))
-            except Exception:  # noqa: BLE001 - sihirli belge kaydı aracı bozmasın
-                pass
-        note = self.__dict__.get("_hook_notes", {}).pop(call["id"], "")
+        self._note_read(tool, args, result)
+        note =self.__dict__.get("_hook_notes", {}).pop(call["id"], "")
         if note:
             from dataclasses import replace
 
@@ -1390,6 +1464,18 @@ class Agent:
         self._log_outward(tool, args, summary, "failed" if result.is_error else "sent", result.text)
         self.ui.tool_end(call["id"], tool.name, result)
         return self._fence(tool, result)
+
+    def _note_read(self, tool: Tool, args: dict[str, Any], result: ToolResult) -> None:
+        """Okunan sihirli belgeyi (# MAGIC DOC:) kaydet. Sıralı, paralel ve erken başlatılan yolların hepsinde
+        çağrılır: read_file paralel güvenli olduğu için çoğu zaman o yollardan geçiyor, belge hiç kaydedilmiyordu."""
+        if tool.name != "read_file" or result.is_error or not args.get("path"):
+            return
+        try:
+            from alice import magicdocs
+
+            magicdocs.note_read(self.ctx.state, self.ctx.resolve(str(args["path"])))
+        except Exception:  # noqa: BLE001 - sihirli belge kaydı aracı bozmasın
+            pass
 
     def _watch(self, tool: Tool, args: dict[str, Any]):
         """Ekranı etkileyen eylem (tıklama, tuş, program açma, komut) öncesi pencereleri not al; sonra ne değiştiği
@@ -1487,7 +1573,17 @@ class Agent:
             return f"(görüntü açıklanamadı: {str(e)[:200]})"
 
     def _cache_cold(self) -> bool:
-        return bool(self._last_call_at) and time.monotonic() - self._last_call_at > CACHE_COLD_S
+        return bool(self._last_call_at) and time.monotonic() - self._last_call_at > self._cache_ttl()
+
+    def _cache_ttl(self, ref: str | None = None) -> float:
+        """Son modelin prompt önbelleği kaç sn yaşar. cliproxy Claude'a 1 saatlik önbellek yazıyor; diğerleri ~5 dk.
+        Önbellek gerçekten soğumadan geçmişi kısaltmak (5. dakikada) hâlâ sıcak olan önbelleği boşa yakıyordu."""
+        if ref is None:
+            try:
+                ref = self.router.last_ref.get(self.role) or ""
+            except Exception:  # noqa: BLE001
+                ref = ""
+        return CACHE_LONG_S if str(ref).startswith("cliproxy:") else CACHE_COLD_S
 
     def _prune_images(self) -> None:
         idx = [i for i, m in enumerate(self.messages) if m.get("_image")]
@@ -1656,3 +1752,4 @@ class Agent:
 
     def reset(self) -> None:
         self.messages = self.messages[:1]
+        self._last_turn_role = None

@@ -490,3 +490,67 @@ def test_start_hotkeys_windows_uses_registerhotkey(fake_server, monkeypatch):
     FakeWin.start = lambda self: False
     qb._listener = None
     assert qb.start_hotkeys() is False and qb._listener is None
+
+
+def test_phone_token_leaves_url_after_pairing(monkeypatch):
+    """QR adresindeki ?t= çereze çevrilip anahtarsız adrese yönlendirilir; sonra çerez (GET) ya da Bearer/X-Alice-Token
+    başlığı yeter. Çerez tek başına POST'a yetmez; yanlış anahtar hep reddedilir."""
+    import http.client
+    import threading
+
+    from alice.app import relay
+    from alice.app.server import QuietHTTPServer, make_handler
+
+    monkeypatch.setattr(relay, "host", lambda: "")
+    tok = "T" * 32
+    st = SimpleNamespace(token=tok, allowed_hosts={"127.0.0.1"})
+    httpd = QuietHTTPServer(("127.0.0.1", 0), phone.phone_handler(make_handler(st), st))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    port = httpd.server_address[1]
+
+    def req(method, path, headers=None):
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        c.request(method, path, body=b"{}" if method == "POST" else None, headers=headers or {})
+        r = c.getresponse()
+        r.read()
+        c.close()
+        return r
+
+    try:
+        r = req("GET", f"/m?t={tok}&r=https%3A%2F%2Fx")
+        assert r.status == 303 and r.getheader("Location") == "/m?r=https%3A%2F%2Fx"
+        cookie = r.getheader("Set-Cookie")
+        assert f"{phone.COOKIE}={tok}" in cookie and "HttpOnly" in cookie and "SameSite=Strict" in cookie
+        assert "Secure" not in cookie  # yerel ağ düz HTTP
+        assert req("GET", "/m?t=yanlis").status == 403  # yanlış anahtar yönlendirilmez
+        assert req("GET", "/m").status == 403
+        jar = {"Cookie": f"{phone.COOKIE}={tok}"}
+        assert req("GET", "/m", jar).status == 200
+        assert req("GET", "/m", {"Cookie": f"{phone.COOKIE}=yanlis"}).status == 403
+        assert req("GET", "/m", {"Authorization": f"Bearer {tok}"}).status == 200
+        assert req("GET", f"/m?t={tok}", {"Host": "evil.example"}).status == 403  # Host kontrolü önce
+        assert req("POST", "/api/yok", jar).status == 403  # çerez yazan isteğe yetmez
+        assert req("POST", "/api/yok", {"Authorization": f"Bearer {tok}"}).status != 403
+        assert req("POST", "/api/yok", {"X-Alice-Token": tok}).status != 403
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_phone_server_installs_phone_handler(monkeypatch):
+    """PhoneServer gerçek sunucunun işleyicisini telefon işleyicisiyle değiştirir (başlatmadan önce)."""
+    calls = []
+
+    class Srv(FakeServer):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self.httpd.RequestHandlerClass = type("Base", (), {})
+
+        def start(self):
+            calls.append(self.httpd.RequestHandlerClass.__name__)
+            return self
+
+    monkeypatch.setattr("alice.app.server.AppServer", Srv)
+    monkeypatch.setattr(phone, "lan_ip", lambda: "10.0.0.7")
+    ps = phone.PhoneServer(Config(default_config_dict()), store="S", state=fake_state())
+    assert calls == ["PhoneHandler"] and ps.url.endswith(f"/m?t={ps.state.token}")

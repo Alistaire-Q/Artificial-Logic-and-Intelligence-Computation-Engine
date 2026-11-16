@@ -38,12 +38,17 @@ def home() -> Path:
 
 
 def downloads_dir() -> Path:
-    return home() / "Downloads"
+    """Kullanıcının gerçek İndirilenler klasörü: başka diske/klasöre taşınmışsa (Özellikler > Konum) ~/Downloads
+    değil orası; eskiden taşınmış klasörde "bulunamadı" deniyordu."""
+    from alice.tools.fetch_file import downloads_dir as known
+
+    p = home() / "Downloads"
+    return p if p.is_dir() else known()
 
 
 def search_roots() -> list[Path]:
     h = home()
-    roots = [h / "Desktop", h / "Documents", h / "Downloads", h / "Pictures", h / "Videos"]
+    roots = [h / "Desktop", h / "Documents", downloads_dir(), h / "Pictures", h / "Videos"]
     roots += [p for p in h.glob("OneDrive*") if p.is_dir()]
     return [r for r in roots if r.is_dir()]
 
@@ -174,6 +179,7 @@ def tidy_plan(folder: Path | None = None, older_than_days: float = 1.0) -> list[
     folder = folder or downloads_dir()
     cutoff = time.time() - older_than_days * 86400
     plan = []
+    taken: set[Path] = set()  # bu planda zaten hedef olan yollar: iki dosya aynı hedefe gidip biri ezilmesin
     for p in sorted(folder.iterdir()) if folder.is_dir() else []:
         try:
             if not p.is_file() or p.stat().st_mtime > cutoff or p.suffix.lower() in (".crdownload", ".part", ".tmp"):
@@ -184,9 +190,10 @@ def tidy_plan(folder: Path | None = None, older_than_days: float = 1.0) -> list[
         if sub:
             dest = folder / sub / p.name
             n = 1
-            while dest.exists():
+            while dest.exists() or dest in taken:
                 dest = folder / sub / f"{p.stem} ({n}){p.suffix}"
                 n += 1
+            taken.add(dest)
             plan.append((p, dest))
     return plan
 
@@ -218,7 +225,10 @@ class FindFiles(Tool):
     def run(self, ctx: ToolContext, action: str, query: str = "", kind: str = "", days: float | None = None,
             path: str = "", apply: bool = False) -> ToolResult:
         if action == "open":
-            p = Path(path).expanduser()
+            if not path:
+                raise ToolError("open için path gerekli")
+            # Göreli yol sohbetin çalışma klasörüne göre çözülür (eskiden sürecin cwd'sine göreydi).
+            p = ctx.resolve(path)
             if not p.exists():
                 raise ToolError(f"dosya yok: {p}")
             if sys.platform == "win32":
@@ -241,6 +251,8 @@ class FindFiles(Tool):
             moved = 0
             for src, dest in plan:
                 try:
+                    if dest.exists():  # plan ile taşıma arasında oluştu: üzerine yazma (POSIX'te sessizce ezerdi)
+                        continue
                     dest.parent.mkdir(exist_ok=True)
                     shutil.move(str(src), str(dest))
                     moved += 1

@@ -287,7 +287,8 @@ def test_plan_council_blocks_only_plan_breaking_issues_and_routes_notes(workdir)
     sys_prompt, material = next((s, p) for r, s, p in state["prompts"] if r == "critic")
     assert "Plan incelemesi" in sys_prompt and "Yasak: uygulama ayrıntıları" in sys_prompt
     assert "Proje klasörü" in material and "index.html" in material and "DESIGN.md" in material
-    second = [p for r, s, p in state["prompts"] if r == "critic"][-1]
+    # Ajan hemen başlayınca iş incelemesi de gelebiliyor: son *plan* incelemesine bak.
+    second = [p for r, s, p in state["prompts"] if r == "critic" and "Plan incelemesi" in s][-1]
     assert "Önceki kurulun bulguları" in second  # düzeltilmiş plan öncekine göre incelenir
     assert team.plan_rejects == 0
 
@@ -355,3 +356,19 @@ def test_council_reports_live_progress(workdir):
     assert "Plan inceleniyor" in phases and "Kontrolcü bulguları doğruluyor" in phases
     assert any("working" in states.values() for _, states in seen)
     assert all(a["state"] == "done" and a["vote"] == "approve" for a in snap["activity"].values())
+
+
+def test_council_setup_failure_marks_entry_failed(workdir):
+    import pytest
+
+    agent, _, ctx = make(lambda *a, **k: "x", workdir)
+    team = Team(ctx, "hedef")
+
+    def boom(*a, **k):
+        raise RuntimeError("ekran görüntüsü alınamadı")
+
+    team._screens = boom
+    store: list = []
+    with pytest.raises(RuntimeError):
+        team._council("adhoc", "site.html", "bağlam", store)
+    assert store[0]["state"] == "failed" and "ekran" in store[0]["result"]["error"]

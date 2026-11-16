@@ -118,3 +118,39 @@ def test_hidden_models_are_skipped_by_routing():
     router.is_hidden = lambda ref: ref.startswith("cliproxy:claude-")
     cfg = NS(data={"routing": {"strong": ["cliproxy:claude-opus-5-5", "chatgpt:terra"]}})
     assert jev_route.tier_chain(router, cfg, "strong") == ["chatgpt:terra"]
+
+
+def warm_stub(prev_role="brain", tokens=20000, ago=30.0, **routing):
+    import time
+
+    a = agent_stub()
+    a.config.data["routing"].update(routing)
+    a._last_turn_role = prev_role  # noqa: SLF001
+    a._last_call_at = time.monotonic() - ago  # noqa: SLF001
+    a.context_tokens = lambda: tokens
+    return a
+
+
+def test_warm_cache_keeps_easy_message_on_heavy_model(monkeypatch):
+    calls = []
+    monkeypatch.setattr(jev_route, "route", lambda *a, **k: calls.append(1) or jev_route.Route("light", "sohbet"))
+    assert warm_stub()._route_role("teşekkürler") is None  # noqa: SLF001 - beyinde kaldı
+    assert calls  # güçlü katman farklı modelle başlıyor: Jev'e yine soruldu
+    assert agent_stub()._route_role("teşekkürler") == "route-light"  # noqa: SLF001 - ilk tur: hafif modele
+
+
+def test_cold_short_or_disabled_cache_routes_light(monkeypatch):
+    monkeypatch.setattr(jev_route, "route", lambda *a, **k: jev_route.Route("light", "sohbet"))
+    assert warm_stub(tokens=1000)._route_role("selam") == "route-light"  # noqa: SLF001 - kısa bağlam
+    assert warm_stub(ago=600)._route_role("selam") == "route-light"  # noqa: SLF001 - önbellek soğudu (5 dk)
+    assert warm_stub(cache_sticky=False)._route_role("selam") == "route-light"  # noqa: SLF001
+    assert warm_stub(prev_role="route-light")._route_role("selam") == "route-light"  # noqa: SLF001
+
+
+def test_warm_cache_still_upgrades_and_skips_jev_when_pointless(monkeypatch):
+    monkeypatch.setattr(jev_route, "route", lambda *a, **k: jev_route.Route("strong", "kod işi"))
+    a = warm_stub()
+    assert a._route_role("bu kodu düzelt") == "route-strong"  # noqa: SLF001 - yukarı çıkış serbest
+    a._last_turn_role = "route-strong"  # noqa: SLF001
+    monkeypatch.setattr(jev_route, "route", lambda *a, **k: (_ for _ in ()).throw(AssertionError("jev çağrıldı")))
+    assert a._route_role("tamam devam") == "route-strong"  # noqa: SLF001 - aynı model: Jev'e sorulmadı

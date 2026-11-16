@@ -842,7 +842,11 @@ def test_warthunder_hud_parse_and_nick_learning():
     assert learn_nick(msgs, "su_30mkk") == "=R1N= Sgt_Hi_Ping"
     assert learn_nick(msgs + [{"msg": "a (F-16C) shot down b (␗Su-30MKK)"}], "su_30mkk") is None  # iki aday
     kill = [{"msg": "=R1N= Sgt_Hi_Ping (␗Su-30MKK) shot down [SSQS] BlackBurn01 (☢MiG-29SMT)"}]
-    assert hud_events(msgs + kill, "=R1N= Sgt_Hi_Ping") == [("fire", "Su-30MK"), ("kill", "MiG-29SMT")]
+    assert hud_events(msgs + kill, "=R1N= Sgt_Hi_Ping") == [("fire", "Su-30MK"), ("killed", "Su-30MK"),
+                                                            ("kill", "MiG-29SMT")]
+    # Yapay zekâ SAM'inde tip "TEL": düşüren olarak sistemin adı söylenir.
+    sam = [{"msg": "FSAF SAMP/T (TEL) shot down =R1N= Sgt_Hi_Ping (␗Su-30MKK)"}]
+    assert hud_events(sam, "=R1N= Sgt_Hi_Ping") == [("killed", "FSAF SAMP/T")]
     assert hud_events(kill, "") == []
 
 

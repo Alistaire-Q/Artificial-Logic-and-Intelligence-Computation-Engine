@@ -56,6 +56,18 @@ def save_settings(url: str, key: str) -> None:
         p.chmod(0o600)
     except OSError:
         pass
+    _hide(p)
+
+
+def _hide(p: Path) -> None:
+    """Sandbox'taki komutlar aktarma anahtarını okuyamasın: okusa bilgisayarın yerine aktarma sunucusuna bağlanıp
+    telefonun isteklerini (ve anahtarını) alabilirdi."""
+    try:
+        from alice.sandbox import hide_from_sandbox
+
+        hide_from_sandbox(p)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def host() -> str:
@@ -230,6 +242,7 @@ def start_for(port: int, log: Callable[[str], None] = lambda s: None) -> RelayCl
     s = settings()
     if s is None:
         return None
+    _hide(settings_path())  # eski sürümün yazdığı dosya da etiketlensin
     return RelayClient(s["url"], s["key"], port, log).start()
 
 

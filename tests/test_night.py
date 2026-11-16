@@ -157,3 +157,44 @@ def test_struggles_find_loops_repeated_keys_interrupts_and_frustration(tmp_path)
     assert "Kullanıcı işi yarıda kesti" in titles
     assert any(t.startswith("Kullanıcı memnun kalmadı: \"yine saçmaladın") for t in titles)
     assert not any("takılmaca" in t for t in titles)
+
+
+def test_tomorrow_does_not_close_followups_that_are_still_current():
+    from alice.memory import LongMemory
+
+    m = LongMemory(":memory:")
+    now = datetime(2026, 10, 20, 4, 0).timestamp()
+    # 3,5 gün önce sorulacaktı: bugün hâlâ geçerli (4 gün kuralı); 36 saat sonrası için bakınca "eski" görünür.
+    fid = m.add_followup("Sınavın nasıl geçtiğini sor.", now - 3.5 * 86400, "ask")
+    m.add_followup("Dişçi randevusunu hatırlat.", now + 20 * 3600, "remind")
+    assert night.tomorrow(m, now) == ["Dişçi randevusunu hatırlat."]
+    assert fid in [f.id for f in m.due_followups(now)]  # gece raporu takibi kapatmadı
+
+
+def test_state_is_written_atomically_and_retries_locked_target(monkeypatch):
+    import os
+    import pytest
+
+    night._save_state(ran="2026-11-15")
+    real, calls = os.replace, []
+
+    def flaky(src, dst):
+        calls.append(dst)
+        if len(calls) == 1:
+            raise PermissionError("kilitli")
+        real(src, dst)
+
+    monkeypatch.setattr(night.os, "replace", flaky)
+    monkeypatch.setattr(night.time, "sleep", lambda s: None)
+    night._save_state(told="2026-11-15")
+    assert len(calls) == 2
+    assert json.loads(night.state_path().read_text(encoding="utf-8")) == {"ran": "2026-11-15", "told": "2026-11-15"}
+
+    def broken(src, dst):
+        raise OSError("disk")
+
+    monkeypatch.setattr(night.os, "replace", broken)
+    with pytest.raises(OSError):
+        night._save_state(told="x")
+    assert json.loads(night.state_path().read_text(encoding="utf-8"))["told"] == "2026-11-15"  # eski hali sağlam
+    assert [p.name for p in night.state_path().parent.iterdir() if p.name.endswith(".tmp")] == []

@@ -79,6 +79,19 @@ def test_rule_matching_patterns():
     assert rule_matches("write_file(*.env)", "write_file", {"path": "C:\\proje\\.env"})
 
 
+def test_path_rules_use_normalized_path(workdir):
+    """Yol kuralları ham metne değil yolun kendisine bakar: "./gizli/a", tam yol ve ".." yasağı delemez, izin de
+    ".." ile proje dışına taşmaz; göreli izin kuralı tam yolla gelen çağrıda da geçerli."""
+    wf = TOOLS["write_file"]
+    ctx = ctx_with(workdir, {"deny": ["write_file(gizli/*)"], "allow": ["write_file(src/*)"]})
+    yolo, ask = Permissions("yolo"), Permissions("ask")
+    for p in ("gizli/a.txt", "./gizli/a.txt", str(workdir / "gizli" / "a.txt"), "src/../gizli/a.txt"):
+        assert yolo.decide(wf, {"path": p, "content": "x"}, ctx) == "deny", p
+    assert ask.decide(wf, {"path": "src/a.py", "content": "x"}, ctx) == "allow"
+    assert ask.decide(wf, {"path": str(workdir / "src" / "a.py"), "content": "x"}, ctx) == "allow"
+    assert ask.decide(wf, {"path": "src/../../disari.txt", "content": "x"}, ctx) == "ask"
+
+
 def test_permission_rules_allow_ask_deny(workdir):
     rc, wf = TOOLS["run_command"], TOOLS["write_file"]
     ctx = ctx_with(workdir, {"allow": ["run_command(git status*)", "run_command"], "ask": ["run_command(git push*)"],
@@ -138,7 +151,10 @@ def test_hooks_from_config_and_prompt_block(workdir):
     assert [x.event for x in h.hooks] == ["UserPromptSubmit"]
     agent, provs, ui = make_agent(["olmamalı"], workdir)
     agent.hooks = h
+    remembered = []
+    agent._remember_turn = lambda u, r: remembered.append((u, r))
     assert agent.run_turn("merhaba") == "" and provs["a"].calls == []
+    assert remembered == []  # engellenen mesaj hafızaya boş tur olarak yazılmaz
 
 
 # ----------------------------------------------------------------------------------------- takvim
@@ -338,6 +354,18 @@ def test_review_builtins_and_user_override(workdir):
     assert expand_custom("/review hız", workdir) == "Benim tarzımla incele: hız"
     names = [c["name"] for c in catalog(workdir)]
     assert names.count("review") == 1 and "security-review" in names
+
+
+def test_slash_command_name_ends_at_newline(workdir):
+    # Shift+Enter ile "/kurul\nkonu" yazınca ad yalnız boşlukta bölündüğü için "bilinmeyen komut" deniyordu.
+    assert "giriş akışı" in builtin_prompt("/kurul\ngiriş akışı")
+    assert "PR 12" in builtin_prompt("/review\tPR 12")
+    d = workdir / ".alice" / "commands"
+    d.mkdir(parents=True)
+    (d / "ozet.md").write_text("Özetle: $ARGUMENTS\n", encoding="utf-8")
+    assert expand_custom("/ozet\nşu dosya", workdir) == "Özetle: şu dosya"
+    assert expand_custom("/ozet", workdir) == "Özetle: "
+    assert builtin_prompt("/") is None
 
 
 # ----------------------------------------------------------------------------------------- eval

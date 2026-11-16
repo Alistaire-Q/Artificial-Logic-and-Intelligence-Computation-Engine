@@ -98,10 +98,11 @@
         const m = code.slice(i).match(/^@[\w.]+/);
         flush(); out += span("f", m[0]); i += m[0].length; continue;
       }
-      if (L.vars && ch === "$" && /[\w{(]/.test(code[i + 1] || "")) {
-        const m = code.slice(i).match(/^\$(\{[^}]*\}|\(|[\w:]+)/);
-        const lit = L.lit.has(m[0].toLowerCase());
-        flush(); out += span(lit ? "l" : "v", m[0]); i += m[0].length; continue;
+      // Kapanmamış "${" (akış sırasında yarım gelen kod) eşleşmez: düz metin say, yoksa m[0] hata atıyordu.
+      const vm = L.vars && ch === "$" && /[\w{(]/.test(code[i + 1] || "") && code.slice(i).match(/^\$(\{[^}]*\}|\(|[\w:]+)/);
+      if (vm) {
+        const lit = L.lit.has(vm[0].toLowerCase());
+        flush(); out += span(lit ? "l" : "v", vm[0]); i += vm[0].length; continue;
       }
       if (/[A-Za-z_#@!-]/.test(ch) && !/[\w-]/.test(code[i - 1] || "")) {
         const m = code.slice(i).match(L.css ? /^[@!#.]?[\w-]+/ : /^[#@]?[A-Za-z_][\w-]*/);

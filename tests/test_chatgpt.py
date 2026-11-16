@@ -71,6 +71,40 @@ def test_messages_become_responses_items():
          "strict": False}]
 
 
+def test_system_messages_with_parts_reach_instructions():
+    msgs = [{"role": "system", "content": "A"},
+            {"role": "system", "content": [{"type": "text", "text": "B1"}, {"type": "text", "text": "B2"}]},
+            {"role": "system", "content": [{"type": "image_url", "image_url": {"url": "data:x"}}]},
+            {"role": "user", "content": "selam"}]
+    instr, items = to_responses(msgs)
+    assert instr == "A\n\nB1\nB2" and len(items) == 1
+    _, items = to_responses(msgs, codex_prompt="CODEX")
+    assert items[0]["content"] == [{"type": "input_text", "text": "A\n\nB1\nB2"}]
+
+
+def test_tool_result_images_go_as_input_image_not_base64_text():
+    b64 = "QUJD" * 400
+    msgs = [{"role": "user", "content": "bak"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "screen", "arguments": "{}"}},
+                {"id": "c2", "type": "function", "function": {"name": "raw", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": [
+                {"type": "text", "text": "ekran"},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}}]},
+            {"role": "tool", "tool_call_id": "c2", "content": {"png": b64, "name": "x"}},
+            {"role": "user", "content": "devam"}]
+    _, items = to_responses(msgs)
+    out1, out2, img, user = items[3:]
+    assert out1["type"] == "function_call_output" and out1["output"].startswith("ekran") and b64 not in out1["output"]
+    assert out2["type"] == "function_call_output" and b64 not in out2["output"] and '"name": "x"' in out2["output"]
+    # Görüntü, araç çıktıları bitince (aralarına girmeden) kullanıcı mesajı olarak gider.
+    assert img == {"type": "message", "role": "user", "content": [
+        {"type": "input_image", "image_url": f"data:image/png;base64,{b64}"}]}
+    assert user["content"] == [{"type": "input_text", "text": "devam"}]
+    _, items = to_responses(msgs[:3])  # konuşma araç sonucuyla bitiyorsa da görüntü gönderilir
+    assert items[-1]["role"] == "user" and items[-1]["content"][0]["type"] == "input_image"
+
+
 def test_stream_text_tool_call_usage_and_headers():
     chatgpt.save_auth(tokens())
     seen = {}
@@ -98,6 +132,32 @@ def test_stream_text_tool_call_usage_and_headers():
     b = seen["body"]
     assert b["instructions"] == "S" and b["stream"] is True and b["store"] is False
     assert b["reasoning"] == {"effort": "low", "summary": "auto"} and b["tools"][0]["name"] == "weather"
+
+
+def test_chat_maps_response_format_and_does_not_send_max_tokens():
+    chatgpt.save_auth(tokens())
+    bodies = []
+
+    def handler(req):
+        bodies.append(json.loads(req.content))
+        return httpx.Response(200, content=sse({"type": "response.output_text.delta", "delta": "{}"}))
+
+    p = ChatGPTProvider(pc(), client=httpx.Client(transport=httpx.MockTransport(handler)))
+    schema = {"type": "object", "properties": {"a": {"type": "integer"}}}
+    p.chat("gpt-5.5", [{"role": "user", "content": "x"}], max_tokens=50, temperature=0.2,
+           response_format={"type": "json_schema", "json_schema": {"name": "cevap", "schema": schema, "strict": True}})
+    b = bodies[-1]
+    assert b["text"] == {"format": {"type": "json_schema", "name": "cevap", "schema": schema, "strict": True}}
+    # Codex arka ucu max_output_tokens/temperature'ı reddediyor: gönderilmez.
+    assert "max_output_tokens" not in b and "temperature" not in b
+    p.chat("gpt-5.5", [{"role": "user", "content": "x"}], response_format={"type": "json_object"})
+    b = bodies[-1]
+    assert b["text"] == {"format": {"type": "json_object"}}
+    assert b["input"][-1]["role"] == "developer" and "JSON" in b["input"][-1]["content"][0]["text"]
+    p.chat("gpt-5.5", [{"role": "user", "content": "JSON ver"}], response_format={"type": "json_object"})
+    assert len(bodies[-1]["input"]) == 1  # girdide JSON geçiyorsa ek mesaj yok
+    p.chat("gpt-5.5", [{"role": "user", "content": "x"}])
+    assert "text" not in bodies[-1]
 
 
 def test_rejected_instructions_retry_with_codex_prompt(isolated_home):
@@ -419,3 +479,208 @@ def test_request_keeps_its_own_account_when_another_chat_switches():
     # süresi dolmuş anahtar yenilenirken seçili hesap değişmez
     chatgpt.save_auth({"access_token": tokens()["access_token"]}, key="acc2")
     assert chatgpt._store()["active"] == "acc1"
+
+
+def test_stream_cut_mid_tool_call_is_an_error_not_an_empty_call():
+    """Bitiş olayı gelmeden kesilen akışta argümanları gelmemiş araç çağrısı boş argümanla çalıştırılmamalı."""
+    chatgpt.save_auth(tokens())
+
+    def handler(req):
+        return httpx.Response(200, content=sse(
+            {"type": "response.output_item.added", "item": {"type": "function_call", "id": "fc1", "call_id": "c1",
+                                                             "name": "delete_file", "arguments": ""}},
+            {"type": "response.function_call_arguments.delta", "item_id": "fc1", "delta": "{\"pa"}))
+
+    p = ChatGPTProvider(pc(), client=httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(ProviderError) as ei:
+        p.chat("gpt-5.5", [{"role": "user", "content": "x"}], tools=[
+            {"type": "function", "function": {"name": "delete_file", "parameters": {}}}])
+    assert ei.value.kind == "network"
+
+
+def test_concurrent_limit_write_does_not_lose_refreshed_token(monkeypatch):
+    """Bir akışın save_limits'i ile anahtar yenilemenin kaydı aynı anda olunca biri diğerini ezmemeli."""
+    chatgpt.save_auth(tokens())
+    real_write = chatgpt._write
+
+    def slow_write(store):
+        time.sleep(0.15)  # oku-değiştir-yaz arasındaki pencereyi büyüt
+        real_write(store)
+
+    monkeypatch.setattr(chatgpt, "_write", slow_write)
+    t = threading.Thread(target=chatgpt.save_limits, args=({"primary": {"used_percent": 40.0}},))
+    t.start()
+    time.sleep(0.05)
+    chatgpt.save_auth(tokens(refresh="r2"), key="acc1")
+    t.join()
+    acc = chatgpt._store()["accounts"]["acc1"]
+    assert acc["refresh_token"] == "r2" and acc["limits"]["primary"]["used_percent"] == 40.0
+
+
+def test_expired_token_is_refreshed_once_by_concurrent_requests():
+    """refresh_token tek kullanımlık: aynı anda süresi dolan iki istek tek yenileme yapmalı."""
+    chatgpt.save_auth(tokens(exp_in=-10))
+    posts = []
+
+    def handler(req):
+        posts.append(json.loads(req.content)["refresh_token"])
+        time.sleep(0.2)
+        if len(posts) > 1:
+            return httpx.Response(400, json={"error": "refresh_token_reused"})
+        return httpx.Response(200, json=tokens(refresh="r2"))
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    out, errs = [], []
+
+    def run():
+        try:
+            out.append(chatgpt.access(client))
+        except ProviderError as e:
+            errs.append(e)
+
+    threads = [threading.Thread(target=run) for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert posts == ["r1"] and not errs and len(out) == 3
+    assert chatgpt.load_auth()["refresh_token"] == "r2"
+
+
+def test_token_refresh_keeps_models_and_used_up_mark():
+    chatgpt.save_auth(tokens())
+    chatgpt._update(None, models=["gpt-5.5"])
+    chatgpt._mark_exhausted(3600)
+    chatgpt.save_auth({"access_token": tokens()["access_token"], "refresh_token": "r2"}, key="acc1")
+    acc = chatgpt.load_auth("acc1")
+    assert acc["refresh_token"] == "r2" and acc["models"] == ["gpt-5.5"]
+    assert acc["limits"]["primary"]["used_percent"] == 100.0
+    assert chatgpt._next_account(set()) is None  # dolu hesap yenilemeden sonra da dolu
+
+
+def test_context_overflow_in_stream_is_too_large_not_server():
+    chatgpt.save_auth(tokens())
+
+    def handler(req):
+        return httpx.Response(200, content=sse({"type": "response.failed", "response": {"error": {
+            "code": "context_length_exceeded", "message": "Your input exceeds the context window of this model."}}}))
+
+    p = ChatGPTProvider(pc(), client=httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(ProviderError) as ei:
+        p.chat("gpt-5.5", [{"role": "user", "content": "x"}])
+    assert ei.value.kind == "too_large"
+
+
+def test_added_without_call_id_and_done_with_it_gives_one_call():
+    chatgpt.save_auth(tokens())
+
+    def handler(req):
+        return httpx.Response(200, content=sse(
+            {"type": "response.output_item.added", "item": {"type": "function_call", "id": "fc1", "name": "f",
+                                                             "arguments": ""}},
+            {"type": "response.output_item.done", "item": {"type": "function_call", "id": "fc1", "call_id": "c1",
+                                                            "name": "f", "arguments": "{\"a\": 1}"}}))
+
+    p = ChatGPTProvider(pc(), client=httpx.Client(transport=httpx.MockTransport(handler)))
+    r = p.chat("gpt-5.5", [{"role": "user", "content": "x"}], tools=[{"type": "function", "function": {"name": "f"}}])
+    assert [(c["id"], c["function"]["arguments"]) for c in r.message["tool_calls"]] == [("c1", "{\"a\": 1}")]
+
+
+# ------------------------------------------------------------------- gerçek soketle akış süreleri (ilk veri / sessizlik)
+class _SlowSSE:
+    """Yerel HTTP sunucusu: SSE'yi parça parça (chunked) gönderir; adımlar (gecikme, olay) listesi."""
+
+    def __init__(self, steps):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        self.release = threading.Event()
+        outer = self
+
+        class H(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                try:
+                    for delay, ev in steps:
+                        if delay and outer.release.wait(delay):
+                            return
+                        data = sse(ev)
+                        self.wfile.write(f"{len(data):x}\r\n".encode() + data + b"\r\n")
+                        self.wfile.flush()
+                    self.wfile.write(b"0\r\n\r\n")
+                except OSError:
+                    pass
+
+            def log_message(self, *a):
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.server.daemon_threads = True
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def close(self):
+        self.release.set()
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def _fast_provider(url, monkeypatch):
+    import dataclasses
+
+    chatgpt.save_auth(tokens())
+    monkeypatch.setattr(ChatGPTProvider, "FIRST_DATA", 0.6)
+    monkeypatch.setattr(ChatGPTProvider, "STREAM_READ", 5.0)
+    monkeypatch.setattr(ChatGPTProvider, "WATCH_TICK", 0.05)
+    return ChatGPTProvider(dataclasses.replace(pc(), base_url=url), client=httpx.Client())
+
+
+def _delta(t):
+    return {"type": "response.output_text.delta", "delta": t}
+
+
+_DONE = {"type": "response.completed", "response": {"model": "gpt-5.5", "usage": {}}}
+
+
+def test_long_silence_after_first_data_is_not_cut(monkeypatch):
+    """İlk veri geldikten sonra uzun düşünme sessizliği ilk veri sınırıyla kesiliyordu: okuma süresi her aralığa
+    uygulanıyordu. Artık parça arası STREAM_READ."""
+    srv = _SlowSSE([(0, {"type": "response.created"}), (0.05, _delta("Mer")), (1.5, _delta("haba")), (0, _DONE)])
+    try:
+        p = _fast_provider(srv.url, monkeypatch)
+        assert p.chat("gpt-5.5", [{"role": "user", "content": "x"}]).text == "Merhaba"
+    finally:
+        srv.close()
+
+
+def test_no_first_data_still_times_out_at_first_data_limit(monkeypatch):
+    srv = _SlowSSE([(0, {"type": "response.created"}), (10, _delta("geç"))])
+    try:
+        p = _fast_provider(srv.url, monkeypatch)
+        t = time.monotonic()
+        with pytest.raises(ProviderError) as ei:
+            p.chat("gpt-5.5", [{"role": "user", "content": "x"}])
+        assert ei.value.kind == "network" and "ilk cevabı vermedi" in str(ei.value)
+        assert time.monotonic() - t < 3  # STREAM_READ (5 sn) beklenmedi
+    finally:
+        srv.close()
+
+
+def test_cancel_during_silence_stops_promptly(monkeypatch):
+    from alice.providers.openai_compat import StreamCancelled
+
+    srv = _SlowSSE([(0, _delta("a")), (10, _delta("b")), (0, _DONE)])
+    try:
+        p = _fast_provider(srv.url, monkeypatch)
+        t = time.monotonic()
+        with pytest.raises(StreamCancelled):
+            p.chat_stream("gpt-5.5", [{"role": "user", "content": "x"}], lambda d: None,
+                          cancel=lambda: time.monotonic() - t > 0.3)
+        assert time.monotonic() - t < 3
+    finally:
+        srv.close()

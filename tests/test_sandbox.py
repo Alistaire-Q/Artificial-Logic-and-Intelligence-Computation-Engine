@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 
 import pytest
@@ -103,6 +104,88 @@ def test_windows_low_integrity_blocks_writes_outside_project(tmp_path):
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows düşük bütünlük seviyesi")
+def test_sandbox_cannot_read_hidden_secrets(tmp_path):
+    """Low seviye her dosyayı okuyabiliyordu: kandırılmış bir sandbox komutu ~/.alice/phone-token'ı okuyup
+    127.0.0.1'deki telefon sunucusundan bilgisayarı tam yetkiyle yönetebilirdi."""
+    import subprocess
+
+    secret, plain = tmp_path / "phone-token", tmp_path / "acik.txt"
+    secret.write_text("gizli-anahtar", encoding="utf-8")
+    plain.write_text("acik", encoding="utf-8")
+    assert sandbox.hide_from_sandbox(secret)
+    assert secret.read_text(encoding="utf-8") == "gizli-anahtar"  # ALICE'in kendisi okumaya devam eder
+
+    def low_read(p):
+        return subprocess.run([sys.executable, "-m", "alice.sandbox_run", "--", sys.executable, "-c",
+                               f"print(open(r'{p}').read())"], capture_output=True, text=True, timeout=60)
+
+    assert "acik" in low_read(plain).stdout  # kontrol: sandbox gerçekten çalışıyor
+    r = low_read(secret)
+    assert r.returncode != 0 and "gizli-anahtar" not in r.stdout
+
+
+def test_phone_token_is_hidden_from_sandbox(monkeypatch):
+    from alice.app import phone
+
+    seen = []
+    monkeypatch.setattr(sandbox, "hide_from_sandbox", lambda p: seen.append(p.name) or True)
+    t = phone.token(new=True)
+    assert seen == ["phone-token"] and phone.token() == t and seen == ["phone-token", "phone-token"]
+
+
+def _secret_home():
+    from alice.config import alice_home
+
+    home = alice_home()
+    (home / "cliproxy" / "auths").mkdir(parents=True)
+    (home / ".env").write_text("OZEL_SERVIS=gizli-env-degeri\nGEMINI_API_KEY=gizli-gemini\n", encoding="utf-8")
+    (home / "cliproxy" / "keys.txt").write_text("api_key=gizli-proxy\n", encoding="utf-8")
+    (home / "cliproxy" / "auths" / "claude.json").write_text('{"t": "gizli-oturum"}', encoding="utf-8")
+    return home
+
+
+def test_secret_env_is_not_passed_to_sandbox(monkeypatch):
+    """.env'deki API anahtarları ALICE'in ortamına yüklenir; sandbox'taki komut onları ortamdan okuyabiliyordu."""
+    _secret_home()
+    env = {"PATH": "x", "OZEL_SERVIS": "gizli-env-degeri", "GEMINI_API_KEY": "g", "GH_TOKEN": "t",
+           "CLIPROXY_API_KEY": "c", "AWS_SECRET_ACCESS_KEY": "a", "HF_TOKEN": "h", "PYTHONUTF8": "1"}
+    assert sandbox.scrub_env(env) == {"PATH": "x", "PYTHONUTF8": "1"}
+    c = ToolContext(cwd=".", config=make_config({"brain": ["a:m"]}, sandbox_env_allow=["HF_TOKEN"]))
+    assert sandbox.scrub_env(env, c) == {"PATH": "x", "PYTHONUTF8": "1", "HF_TOKEN": "h"}
+
+
+def test_bwrap_and_mac_hide_secret_files(workdir, monkeypatch):
+    home = _secret_home()
+    fake_backend(monkeypatch)
+    monkeypatch.setattr(sandbox, "IS_WIN", False)
+    s = " ".join(sandbox.wrap(["ls"], workdir, ctx(workdir))[0])
+    assert f"--ro-bind /dev/null {home / '.env'}" in s and f"--tmpfs {home / 'cliproxy' / 'auths'}" in s
+    assert f"--ro-bind /dev/null {home / 'cliproxy' / 'keys.txt'}" in s
+    p = sandbox.mac_profile(workdir, True, sandbox.secret_paths())
+    assert "(deny file-read*" in p and json.dumps(str(home / "cliproxy" / "keys.txt")) in p
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows düşük bütünlük seviyesi")
+def test_windows_sandbox_cannot_read_api_keys(tmp_path, monkeypatch):
+    """Canlı denetim: ~/.alice/.env ve ~/.alice/cliproxy/keys.txt sandbox'tan okunabiliyordu, ağ da açık."""
+    home = _secret_home()
+    monkeypatch.setenv("OZEL_SERVIS", "gizli-env-degeri")
+    from alice import config as alice_config
+
+    monkeypatch.setattr(alice_config, "LOADED_ENV_KEYS", {"OZEL_SERVIS"})
+    proj = tmp_path / "proje"
+    proj.mkdir()
+    c = ToolContext(cwd=proj, config=make_config({"brain": ["a:m"]}, sandbox="on"))
+    files = [home / ".env", home / "cliproxy" / "keys.txt", home / "cliproxy" / "auths" / "claude.json"]
+    cmd = "; ".join(f"Get-Content -Raw '{f}'" for f in files) + "; Write-Output \"env=$env:OZEL_SERVIS\""
+    res = TOOLS["run_command"].run(c, cmd)
+    assert "env=" in res.text, res.text  # kontrol: komut gerçekten çalıştı
+    assert "gizli" not in res.text, res.text
+    assert (home / ".env").read_text(encoding="utf-8").startswith("OZEL_SERVIS")  # ALICE okumaya devam eder
+    assert "gizli-oturum" in files[2].read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows düşük bütünlük seviyesi")
 def test_failed_read_is_not_blamed_on_sandbox(tmp_path):
     """Canlı kayıt: olmayan dosyaya bakan Get-Item'ın hatasına sandbox notu eklenince model "indirme klasörüne
     erişim engellendi" sanıp yanlış yöne gitti."""
@@ -122,3 +205,39 @@ def test_sandboxed_command_output_reaches_the_model(tmp_path):
     c = ToolContext(cwd=proj, config=make_config({"brain": ["a:m"]}, sandbox="on"))
     res = TOOLS["run_command"].run(c, "Write-Output merhaba-kum-havuzu; Write-Error hata-satiri")
     assert "merhaba-kum-havuzu" in res.text and "hata-satiri" in res.text
+
+
+def test_git_snapshot_sees_planted_hooks_and_config(tmp_path):
+    import subprocess
+    from pathlib import Path
+
+    from alice import gitsafe
+
+    subprocess.run(["git", "init", "-q", str(tmp_path / "r")], check=True, capture_output=True)
+    sub = tmp_path / "r" / "alt"
+    sub.mkdir()
+    before = gitsafe.snapshot(sub)
+    assert str((tmp_path / "r" / ".git" / "config").resolve()) in before
+    assert gitsafe.changes(before, gitsafe.snapshot(sub)) == [] and gitsafe.warning([]) == ""
+    (tmp_path / "r" / ".git" / "hooks" / "pre-commit").write_text("kotu", encoding="utf-8")
+    with open(tmp_path / "r" / ".git" / "config", "a", encoding="utf-8") as f:
+        f.write("[core]\n\tfsmonitor = kotu\n")
+    changed = gitsafe.changes(before, gitsafe.snapshot(sub))
+    assert [Path(c).name for c in changed] == ["config", "pre-commit"]
+    assert "GÜVENLİK" in gitsafe.warning(changed)
+    assert gitsafe.snapshot(tmp_path) == {}  # depo değil
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows düşük bütünlük seviyesi")
+def test_windows_sandbox_hook_write_is_reported(tmp_path):
+    """Sandbox'taki komut .git/hooks'a yazabiliyor (klasör kilidi yeniden adlandırmayla aşılıyordu): en azından
+    sonuçta uyarı görünmeli."""
+    import subprocess
+
+    proj = tmp_path / "proje"
+    subprocess.run(["git", "init", "-q", str(proj)], check=True, capture_output=True)
+    c = ToolContext(cwd=proj, config=make_config({"brain": ["a:m"]}, sandbox="on"))
+    res = TOOLS["run_command"].run(c, "Write-Output temiz")
+    assert "GÜVENLİK" not in res.text
+    res = TOOLS["run_command"].run(c, "Set-Content -Path .git/hooks/pre-commit -Value 'echo kotu'")
+    assert "GÜVENLİK UYARISI" in res.text and "pre-commit" in res.text, res.text

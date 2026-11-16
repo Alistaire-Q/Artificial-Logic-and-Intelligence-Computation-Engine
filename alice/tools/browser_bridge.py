@@ -19,8 +19,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hmac
 import json
+import os
+import secrets
 import time
+from pathlib import Path
 from typing import Any
 
 DEFAULT_PORT = 9339
@@ -58,6 +62,48 @@ def neutralize(msg: dict[str, Any]) -> dict[str, Any] | None:
 
 def endpoint(port: int = DEFAULT_PORT) -> str:
     return f"ws://127.0.0.1:{port}{PATH}"
+
+
+# Köprü anahtarı: köprü her başlayışta yenisini üretir, ~/.alice/browser-bridge-token'a yazar (sandbox'tan gizli).
+# Origin kontrolü web sayfalarını keser ama sandbox'taki bir program da Origin göndermez: anahtarsız o da kullanıcının
+# tarayıcısını (çerezler, her sekmede JS) sürebiliyordu. ALICE'in Playwright istemcisi anahtarı başlıkta gönderir.
+# Eklenti bu köprüyü kullanmaz (kendi portu 9340, browser_ext).
+TOKEN_HEADER = "X-Alice-Bridge-Token"
+
+
+def token_path() -> Path:
+    from alice.config import alice_home
+
+    return alice_home() / "browser-bridge-token"
+
+
+def read_token() -> str:
+    try:
+        return token_path().read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def write_token() -> str:
+    """Yeni anahtar üret ve yaz. Dosya önce geçici adla yazılıp sandbox'tan gizlenir, sonra yerine taşınır: anahtar
+    hiçbir an okunabilir durmaz."""
+    token = secrets.token_urlsafe(32)
+    path = token_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(token, encoding="utf-8")
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    try:
+        from alice.sandbox import hide_from_sandbox
+
+        hide_from_sandbox(tmp)
+    except Exception:  # noqa: BLE001 - etiket konamazsa anahtar yine çalışır
+        pass
+    os.replace(tmp, path)
+    return token
 
 
 class Bridge:
@@ -252,20 +298,40 @@ class Bridge:
             self.log("istemci ayrıldı")
 
 
-def _health(connection, request, bridge: Bridge | None = None):
+LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]"}
+
+
+def _health(connection, request, bridge: Bridge | None = None, token: str | None = None):
+    # Köprü kullanıcının tarayıcısına tam CDP erişimi verir (çerezler, her sekmede JS). Tarayıcılar her WebSocket
+    # el sıkışmasında Origin gönderir, Playwright/websockets istemcileri göndermez: Origin'li istek açılmış bir web
+    # sayfasından gelir, reddedilir. Host kontrolü DNS rebinding'i keser. token verilmişse bağlantı için anahtar şart
+    # (sağlık kontrolü /alice-bridge anahtarsız: tarayıcıya erişim vermez).
+    headers = getattr(request, "headers", None) or {}
+    if headers.get("Origin") is not None:
+        return connection.respond(403, "forbidden\n")
+    host = headers.get("Host")
+    if host is not None and host.rsplit(":", 1)[0].lower() not in LOCAL_HOSTS:
+        return connection.respond(403, "forbidden\n")
     if request.path == "/alice-bridge":
         if bridge is not None and bridge.closed.is_set():
             return connection.respond(503, "closing\n")  # kapanan köprüye bağlanılmasın, yenisi başlatılsın
         return connection.respond(200, "alice-bridge\n")
+    if token and not hmac.compare_digest(str(headers.get(TOKEN_HEADER) or "").encode(), token.encode()):
+        return connection.respond(403, "forbidden\n")
     return None
 
 
-async def serve(port: int, log=print, bridge: Bridge | None = None) -> None:
+async def serve(port: int, log=print, bridge: Bridge | None = None, auth: bool = True) -> None:
     from websockets.asyncio.server import serve as ws_serve
 
     bridge = bridge or Bridge(log=log)
+    key: dict[str, str | None] = {"token": None}
     async with ws_serve(bridge.handle, "127.0.0.1", port, max_size=None, ping_interval=None,
-                        process_request=lambda c, r: _health(c, r, bridge)):
+                        process_request=lambda c, r: _health(c, r, bridge, key["token"] if auth else None)):
+        # Anahtar port alındıktan SONRA yazılır (aynı adımda, araya istek girmeden): port doluysa (başka köprü çalışıyor)
+        # onun anahtarı ezilmesin.
+        if auth:
+            key["token"] = write_token()
         log(f"köprü dinliyor: {endpoint(port)}")
         await bridge.closed.wait()
 

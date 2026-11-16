@@ -51,6 +51,16 @@ def test_logs_show_sent_and_feedback():
     assert v["run"]["state"] == "idle"
 
 
+def test_logs_view_survives_malformed_results_file():
+    p = evals.results_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    for bad in ("[1, 2]", '"metin"', "null", '{"ts": "dün", "passed": 1}', '{"ts": [1]}'):
+        p.write_text(bad, encoding="utf-8")
+        assert j().logs_view()["last_run"] is None, bad  # Kayıtlar sekmesi 500 vermeden açılır
+    p.write_text('{"ts": 0, "passed": 3, "total": 4}', encoding="utf-8")
+    assert j().logs_view()["last_run"]["passed"] == 3
+
+
 def test_eval_runs_in_background_with_progress(monkeypatch):
     p = j()
     assert not p.logs_action("eval_run", {})["ok"]  # boş set

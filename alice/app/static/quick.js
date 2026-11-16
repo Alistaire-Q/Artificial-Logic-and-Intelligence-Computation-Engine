@@ -9,6 +9,7 @@ const q = $("#q"), out = $("#out"), statusEl = $("#status"), mic = $("#mic");
 let image = null;   // base64 PNG
 let cur = null;     // akan cevap: {el, text}
 let busy = false;
+let session = "";   // öndeki sohbet: olay akışı bütün sohbetlerin (arkadakiler, telefon) olaylarını taşır
 
 async function api(path, body) {
   const opts = { headers: { "X-Alice-Token": TOKEN } };
@@ -50,6 +51,9 @@ async function send(text) {
   text = (text ?? q.value).trim();
   if (!text && !image) return;
   if (busy) { setStatus("önceki iş sürüyor (Esc durdurur)"); return; }
+  // Mesaj öndeki sohbete gider; masaüstünde sohbet değişmiş olabilir (her değişim olay olarak gelmiyor).
+  const st = await api("/api/state");
+  if (st && st.session) session = st.session;
   const r = await api("/api/send", { text: text || "Bu ekran görüntüsünde ne var? Bir hata varsa açıkla ve çözümünü söyle.",
                                      images: image ? [image] : [] });
   if (!r.ok) { addErr(r.error || "gönderilemedi"); return; }
@@ -62,6 +66,7 @@ function addErr(t) { out.appendChild(el("div", "err", t)); show(); }
 
 /* ---------------------------------------------------------------- olaylar */
 const handlers = {
+  status: (ev) => { if (ev.session) session = ev.session; },
   user: (ev) => { out.appendChild(el("div", "user", ev.text)); show(); },
   busy: (ev) => { busy = ev.value; setStatus(busy ? "düşünüyor…" : ""); },
   stream_start: () => { cur = null; },
@@ -118,6 +123,8 @@ function connect() {
   es.onmessage = (m) => {
     let ev;
     try { ev = JSON.parse(m.data); } catch { return; }
+    // Arkadaki sohbetin ya da telefonun akışı, izin kartı ve "bitti" olayı hızlı bara karışmasın.
+    if (ev.sid && session && ev.sid !== session) return;
     if (handlers[ev.type]) handlers[ev.type](ev);
   };
 }
@@ -173,7 +180,7 @@ document.addEventListener("keydown", (e) => {
     if (busy) api("/api/stop", {}); else window.close();
   } else if (e.ctrlKey && e.key.toLowerCase() === "n") {
     e.preventDefault();
-    api("/api/new", {}).then(() => { out.innerHTML = ""; out.hidden = true; });
+    api("/api/new", {}).then((r) => { if (r && r.session) session = r.session; out.innerHTML = ""; out.hidden = true; });
   } else if (e.ctrlKey && e.code === "Space" && !spaceHeld) {
     e.preventDefault();
     spaceHeld = true;

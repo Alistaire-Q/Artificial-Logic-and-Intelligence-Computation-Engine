@@ -100,6 +100,28 @@ def test_web_fetch_missing_content_type(ctx, monkeypatch):
     assert web.WebFetch().run(ctx, url="https://a").text.endswith("<p>x</p>")
 
 
+def test_web_fetch_binary_content_returns_summary(ctx, monkeypatch):
+    # Resim/zip gibi ikili içerik eskiden r.text ile anlamsız karakter yığını olarak dönüyordu.
+    png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR" + bytes(range(256)) * 4
+
+    def fake_get(url, **kw):
+        ctype = "image/png" if url.endswith("png") else None
+        return httpx.Response(200, headers={"content-type": ctype} if ctype else {}, content=png,
+                              request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(web.httpx, "get", fake_get)
+    for url, ctype in (("https://bin.example/logo.png", "image/png"), ("https://bin.example/blob", "türü belirtilmemiş")):
+        out = web.WebFetch().run(ctx, url=url).text
+        assert "ikili içerik" in out and ctype in out and f"{len(png)} bayt" in out
+        assert "IHDR" not in out
+
+
+def test_web_fetch_octet_stream_text_still_shown(ctx, monkeypatch):
+    monkeypatch.setattr(web.httpx, "get",
+                        lambda url, **kw: _resp(url, "düz metin şğü", ctype="application/octet-stream"))
+    assert web.WebFetch().run(ctx, url="https://bin.example/notes").text.endswith("düz metin şğü")
+
+
 def test_web_fetch_http_error_status(ctx, monkeypatch):
     monkeypatch.setattr(web.httpx, "get", lambda url, **kw: _resp(url, "yok", status=404, ctype="text/plain"))
     r = web.WebFetch().run(ctx, url="https://a/b")
@@ -413,3 +435,28 @@ def test_web_search_caches_engine_results(ctx, monkeypatch):
     # Farklı sorgu önbelleğe takılmaz.
     web.WebSearch().run(ctx, query="başka sorgu")
     assert len(calls) == 2
+
+
+def test_http_request_interrupted_download_keeps_existing_file(ctx, monkeypatch, workdir):
+    client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, content=b"yeni")))
+    monkeypatch.setattr(web.httpx, "stream", lambda method, url, **kw: client.stream(method, url, **kw))
+    (workdir / "f.bin").write_bytes(b"eski ve saglam")
+    monkeypatch.setattr(ctx, "cancelled", lambda: True)
+    with pytest.raises(ToolError, match="durdurdu"):
+        web.HttpRequest().run(ctx, url="https://a/f.bin", save_to="f.bin")
+    assert (workdir / "f.bin").read_bytes() == b"eski ve saglam"
+    assert [p.name for p in workdir.iterdir()] == ["f.bin"]  # yarım .part kalmaz
+
+
+def test_http_request_env_secret_in_url_not_echoed(ctx, monkeypatch):
+    monkeypatch.setenv("ALICE_TEST_KEY", "cokgizli")
+    seen = {}
+
+    def fake_request(method, url, **kw):
+        seen["url"] = url
+        return httpx.Response(200, text="ok", request=httpx.Request(method, url))
+
+    monkeypatch.setattr(web.httpx, "request", fake_request)
+    r = web.HttpRequest().run(ctx, url="https://api.x/v1?key=${env:ALICE_TEST_KEY}")
+    assert seen["url"].endswith("key=cokgizli")
+    assert "cokgizli" not in r.text and "${env:ALICE_TEST_KEY}" in r.text

@@ -330,6 +330,21 @@ def test_write_roles_adds_missing_role(isolated_home):
     assert tomllib.loads(path.read_text(encoding="utf-8"))["roles"]["vision"] == ["auto", "gemini:x"]
 
 
+def test_write_roles_only_touches_roles_section_with_comment_header(isolated_home):
+    init_home()
+    path = alice_home() / "config.toml"
+    path.write_text('[other]\nvision = ["dokunma"]\n\n[roles]  # modeller\nbrain = [\n  "a:b",  # ilk\n  "c:d",\n]'
+                    '  # beyin\n\n[thinking]\nfast = "off"\n', encoding="utf-8")
+    cli.write_roles({"brain": ["auto", "x:y"], "vision": ["auto", "gemini:x"]})
+    from alice.config import tomllib
+
+    text = path.read_text(encoding="utf-8")
+    data = tomllib.loads(text)
+    assert data["roles"] == {"brain": ["auto", "x:y"], "vision": ["auto", "gemini:x"]}
+    assert data["other"]["vision"] == ["dokunma"] and data["thinking"]["fast"] == "off"
+    assert "[roles]  # modeller" in text and text.count("[roles]") == 1
+
+
 # ------------------------------------------------------------ default_workspace
 def test_default_workspace_prefers_config_then_last_cwd(isolated_home, tmp_path, monkeypatch):
     fake_home = tmp_path / "home"

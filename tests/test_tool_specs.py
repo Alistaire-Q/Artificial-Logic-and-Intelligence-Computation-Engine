@@ -70,3 +70,15 @@ def test_empty_string_is_not_missing():
     # edit_file new_string="" metni silmek demek; boş içerikli dosya yazmak da geçerli.
     assert check_args(_tool("edit_file"), {"path": "a", "old_string": "x", "new_string": ""}) == ""
     assert check_args(_tool("write_file"), {"path": "a", "content": ""}) == ""
+
+
+def test_truncate_zero_or_negative_limit_does_not_return_whole_text():
+    # text[-0:] eskiden bütün metni döndürüyordu.
+    from alice.tools.base import truncate
+    text = "x" * 50
+    for limit in (0, -3):
+        out = truncate(text, limit)
+        assert out == "... [50 karakter kesildi] ..." and "x" not in out
+    assert truncate("", 0) == ""
+    out = truncate(text, 10)
+    assert out.startswith("xxxxxx\n") and out.endswith("\nxxxx") and "40 karakter kesildi" in out

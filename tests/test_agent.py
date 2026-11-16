@@ -407,3 +407,43 @@ def test_request_prefix_stays_identical_for_prompt_cache(workdir):
     agent.memory.remember("Kullanıcı kısa cevap sever.", "preference", source="kullanıcı")
     agent.refresh_memory()
     assert agent.messages[0]["content"] != system1  # kullanıcı hafızayı değiştirince yenilenir
+
+
+def test_stop_during_turn_setup_is_not_lost(workdir):
+    # Durdur, hatırlama/kurulum sırasında basılırsa tur modele gitmeden durmalı (bayrak sonradan silinmemeli).
+    calls = []
+
+    def model(model, messages, tools, **kw):
+        calls.append(1)
+        return "cevap"
+
+    agent, _, ui = make_agent(model, workdir, stream=False)
+
+    def recall(text):
+        agent.stop()
+        return ""
+
+    agent._recall = recall
+    agent.run_turn("merhaba")
+    assert calls == []
+    assert ("info", "durduruldu") in ui.events
+    agent._recall = lambda text: ""
+    assert agent.run_turn("tekrar") == "cevap"  # sonraki tur temiz başlar
+
+
+def test_stop_check_catches_stop_pressed_just_before_turn(workdir):
+    # Takım üyesi: Durdur, takımın son kontrolü ile run_turn'ün bayrağı temizlemesi arasına düşerse kaybolmasın.
+    calls = []
+
+    def model(model, messages, tools, **kw):
+        calls.append(1)
+        return "cevap"
+
+    agent, _, _ui = make_agent(model, workdir, stream=False)
+    agent._recall = lambda text: ""
+    wanted = [True]
+    agent.stop_check = lambda: wanted[0]
+    agent.run_turn("merhaba")
+    assert calls == []
+    wanted[0] = False
+    assert agent.run_turn("tekrar") == "cevap"

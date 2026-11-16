@@ -131,6 +131,8 @@ class PCMonitor:
             except (PermissionError, OSError):
                 continue
             out.append((f"pc.disk.{_key_part(part.mountpoint)}.percent", u.percent, None))
+            # Yüzde büyük veri diskinde (F: hep %98) gürültü, küçük sistem diskinde geç kalır: boş GB de yazılsın.
+            out.append((f"pc.disk.{_key_part(part.mountpoint)}.free_gb", round(u.free / 1024 ** 3, 2), None))
         return out
 
     def _temps(self) -> list[Row]:

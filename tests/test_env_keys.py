@@ -220,3 +220,6 @@ def test_page_allows_voice_preview_audio(app):
     csp = client.get("/?t=" + state.token).headers["Content-Security-Policy"]
     media = next(p for p in csp.split(";") if p.strip().startswith("media-src"))
     assert "data:" in media and "default-src 'none'" in csp
+    # PDF önizlemesi blob: adresinden çerçevede açılır; 'self' blob:'u kapsamaz.
+    frame = next(p for p in csp.split(";") if p.strip().startswith("frame-src"))
+    assert "blob:" in frame and "'self'" in frame

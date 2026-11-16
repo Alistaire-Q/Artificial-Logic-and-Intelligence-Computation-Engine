@@ -231,7 +231,9 @@ class Schedule(Tool):
         if not id:
             raise ToolError("id gerekli")
         if action == "remove":
-            return ToolResult("silindi" if ts.remove(id) else f"görev yok: {id}")
+            if not ts.remove(id):  # bilinmeyen id hata sayılsın: model silindi sanmasın
+                raise ToolError(f"görev yok: {id}. Kimlikler için action=list")
+            return ToolResult("silindi")
         task = ts.get(id)
         if task is None:
             raise ToolError(f"görev yok: {id}")
