@@ -931,7 +931,8 @@ def load_env_file(path: Path) -> None:
     """Basit KEY=VALUE parser. Zaten tanımlı ortam değişkenlerinin üstüne yazmaz."""
     if not path.is_file():
         return
-    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    # utf-8-sig: Not Defteri'nin eklediği BOM ilk anahtarın adına yapışıp ("﻿GEMINI_API_KEY") onu yok ediyordu.
+    for raw in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue

@@ -48,3 +48,16 @@ def test_set_config_value_on_default_config_stays_valid(tmp_path, monkeypatch):
     data = tomllib.loads((tmp_path / "config.toml").read_text(encoding="utf-8"))
     assert data["kairos"]["enabled"] is True and data["buddy"]["chatter"] is False
     assert data["voice"]["gemini_tts_models"] == ["m1"] and data["voice"]["stt_cpu_model"] == "small"
+
+
+def test_env_file_with_bom_loads_first_key(tmp_path, monkeypatch):
+    import os
+
+    from alice.config import load_env_file
+
+    monkeypatch.delenv("BOMTEST_KEY", raising=False)
+    env = tmp_path / ".env"
+    env.write_text("﻿BOMTEST_KEY=abc\n", encoding="utf-8")
+    load_env_file(env)
+    assert os.environ.get("BOMTEST_KEY") == "abc"
+    monkeypatch.delenv("BOMTEST_KEY", raising=False)
