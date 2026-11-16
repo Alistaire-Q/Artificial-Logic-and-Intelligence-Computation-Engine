@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from alice.tools.base import WRITE, Tool, ToolContext, ToolError, ToolResult, make_diff, obj
-from alice.tools.files import _read_text, file_encoding, mark_read, snapshot, write_encoded
+from alice.tools.files import FileOps, _read_text, file_encoding, mark_read, require_read, snapshot, write_encoded
 
 BEGIN, END = "*** Begin Patch", "*** End Patch"
 ADD, DELETE, UPDATE, MOVE, EOF_ = "*** Add File: ", "*** Delete File: ", "*** Update File: ", "*** Move to: ", \
@@ -172,6 +172,9 @@ class ApplyPatch(Tool):
         # diskteki hâli okuyup sonuncusu öncekileri sessizce siliyordu.
         pending: dict[Path, str | None] = {}  # yol -> yeni içerik ya da None=sil
         encodings: dict[Path, str] = {}  # dosyanın özgün kodlaması (UTF-16/BOM/cp1254 korunur)
+        # Delete File çöpe gider (file_ops delete gibi, geri alınabilir); Move to'nun kaynağı ise içeriği hedefe
+        # yazıldığı için doğrudan kaldırılır.
+        to_trash: set[Path] = set()
         diffs: list[str] = []
         report: list[str] = []
 
@@ -200,12 +203,15 @@ class ApplyPatch(Tool):
                 if before is None:
                     raise ToolError(f"silinecek dosya yok: {op.path}")
                 pending[p] = None
+                to_trash.add(p)
                 diffs.append(make_diff(op.path, before, ""))
                 report.append(f"D {op.path}")
             else:
                 before = current(p)
                 if before is None:
                     raise ToolError(f"düzenlenecek dosya yok: {op.path}")
+                if p not in pending:
+                    require_read(ctx, p)  # edit_file ile aynı kural: okunmamış/okunduktan sonra değişmiş dosya düzenlenmez
                 after = apply_chunks(before, op.chunks, op.path) if op.chunks else before
                 if op.move_to:
                     dest = ctx.resolve(op.move_to)
@@ -214,23 +220,32 @@ class ApplyPatch(Tool):
                     encodings[dest] = encoding_of(p)
                     pending[dest] = after
                     pending[p] = None
+                    to_trash.discard(p)
                     report.append(f"R {op.path} -> {op.move_to}")
                 else:
                     encoding_of(p)
                     pending[p] = after
+                    to_trash.discard(p)
                     report.append(f"M {op.path}")
                 diffs.append(make_diff(op.move_to or op.path, before.replace("\r\n", "\n"),
                                        after.replace("\r\n", "\n")))
         for p in pending:
             snapshot(ctx, p)
+        trashed: list[str] = []
         for p, body in pending.items():
             if body is None:
-                p.unlink(missing_ok=True)  # aynı yamada eklenip silinen dosya diskte hiç olmadı
+                if p in to_trash and p.is_file():
+                    trashed.append(f"{p.name} -> {FileOps._trash(ctx, p)}")  # noqa: SLF001
+                else:
+                    p.unlink(missing_ok=True)  # aynı yamada eklenip silinen dosya diskte hiç olmadı
             else:
                 p.parent.mkdir(parents=True, exist_ok=True)
                 write_encoded(p, body, encodings.get(p, "utf-8"))
                 mark_read(ctx, p)  # kendi yazdığı hâli biliyor: ardından edit_file "diskte değişti" demesin
-        return ToolResult("yama uygulandı:\n" + "\n".join(report), diff="\n".join(d for d in diffs if d))
+        text = "yama uygulandı:\n" + "\n".join(report)
+        if trashed:
+            text += "\nsilinenler ALICE çöpünde:\n" + "\n".join(trashed)
+        return ToolResult(text, diff="\n".join(d for d in diffs if d))
 
 
 TOOLS = [ApplyPatch()]

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from alice.tools import ToolContext
-from alice.tools.files import EditFile, ReadFile
+from alice.tools.files import EditFile, ReadFile, mark_read
 from tests.conftest import make_config
 
 
@@ -96,6 +96,7 @@ def test_apply_patch_two_updates_same_file_both_kept(ctx, workdir):
     (workdir / "a.py").write_text("x = 1\ny = 2\nz = 3\n", encoding="utf-8")
     patch = ("*** Begin Patch\n*** Update File: a.py\n-x = 1\n+x = 10\n"
              "*** Update File: a.py\n-z = 3\n+z = 30\n*** End Patch")
+    mark_read(ctx, workdir / "a.py")
     ApplyPatch().run(ctx, patch=patch)
     assert (workdir / "a.py").read_text(encoding="utf-8") == "x = 10\ny = 2\nz = 30\n"
 
@@ -109,6 +110,8 @@ def test_apply_patch_keeps_encoding_and_marks_read(ctx, workdir):
     g.write_bytes("şey\r\n".encode("utf-16"))
     patch = ("*** Begin Patch\n*** Update File: s.ps1\n-Write-Host 'ç'\n+Write-Host 'ğ'\n"
              "*** Update File: u.txt\n*** Move to: v.txt\n-şey\n+öz\n*** End Patch")
+    mark_read(ctx, f)
+    mark_read(ctx, g)
     ApplyPatch().run(ctx, patch=patch)
     assert f.read_bytes() == "﻿Write-Host 'ğ'\r\n".encode("utf-8")
     assert not g.exists() and (workdir / "v.txt").read_bytes() == "öz\r\n".encode("utf-16")

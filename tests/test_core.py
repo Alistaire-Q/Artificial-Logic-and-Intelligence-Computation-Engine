@@ -14,6 +14,7 @@ from alice.core.service import Core, force_mode, read_state
 from alice.core.store import MODE_KEY, Store, parse_time
 from alice.decider import Answer, Decision
 from alice.tools import ToolContext
+from alice.tools.base import ToolError
 from alice.tools.core import Metrics, Rules, Schedule
 
 
@@ -348,6 +349,11 @@ def test_tools(tmp_path, isolated_home):
     tid = TaskStore().tasks[0].id
     s.run(ctx, action="run_now", id=tid)
     assert TaskStore().due()[0][0].id == tid
+    # Bilinmeyen id ile remove hata olmalı (eskiden başarılı sonuç dönüyordu).
+    with pytest.raises(ToolError, match="görev yok"):
+        s.run(ctx, action="remove", id="olmayan-gorev")
+    assert s.run(ctx, action="remove", id=tid).text == "silindi"
+    assert TaskStore().get(tid) is None
 
 
 def test_desktop_toasts_skip_flight_and_repeats(monkeypatch, tmp_path):

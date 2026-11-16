@@ -865,7 +865,7 @@ class Grep(Tool):
                 note = _limit_note(f"{SEARCH_MAX_FILES} dosyaya bakıldı")
                 truncated = True
                 break
-            if glob and not _glob_match(f.name, glob):
+            if glob and not _glob_match(f.name, glob, f.relative_to(base).as_posix() if base.is_dir() else f.name):
                 continue
             try:
                 if f.stat().st_size > SEARCH_MAX_BYTES or _is_binary(f):
@@ -911,12 +911,18 @@ class Grep(Tool):
                 yield Path(root) / name
 
 
-def _glob_match(name: str, pattern: str) -> bool:
-    """fnmatch + '*.{ts,tsx}' gibi süslü parantezli seçenekler (rg -g ile aynı davranış)."""
+def _glob_match(name: str, pattern: str, rel: str | None = None) -> bool:
+    """fnmatch + '*.{ts,tsx}' gibi süslü parantezli seçenekler (rg -g ile aynı davranış).
+    rg gibi: desende '/' varsa (ör. 'src/**/*.py') arama köküne göre göreli yola (rel), yoksa dosya adına bakılır."""
     m = re.search(r"\{([^{}]*)\}", pattern)
     if m:
-        return any(_glob_match(name, pattern[:m.start()] + alt + pattern[m.end():]) for alt in m.group(1).split(","))
-    return fnmatch.fnmatch(name, pattern)
+        return any(_glob_match(name, pattern[:m.start()] + alt + pattern[m.end():], rel)
+                   for alt in m.group(1).split(","))
+    pat = pattern.replace("\\", "/")
+    if "/" in pat.rstrip("/"):
+        target = (rel if rel is not None else name).replace("\\", "/")
+        return bool(glob_regex(pat.lstrip("/")).match(target))
+    return fnmatch.fnmatch(name, pat.rstrip("/"))
 
 
 def _same_file(a: Path, b: Path) -> bool:

@@ -100,6 +100,28 @@ def test_web_fetch_missing_content_type(ctx, monkeypatch):
     assert web.WebFetch().run(ctx, url="https://a").text.endswith("<p>x</p>")
 
 
+def test_web_fetch_binary_content_returns_summary(ctx, monkeypatch):
+    # Resim/zip gibi ikili içerik eskiden r.text ile anlamsız karakter yığını olarak dönüyordu.
+    png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR" + bytes(range(256)) * 4
+
+    def fake_get(url, **kw):
+        ctype = "image/png" if url.endswith("png") else None
+        return httpx.Response(200, headers={"content-type": ctype} if ctype else {}, content=png,
+                              request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(web.httpx, "get", fake_get)
+    for url, ctype in (("https://bin.example/logo.png", "image/png"), ("https://bin.example/blob", "türü belirtilmemiş")):
+        out = web.WebFetch().run(ctx, url=url).text
+        assert "ikili içerik" in out and ctype in out and f"{len(png)} bayt" in out
+        assert "IHDR" not in out
+
+
+def test_web_fetch_octet_stream_text_still_shown(ctx, monkeypatch):
+    monkeypatch.setattr(web.httpx, "get",
+                        lambda url, **kw: _resp(url, "düz metin şğü", ctype="application/octet-stream"))
+    assert web.WebFetch().run(ctx, url="https://bin.example/notes").text.endswith("düz metin şğü")
+
+
 def test_web_fetch_http_error_status(ctx, monkeypatch):
     monkeypatch.setattr(web.httpx, "get", lambda url, **kw: _resp(url, "yok", status=404, ctype="text/plain"))
     r = web.WebFetch().run(ctx, url="https://a/b")
