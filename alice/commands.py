@@ -70,8 +70,8 @@ SECURITY_PROMPT = (
 
 def builtin_prompt(text: str) -> str | None:
     """Model'e mesaj olarak giden yerleşik komutlar (/init, /kurul, /review, /security-review); değilse None."""
-    name, _, args = text.strip()[1:].partition(" ")
-    name, args = name.lower(), args.strip()
+    name, args = _split(text.strip())
+    name = name.lower()
     if name == "init":
         return INIT_PROMPT
     if name == "kurul":
@@ -159,6 +159,13 @@ def expand_custom(text: str, cwd: Path) -> str | None:
     """'/isim argümanlar' özel bir komutsa genişletilmiş mesajı döndür, değilse None."""
     if not text.startswith("/"):
         return None
-    name, _, args = text[1:].partition(" ")
+    name, args = _split(text)
     cmd = load_custom(cwd).get(name.lower())
-    return cmd.expand(args.strip()) if cmd else None
+    return cmd.expand(args) if cmd else None
+
+
+def _split(text: str) -> tuple[str, str]:
+    """'/ad argümanlar' -> (ad, argümanlar). Ad ilk boşlukta ya da satır sonunda biter: "/kurul\\nkonu" (Shift+Enter)
+    eskiden yalnız boşlukta bölündüğü için ad "kurul\\nkonu" sayılıyor ve "bilinmeyen komut" deniyordu."""
+    parts = text[1:].split(None, 1)
+    return (parts[0] if parts else ""), (parts[1].strip() if len(parts) > 1 else "")
