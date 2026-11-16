@@ -113,3 +113,20 @@ def test_is_gui_exe_reads_pe_subsystem():
     pyw = exe.with_name("pythonw.exe")
     if pyw.exists():
         assert sh._is_gui_exe(str(pyw)) is True
+
+
+def test_process_output_tail_chars_zero_or_negative_returns_no_output(ctx, tmp_path):
+    # data[-0:] eskiden bütün logu döndürüyordu.
+    import time
+
+    from alice.tools.shell import BgProc, ProcessOutput
+    log = tmp_path / "bg.log"
+    log.write_text("satir1\nsatir2\nSON", encoding="utf-8")
+    pop = MagicMock()
+    pop.poll.return_value = 0
+    pop.returncode = 0
+    ctx.state["bg_procs"] = {42: BgProc(42, "x", pop, log, time.time())}
+    po = ProcessOutput()
+    assert po.run(ctx, pid=42, tail_chars=3).text.endswith("SON")
+    for n in (0, -5):
+        assert po.run(ctx, pid=42, tail_chars=n).text == "pid=42 bitti (kod 0)"

@@ -261,7 +261,8 @@ class ProcessOutput(Tool):
                    "- ALICE'in başlatmadığı programlar için process_list.")
     parameters = obj({
         "pid": {"type": "integer", "description": "run_command'ın döndürdüğü pid. Boş: tüm arka plan süreçleri."},
-        "tail_chars": {"type": "integer", "description": "Çıktının sonundan kaç karakter. Varsayılan 4000."},
+        "tail_chars": {"type": "integer", "description": "Çıktının sonundan kaç karakter. Varsayılan 4000; "
+                       "0: çıktı yok, yalnız durum."},
     })
 
     def run(self, ctx: ToolContext, pid: int | None = None, tail_chars: int = 4000) -> ToolResult:
@@ -277,7 +278,11 @@ class ProcessOutput(Tool):
             raise ToolError(f"pid {pid} ALICE tarafından başlatılmamış")
         data = p.log.read_bytes().decode("utf-8", errors="replace") if p.log.exists() else ""
         state = "çalışıyor" if p.popen.poll() is None else f"bitti (kod {p.popen.returncode})"
-        return ToolResult(f"pid={pid} {state}\n{data[-tail_chars:]}")
+        # data[-0:] bütün logu döndürüyordu: 0 ve negatif "çıktı yok, yalnız durum" demek.
+        n = int(tail_chars or 0)
+        if n <= 0:
+            return ToolResult(f"pid={pid} {state}")
+        return ToolResult(f"pid={pid} {state}\n{data[-n:]}")
 
 
 class ProcessStop(Tool):
