@@ -1070,3 +1070,8 @@ Testler sahte sağlayıcılarla router geçişlerini, ajan döngüsünü (araç 
 * [Jev pricing](https://www.mindstudio.ai/blog/jev-pricing-cost-per-token)
 * [Cua: Jev, System One models, and the future of computer use](https://x.com/trycua/status/2101437979180904640)
 * [Jev Ultrafast web agent architecture](https://dev.to/terminalchai/jev-ultrafast-the-sub-10-second-web-agent-architecture-1728)
+
+## License
+
+ALICE is licensed under the [GNU Affero General Public License v3.0](LICENSE). Contributions are accepted under
+the [Contributor License Agreement](CLA.md); see [CONTRIBUTING.md](CONTRIBUTING.md) for how to contribute.
