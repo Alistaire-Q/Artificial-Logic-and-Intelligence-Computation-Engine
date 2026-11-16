@@ -47,26 +47,31 @@ def log(tool: str, summary: str, outcome: str, args: dict[str, Any] | None = Non
         pass  # kayıt yazılamadı diye eylem durmasın
 
 
-def recent(limit: int = 50, since: float = 0.0) -> list[dict[str, Any]]:
-    """En yeniden eskiye."""
+def _read_lines(p: Path) -> list[str]:
     try:
         # Yarım yazılmış (çökme/elektrik kesintisi) satırdaki bozuk bayt UnicodeDecodeError ile bütün kaydı
         # okunmaz yapıyordu ("bugün kime ne yazdın" sorusu hata veriyordu).
-        lines = path().read_text(encoding="utf-8", errors="replace").splitlines()
+        return p.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return []
-    out = []
-    for line in reversed(lines):
-        try:
-            row = json.loads(line)
-            ts = float(row.get("ts") or 0)
-        except (ValueError, TypeError, AttributeError):
-            continue
-        if ts < since:
-            break
-        out.append(row)
-        if len(out) >= limit:
-            break
+
+
+def recent(limit: int = 50, since: float = 0.0) -> list[dict[str, Any]]:
+    """En yeniden eskiye. Dosya döndüyse istenen pencere `.1`'den tamamlanır: dönüşten hemen sonra bugünün
+    önceki kayıtları kaybolmuş gibi görünüyordu. İki dosya kilit altında okunur ki arada dönüş olmasın."""
+    p = path()
+    out: list[dict[str, Any]] = []
+    with _lock:
+        for f in (p, p.with_suffix(".jsonl.1")):
+            for line in reversed(_read_lines(f)):
+                try:
+                    row = json.loads(line)
+                    ts = float(row.get("ts") or 0)
+                except (ValueError, TypeError, AttributeError):
+                    continue
+                if ts < since or len(out) >= limit:
+                    return out
+                out.append(row)
     return out
 
 
