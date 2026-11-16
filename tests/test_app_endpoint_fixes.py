@@ -43,3 +43,17 @@ def test_prs_bad_number_is_400(app, path, number):
     r = client.post(path, json={"repo": "o/r", "number": number})
     assert r.status_code == 400 and r.json()["ok"] is False
     assert client.post(path, json={"repo": "o/r"}).status_code == 400  # eksik number da 400
+
+
+def test_resume_empty_id_is_400_and_keeps_current_chat(app, monkeypatch):
+    from alice import session as sess
+
+    state, client = app
+    before = state.chat.sid
+    calls = []
+    monkeypatch.setattr(sess, "load", lambda sid, *a, **k: calls.append(sid))
+    for body in ({}, {"id": ""}, {"id": "  "}, {"id": None}, {"id": "", "detached": True}):
+        r = client.post("/api/resume", json=body)
+        assert r.status_code == 400 and r.json()["ok"] is False, body
+    assert state.resume("") is False
+    assert calls == [] and state.chat.sid == before  # en son sohbet açılmadı

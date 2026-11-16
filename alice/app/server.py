@@ -835,6 +835,8 @@ class AppState:
         return None
 
     def resume(self, sid: str) -> bool:
+        if not sid:  # sess.load("") en son sohbeti açar: boş kimlik "o sohbet" değil
+            return False
         with self._chats_lock:
             if sid == self.chat.sid:
                 return True
@@ -2794,13 +2796,15 @@ def make_handler(state: AppState):
                     err = state.new_session()
                     return self._json({"ok": not err, "error": err, **state.status()}, 409 if err else 200)
                 if p == "/api/resume":
+                    sid = str(d.get("id") or "").strip()
+                    if not sid:  # boş kimlik en son sohbeti açıyordu (sess.load("")): istenen sohbet değil
+                        return self._json({"ok": False, "error": "sohbet kimliği gerekli"}, 400)
                     if d.get("detached"):  # telefon: sohbeti aç ama bilgisayarın öndeki sohbetini değiştirme
-                        sid = str(d.get("id", ""))
                         hist = state.history_for(sid)
                         found = bool(hist) or state.find_chat(sid) is not None
                         return self._json({"ok": found, "sid": sid, "history": hist,
                                            "error": None if found else "sohbet bulunamadı", **state.status()})
-                    ok = state.resume(str(d.get("id", "")))
+                    ok = state.resume(sid)
                     return self._json({"ok": ok, "error": None if ok else "sohbet açılamadı (arkada çok fazla iş var "
                                        "ya da sohbet bulunamadı)",
                                        "history": state.history_for(),
