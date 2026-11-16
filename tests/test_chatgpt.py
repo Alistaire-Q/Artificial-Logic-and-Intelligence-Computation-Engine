@@ -71,6 +71,17 @@ def test_messages_become_responses_items():
          "strict": False}]
 
 
+def test_system_messages_with_parts_reach_instructions():
+    msgs = [{"role": "system", "content": "A"},
+            {"role": "system", "content": [{"type": "text", "text": "B1"}, {"type": "text", "text": "B2"}]},
+            {"role": "system", "content": [{"type": "image_url", "image_url": {"url": "data:x"}}]},
+            {"role": "user", "content": "selam"}]
+    instr, items = to_responses(msgs)
+    assert instr == "A\n\nB1\nB2" and len(items) == 1
+    _, items = to_responses(msgs, codex_prompt="CODEX")
+    assert items[0]["content"] == [{"type": "input_text", "text": "A\n\nB1\nB2"}]
+
+
 def test_tool_result_images_go_as_input_image_not_base64_text():
     b64 = "QUJD" * 400
     msgs = [{"role": "user", "content": "bak"},

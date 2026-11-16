@@ -564,9 +564,19 @@ def login(open_url: Callable[[str], Any] | None = None, timeout: float = 300.0,
 
 
 # ------------------------------------------------------------------------------------------- istek biçimi
-def to_responses(messages: list[dict[str, Any]], codex_prompt: str | None = None) -> tuple[str, list[dict[str, Any]]]:
+def _system_text(c: Any) -> str:
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        return "\n".join(p["text"] for p in c if isinstance(p, dict) and p.get("type") in ("text", "input_text")
+                         and isinstance(p.get("text"), str) and p["text"])
+    return ""
+
+
+def to_responses(messages:list[dict[str, Any]], codex_prompt: str | None = None) -> tuple[str, list[dict[str, Any]]]:
     """Chat Completions mesajları -> (instructions, Responses API input)."""
-    system = "\n\n".join(m["content"] for m in messages if m.get("role") == "system" and isinstance(m.get("content"), str))
+    # Parça listesi olarak gelen sistem mesajları da talimata girer (önceden yalnız düz metin alınıyor, liste düşüyordu).
+    system = "\n\n".join(t for t in (_system_text(m.get("content")) for m in messages if m.get("role") == "system") if t)
     items: list[dict[str, Any]] = []
     if codex_prompt is not None and system:
         items.append({"type": "message", "role": "developer", "content": [{"type": "input_text", "text": system}]})
