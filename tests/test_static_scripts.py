@@ -22,3 +22,14 @@ def test_app_scripts_share_scope_without_conflicts(tmp_path):
     bundle.write_text("\n;\n".join((STATIC / n).read_text(encoding="utf-8") for n in names), encoding="utf-8")
     p = subprocess.run(["node", "--check", str(bundle)], capture_output=True, text=True, encoding="utf-8")
     assert p.returncode == 0, p.stderr[-800:]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node yok")
+def test_highlighter_survives_unclosed_shell_variable():
+    """Akış sırasında yarım gelen "${" (kabuk/PowerShell) renklendiriciyi TypeError ile düşürüyordu."""
+    js = ("global.window = {}; require(process.argv[1]); const H = window.AliceHL;"
+          "console.log(H.highlight('echo ${HO', 'bash') + '|' + H.highlight('$x ${a} <b>', 'ps1'));")
+    p = subprocess.run(["node", "-e", js, str(STATIC / "highlight.js")], capture_output=True, text=True,
+                       encoding="utf-8")
+    assert p.returncode == 0, p.stderr[-800:]
+    assert "${HO" in p.stdout and '<span class="tk-v">${a}</span>' in p.stdout and "&lt;b&gt;" in p.stdout

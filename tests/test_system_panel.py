@@ -133,6 +133,24 @@ def test_panel_actions(monkeypatch):
     assert not p.action("uç", {})["ok"]
 
 
+def test_restart_inside_core_uses_core_restart_not_stop_start(monkeypatch):
+    """Uygulama çekirdeğin içindeyse stop_core bu süreci kapatır, start_detached'e sıra gelmezdi."""
+    calls = []
+    monkeypatch.setattr(service, "start_detached", lambda: calls.append("start"))
+    monkeypatch.setattr(system, "stop_core", lambda: calls.append("stop"))
+    monkeypatch.setattr(system.time, "sleep", lambda s: None)
+    monkeypatch.setattr(service, "read_state", lambda: {"running": True, "pid": os.getpid()})
+    p = system.SystemPanel(cfg(), restart_core=lambda: calls.append("core") or True)
+    assert p.action("restart", {}) == {"ok": True, "restarting": True}
+    assert p.action("voice", {"on": True})["ok"]
+    assert calls == ["core", "core"] and not p._busy
+    # Başka bir süreçteki çekirdek (bağımsız uygulama): eski yol.
+    calls.clear()
+    monkeypatch.setattr(service, "read_state", lambda: {"running": True, "pid": os.getpid() + 1})
+    assert p.action("restart", {})["ok"]
+    assert wait(lambda: calls == ["stop", "start"] and not p._busy)
+
+
 class FakeMic:
     def __init__(self, loud=True):
         self.loud = loud

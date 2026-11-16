@@ -192,6 +192,9 @@ function setEmpty(v) { app.classList.toggle("empty", v); }
 function clearChat() {
   hideWorking();
   list.replaceChildren();
+  // Süren araç satırlarının sayaçları da durur: sohbet değişince/yeniden bağlanınca satır atılıyor ama aralığı sonsuza
+  // dek kopuk düğümü güncelliyordu (tool_end yeni bir satıra gider).
+  for (const t of S.tools.values()) clearInterval(t._timer);
   S.tools.clear(); S.perms.clear(); S.cur = null;
   setTodo("");
   setEmpty(true);
@@ -812,7 +815,9 @@ async function previewFile(f) {
     } else if (r.kind === "pdf") {
       const bytes = Uint8Array.from(atob(r.b64), (c) => c.charCodeAt(0));
       const fr = el("iframe");
-      fr.src = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+      const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+      fr.src = url;
+      onDialogClose = () => URL.revokeObjectURL(url);  // her önizleme PDF'i (15 MB'a kadar) bellekte bırakıyordu
       body.appendChild(fr);
     } else if (r.kind === "markdown") {
       const md = el("div", "md");
@@ -1147,7 +1152,10 @@ function applyStatus(s) {
   if (PREFS.panel && PREFS.tab === "context") renderPanel();
   // Sadece gelen durumda busy varsa uygula: kısmi güncelleme (ör. model değişimi) eski busy değeriyle işi bitmiş saymasın.
   if (s.busy !== undefined && s.busy !== S.busy) setBusy(s.busy);
-  for (const p of st.pending || []) (p.type === "ask_choice" ? onChoice : onPermission)(p);
+  // Arkadaki sohbetin sorusu öndekine çizilmez (olayı da çizilmiyor; cevabı gelince kart açık kalıyordu).
+  for (const p of st.pending || []) {
+    if (!p.sid || !st.session || p.sid === st.session) (p.type === "ask_choice" ? onChoice : onPermission)(p);
+  }
   markSessions();
   drawChatTitle();
   if (app.classList.contains("empty")) greet();

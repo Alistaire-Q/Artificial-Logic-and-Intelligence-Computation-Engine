@@ -86,7 +86,8 @@ def test_permission_via_api(app, workdir):
     t.join()
     perm = events[-1]
     assert perm["risk"] == "danger"
-    assert client.get("/api/state").json()["pending"][0]["id"] == perm["id"]
+    pend = client.get("/api/state").json()["pending"][0]
+    assert pend["id"] == perm["id"] and pend["sid"] == state.sid  # arayüz arkadaki sohbetin sorusunu ayırabilsin
     # Meşgulken yazılan mesaj yeni iş başlatmaz, çalışan işe iletilir (bir sonraki adımda modele gider).
     assert client.post("/api/send", json={"text": "başka"}).status_code == 200
     assert state.agent._inbox and state.agent._inbox[0][0] == "başka"
@@ -492,6 +493,37 @@ def test_phone_chat_does_not_move_the_desktop_chat(app):
     assert not [h for h in client.get("/api/history").json() if h["type"] == "user"]  # masaüstü sohbeti boş
     r = client.post("/api/resume", json={"id": phone, "detached": True}).json()
     assert r["ok"] and r["sid"] == phone and state.sid == desk
+
+
+def test_phone_stop_for_finished_chat_does_not_stop_the_desktop(app):
+    """Telefonun sohbeti bitmiş (ya da hiç başlamamış) iken Durdur, bilgisayarda süren işi kesmemeli."""
+    state, srv, client, prov = app
+    release = threading.Event()
+    busy_agent = _hold_turn(state, release)
+    prov.script = lambda model, messages, tools, **kw: "ok"
+    client.post("/api/send", json={"text": "uzun iş"})
+    assert _wait(lambda: state.agent.busy)
+    phone = client.post("/api/new", json={"detached": True}).json()["sid"]
+    assert client.post("/api/stop", json={"sid": phone}).json()["ok"]
+    assert not busy_agent.cancel.is_set() and state.agent.busy
+    # Öndeki çalışan sohbet de (ör. telefondan) silinemez: arkadaki gibi bitince kendini yeniden yazardı.
+    assert client.post("/api/session/delete", json={"id": state.sid}).status_code == 409
+    release.set()
+    assert _wait(lambda: not state.agent.busy)
+
+
+def test_phone_message_that_starts_no_turn_does_not_leak_a_chat(app):
+    """Telefonun canlı olmayan sohbetine /btw ya da bilinmeyen komut: açılan arka plan sohbeti kapanmalı."""
+    state, srv, client, prov = app
+    prov.script = lambda model, messages, tools, **kw: "yan cevap"
+    phone = client.post("/api/new", json={"detached": True}).json()["sid"]
+    r = client.post("/api/send", json={"text": "/olmayankomut", "sid": phone})
+    assert r.status_code == 409 and state.find_chat(phone) is None
+    events, t = collect(state, lambda e: e["type"] == "btw" and not e.get("pending"))
+    assert client.post("/api/send", json={"text": "/btw ne?", "sid": phone}).json()["ok"]
+    t.join()
+    assert any(e.get("a") == "yan cevap" for e in events)
+    assert _wait(lambda: state.find_chat(phone) is None) and state.sid != phone
 
 
 def test_btw_side_question_does_not_touch_history(app):

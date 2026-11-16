@@ -47,7 +47,9 @@ STATIC_FILES = {"app.js": "text/javascript", "projects.js": "text/javascript", "
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
        "media-src 'self' data: blob:; "
        "connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; "
-       "frame-src 'self'")
+       "frame-src 'self' blob:")
+# frame-src blob: dosya önizlemesindeki PDF bir blob: adresinden çerçevede açılır; 'self' blob:'u kapsamaz, PDF
+# önizlemesi boş kalıyordu. blob: adresini yalnız sayfanın kendisi üretebilir.
 # Önizlenen site korumalı çerçevede (ayrı köken) çalışır: ALICE'in sayfasına ve API'sine dokunamaz.
 PREVIEW_CSP = "sandbox allow-scripts allow-forms allow-popups allow-modals"
 # İstek gövdesi sınırı: 6 ekran görüntüsü (1600 px PNG, base64) ya da uzun bir ses kaydı sığsın.
@@ -858,8 +860,13 @@ class AppState:
     def stop(self, sid: str = "") -> None:
         """Durdur düğmesi (öndeki sohbet; sid verilirse o sohbet). Araç her şeye rağmen bırakmıyorsa (cevap vermeyen
         bir pencere/COM çağrısı) sohbetin thread'i sonsuza dek meşgul kalırdı: o zaman sohbet o thread'den ayrılır
-        (bkz. _abandon)."""
-        chat = (self.find_chat(sid) if sid else None) or self.chat
+        (bkz. _abandon).
+
+        sid verilip o sohbet canlı değilse (telefonun sohbeti bitmiş ya da hiç başlamamış) hiçbir şey durmaz: önceden
+        öndeki sohbete düşülüyor, telefondaki Durdur bilgisayarda süren işi kesiyordu."""
+        chat = self.find_chat(sid) if sid else self.chat
+        if chat is None:
+            return
         chat.agent.stop()
         if chat.busy:
             threading.Thread(target=self._unstick, args=(chat,), daemon=True, name="alice-unstick").start()
@@ -946,7 +953,9 @@ class AppState:
             "session": self.sid,
             "started": self.chat.started,
             "running": self.running(),
-            "pending": [p for ui in self.all_uis() for p in ui.pending.values()],
+            # Hangi sohbetin sorusu olduğu da gelir: arayüz arkadaki sohbetin kartını öndekine çizmesin. list(): soru
+            # ajan thread'inde eklenip silinirken sözlüğü gezmek RuntimeError atıyordu.
+            "pending": [{**p, "sid": ui.sid} for ui in self.all_uis() for p in list(ui.pending.values())],
             "brain_chain": self.router.chain("brain"),
             "brain_pinned": "brain" in self.router.role_overrides,
             "thinking": self.router.thinking_level("brain"),
@@ -1316,8 +1325,15 @@ class AppState:
         if self._system is None:
             from alice.app.system import SystemPanel
 
-            self._system = SystemPanel(self.cfg)
+            self._system = SystemPanel(self.cfg, restart_core=self._restart_core)
         return self._system
+
+    def _restart_core(self) -> bool:
+        """Sistem paneli: uygulama çekirdeğin içindeyse çekirdeği yeniden başlat (güncellemedeki yol)."""
+        if self.restart_hook is None:
+            return False
+        threading.Thread(target=self._restart_soon, daemon=True, name="alice-restart").start()
+        return True
 
     _enroll = None
 
@@ -1923,6 +1939,7 @@ class AppState:
         if text.split(" ", 1)[0].lower() == "/btw":
             question = text[4:].strip()
             if not question:
+                self._drop_if_idle(chat)
                 return False, "kullanım: /btw <soru>"
             threading.Thread(target=self._side_question, args=(chat, question), daemon=True, name="alice-btw").start()
             return True, None
@@ -1948,9 +1965,19 @@ class AppState:
             if prompt is None:
                 prompt = builtin_prompt(text)
                 if prompt is None:
+                    self._drop_if_idle(chat)
                     return False, f"bilinmeyen komut: {text.split()[0]}"
         self._start_turn(chat, text, prompt, images or [])
         return True, None
+
+    def _drop_if_idle(self, chat: Chat) -> None:
+        """chat_for'un bu istek için açtığı arka plan sohbeti tur başlatmadan kaldıysa (bilinmeyen komut, /btw) kapat.
+        Arkadaki sohbetler yalnız tur bitince kapanıyordu: tur hiç başlamayınca thread'i ve ajanı sonsuza dek kalıyordu."""
+        with self._chats_lock:
+            if chat is self.chat or chat.busy or self.background.get(chat.sid) is not chat:
+                return
+            self.background.pop(chat.sid, None)
+        chat.close()
 
     def _suggest(self, chat: Any) -> list[str]:
         """Tur bitince kullanıcının muhtemel sonraki mesajı (en fazla 2 kısa öneri). Arayüzde düğme olur; tıklayınca
@@ -2019,6 +2046,7 @@ class AppState:
         except Exception as e:  # noqa: BLE001 - yan soru başarısızsa iş etkilenmesin
             answer = f"cevaplanamadı: {str(e)[:300]}"
         pub({"type": "btw", "q": question, "a": answer, "pending": False})
+        self._drop_if_idle(chat)
 
     def deliver(self, sid: str, text: str, tries: int = 30) -> str:
         """Arka plandan bir sohbete mesaj (izleme olayı, ayrı oturumun sonucu): sohbet çalışıyorsa işe iletilir,
@@ -2881,7 +2909,9 @@ def make_handler(state: AppState):
                     return self._json({"ok": True, "note": note, **state.status()})
                 if p == "/api/session/delete":
                     sid = str(d.get("id", ""))
-                    if sid in state.running():  # arkada çalışan sohbet bitince kendini yeniden kaydederdi
+                    live = state.find_chat(sid)
+                    # Çalışan sohbet (arkadaki ya da öndeki: telefondan silinebilir) bitince kendini yeniden kaydederdi.
+                    if live is not None and live.busy:
                         return self._json({"ok": False, "error": "bu sohbet arkada çalışıyor; önce bitsin"}, 409)
                     return self._json(state.delete_session(sid))
                 if p in ("/api/session/rename", "/api/session/pin"):
