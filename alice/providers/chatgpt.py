@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import secrets
+import socket
 import threading
 import time
 import uuid
@@ -33,7 +34,7 @@ import httpx
 from alice.config import ProviderConfig, alice_home
 from alice.providers.openai_compat import (_TOO_LARGE_HINTS, _TRANSPORT_ERRORS, ChatResult, OpenAICompatProvider,
                                            ProviderError, StreamCancelled, _transport_error, classify_error,
-                                           normalize_message)
+                                           normalize_message, redact_binary)
 
 ISSUER = "https://auth.openai.com"
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"  # Codex CLI'ın herkese açık OAuth istemcisi
@@ -564,20 +565,39 @@ def login(open_url: Callable[[str], Any] | None = None, timeout: float = 300.0,
 
 
 # ------------------------------------------------------------------------------------------- istek biçimi
-def to_responses(messages: list[dict[str, Any]], codex_prompt: str | None = None) -> tuple[str, list[dict[str, Any]]]:
+def _system_text(c: Any) -> str:
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        return "\n".join(p["text"] for p in c if isinstance(p, dict) and p.get("type") in ("text", "input_text")
+                         and isinstance(p.get("text"), str) and p["text"])
+    return ""
+
+
+def to_responses(messages:list[dict[str, Any]], codex_prompt: str | None = None) -> tuple[str, list[dict[str, Any]]]:
     """Chat Completions mesajları -> (instructions, Responses API input)."""
-    system = "\n\n".join(m["content"] for m in messages if m.get("role") == "system" and isinstance(m.get("content"), str))
+    # Parça listesi olarak gelen sistem mesajları da talimata girer (önceden yalnız düz metin alınıyor, liste düşüyordu).
+    system = "\n\n".join(t for t in (_system_text(m.get("content")) for m in messages if m.get("role") == "system") if t)
     items: list[dict[str, Any]] = []
     if codex_prompt is not None and system:
         items.append({"type": "message", "role": "developer", "content": [{"type": "input_text", "text": system}]})
+    images: list[dict[str, Any]] = []  # araç sonuçlarındaki görüntüler: araç çıktıları bitince kullanıcı mesajıyla
+
+    def flush_images() -> None:
+        if images:
+            items.append({"type": "message", "role": "user", "content": list(images)})
+            images.clear()
+
     for m in messages:
         role = m.get("role")
         c = m.get("content")
-        if role == "system":
-            continue
         if role == "tool":
-            items.append({"type": "function_call_output", "call_id": m.get("tool_call_id") or "",
-                          "output": c if isinstance(c, str) else json.dumps(c, ensure_ascii=False)})
+            output, imgs = _tool_output(c)
+            items.append({"type": "function_call_output", "call_id": m.get("tool_call_id") or "", "output": output})
+            images.extend(imgs)
+            continue
+        flush_images()
+        if role == "system":
             continue
         parts: list[dict[str, Any]] = []
         kind = "output_text" if role == "assistant" else "input_text"
@@ -596,7 +616,54 @@ def to_responses(messages: list[dict[str, Any]], codex_prompt: str | None = None
             fn = tc.get("function") or {}
             items.append({"type": "function_call", "call_id": tc.get("id") or "", "name": fn.get("name") or "",
                           "arguments": fn.get("arguments") or "{}"})
+    flush_images()
     return (codex_prompt if codex_prompt is not None else system), items
+
+
+def _tool_output(c: Any) -> tuple[str, list[dict[str, Any]]]:
+    """Araç sonucu -> (function_call_output metni, ayrıca gönderilecek input_image parçaları). Parça listesi önceden
+    JSON metnine dökülüyordu: ekran görüntüsünün base64'ü modele metin olarak gidiyordu."""
+    if isinstance(c, str):
+        return c, []
+    if not isinstance(c, list):
+        return redact_binary(c), []
+    texts: list[str] = []
+    imgs: list[dict[str, Any]] = []
+    for p in c:
+        if not isinstance(p, dict):
+            continue
+        if p.get("type") == "text" and p.get("text"):
+            texts.append(p["text"])
+        elif p.get("type") == "image_url":
+            url = p["image_url"].get("url") if isinstance(p.get("image_url"), dict) else p.get("image_url")
+            if url:
+                imgs.append({"type": "input_image", "image_url": url})
+        elif p.get("type") == "image" and isinstance(p.get("data"), str):  # MCP biçimi
+            mime = p.get("mimeType") or "image/png"
+            imgs.append({"type": "input_image", "image_url": f"data:{mime};base64,{p['data']}"})
+    if not texts and not imgs:
+        return redact_binary(c), []
+    if imgs:
+        texts.append(f"[araç {len(imgs)} görüntü döndürdü; görüntüler sonraki mesajda]")
+    return "\n".join(texts), imgs
+
+
+def text_format(response_format: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Chat Completions response_format -> Responses API text.format."""
+    if not isinstance(response_format, dict):
+        return None
+    kind = response_format.get("type")
+    if kind == "json_schema":
+        js = response_format.get("json_schema") or {}
+        if not isinstance(js.get("schema"), dict):
+            return None
+        out: dict[str, Any] = {"type": "json_schema", "name": js.get("name") or "output", "schema": js["schema"]}
+        if "strict" in js:
+            out["strict"] = bool(js["strict"])
+        return out
+    if kind == "json_object":
+        return {"type": "json_object"}
+    return None
 
 
 def to_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
@@ -645,6 +712,10 @@ class ChatGPTProvider(OpenAICompatProvider):
     # İlk veri normalde 1-4 sn'de geliyor (düşünme özeti de veri sayılır). 90 sn beklenince takılan tek bir istek
     # yönlendiricinin tekrarlarıyla bir görevi ~280 sn bekletmişti.
     FIRST_DATA = 30.0
+    # İlk veriden sonra iki parça arası en çok bu kadar sessizlik: uzun düşünmede model dakikalarca özet
+    # göndermeyebiliyor; 30 sn'lik ilk veri sınırı her aralığa uygulanınca sağlıklı cevap yarıda kesiliyordu.
+    STREAM_READ = 300.0
+    WATCH_TICK = 0.5  # bekçi: ilk veri süresi ve iptal bu sıklıkla denetlenir
 
     def __init__(self, cfg: ProviderConfig, timeout: float = 180.0, client: httpx.Client | None = None):
         super().__init__(cfg, timeout, client)
@@ -684,7 +755,10 @@ class ChatGPTProvider(OpenAICompatProvider):
         raise ProviderError("server", f"model listesi boş geldi (sunucu cevabı: {seen or 'boş'})", 200)
 
     def chat(self, model, messages, tools=None, temperature=None, max_tokens=None, response_format=None, extra=None):
-        return self.chat_stream(model, messages, lambda _t: None, tools=tools, extra=extra)
+        # max_tokens/temperature bilerek gönderilmiyor: Codex arka ucu max_output_tokens ve temperature'ı
+        # "Unsupported parameter" ile reddediyor (Codex CLI de göndermiyor). response_format text.format'a çevrilir.
+        return self.chat_stream(model, messages, lambda _t: None, tools=tools, max_tokens=max_tokens,
+                                response_format=response_format, extra=extra)
 
     def chat_stream(self, model, messages, on_delta, tools=None, temperature=None, max_tokens=None,
                     response_format=None, extra=None, cancel=None, on_reasoning=None, on_first=None, on_tool=None,
@@ -708,7 +782,7 @@ class ChatGPTProvider(OpenAICompatProvider):
             started = [False]  # veri gelmeye başladıysa hesap değiştirilmez: ekrana yarım cevap basılmış olur
             try:
                 return self._chat_one(model, messages, on_delta, tools, extra, cancel, on_reasoning, on_first, on_tool,
-                                      started, key, on_call=on_call)
+                                      started, key, on_call=on_call, response_format=response_format)
             except ProviderError as e:
                 if e.kind not in ("rate_limit", "quota", "auth") or started[0]:
                     raise
@@ -734,7 +808,7 @@ class ChatGPTProvider(OpenAICompatProvider):
                                     max(wait, 60.0)) from e
 
     def _chat_one(self, model, messages, on_delta, tools, extra, cancel, on_reasoning, on_first, on_tool,
-                  started: list[bool] | None = None, key: str | None = None, on_call=None):
+                  started: list[bool] | None = None, key: str | None = None, on_call=None, response_format=None):
         started = started if started is not None else [False]
 
         def first() -> None:
@@ -749,18 +823,18 @@ class ChatGPTProvider(OpenAICompatProvider):
         try:
             try:
                 return self._stream(model, messages, delta, tools, extra, cancel, on_reasoning, first, on_tool, key,
-                                    on_call=on_call)
+                                    on_call=on_call, response_format=response_format)
             except ProviderError as e:
                 if self.use_codex_prompt or e.kind != "bad_request" or "instruction" not in str(e).lower():
                     raise
                 self.use_codex_prompt = True  # arka uç kendi istemini istiyor: onunla tekrar dene
                 return self._stream(model, messages, delta, tools, extra, cancel, on_reasoning, first, on_tool, key,
-                                    on_call=on_call)
+                                    on_call=on_call, response_format=response_format)
         except ProviderError as e:
             raise self._scrub(e) from e.__cause__
 
     def _stream(self, model, messages, on_delta, tools, extra, cancel, on_reasoning, on_first, on_tool,
-                key: str | None = None, on_call=None) -> ChatResult:
+                key: str | None = None, on_call=None, response_format=None) -> ChatResult:
         instructions, items = to_responses(messages, codex_prompt(self._client) if self.use_codex_prompt else None)
         body: dict[str, Any] = {"model": model, "instructions": instructions, "input": items, "tools": to_tools(tools),
                                 "tool_choice": "auto", "parallel_tool_calls": bool(tools), "store": False,
@@ -768,6 +842,14 @@ class ChatGPTProvider(OpenAICompatProvider):
         effort = (extra or {}).get("reasoning_effort") or ((extra or {}).get("reasoning") or {}).get("effort")
         if effort:
             body["reasoning"] = {"effort": effort, "summary": "auto"}
+        fmt = text_format(response_format)
+        if fmt:
+            body["text"] = {"format": fmt}
+            if fmt["type"] == "json_object" and "json" not in json.dumps(body["input"], ensure_ascii=False).lower() \
+                    and "json" not in str(instructions).lower():
+                # Responses API json_object'te girdide "JSON" geçmesini şart koşuyor; yoksa istek 400 ile döner.
+                body["input"] = [*items, {"type": "message", "role": "developer",
+                                          "content": [{"type": "input_text", "text": "Cevabı JSON olarak ver."}]}]
         t0 = time.monotonic()
         text: list[str] = []
         calls: dict[str, dict[str, Any]] = {}
@@ -777,7 +859,27 @@ class ChatGPTProvider(OpenAICompatProvider):
         finish = ""
         got_data = False
         completed = False
+        aborted = [""]  # bekçi akışı kestiyse nedeni: "first" (ilk veri gelmedi) ya da "cancel"
+        stop = threading.Event()
+
+        def watch(r: httpx.Response) -> None:
+            """Akış sessizken de ilk veri sınırını ve iptali uygular: soketi kapatıp bekleyen okumayı uyandırır."""
+            while not stop.wait(self.WATCH_TICK):
+                if cancel is not None and cancel():
+                    aborted[0] = "cancel"
+                elif not got_data and time.monotonic() - t0 > self.FIRST_DATA:
+                    aborted[0] = "first"
+                else:
+                    continue
+                _abort_stream(r)
+                return
+
+        def first_timeout() -> ProviderError:
+            return ProviderError("network", f"zaman aşımı: model {int(self.FIRST_DATA)} sn'dir ilk cevabı vermedi")
+
         try:
+            # Başlıklar için okuma sınırı ilk veri süresi; gövdede (parça arası) STREAM_READ. İlk verinin 30 sn
+            # içinde gelmesini bekçi denetler.
             with self._client.stream("POST", f"{self.cfg.base_url}/responses", headers=self._auth_headers(key),
                                      json=body, timeout=httpx.Timeout(self.FIRST_DATA, connect=15.0)) as r:
                 lim = limits_from_headers(r.headers)
@@ -786,12 +888,15 @@ class ChatGPTProvider(OpenAICompatProvider):
                 if r.status_code != 200:
                     r.read()
                     raise _limit_error(r.status_code, r.text, dict(r.headers))
+                tm = r.request.extensions.get("timeout")
+                if isinstance(tm, dict):
+                    tm["read"] = self.STREAM_READ  # httpcore gövde okumasının süresini gövdeye başlarken buradan alır
+                threading.Thread(target=watch, args=(r,), daemon=True, name="alice-chatgpt-watch").start()
                 for line in r.iter_lines():
                     if cancel and cancel():
                         raise StreamCancelled()
                     if not got_data and time.monotonic() - t0 > self.FIRST_DATA:
-                        raise ProviderError("network", f"zaman aşımı: model {int(self.FIRST_DATA)} sn'dir ilk "
-                                                       "cevabı vermedi")
+                        raise first_timeout()
                     if not line.startswith("data:"):
                         continue
                     try:
@@ -851,7 +956,17 @@ class ChatGPTProvider(OpenAICompatProvider):
                             raise ProviderError("too_large", f"ChatGPT: {msg}")
                         raise ProviderError("server", f"ChatGPT: {msg}")
         except _TRANSPORT_ERRORS as e:
+            if aborted[0] == "cancel":
+                raise StreamCancelled() from e
+            if aborted[0] == "first":
+                raise first_timeout() from e
             raise _transport_error(e) from e
+        finally:
+            stop.set()
+        if aborted[0] == "cancel":
+            raise StreamCancelled()
+        if aborted[0] == "first" and not completed:
+            raise first_timeout()
         if not completed and any(cid not in closed for cid in calls):
             # Akış bitiş olayı gelmeden kesildi ve bir araç çağrısının argümanları yarım (output_item.added'deki
             # boş metin): önceden çağrı boş argümanla başarılı cevap sayılıp araç öyle çalıştırılıyordu.
@@ -862,6 +977,31 @@ class ChatGPTProvider(OpenAICompatProvider):
         if not msg["content"] and not calls:
             raise ProviderError("server", "ChatGPT boş cevap döndü")
         return ChatResult(normalize_message(msg), self.name, served, usage, time.monotonic() - t0, finish=finish)
+
+
+def _abort_stream(r: httpx.Response) -> None:
+    """Başka iş parçacığında bloklanmış okumayı uyandırır: Linux'ta yalnız shutdown, Windows'ta yalnız close bekleyen
+    recv'i hemen bitiriyor; ikisi de yapılır. Soket yoksa (sahte taşıma) yanıt kapatılır."""
+    stream = (r.extensions or {}).get("network_stream")
+    sock = None
+    try:
+        sock = stream.get_extra_info("socket") if stream is not None else None
+    except Exception:  # noqa: BLE001
+        sock = None
+    if sock is not None:
+        try:
+            socket.socket.shutdown(sock, socket.SHUT_RDWR)  # SSLSocket.shutdown _sslobj'u sıfırlıyor: ham soketle
+        except (OSError, TypeError, ValueError):
+            pass
+        try:
+            sock.close()
+            return
+        except (OSError, TypeError, ValueError):
+            pass
+    try:
+        r.close()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def make_client(pc: ProviderConfig, timeout: float = 180.0) -> OpenAICompatProvider:

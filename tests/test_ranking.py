@@ -205,3 +205,32 @@ def test_router_orders_brain_by_reliability(tmp_path):
     for _ in range(5):
         ranking.record_outcome("n:z-ai/glm-5.3", False, "network")
     assert r.auto_chain("brain") == ["g:gemini-3-flash", "n:z-ai/glm-5.3"]
+
+
+def test_health_writes_are_serialized_and_atomic(monkeypatch):
+    """Yazım kilit içinde: aynı anda gelen hatalar dosyayı bozmuyor, geçici dosya artığı kalmıyor."""
+    import json
+    import threading
+
+    active, overlap = [0], [False]
+    real = ranking._write_health
+
+    def slow_write(text):
+        active[0] += 1
+        overlap[0] = overlap[0] or active[0] > 1
+        time.sleep(0.002)
+        real(text)
+        active[0] -= 1
+
+    monkeypatch.setattr(ranking, "_write_health", slow_write)
+    now = time.time()
+    threads = [threading.Thread(target=lambda i=i: [ranking.record_outcome(f"n:m{i}", False, "network", now=now)
+                                                    for _ in range(5)]) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not overlap[0]
+    data = json.loads(ranking.health_path().read_text(encoding="utf-8"))
+    assert all(data[f"n:m{i}"]["bad"] == 5 for i in range(8))
+    assert not list(ranking.health_path().parent.glob(".model-health-*"))
