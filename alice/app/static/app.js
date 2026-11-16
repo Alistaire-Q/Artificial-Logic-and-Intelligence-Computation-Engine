@@ -812,7 +812,9 @@ async function previewFile(f) {
     } else if (r.kind === "pdf") {
       const bytes = Uint8Array.from(atob(r.b64), (c) => c.charCodeAt(0));
       const fr = el("iframe");
-      fr.src = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+      const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+      fr.src = url;
+      onDialogClose = () => URL.revokeObjectURL(url);  // her önizleme PDF'i (15 MB'a kadar) bellekte bırakıyordu
       body.appendChild(fr);
     } else if (r.kind === "markdown") {
       const md = el("div", "md");

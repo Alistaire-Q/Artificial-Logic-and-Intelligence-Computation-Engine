@@ -47,7 +47,9 @@ STATIC_FILES = {"app.js": "text/javascript", "projects.js": "text/javascript", "
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
        "media-src 'self' data: blob:; "
        "connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; "
-       "frame-src 'self'")
+       "frame-src 'self' blob:")
+# frame-src blob: dosya önizlemesindeki PDF bir blob: adresinden çerçevede açılır; 'self' blob:'u kapsamaz, PDF
+# önizlemesi boş kalıyordu. blob: adresini yalnız sayfanın kendisi üretebilir.
 # Önizlenen site korumalı çerçevede (ayrı köken) çalışır: ALICE'in sayfasına ve API'sine dokunamaz.
 PREVIEW_CSP = "sandbox allow-scripts allow-forms allow-popups allow-modals"
 # İstek gövdesi sınırı: 6 ekran görüntüsü (1600 px PNG, base64) ya da uzun bir ses kaydı sığsın.
