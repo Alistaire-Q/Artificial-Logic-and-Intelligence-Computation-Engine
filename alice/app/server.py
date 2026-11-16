@@ -843,8 +843,13 @@ class AppState:
     def stop(self, sid: str = "") -> None:
         """Durdur düğmesi (öndeki sohbet; sid verilirse o sohbet). Araç her şeye rağmen bırakmıyorsa (cevap vermeyen
         bir pencere/COM çağrısı) sohbetin thread'i sonsuza dek meşgul kalırdı: o zaman sohbet o thread'den ayrılır
-        (bkz. _abandon)."""
-        chat = (self.find_chat(sid) if sid else None) or self.chat
+        (bkz. _abandon).
+
+        sid verilip o sohbet canlı değilse (telefonun sohbeti bitmiş ya da hiç başlamamış) hiçbir şey durmaz: önceden
+        öndeki sohbete düşülüyor, telefondaki Durdur bilgisayarda süren işi kesiyordu."""
+        chat = self.find_chat(sid) if sid else self.chat
+        if chat is None:
+            return
         chat.agent.stop()
         if chat.busy:
             threading.Thread(target=self._unstick, args=(chat,), daemon=True, name="alice-unstick").start()
@@ -2873,7 +2878,9 @@ def make_handler(state: AppState):
                     return self._json({"ok": True, "note": note, **state.status()})
                 if p == "/api/session/delete":
                     sid = str(d.get("id", ""))
-                    if sid in state.running():  # arkada çalışan sohbet bitince kendini yeniden kaydederdi
+                    live = state.find_chat(sid)
+                    # Çalışan sohbet (arkadaki ya da öndeki: telefondan silinebilir) bitince kendini yeniden kaydederdi.
+                    if live is not None and live.busy:
                         return self._json({"ok": False, "error": "bu sohbet arkada çalışıyor; önce bitsin"}, 409)
                     return self._json(state.delete_session(sid))
                 if p in ("/api/session/rename", "/api/session/pin"):

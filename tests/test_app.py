@@ -494,6 +494,23 @@ def test_phone_chat_does_not_move_the_desktop_chat(app):
     assert r["ok"] and r["sid"] == phone and state.sid == desk
 
 
+def test_phone_stop_for_finished_chat_does_not_stop_the_desktop(app):
+    """Telefonun sohbeti bitmiş (ya da hiç başlamamış) iken Durdur, bilgisayarda süren işi kesmemeli."""
+    state, srv, client, prov = app
+    release = threading.Event()
+    busy_agent = _hold_turn(state, release)
+    prov.script = lambda model, messages, tools, **kw: "ok"
+    client.post("/api/send", json={"text": "uzun iş"})
+    assert _wait(lambda: state.agent.busy)
+    phone = client.post("/api/new", json={"detached": True}).json()["sid"]
+    assert client.post("/api/stop", json={"sid": phone}).json()["ok"]
+    assert not busy_agent.cancel.is_set() and state.agent.busy
+    # Öndeki çalışan sohbet de (ör. telefondan) silinemez: arkadaki gibi bitince kendini yeniden yazardı.
+    assert client.post("/api/session/delete", json={"id": state.sid}).status_code == 409
+    release.set()
+    assert _wait(lambda: not state.agent.busy)
+
+
 def test_btw_side_question_does_not_touch_history(app):
     state, srv, client, prov = app
 
