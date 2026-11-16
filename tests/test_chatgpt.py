@@ -584,3 +584,103 @@ def test_added_without_call_id_and_done_with_it_gives_one_call():
     p = ChatGPTProvider(pc(), client=httpx.Client(transport=httpx.MockTransport(handler)))
     r = p.chat("gpt-5.5", [{"role": "user", "content": "x"}], tools=[{"type": "function", "function": {"name": "f"}}])
     assert [(c["id"], c["function"]["arguments"]) for c in r.message["tool_calls"]] == [("c1", "{\"a\": 1}")]
+
+
+# ------------------------------------------------------------------- gerçek soketle akış süreleri (ilk veri / sessizlik)
+class _SlowSSE:
+    """Yerel HTTP sunucusu: SSE'yi parça parça (chunked) gönderir; adımlar (gecikme, olay) listesi."""
+
+    def __init__(self, steps):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        self.release = threading.Event()
+        outer = self
+
+        class H(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                try:
+                    for delay, ev in steps:
+                        if delay and outer.release.wait(delay):
+                            return
+                        data = sse(ev)
+                        self.wfile.write(f"{len(data):x}\r\n".encode() + data + b"\r\n")
+                        self.wfile.flush()
+                    self.wfile.write(b"0\r\n\r\n")
+                except OSError:
+                    pass
+
+            def log_message(self, *a):
+                pass
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.server.daemon_threads = True
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def close(self):
+        self.release.set()
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def _fast_provider(url, monkeypatch):
+    import dataclasses
+
+    chatgpt.save_auth(tokens())
+    monkeypatch.setattr(ChatGPTProvider, "FIRST_DATA", 0.6)
+    monkeypatch.setattr(ChatGPTProvider, "STREAM_READ", 5.0)
+    monkeypatch.setattr(ChatGPTProvider, "WATCH_TICK", 0.05)
+    return ChatGPTProvider(dataclasses.replace(pc(), base_url=url), client=httpx.Client())
+
+
+def _delta(t):
+    return {"type": "response.output_text.delta", "delta": t}
+
+
+_DONE = {"type": "response.completed", "response": {"model": "gpt-5.5", "usage": {}}}
+
+
+def test_long_silence_after_first_data_is_not_cut(monkeypatch):
+    """İlk veri geldikten sonra uzun düşünme sessizliği ilk veri sınırıyla kesiliyordu: okuma süresi her aralığa
+    uygulanıyordu. Artık parça arası STREAM_READ."""
+    srv = _SlowSSE([(0, {"type": "response.created"}), (0.05, _delta("Mer")), (1.5, _delta("haba")), (0, _DONE)])
+    try:
+        p = _fast_provider(srv.url, monkeypatch)
+        assert p.chat("gpt-5.5", [{"role": "user", "content": "x"}]).text == "Merhaba"
+    finally:
+        srv.close()
+
+
+def test_no_first_data_still_times_out_at_first_data_limit(monkeypatch):
+    srv = _SlowSSE([(0, {"type": "response.created"}), (10, _delta("geç"))])
+    try:
+        p = _fast_provider(srv.url, monkeypatch)
+        t = time.monotonic()
+        with pytest.raises(ProviderError) as ei:
+            p.chat("gpt-5.5", [{"role": "user", "content": "x"}])
+        assert ei.value.kind == "network" and "ilk cevabı vermedi" in str(ei.value)
+        assert time.monotonic() - t < 3  # STREAM_READ (5 sn) beklenmedi
+    finally:
+        srv.close()
+
+
+def test_cancel_during_silence_stops_promptly(monkeypatch):
+    from alice.providers.openai_compat import StreamCancelled
+
+    srv = _SlowSSE([(0, _delta("a")), (10, _delta("b")), (0, _DONE)])
+    try:
+        p = _fast_provider(srv.url, monkeypatch)
+        t = time.monotonic()
+        with pytest.raises(StreamCancelled):
+            p.chat_stream("gpt-5.5", [{"role": "user", "content": "x"}], lambda d: None,
+                          cancel=lambda: time.monotonic() - t > 0.3)
+        assert time.monotonic() - t < 3
+    finally:
+        srv.close()
