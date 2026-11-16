@@ -1086,24 +1086,48 @@ class Config:
         return dict(self.data.get("models", {}).get(ref, {}).get("extra", {}))
 
 
+def _section_header(text: str, section: str) -> re.Match[str] | None:
+    """[section] başlık satırı. Başlığın sonunda yorum olabilir ("[kairos]   # arka plan nöbeti"): eskiden bu
+    eşleşmiyordu, bölüm sona ikinci kez ekleniyor ve config.toml geçersiz TOML olup tüm ayarlar varsayılana dönüyordu."""
+    return re.search(rf"(?m)^[ \t]*\[[ \t]*{re.escape(section)}[ \t]*\][ \t]*(?:#[^\n]*)?$", text)
+
+
+def _value_end(body: str, start: int) -> int:
+    """body[start:]'taki `key = değer` atamasının bittiği yer: değer birden çok satıra yayılıyorsa (çok satırlı dizi,
+    üç tırnaklı metin) hepsi. Sadece ilk satırı değiştirmek kalan satırları sahipsiz bırakıp dosyayı bozuyordu."""
+    pos = start
+    while True:
+        nl = body.find("\n", pos)
+        end = len(body) if nl < 0 else nl
+        try:
+            tomllib.loads(body[start:end])
+            return end
+        except tomllib.TOMLDecodeError:
+            if nl < 0:
+                return body.find("\n", start) if "\n" in body[start:] else len(body)
+            pos = nl + 1
+
+
 def set_config_value(section: str, key: str, value: Any) -> Path:
     """~/.alice/config.toml'da [section] altındaki key'i yaz (yoksa ekle). value TOML'a çevrilir."""
     import json
-    import re
 
     init_home()
     path = alice_home() / "config.toml"
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8-sig")  # Not Defteri BOM'u ilk başlığın eşleşmesini engellemesin
     line = f"{key} = {json.dumps(value, ensure_ascii=False)}"
-    sec = re.search(rf"(?m)^\[{re.escape(section)}\]\s*$", text)
+    sec = _section_header(text, section)
     if not sec:
         text = text.rstrip() + f"\n\n[{section}]\n{line}\n"
     else:
         nxt = re.search(r"(?m)^\[", text[sec.end():])
         end = sec.end() + (nxt.start() if nxt else len(text) - sec.end())
         body = text[sec.end():end]
-        rx = re.compile(rf"(?m)^{re.escape(key)}\s*=.*$")
-        body = rx.sub(lambda _m: line, body, count=1) if rx.search(body) else f"\n{line}" + body
+        m = re.compile(rf"(?m)^[ \t]*{re.escape(key)}[ \t]*=").search(body)
+        if m:
+            body = body[:m.start()] + line + body[_value_end(body, m.start()):]
+        else:
+            body = f"\n{line}" + body
         text = text[:sec.end()] + body + text[end:]
     path.write_text(text, encoding="utf-8")
     return path
@@ -1111,14 +1135,12 @@ def set_config_value(section: str, key: str, value: Any) -> Path:
 
 def remove_config_section(section: str) -> bool:
     """~/.alice/config.toml'dan [section] bölümünü (bir sonraki bölüm başlığına kadar) sil. Yoksa False."""
-    import re
-
     path = alice_home() / "config.toml"
     try:
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8-sig")
     except OSError:
         return False
-    sec = re.search(rf"(?m)^\[{re.escape(section)}\]\s*$", text)
+    sec = _section_header(text, section)
     if not sec:
         return False
     nxt = re.search(r"(?m)^\[", text[sec.end():])
