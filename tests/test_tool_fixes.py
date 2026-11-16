@@ -122,3 +122,25 @@ def test_apply_patch_add_then_delete_same_file(ctx, workdir):
     patch = "*** Begin Patch\n*** Add File: t.txt\n+a\n*** Delete File: t.txt\n*** End Patch"
     ApplyPatch().run(ctx, patch=patch)
     assert not (workdir / "t.txt").exists()
+
+
+def test_process_wait_sees_last_line_written_just_before_exit(ctx, workdir):
+    from alice.tools.shell import BgProc, ProcessWait
+
+    log = workdir / "bg.log"
+    log.write_bytes(b"basliyor\n")
+
+    class Pop:
+        returncode = None
+
+        def poll(self):
+            # süreç son satırını yazıp hemen çıkıyor (okuma ile poll arasında)
+            if self.returncode is None:
+                with open(log, "ab") as fh:
+                    fh.write(b"ERROR boom\n")
+                self.returncode = 1
+            return self.returncode
+
+    ctx.state["bg_procs"] = {7: BgProc(7, "x", Pop(), log, 0.0)}
+    r = ProcessWait().run(ctx, pid=7, pattern="error", timeout=5)
+    assert "desen göründü" in r.text and "ERROR boom" in r.text
