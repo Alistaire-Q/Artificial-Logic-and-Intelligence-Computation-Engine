@@ -308,7 +308,8 @@ def tomorrow(mem: Any, now: float) -> list[str]:
     if mem is None:
         return []
     try:
-        due = mem.due_followups(now + 36 * 3600)
+        # İleri bir ana bakılıyor: o anın "eskidi" saydığı takipler bugün hâlâ geçerli, kapatılmasın.
+        due = mem.due_followups(now + 36 * 3600, prune=False)
     except Exception:  # noqa: BLE001
         return []
     return [f.text for f in due if (getattr(f, "due", None) or 0) > now][:5]

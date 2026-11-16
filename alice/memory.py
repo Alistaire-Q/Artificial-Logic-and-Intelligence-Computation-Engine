@@ -1006,9 +1006,11 @@ class LongMemory:
             rows = self.db.execute(sql + " ORDER BY COALESCE(due, created)").fetchall()
         return [Followup(*r) for r in rows]
 
-    def due_followups(self, now: float | None = None) -> list[Followup]:
+    def due_followups(self, now: float | None = None, prune: bool = True) -> list[Followup]:
         """Bugün ya da daha önce günü gelmiş takipler + yarım kalan işler. Çok eskiyenler kendiliğinden düşer
-        (sınavdan 4 gün sonra "nasıl geçti" sorulmaz; iki hafta önce yarım kalan iş artık güncel değil)."""
+        (sınavdan 4 gün sonra "nasıl geçti" sorulmaz; iki hafta önce yarım kalan iş artık güncel değil).
+        prune=False: eskiyenler yalnız listeden çıkar, kalıcı olarak kapatılmaz (ileri bir an için bakarken: gece
+        raporu "yarın"a bakarken takipleri bir buçuk gün erken kapatıyordu)."""
         now = now or time.time()
         end_of_day = datetime.fromtimestamp(now).replace(hour=23, minute=59, second=59).timestamp()
         out, stale = [], []
@@ -1020,7 +1022,7 @@ class LongMemory:
                 stale.append(f.id)
                 continue
             out.append(f)
-        if stale:
+        if stale and prune:
             with self._lock:
                 self.db.executemany("UPDATE followups SET done = 2 WHERE id = ?", [(i,) for i in stale])
                 self.db.commit()
