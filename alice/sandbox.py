@@ -179,6 +179,40 @@ def label_low(folder: Path) -> None:
         pass
 
 
+def hide_from_sandbox(path: Path) -> bool:
+    """Gizli bir dosyayı (telefon anahtarı, aktarma anahtarı) düşük bütünlüklü süreçlerin OKUYAMAYACAĞI şekilde
+    etiketle. Low seviye varsayılan olarak her dosyayı okuyabilir: kandırılmış bir sandbox komutu telefon anahtarını
+    okuyup 127.0.0.1'deki telefon sunucusundan bilgisayarı tam yetkiyle yönetebilirdi (sandbox kaçışı). Etiket: Medium,
+    no-read-up + no-write-up. Windows dışında ya da başarısızsa False (dosya yine çalışır)."""
+    if not IS_WIN:
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.ULONG)]
+    advapi32.GetSecurityDescriptorSacl.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL),
+                                                   ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.BOOL)]
+    advapi32.SetNamedSecurityInfoW.argtypes = [wintypes.LPWSTR, ctypes.c_int, wintypes.DWORD, ctypes.c_void_p,
+                                               ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    advapi32.SetNamedSecurityInfoW.restype = wintypes.DWORD
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    sd = ctypes.c_void_p()
+    if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW("S:(ML;;NWNR;;;ME)", 1, ctypes.byref(sd),
+                                                                         None):
+        return False
+    try:
+        present, defaulted, sacl = wintypes.BOOL(), wintypes.BOOL(), ctypes.c_void_p()
+        if not advapi32.GetSecurityDescriptorSacl(sd, ctypes.byref(present), ctypes.byref(sacl), ctypes.byref(defaulted)):
+            return False
+        # SE_FILE_OBJECT = 1, LABEL_SECURITY_INFORMATION = 0x10
+        return advapi32.SetNamedSecurityInfoW(str(path), 1, 0x10, None, None, None, sacl) == 0
+    finally:
+        kernel32.LocalFree(sd)
+
+
 def low_temp() -> Path:
     base = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "AppData" / "LocalLow" / "ALICE-sandbox"
     base.mkdir(parents=True, exist_ok=True)

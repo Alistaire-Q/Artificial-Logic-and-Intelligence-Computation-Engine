@@ -252,7 +252,19 @@ class Bridge:
             self.log("istemci ayrıldı")
 
 
+LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]"}
+
+
 def _health(connection, request, bridge: Bridge | None = None):
+    # Köprü kullanıcının tarayıcısına tam CDP erişimi verir (çerezler, her sekmede JS). Tarayıcılar her WebSocket
+    # el sıkışmasında Origin gönderir, Playwright/websockets istemcileri göndermez: Origin'li istek açılmış bir web
+    # sayfasından gelir, reddedilir. Host kontrolü DNS rebinding'i keser.
+    headers = getattr(request, "headers", None) or {}
+    if headers.get("Origin") is not None:
+        return connection.respond(403, "forbidden\n")
+    host = headers.get("Host")
+    if host is not None and host.rsplit(":", 1)[0].lower() not in LOCAL_HOSTS:
+        return connection.respond(403, "forbidden\n")
     if request.path == "/alice-bridge":
         if bridge is not None and bridge.closed.is_set():
             return connection.respond(503, "closing\n")  # kapanan köprüye bağlanılmasın, yenisi başlatılsın

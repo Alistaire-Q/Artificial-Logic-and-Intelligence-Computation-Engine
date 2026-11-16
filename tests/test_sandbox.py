@@ -103,6 +103,36 @@ def test_windows_low_integrity_blocks_writes_outside_project(tmp_path):
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows düşük bütünlük seviyesi")
+def test_sandbox_cannot_read_hidden_secrets(tmp_path):
+    """Low seviye her dosyayı okuyabiliyordu: kandırılmış bir sandbox komutu ~/.alice/phone-token'ı okuyup
+    127.0.0.1'deki telefon sunucusundan bilgisayarı tam yetkiyle yönetebilirdi."""
+    import subprocess
+
+    secret, plain = tmp_path / "phone-token", tmp_path / "acik.txt"
+    secret.write_text("gizli-anahtar", encoding="utf-8")
+    plain.write_text("acik", encoding="utf-8")
+    assert sandbox.hide_from_sandbox(secret)
+    assert secret.read_text(encoding="utf-8") == "gizli-anahtar"  # ALICE'in kendisi okumaya devam eder
+
+    def low_read(p):
+        return subprocess.run([sys.executable, "-m", "alice.sandbox_run", "--", sys.executable, "-c",
+                               f"print(open(r'{p}').read())"], capture_output=True, text=True, timeout=60)
+
+    assert "acik" in low_read(plain).stdout  # kontrol: sandbox gerçekten çalışıyor
+    r = low_read(secret)
+    assert r.returncode != 0 and "gizli-anahtar" not in r.stdout
+
+
+def test_phone_token_is_hidden_from_sandbox(monkeypatch):
+    from alice.app import phone
+
+    seen = []
+    monkeypatch.setattr(sandbox, "hide_from_sandbox", lambda p: seen.append(p.name) or True)
+    t = phone.token(new=True)
+    assert seen == ["phone-token"] and phone.token() == t and seen == ["phone-token", "phone-token"]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows düşük bütünlük seviyesi")
 def test_failed_read_is_not_blamed_on_sandbox(tmp_path):
     """Canlı kayıt: olmayan dosyaya bakan Get-Item'ın hatasına sandbox notu eklenince model "indirme klasörüne
     erişim engellendi" sanıp yanlış yöne gitti."""
