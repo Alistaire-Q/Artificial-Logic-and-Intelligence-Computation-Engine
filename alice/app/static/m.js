@@ -269,7 +269,8 @@ const handlers = {
 const CHAT_EVENTS = new Set(["user", "busy", "stream_start", "delta", "stream_reset", "stream_end", "tool_start", "tool_end"]);
 let es = null;
 function connect() {
-  es = new EventSource("/api/events?t=" + encodeURIComponent(TOKEN));
+  // Anahtar adreste değil: sayfa açılırken kurulan HttpOnly çerezle doğrulanır (alice/app/phone.py phone_handler).
+  es = new EventSource("/api/events");
   es.onopen = () => setOnline(true);
   es.onerror = () => {
     setOnline(false);
@@ -1500,7 +1501,7 @@ function appRow(body) {
     }, newer ? "w" : ""));
   } else if (/Android/i.test(navigator.userAgent) && app.available) {
     body.appendChild(navRow("dl", "Android uygulamasını kur", app.version_name, () => {
-      location.href = "/api/phone/app.apk?t=" + encodeURIComponent(TOKEN);
+      location.href = "/api/phone/app.apk";  // çerezle doğrulanır: anahtar indirme geçmişine düşmez
       toast("İnince aç ve kur. Sonra uygulamada QR'yi yeniden okut.");
     }));
   }
@@ -1839,7 +1840,7 @@ function playNext() {
   if (seg.audio) {
     c.audio.onended = next;
     c.audio.onerror = () => speakText(seg.text, next);
-    c.audio.src = `/api/call/audio?id=${encodeURIComponent(c.id)}&n=${seg.n}&t=${encodeURIComponent(TOKEN)}`;
+    c.audio.src = `/api/call/audio?id=${encodeURIComponent(c.id)}&n=${seg.n}`;  // çerezle doğrulanır
     c.audio.play().catch(() => speakText(seg.text, next));
   } else speakText(seg.text, next);
 }
