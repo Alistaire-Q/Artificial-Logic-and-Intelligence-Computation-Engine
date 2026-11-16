@@ -647,6 +647,7 @@ class Team:
             m.limit_hit, m.provider_failed = False, ""
             if self.stopped or m.stop_requested:  # tam başlarken proje ya da bu ajan durduruldu
                 raise _Stopped()
+            m.agent.stop_check = lambda m=m: self.stopped or m.stop_requested  # bu satırla tur arası da kapansın
             text = m.agent.run_turn(prompt, max_steps=m.max_steps) or ""
             if self.stopped or m.stop_requested or m.agent.cancel.is_set():
                 final = "stopped"

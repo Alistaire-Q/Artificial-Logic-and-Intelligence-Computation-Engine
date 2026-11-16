@@ -352,6 +352,9 @@ class Agent:
 
             self.hooks = Hooks([], ctx.cwd)
         self.cancel = threading.Event()
+        # Durdurma isteği dışarıda da tutuluyorsa (takım üyesi): run_turn bayrağı temizledikten sonra buna bakar.
+        # Kontrol ile tur başlangıcı arasına düşen bir Durdur böylece kaybolmaz.
+        self.stop_check: Any = None
         self.busy = False
         # Çalışırken gelen kullanıcı mesajları (steer): bir sonraki model adımından önce konuşmaya girer.
         self._inbox: list[tuple[str, list[str]]] = []
@@ -556,6 +559,8 @@ class Agent:
         # Durdurma bayrağı her şeyden önce temizlenir: hatırlama ve kurulum sırasında basılan Durdur kaybolmasın
         # (önceden _run_turn içinde temizleniyordu; o arada gelen durdurma isteği silinip tur sürüyordu).
         self.cancel.clear()
+        if self.stop_check is not None and self.stop_check():
+            self.cancel.set()
         self.refresh_memory()
         self.sync_catalog()
         recall = self._recall(user_text)

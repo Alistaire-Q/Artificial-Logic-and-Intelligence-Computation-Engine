@@ -429,3 +429,21 @@ def test_stop_during_turn_setup_is_not_lost(workdir):
     assert ("info", "durduruldu") in ui.events
     agent._recall = lambda text: ""
     assert agent.run_turn("tekrar") == "cevap"  # sonraki tur temiz başlar
+
+
+def test_stop_check_catches_stop_pressed_just_before_turn(workdir):
+    # Takım üyesi: Durdur, takımın son kontrolü ile run_turn'ün bayrağı temizlemesi arasına düşerse kaybolmasın.
+    calls = []
+
+    def model(model, messages, tools, **kw):
+        calls.append(1)
+        return "cevap"
+
+    agent, _, _ui = make_agent(model, workdir, stream=False)
+    agent._recall = lambda text: ""
+    wanted = [True]
+    agent.stop_check = lambda: wanted[0]
+    agent.run_turn("merhaba")
+    assert calls == []
+    wanted[0] = False
+    assert agent.run_turn("tekrar") == "cevap"
