@@ -24,9 +24,24 @@ def test_death_context_reads_last_alive_moment():
     events = [ev(970.0, "Arkanda düşman, saat 6, 400 metre!"), ev(950.0, "SAM menzilindesin: saat 2, 9 km."),
               ev(995.0, "Yanıyorsun! F-16C vurdu.")]
     c = coach.death_context(f, events)
-    assert (c["low"], c["turning"], c["six"], c["sam"], c["killer"]) == (True, True, True, True, "F-16C")
+    # Menzildeydin ama seni uçak vurdu: ölüm SAM'e yazılmaz.
+    assert (c["low"], c["turning"], c["six"], c["sam"], c["killer"]) == (True, True, True, False, "F-16C")
     assert coach.death_context(flight(1000.0, landed=True), events) is None
     assert coach.death_context({"touchdown_vv_ms": None, "series": {}}, events) is None
+
+
+def test_death_blamed_on_real_killer():
+    f = flight(1000.0)
+    sam_only = [ev(950.0, "SAM menzilindesin: saat 2, 9 km.")]
+    assert coach.death_context(f, sam_only)["sam"] is True  # vuran bilinmiyor: menzil ipucu kalır
+    late_plane = sam_only + [ev(1015.0, "Ağır hasar aldın, F/A-18E vurdu!")]  # yazı uçuş bittikten sonra geldi
+    c = coach.death_context(f, late_plane)
+    assert (c["killer"], c["sam"]) == ("F/A-18E", False)
+    assert coach.death_context(f, [ev(995.0, "Yanıyorsun! Pantsir-S1 vurdu.")])["sam"] is True
+    # Hasarı biri verdi, düşüren başkası: ölüm düşürene yazılır.
+    both = [ev(990.0, "Ağır hasar aldın, F-16C vurdu!"), ev(1010.0, "Seni FSAF SAMP/T düşürdü.")]
+    assert (coach.death_context(f, both)["killer"], coach.death_context(f, both)["sam"]) == ("FSAF SAMP/T", True)
+    assert not coach.is_air_defense("Tornado IDS") and not coach.is_air_defense("F-16C")
 
 
 def test_patterns_need_share_and_count():
@@ -85,7 +100,7 @@ def test_hint_once_per_session_and_calm_mode():
     tr.feed(st(1, ias=80, agl=30))
     sam = {"id": "", "clock": 2, "dist_m": 9000.0, "kind": "sam", "name": "SAM", "range_m": 18000.0}
     tr.feed(st(2, extra={"contacts": [sam]}))
-    assert r.texts()[-1] == ("SAM menzilindesin: saat 2, 9,0 kilometre. Geçen ölümlerinin çoğu SAM menzilindeydi, "
+    assert r.texts()[-1] == ("SAM menzilindesin: saat 2, 9,0 kilometre. Geçen ölümlerinin çoğu hava savunmasındandı, "
                              "alçal ya da çık.")
     c.calm = True
     assert c._may_say(10.0, "x", 0) is False  # tilt: 12 değil 24 sn boşluk

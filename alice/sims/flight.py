@@ -662,6 +662,8 @@ class FlightCompanion:
                 self.say(f"Yanıyorsun! {who} vurdu.", "critical", "urgent")
             elif kind == "hit":
                 self.say(f"Ağır hasar aldın, {who} vurdu!", "warn", "urgent")
+            elif kind == "killed":
+                self.say(f"Seni {who} düşürdü.", "info", "serious")
 
     # ------------------------------------------------------------------- evre
     def _airborne(self, s: FlightState) -> bool:
