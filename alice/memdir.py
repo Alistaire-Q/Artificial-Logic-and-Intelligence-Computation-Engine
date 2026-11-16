@@ -209,13 +209,28 @@ class Note:
 
 
 # ---------------------------------------------------------------------------------------------------- defter
+_root_locks: dict[str, threading.RLock] = {}
+_root_locks_guard = threading.Lock()
+
+
+def _root_lock(root: Path) -> threading.RLock:
+    key = os.path.normcase(os.path.abspath(str(root)))
+    with _root_locks_guard:
+        lock = _root_locks.get(key)
+        if lock is None:
+            lock = _root_locks[key] = threading.RLock()
+        return lock
+
+
 class NoteBook:
     """Bir hafıza klasörü (genel ya da bir projenin)."""
 
     def __init__(self, root: Path | str, scope: str = "genel"):
         self.root = Path(root)
         self.scope = scope
-        self._lock = threading.RLock()
+        # Aynı klasörün defteri her çağrıda yeniden kuruluyor (proje defteri, all_books): kilit klasöre bağlı olmalı,
+        # yoksa arka plan çıkarımı ile araç aynı anda yazınca MEMORY.md satırları kayboluyordu.
+        self._lock = _root_lock(self.root)
 
     # -------------------------------------------------------------- dosyalar
     def ensure(self) -> Path:
@@ -280,7 +295,17 @@ class NoteBook:
             name = name.split(":", 1)[1]
         if name.endswith(".md"):
             name = name[:-3]
-        return name if NAME_RX.match(name) else slugify(name)
+        if NAME_RX.match(name):
+            out = name
+        elif name not in ("", ".", "..") and not re.search(r"[\\/:*?\"<>|]", name) and self.path_for(name).is_file():
+            # Elle eklenmiş "Sunucu Notları.md" gibi bir dosya: listede bu adla görünüyor ama ad sadeleştirilince
+            # ("sunucu-notlari") bulunamıyor, okunamıyor/silinemiyordu. Klasörde birebir duran dosyanın adı geçerli.
+            out = name
+        else:
+            out = slugify(name)
+        # "memory.md" Windows'ta (büyük/küçük harf duyarsız) MEMORY.md'nin ta kendisi: böyle adlı not dizinin üstüne
+        # yazılıyor, ardından dizin yazımı da notu siliyordu.
+        return "memory-not" if out.lower() == INDEX[:-3].lower() else out
 
     # -------------------------------------------------------------- yazma
     def save(self, name: str, description: str, type: str, body: str, title: str = "",

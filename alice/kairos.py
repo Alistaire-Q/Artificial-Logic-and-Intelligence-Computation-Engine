@@ -25,6 +25,8 @@ config.toml:
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import threading
 import time
 from datetime import datetime
@@ -61,9 +63,27 @@ def load_state(path: Path | None = None) -> dict[str, Any]:
 def save_state(data: dict[str, Any], path: Path | None = None) -> None:
     path = path or state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-    tmp.replace(path)
+    # Her yazan kendi geçici dosyasını kullanır: çekirdek (tick/uyanış) ile uygulama ("şimdi uyan", aç/kapat) aynı
+    # anda yazınca ortak "kairos.tmp" birinin elinden kayıyor, os.replace FileNotFoundError veriyordu (uyanışın
+    # özeti ve sıradaki uyanış zamanı kayboluyordu).
+    fd, tmp = tempfile.mkstemp(prefix=".kairos-", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(data, ensure_ascii=False, indent=1))
+        for attempt in range(5):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:  # Windows: hedef o an başka biri tarafından okunuyor/değiştiriliyor
+                if attempt == 4:
+                    raise
+                time.sleep(0.05)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def is_enabled(cfg: Any, st: dict[str, Any] | None = None) -> bool:

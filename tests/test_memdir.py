@@ -115,3 +115,42 @@ def test_relevance_falls_back_to_keywords_when_the_model_fails(tmp_path):
     assert [n.name for n in picked] == ["reference-grafana"]
     picked = memdir.select_relevant("kahve", b.scan(), lambda p: '{"selected": ["genel:user-kahve", "uydurma"]}')
     assert [n.name for n in picked] == ["user-kahve"]  # olmayan ad yok sayılır
+
+
+def test_books_of_the_same_folder_share_one_lock_and_lose_no_index_lines(tmp_path):
+    import threading
+
+    root = tmp_path / "proje"
+    assert NoteBook(root)._lock is NoteBook(root, scope="proje")._lock
+
+    def work(prefix):
+        b = NoteBook(root, scope="proje")  # proje defteri her çağrıda yeniden kuruluyor
+        for i in range(25):
+            b.save(f"{prefix}-{i}", f"not {prefix} {i}", "project", "gövde")
+
+    threads = [threading.Thread(target=work, args=(p,)) for p in ("a", "b", "c")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(NoteBook(root).index_raw().strip().splitlines()) == 75
+
+
+def test_hand_added_file_with_spaces_can_be_read_updated_and_deleted(tmp_path):
+    b = NoteBook(tmp_path / "m")
+    b.ensure()
+    (b.root / "Sunucu Notları.md").write_text("Sunucu 9000 portunda.\n", encoding="utf-8")
+    [n] = b.scan()
+    assert b.get(n.name) is not None and b.get(f"genel:{n.name}") is not None
+    b.save(n.name, "Sunucu portu", "reference", "Sunucu 9001 portunda.")
+    assert [x.name for x in b.scan()] == ["Sunucu Notları"] and "9001" in b.scan()[0].body
+    assert b.delete(n.key) is not None and b.scan() == []
+    assert b._resolve("../dışarı") == "disari"  # yol dışarı çıkamaz
+
+
+def test_note_named_memory_does_not_overwrite_the_index(tmp_path):
+    b = NoteBook(tmp_path / "m")
+    b.save("kahve", "Kullanıcı kahveyi şekersiz içer", "user", "Şekersiz.")
+    note, _ = b.save("memory", "ALICE'in hafızası hakkında", "reference", "Hafıza notu.")
+    assert note.name == "memory-not" and b.get("Memory!") is not None
+    assert "](kahve.md)" in b.index_raw() and {n.name for n in b.scan()} == {"kahve", "memory-not"}

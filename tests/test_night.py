@@ -157,3 +157,15 @@ def test_struggles_find_loops_repeated_keys_interrupts_and_frustration(tmp_path)
     assert "Kullanıcı işi yarıda kesti" in titles
     assert any(t.startswith("Kullanıcı memnun kalmadı: \"yine saçmaladın") for t in titles)
     assert not any("takılmaca" in t for t in titles)
+
+
+def test_tomorrow_does_not_close_followups_that_are_still_current():
+    from alice.memory import LongMemory
+
+    m = LongMemory(":memory:")
+    now = datetime(2026, 10, 20, 4, 0).timestamp()
+    # 3,5 gün önce sorulacaktı: bugün hâlâ geçerli (4 gün kuralı); 36 saat sonrası için bakınca "eski" görünür.
+    fid = m.add_followup("Sınavın nasıl geçtiğini sor.", now - 3.5 * 86400, "ask")
+    m.add_followup("Dişçi randevusunu hatırlat.", now + 20 * 3600, "remind")
+    assert night.tomorrow(m, now) == ["Dişçi randevusunu hatırlat."]
+    assert fid in [f.id for f in m.due_followups(now)]  # gece raporu takibi kapatmadı

@@ -162,6 +162,32 @@ def test_digest_failure_backs_off_and_retries_later():
     assert m.digest() == 0
     assert float(m._meta("digest_fail_until")) > time.time()
     assert len(m.pending_sessions()) == 1  # kaybolmadı, sonra tekrar denenecek
+    for _ in range(5):  # ağ/kota hatası konuşmayı hiçbir zaman atlatmaz
+        m.digest()
+    assert len(m.pending_sessions()) == 1
+
+
+def test_digest_skips_a_conversation_the_model_never_answers_usably():
+    calls = []
+
+    def extractor(prompt):
+        calls.append(prompt)
+        if "Unity" in prompt:
+            return "{}"  # bu konuşma için model hep boş/bozuk cevap veriyor
+        return json.dumps({"summary": "Matematik sınavı planlandı.", "followups": [], "done": []})
+
+    m = LongMemory(":memory:", {}, extractor)
+    m.record("Unity projesinde silah sistemini yazıyorduk, uzun uzun konuştuk", "Evet.")
+    _old(m, 3)
+    m.record("matematik sınavına nasıl çalışacağımızı planlayalım bugün", "Tamam.")
+    _old(m, 1)
+    for _ in range(3):
+        m._meta("digest_fail_until", "0")
+        m.digest()
+    # Kullanılamaz cevap veren konuşma birkaç denemeden sonra atlanır; sonraki konuşma özetlenir (eskiden sonsuza
+    # dek takılıyordu).
+    assert [s.text for s in m.summaries()] == ["Matematik sınavı planlandı."]
+    assert m.pending_sessions() == []
 
 
 def test_followup_lifecycle_and_expiry():
