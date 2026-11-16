@@ -245,6 +245,9 @@ class OpenAICompatProvider:
     def __init__(self, cfg: ProviderConfig, timeout: float = 180.0, client: httpx.Client | None = None):
         self.cfg = cfg
         self.name = cfg.name
+        # Akışta kullanım bilgisini (stream_options.include_usage) kabul etmeyen sağlayıcı bir kez 400 verince
+        # bir daha istenmez.
+        self._stream_usage = True
         self._client = client or httpx.Client(timeout=httpx.Timeout(timeout, connect=15.0))
 
     def close(self) -> None:
@@ -367,6 +370,11 @@ class OpenAICompatProvider:
                      cancel, on_reasoning, on_first, on_tool, on_call=None) -> ChatResult:
         body = self._body(model, messages, tools, temperature, max_tokens, response_format, extra)
         body["stream"] = True
+        # Akışın sonunda tam kullanım gelsin (önbellekten okunan/yazılan token dahil). İstenmeyince bazı sağlayıcılar
+        # (cliproxy) yalnız ilk parçadaki eksik kullanımı yolluyordu: çıktı 0, önbellek bilgisi yok, ALICE'in önbellek
+        # isabeti hep %0 görünüyordu.
+        if self._stream_usage and "stream_options" not in body:
+            body["stream_options"] = {"include_usage": True}
         if "openrouter.ai" in self.cfg.base_url:  # kullanım ve ücret son parçada gelsin (proje maliyet takibi)
             body.setdefault("usage", {"include": True})
         t0 = time.monotonic()
@@ -381,13 +389,19 @@ class OpenAICompatProvider:
         got_data = False
         chunks = 0  # çözülebilen SSE parçası sayısı
         done = False
+        retry = False
         try:
             with self._client.stream("POST", f"{self.cfg.base_url}/chat/completions", headers=self._headers(),
                                      json=body, timeout=httpx.Timeout(self.FIRST_DATA, connect=15.0)) as r:
                 if r.status_code != 200:
                     r.read()
-                    raise classify_error(r.status_code, r.text, dict(r.headers))
-                for line in r.iter_lines():
+                    if r.status_code in (400, 422) and "stream_options" in r.text and \
+                            body.get("stream_options") and self._stream_usage:
+                        self._stream_usage = False
+                        retry = True
+                    else:
+                        raise classify_error(r.status_code, r.text, dict(r.headers))
+                for line in ([] if retry else r.iter_lines()):
                     if cancel and cancel():
                         raise StreamCancelled()
                     if not got_data and time.monotonic() - t0 > self.FIRST_DATA:
@@ -413,7 +427,7 @@ class OpenAICompatProvider:
                     if isinstance(chunk.get("model"), str) and chunk["model"]:
                         served_model = chunk["model"]
                     if isinstance(chunk.get("usage"), dict) and chunk["usage"]:
-                        usage = chunk["usage"]
+                        usage = merge_usage(usage, chunk["usage"])
                     choices = chunk.get("choices")
                     for ch in choices if isinstance(choices, list) else []:
                         if not isinstance(ch, dict):  # bozuk parça: AttributeError ile oturumu düşürmesin
@@ -455,6 +469,9 @@ class OpenAICompatProvider:
                         finish = ch.get("finish_reason") or finish
         except _TRANSPORT_ERRORS as e:
             raise _transport_error(e) from e
+        if retry:
+            return self._chat_stream(model, messages, on_delta, tools, temperature, max_tokens, response_format,
+                                     extra, cancel, on_reasoning, on_first, on_tool, on_call)
         if not chunks and not done:
             # 200 geldi ama tek bir SSE parçası yok (HTML ara sayfa, boş gövde, akış açılır açılmaz kapandı):
             # önceden boş cevap başarılı sayılıp kullanıcıya hiçbir şey gösterilmiyordu.
@@ -486,6 +503,18 @@ class OpenAICompatProvider:
         # Bazı sağlayıcılar listeyi doğrudan döndürüyor: önceden list.get AttributeError ile düşüyordu.
         items = data if isinstance(data, list) else (data.get("data") if isinstance(data, dict) else None)
         return [m for m in items if isinstance(m, dict)] if isinstance(items, list) else []
+
+
+def merge_usage(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
+    """Akışta birden çok parçada gelen kullanımı birleştir: sonraki parçanın dolu alanları öncekinin üstüne yazılır,
+    boş/sıfır alanlar öncekini silmez (ilk parça girdi token'ını, son parça çıktıyı ve önbelleği getirebiliyor)."""
+    out = dict(old)
+    for k, v in new.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = merge_usage(out[k], v)
+        elif v or k not in out:
+            out[k] = v
+    return out
 
 
 def _text_of(content: Any) -> str:

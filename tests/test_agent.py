@@ -213,7 +213,8 @@ def test_tool_groups_keep_requests_small(workdir):
             return tool_call("load_tools", {"groups": ["system"]}, cid="c9")
         return "tamam"
 
-    agent, _, _ = make_agent(script, workdir)
+    # Kelimeyle grup açma (sohbet ortasında önbellek için not düşmek yerine): bkz. test_prompt_cache.
+    agent, _, _ = make_agent(script, workdir, cache_stable_tools=False)
     agent.run_turn("merhaba")
     assert "read_file" in seen[0] and "browser" not in seen[0] and "blender" not in seen[0]
     agent.run_turn("blender'da bir ev yap")
@@ -400,6 +401,9 @@ def test_request_prefix_stays_identical_for_prompt_cache(workdir):
     assert agent.messages[0]["content"] == system1  # konuşma kaydı sistem istemini değiştirmez
     names3 = [s["function"]["name"] for s in provs["a"].calls[-1]["tools"]]
     assert names3[:len(names1)] == names1 and len(names3) > len(names1)
-    agent.memory.remember("Kullanıcı kısa cevap sever.", "preference")
+    agent.memory.remember("Kullanıcı uzun açıklama sever.", "preference", source="otomatik")
     agent.refresh_memory()
-    assert agent.messages[0]["content"] != system1  # not değişince yenilenir
+    assert agent.messages[0]["content"] == system1  # sohbet ortasında otomatik not sistem istemini bozmaz
+    agent.memory.remember("Kullanıcı kısa cevap sever.", "preference", source="kullanıcı")
+    agent.refresh_memory()
+    assert agent.messages[0]["content"] != system1  # kullanıcı hafızayı değiştirince yenilenir

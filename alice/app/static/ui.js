@@ -984,6 +984,9 @@ function assistantPane(pane, data) {
       onOff("agent", "taint_guard", "Koruma")),
     setRow("Google araması", "web_search önce Google'da (Gemini) arar, kota dolarsa DuckDuckGo",
       onOff("agent", "search_grounding", "Google araması")),
+    setRow("Tur token bütçesi", "Tek bir istekte harcanabilecek en çok token (önbellek hariç); aşılınca tur durur, \"devam et\" ile sürer",
+      segmented([["0", "Sınırsız"], ["200000", "200K"], ["500000", "500K"], ["1000000", "1M"], ["2000000", "2M"]],
+        String(v["agent.turn_token_budget"] || 0), (x) => set("agent", "turn_token_budget", Number(x), "Tur bütçesi"))),
     setRow("Dönüşte karşılama", "Uzun yokluktan sonra takip, takvim ve e-postalarla kısa sesli brifing",
       onOff("greeting", "enabled", "Karşılama")),
     setRow("Yokluk süresi", "Bu kadar dakika uzakta kalınca dönüş sayılır",
@@ -2151,6 +2154,7 @@ function memoryPane(pane, data) {
   };
   f.addEventListener("input", draw);
   draw();
+  historyBlock(pane, d);
   if ((d.followups || []).length) {
     pane.appendChild(el("div", "sec", "Takipler (sonra sorulacak / hatırlatılacak)"));
     for (const x of d.followups) {
@@ -2161,6 +2165,42 @@ function memoryPane(pane, data) {
       pane.appendChild(row);
     }
   }
+}
+/* Hatırlanan geçmiş konuşmalar (özetler ve son turlar): ALICE bunları yeni sohbetlerde "hatırlar"; tek tek ya da
+   hepsi birden silinebilir. Sohbeti kenar çubuğundan silmek de o sohbetin buradaki izlerini siler. */
+function historyBlock(pane, d) {
+  const sums = d.summaries || [], eps = d.episodes || [];
+  if (!sums.length && !eps.length) return;
+  const head = el("div", "list-row");
+  const hl = el("span", "l");
+  hl.append(el("b", "", "Hatırlanan konuşmalar"),
+    el("small", "", "ALICE geçmiş sohbetleri bu özetlerden ve turlardan hatırlar. Yanlış ya da istemediğin birini sil; sohbeti kenar çubuğundan silmek de buradaki izlerini siler."));
+  const all = el("button", "btn", "Hepsini unut");
+  all.addEventListener("click", async () => {
+    if (!confirm("Bütün konuşma geçmişi (özetler ve turlar) hafızadan silinsin mi? Notlar ve takipler kalır. Geri alınamaz.")) return;
+    const r = await api("/api/memory/action", { action: "forget_history" });
+    toast(r && r.ok ? `${r.episodes} tur, ${r.summaries} özet silindi` : "silinemedi");
+    showSettings("memory");
+  });
+  head.append(hl, all);
+  pane.appendChild(head);
+  const rows = (title, items, action) => {
+    if (!items.length) return;
+    const det = el("details", "mem-history");
+    det.appendChild(el("summary", "", `${title} (${items.length})`));
+    for (const x of items) {
+      const row = el("div", "list-row");
+      const b = el("button", "btn", "Sil");
+      b.addEventListener("click", () => api("/api/memory/action", { action, id: x.id }).then((r) => {
+        if (r && r.ok) row.remove(); else toast("silinemedi");
+      }));
+      row.append(el("span", "l", x.text), b);
+      det.appendChild(row);
+    }
+    pane.appendChild(det);
+  };
+  rows("Konuşma özetleri", sums, "forget_summary");
+  rows("Son turlar", eps, "forget_episode");
 }
 function noteRow(x, notes, redraw) {
   const row = el("div", "list-row mem-note" + (x.old ? " warn" : ""));

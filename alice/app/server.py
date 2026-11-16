@@ -439,7 +439,7 @@ class Chat:
         self.ctx.state["session_id"] = sid
 
     def save(self) -> None:
-        if not self.abandoned:
+        if not self.abandoned and self.sid not in getattr(self.app, "deleted_sids", ()):
             from alice import subagents
 
             extra = {**self.agent.export_stats(), "started": self.started,
@@ -465,6 +465,7 @@ class Chat:
         for k in ("subagents", "subagent_ids"):
             self.ctx.state.pop(k, None)
         self.set_sid(sid)
+        getattr(self.app, "deleted_sids", set()).discard(sid)
         self.started = time.time()
         self._ckpt_sig = (0, 0)
         if messages is not None:
@@ -606,6 +607,9 @@ class AppState:
         self._mcp_servers: list[Any] = []
         self._chats_lock = threading.RLock()
         self.background: dict[str, Chat] = {}  # öndeki sohbetten ayrılınca çalışmaya devam edenler
+        # Silinen sohbetler: bellekte hâlâ açık duran Chat bunları diske geri yazmasın (silinen sohbet açılışta
+        # yeniden çıkıyordu).
+        self.deleted_sids: set[str] = set()
         self.chat = Chat(self, cwd, mode)
         self.token = secrets.token_urlsafe(24)
         # Önizleme adresindeki anahtar ayrı: sitenin kodu onu görse bile sadece proje dosyalarını okuyabilir.
@@ -748,6 +752,45 @@ class AppState:
         self.chat = chat
         if not old_busy and old is not chat:
             old.close()
+
+    def delete_session(self, sid: str) -> dict[str, Any]:
+        """Sohbeti geçmişten sil: dosyası, arşivi, geri sarma kayıtları, başlığı ve hafızadaki izleri (turlar,
+        özetler). Hafıza silinmezse ALICE silinen sohbeti "Son konuşmalar"dan hatırlamaya devam ediyordu."""
+        f = sess.sessions_dir() / f"{sid}.json"
+        if not sid or f.parent != sess.sessions_dir() or not f.exists():
+            return {"ok": True}
+        users: list[str] = []
+        start = end = None
+        try:
+            raw = json.loads(f.read_text(encoding="utf-8"))
+            msgs = sess.load_archive(sid) + list(raw.get("messages") or [])
+            for m in msgs:
+                if m.get("role") != "user" or m.get("_image") or m.get("_steer"):
+                    continue
+                c = m.get("content")
+                if isinstance(c, list):
+                    c = " ".join(str(x.get("text") or "") for x in c if isinstance(x, dict))
+                if isinstance(c, str) and c.strip():
+                    users.append(c)
+            start = float((raw.get("extra") or {}).get("started") or 0) or None
+            end = f.stat().st_mtime
+            if start is None:
+                start = end - 7 * 86400
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+        self.deleted_sids.add(sid)
+        f.unlink(missing_ok=True)
+        sess.archive_path(sid).unlink(missing_ok=True)
+        sess.checkpoints_path(sid).unlink(missing_ok=True)
+        sess.set_meta(sid, title="", pinned=False, auto_title="")
+        forgot = {"episodes": 0, "summaries": 0}
+        mem = getattr(self.agent, "memory", None)
+        if mem is not None:
+            try:
+                forgot = mem.forget_session(sid, users, start, end)
+            except Exception:  # noqa: BLE001 - hafıza silinemese de sohbet silindi
+                log_error()
+        return {"ok": True, "forgot": forgot}
 
     def new_session(self) -> str | None:
         """Yeni sohbet. Hata varsa metni döner."""
@@ -1064,6 +1107,7 @@ class AppState:
         ("agent", "sandbox"): ("off", "auto", "on"),
         ("agent", "taint_guard"): (True, False),
         ("agent", "search_grounding"): (True, False),
+        ("agent", "turn_token_budget"): (0, 200_000, 500_000, 1_000_000, 2_000_000),
         ("greeting", "enabled"): (True, False),
         ("greeting", "away_minutes"): (60, 90, 120, 180),
         ("memory", "digest"): (True, False),
@@ -1307,6 +1351,10 @@ class AppState:
             "enabled": True,
             "books": out,
             "followups": [{"id": f.id, "text": f.line()} for f in mem.followups()],
+            # Hatırlanan geçmiş konuşmalar: özetler ve son turlar. Silinebilsinler (önceden yalnız notlar silinebiliyordu;
+            # ALICE'in "hatırladığı" konuşmalar arayüzden kaldırılamıyordu).
+            "summaries": [{"id": x.id, "text": x.line()} for x in reversed(mem.summaries(30))],
+            "episodes": [{"id": e.id, "text": e.line(width=200), "channel": e.channel} for e in reversed(mem.recent(30))],
             "dream": {"summary": mem._meta("dream_summary") or "", "at": float(mem._meta("dream_at") or 0),
                       "enabled": mem.dream_enabled, "hours": mem.dream_hours, "sessions": mem.dream_sessions},
             "old_role": {"facts": len(old["facts"]), "summaries": len(old["summaries"]),
@@ -1320,6 +1368,9 @@ class AppState:
         if mem is None:
             return {"ok": False, "error": "hafıza kapalı"}
         cwd = getattr(self.agent.ctx, "cwd", None)
+        if action in ("tidy", "dream", "forget", "save", "restore", "forget_summary", "forget_episode",
+                      "forget_history", "purge_old_role"):
+            mem.mark_user_edit()  # açık sohbetlerin sistem istemi de bir sonraki turda yenilensin
         if action in ("tidy", "dream"):  # Ayarlar → Hafıza → Dream: toparlamayı şimdi çalıştır
             try:
                 done = mem.dream(force=True, cwd=cwd)
@@ -1357,6 +1408,18 @@ class AppState:
                 return {"ok": mem.done_followup(int(d.get("id", -1))) is not None}
             except (TypeError, ValueError):
                 return {"ok": False}
+        if action == "forget_summary":
+            try:
+                return {"ok": mem.forget_summary(int(d.get("id", -1)))}
+            except (TypeError, ValueError):
+                return {"ok": False}
+        if action == "forget_episode":
+            try:
+                return {"ok": mem.forget_episode(int(d.get("id", -1)))}
+            except (TypeError, ValueError):
+                return {"ok": False}
+        if action == "forget_history":
+            return {"ok": True, **mem.forget_history()}
         if action == "purge_old_role":
             return {"ok": True, "removed": mem.purge_old_role()}
         return {"ok": False, "error": f"bilinmeyen işlem: {action}"}
@@ -2805,12 +2868,7 @@ def make_handler(state: AppState):
                     sid = str(d.get("id", ""))
                     if sid in state.running():  # arkada çalışan sohbet bitince kendini yeniden kaydederdi
                         return self._json({"ok": False, "error": "bu sohbet arkada çalışıyor; önce bitsin"}, 409)
-                    f = sess.sessions_dir() / f"{sid}.json"
-                    if sid and f.parent == sess.sessions_dir() and f.exists():
-                        f.unlink()
-                        sess.archive_path(sid).unlink(missing_ok=True)
-                        sess.set_meta(sid, title="", pinned=False)
-                    return self._json({"ok": True})
+                    return self._json(state.delete_session(sid))
                 if p in ("/api/session/rename", "/api/session/pin"):
                     sid = str(d.get("id", ""))
                     f = sess.sessions_dir() / f"{sid}.json"

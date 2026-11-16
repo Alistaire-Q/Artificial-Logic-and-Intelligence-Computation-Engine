@@ -66,7 +66,10 @@ CREATE TABLE IF NOT EXISTS followups (
     text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS vectors (
     kind TEXT NOT NULL, ref INTEGER NOT NULL, vec BLOB NOT NULL, PRIMARY KEY (kind, ref));
+CREATE TABLE IF NOT EXISTS forgotten (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, text TEXT NOT NULL, terms TEXT NOT NULL DEFAULT '');
 """
+KEEP_FORGOTTEN = 200  # silinen notların izi (otomatik çıkarım ve Dream aynı şeyi geri yazmasın)
 FOLLOWUP_KINDS = {"ask": "sor", "remind": "hatırlat", "open": "yarım kaldı"}
 # Eski "sevgili/mommy" kişiliğinden kalan izler. Hafızada kaldıkça yeni kişilik "Buradayım bebeğim" diye geri
 # dönüyordu (voice.log); Ayarlar > Hafıza bunları gösterip tek tıkla temizler.
@@ -113,6 +116,7 @@ _FEEDBACK = re.compile(
     r"beğendim|begendim|istemiyorum|isterim|tercih|don'?t|stop|exactly|perfect|keep doing)\b", re.I)
 
 RECALL_ITEM_CHARS, RECALL_TOTAL_CHARS = 1800, 6000
+RECENT_TURNS_HOURS = 3  # sistem istemine giren "son turlar" bundan eskiyse girmez (yeni sohbet devam sanılmasın)
 
 
 def _clip(text: str, n: int) -> str:
@@ -304,6 +308,7 @@ class LongMemory:
         self._turns_since_extract = 0
         self._last_dream_scan: float | None = None  # monotonic; None = hiç taranmadı (açılıştan hemen sonra monotonic < 600 olabilir)
         self._dream_lock = threading.Lock()
+        self._in_profile: dict[str, set[str]] = {}  # cwd -> sistem isteminde tamamı duran notlar (anahtar@zaman)
         self.embedder = embedder  # alice.memvec.Embedder ya da None (sadece kelime araması)
         self.embed_min = float(o.get("embed_min", 0.68))  # bu kosinüsün altı "ilgisiz" sayılır
         self.digest_enabled = bool(o.get("digest", True))
@@ -333,6 +338,10 @@ class LongMemory:
             except sqlite3.DatabaseError:
                 pass
         self.db.executescript(_SCHEMA)
+        cols = {r[1] for r in self.db.execute("PRAGMA table_info(episodes)")}
+        if "sid" not in cols:  # tur hangi sohbetten: sohbet silinince hafızadaki turları da silinebilsin
+            self.db.execute("ALTER TABLE episodes ADD COLUMN sid TEXT NOT NULL DEFAULT ''")
+        self.db.execute("CREATE INDEX IF NOT EXISTS ix_episodes_sid ON episodes(sid)")
         self.db.commit()
         self._prune()
 
@@ -421,20 +430,74 @@ class LongMemory:
                 best, best_score = n, j
         return best if best_score >= 0.75 else None
 
+    # Kullanıcının elle yaptığı hafıza değişiklikleri (not silme/düzenleme, geçmişi unutma). Sohbet ortasında sistem
+    # istemi yalnız bunlar değişince yenilenir; otomatik çıkarım ve Dream'in yazdıkları sonraki sohbete kalır (sistem
+    # istemi değişince prompt önbelleği baştan kuruluyor, bkz. Agent.refresh_memory).
+    user_edits = 0
+
+    def mark_user_edit(self) -> None:
+        self.user_edits += 1
+
     def save_note(self, name: str, description: str, type: str, content: str, title: str = "", source: str = "",
                   scope: str = "genel", cwd: Path | str | None = None) -> tuple[Any, bool]:
         b = self.book(scope, cwd)
         note, new = b.save(name, description, type, content, title=title, source=source)
+        if source in ("kullanıcı", "araç"):  # konuşmada açıkça yeniden kaydedildi
+            self.unforget(f"{title} {description} {content}")
+        if source == "kullanıcı":
+            self.mark_user_edit()
         self._bump()
         return note, new
 
     def delete_note(self, key: str, cwd: Path | str | None = None) -> Any:
+        """Notu sil (kullanıcı arayüzden, sesle ya da ALICE kullanıcının isteğiyle). Silinen notun izi tutulur: konuşma
+        özetleri durduğu için tur sonu çıkarımı ve Dream aynı bilgiyi yeniden not yapıyor, silinen not geri
+        geliyordu. Dream'in birleştirme silmeleri buradan geçmez (iz bırakmaz)."""
         b, n = self.find_note(key, cwd)
         if b is None:
             return None
         gone = b.delete(n.name)
+        if gone is not None:
+            self._tombstone(f"{n.title}. {n.description}. {_clip(n.body, 400)}")
+        self.mark_user_edit()
         self._bump()
         return gone
+
+    def _tombstone(self, text: str) -> None:
+        text = " ".join(text.split())
+        with self._lock:
+            self.db.execute("INSERT INTO forgotten(ts, text, terms) VALUES (?, ?, ?)",
+                            (time.time(), text[:800], " ".join(sorted(set(terms(text))))))
+            self.db.execute("DELETE FROM forgotten WHERE id NOT IN (SELECT id FROM forgotten ORDER BY id DESC "
+                            "LIMIT ?)", (KEEP_FORGOTTEN,))
+            self.db.commit()
+
+    def forgotten(self, limit: int = 20) -> list[str]:
+        with self._lock:
+            return [r[0] for r in self.db.execute("SELECT text FROM forgotten ORDER BY id DESC LIMIT ?", (int(limit),))]
+
+    def _forgotten_like(self, text: str) -> list[int]:
+        """Metinle aynı şeyi söyleyen silinmiş notların kimlikleri (kelime örtüşmesi: kısa olanın en az %60'ı)."""
+        mine = set(terms(text))
+        if len(mine) < 2:
+            return []
+        out = []
+        with self._lock:
+            rows = self.db.execute("SELECT id, terms FROM forgotten").fetchall()
+        for fid, t in rows:
+            other = set(t.split())
+            if len(other) >= 2 and len(mine & other) / min(len(mine), len(other)) >= 0.6:
+                out.append(fid)
+        return out
+
+    def unforget(self, text: str) -> int:
+        """Kullanıcı aynı şeyi yeniden açıkça kaydettirdi: izi kaldır."""
+        ids = self._forgotten_like(text)
+        if ids:
+            with self._lock:
+                self.db.execute(f"DELETE FROM forgotten WHERE id IN ({','.join('?' * len(ids))})", ids)
+                self.db.commit()
+        return len(ids)
 
     def migrate_facts(self) -> int:
         """Eski tek cümlelik bilgileri (facts tablosu) bir kez notlara taşı. Tablo silinmez (yedek)."""
@@ -524,6 +587,10 @@ class LongMemory:
             title = _clip(words.rstrip("."), 60)
         note, new = book.save(name, text, typ, text, title=title,
                               source=source if old is None else (old.source or source), when=when)
+        if source in ("kullanıcı", "araç"):  # konuşmada açıkça yeniden kaydedildi
+            self.unforget(text)
+        if source == "kullanıcı":
+            self.mark_user_edit()
         self._bump()
         return note.name, new
 
@@ -591,14 +658,15 @@ class LongMemory:
         return [], hits
 
     # ------------------------------------------------------------------ konuşmalar
-    def record(self, user: str, reply: str, channel: str = "") -> int | None:
+    def record(self, user: str, reply: str, channel: str = "", sid: str = "") -> int | None:
         user = clean_user_text(user)
         reply = (reply or "").strip()
         if not user or noise_turn(user):
             return None
         with self._lock:
-            cur = self.db.execute("INSERT INTO episodes(ts, channel, user, reply, terms) VALUES (?, ?, ?, ?, ?)",
-                                  (time.time(), channel, user[:2000], reply[:2000], " ".join(terms(user + " " + reply))))
+            cur = self.db.execute("INSERT INTO episodes(ts, channel, user, reply, terms, sid) VALUES (?, ?, ?, ?, ?, ?)",
+                                  (time.time(), channel, user[:2000], reply[:2000], " ".join(terms(user + " " + reply)),
+                                   str(sid or "")))
             self.db.commit()
         self.index_soon()
         return int(cur.lastrowid)
@@ -853,9 +921,14 @@ class LongMemory:
             return ""
         seen = surfaced if surfaced is not None else set()
         stamp = lambda n: f"{n.key}@{int(n.modified)}"  # noqa: E731 - not değişince yeniden gösterilsin
-        notes = [n for n in self.all_notes(cwd) if stamp(n) not in seen]
+        in_profile = self._in_profile.get(str(cwd or ""), set())
+        notes = [n for n in self.all_notes(cwd) if stamp(n) not in seen and stamp(n) not in in_profile]
         use = self.recall_model if use_model is None else use_model
         chooser = self.extractor if use and self.extractor is not None else None
+        if chooser is not None and notes and not _worth_asking(clean, notes):
+            # "selam naber", "hava nasıl" gibi kısa mesajlar: hiçbir notla kelime ortaklığı yoksa model çağrısı (her
+            # mesajın başında ~1 sn bekleme) boşuna; zaten hiçbir not seçilmiyordu.
+            chooser = None
         picked = select_relevant(clean, notes, chooser, limit=5, recent_tools=recent_tools) if notes else []
         sums = [h for h in self.search(clean, limit=4, facts=False, exclude_after=exclude_after)
                 if isinstance(h.item, Summary) and h.score >= 0.6][:2]
@@ -1055,6 +1128,7 @@ class LongMemory:
         # Davranış kuralları ve kullanıcıyı tanıtan notlar kısa olur ve her konuşmada gerekir: tamamı istemde. Diğer
         # notlar dizinden okunur ya da ilgili olduklarında mesaja kendiliğinden eklenir.
         always, used = [], 0
+        shown: set[str] = set()  # tamamı istemde olan notlar: hatırlama bunları mesaja bir daha eklemesin
         for typ in ("feedback", "user"):
             for n in sorted((n for b in books for n in b.scan() if n.type == typ), key=lambda n: -n.modified):
                 if " ".join(n.body.split()) == " ".join(n.description.split()):
@@ -1064,23 +1138,33 @@ class LongMemory:
                     continue
                 always.append(block)
                 used += len(block)
+                shown.add(f"{n.key}@{int(n.modified)}")
+        self._in_profile[str(cwd or "")] = shown
         if always:
             parts.append(f"## Notların tamamı: {TYPE_TR['feedback']} ve {TYPE_TR['user']} (her konuşmada geçerli)\n"
                          + "\n\n".join(always))
-        eps = self.recent(recent)
+        # Son turlar yalnız yakın zamandansa girer: dünkü sohbetin son cümleleri yeni açılan sohbete "kaldığımız yer"
+        # gibi giriyor, ALICE kullanıcının yeni (alakasız) mesajını dünkü konuşmanın devamı sanıyordu.
+        cutoff = time.time() - RECENT_TURNS_HOURS * 3600
+        eps = [e for e in self.recent(recent) if e.ts >= cutoff]
         sums = self.summaries(4, within_days=10)
         due = self.due_followups()
-        parts.append("Older conversations are not shown here: when the user refers to one, look it up with memory "
-                     "action=search_chats (by topic) or recent_chats (by time) before answering.")
+        parts.append("This chat is a NEW, separate conversation. The past conversations below are background only: do "
+                     "not assume the user is continuing one of them or reacting to something said there, unless they "
+                     "say so or it is obvious from their message. Older conversations are not shown here: when the "
+                     "user refers to one, look it up with memory action=search_chats (by topic) or recent_chats (by "
+                     "time) before answering.")
         if sums:
-            parts.append("Earlier conversations, summarized (continue from them naturally, e.g. ask how a thing went):\n"
+            parts.append("Earlier conversations (separate chats), summarized; bring one up briefly only when it fits, "
+                         "e.g. ask how a thing went, and never treat them as this chat's history:\n"
                          + "\n".join(f"- {s.line()}" for s in sums))
         if due:
             parts.append("Follow-ups due now: bring each up ONCE at a natural moment (a greeting or a pause is fine), "
                          "briefly, in your own words; then call memory action=done id=<n>. Unfinished threads: offer "
                          "to continue.\n" + "\n".join(f"- {f.line()}" for f in due))
         if eps:
-            parts.append("Recent conversations:\n" + "\n".join(f"- {e.line(width=160)}" for e in eps))
+            parts.append("Last turns of earlier chats from the past few hours (other chats or voice, not this "
+                         "conversation):\n" + "\n".join(f"- {e.line(width=160)}" for e in eps))
         return "\n\n".join(parts)
 
     def export_markdown(self, cwd: Path | str | None = None) -> str:
@@ -1165,6 +1249,10 @@ class LongMemory:
                 rules=MEMORY_RULES, manifest="\n".join(n.manifest_line() for n in notes) or "(yok)",
                 related="\n\n".join(f"--- {n.key}\n{n.body}" for n in related) or "(yok)", explicit="",
                 repo=f" ({root.name})" if root else " (şu an bir depoda değilsin: hep genel)", transcript=transcript)
+            gone = self.forgotten(15)
+            if gone:
+                prompt += ("\n\nThe user DELETED these notes; never save them (or anything saying the same) again:\n"
+                           + "\n".join(f"- {_clip(g, 200)}" for g in gone))
             data = parse_json(self.extractor(prompt) if self.extractor else "")
             done = self.apply_notes(data, cwd=cwd, source="otomatik", max_save=3, max_delete=2)
             self._meta("notes_cursor", str(turns[-1].id))
@@ -1199,6 +1287,10 @@ class LongMemory:
             except ValueError:
                 target = self.notes
             old = target.get(str(s.get("name") or ""))
+            if old is None and source in ("otomatik", "dream") and \
+                    self._forgotten_like(f"{s.get('title') or ''} {desc} {content}"):
+                done.append(f"atlandı (kullanıcı silmişti): {desc[:60]}")
+                continue
             try:
                 note, new = target.save(str(s.get("name") or s.get("title") or desc), desc, typ, content,
                                         title=str(s.get("title") or ""),
@@ -1291,6 +1383,10 @@ class LongMemory:
                 signal.append("Open follow-ups:\n" + "\n".join(f"- {f.line()}" for f in fups))
         if not notes and not signal:
             return []
+        gone = self.forgotten(20)
+        if gone and signal:
+            signal.append("Notes the user DELETED (do NOT re-create them or anything saying the same):\n"
+                          + "\n".join(f"- {_clip(g, 200)}" for g in gone))
         backup = b.backup()
         listing = "\n\n".join(
             f"--- {n.name}.md [{n.type or '?'}] ({age_text_iso(n.modified)})"
@@ -1328,6 +1424,63 @@ class LongMemory:
 
     def consolidate(self) -> list[str]:
         return self.dream(force=True)
+
+    def forget_session(self, sid: str, users: list[str] | None = None, start: float | None = None,
+                       end: float | None = None) -> dict[str, int]:
+        """Silinen sohbetin hafızadaki izleri: turları (vektörleriyle) ve yalnız o turları kapsayan özetler.
+
+        Sohbet kimliğiyle kaydedilen turlar kimlikten bulunur. Kimlik eklenmeden önceki eski turlar için sohbetin
+        zaman aralığı (start..end) ve kullanıcının yazdıkları eşleştirilir; başka sohbetin turu silinmesin diye
+        ikisi birden tutmalı. Sohbet silindiği hâlde ALICE onu "Son konuşmalar"dan hatırlamaya devam ediyordu."""
+        ids: set[int] = set()
+        with self._lock:
+            if sid:
+                ids |= {r[0] for r in self.db.execute("SELECT id FROM episodes WHERE sid = ?", (str(sid),))}
+            wanted = {fold(" ".join(clean_user_text(u).split()))[:2000] for u in users or [] if u and u.strip()}
+            if wanted and start is not None and end is not None:
+                for eid, user in self.db.execute("SELECT id, user FROM episodes WHERE sid = '' AND ts BETWEEN ? AND ?",
+                                                 (start - 120, end + 120)):
+                    if fold(" ".join(user.split())) in wanted:
+                        ids.add(eid)
+            if not ids:
+                return {"episodes": 0, "summaries": 0}
+            marks = ",".join("?" * len(ids))
+            lo, hi = self.db.execute(f"SELECT MIN(ts), MAX(ts) FROM episodes WHERE id IN ({marks})", tuple(ids)).fetchone()
+            self.db.execute(f"DELETE FROM episodes WHERE id IN ({marks})", tuple(ids))
+            self.db.execute(f"DELETE FROM vectors WHERE kind = 'episode' AND ref IN ({marks})", tuple(ids))
+            # Özet bir konuşmanın tamamını anlatır: aralığında başka tur kalmadıysa o sohbetindir, gider.
+            gone_sums = []
+            for s_id, s_start, s_end in self.db.execute("SELECT id, start, end FROM summaries WHERE end >= ? AND "
+                                                        "start <= ?", (lo - 1, hi + 1)).fetchall():
+                left = self.db.execute("SELECT COUNT(*) FROM episodes WHERE ts BETWEEN ? AND ?",
+                                       (s_start - 1, s_end + 1)).fetchone()[0]
+                if not left:
+                    gone_sums.append(s_id)
+            for s_id in gone_sums:
+                self.db.execute("DELETE FROM summaries WHERE id = ?", (s_id,))
+                self.db.execute("DELETE FROM vectors WHERE kind = 'summary' AND ref = ?", (s_id,))
+            self.db.commit()
+        self._bump()
+        return {"episodes": len(ids), "summaries": len(gone_sums)}
+
+    def forget_history(self) -> dict[str, int]:
+        """Bütün konuşma geçmişi (turlar, özetler, vektörleri). Notlar ve takipler kalır."""
+        with self._lock:
+            n_eps = self.db.execute("DELETE FROM episodes").rowcount
+            n_sums = self.db.execute("DELETE FROM summaries").rowcount
+            self.db.execute("DELETE FROM vectors WHERE kind IN ('episode', 'summary')")
+            self.db.commit()
+        self._bump()
+        return {"episodes": n_eps, "summaries": n_sums}
+
+    def forget_episode(self, eid: int) -> bool:
+        with self._lock:
+            cur = self.db.execute("DELETE FROM episodes WHERE id = ?", (int(eid),))
+            self.db.execute("DELETE FROM vectors WHERE kind = 'episode' AND ref = ?", (int(eid),))
+            self.db.commit()
+        if cur.rowcount:
+            self._bump()
+        return bool(cur.rowcount)
 
     def forget_summary(self, sid: int) -> bool:
         with self._lock:
@@ -1443,6 +1596,19 @@ def parse_json(raw: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _worth_asking(text: str, notes: list[Any]) -> bool:
+    """Not seçimini modele sormaya değer mi: mesajda en az 3 anlamlı kelime var ya da bir notla ortak kelime var."""
+    q = set(terms(text))
+    if len(q) >= 3:
+        return True
+    if not q:
+        return False
+    for n in notes:
+        if q & set(terms(f"{n.title} {n.name.replace('-', ' ')} {n.description} {n.body[:600]}")):
+            return True
+    return False
 
 
 def make_extractor(options: dict[str, Any], router, role: str | None = None) -> Callable[[str], str] | None:

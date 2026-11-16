@@ -37,7 +37,8 @@ BUILTINS: dict[str, str] = {
     "init": "Bu proje için ALICE.md talimat dosyası oluştur",
     "memory": "Kalıcı hafızayı göster",
     "kurul": "Bir konuyu inceleme kuruluna sor: eleştirmen, savunucu, kontrolcü ve uzmanlar tartışıp oylar",
-    "review": "Değişiklikleri (git diff ya da verilen PR/dal) hata ve risk açısından incele",
+    "review": "Değişiklikleri (git diff ya da verilen PR/dal) hata ve risk açısından incele; /review derin: ayrı "
+              "inceleyici ajanlar (performans, test, doküman da olur)",
     "security-review": "Değişikliklerde güvenlik açığı ara (sır sızıntısı, enjeksiyon, yetki, güvensiz komut)",
 }
 
@@ -50,6 +51,13 @@ REVIEW_PROMPT = (
     "durumlar, yarış durumları, kırılan çağrılar, eksik hata yönetimi, testin kaçırdığı davranış. Her bulgu için: "
     "dosya:satır, ne yanlış, hangi girdiyle bozulur, önerilen düzeltme. Önem sırasına diz (kritik, önemli, küçük). Stil "
     "zevklerini ve emin olmadığın tahminleri ayrı bir 'belki' başlığına koy. Değişiklik YAPMA; sadece raporla."
+)
+# /review deep|derin|performans|test ...: code_review aracını o odakla, bağımsız ajan(lar)la çalıştırır.
+DEEP_WORDS = {"deep": "deep", "derin": "deep", "performance": "performance", "performans": "performance",
+              "tests": "tests", "test": "tests", "docs": "docs", "doküman": "docs", "dokuman": "docs"}
+TOOL_REVIEW_PROMPT = (
+    "code_review aracını focus={focus} ile çalıştır. Kapsam: {target} (bir PR numarası geçiyorsa target=pr ve number "
+    "ver). Bulguları önem sırasıyla bana göster; değişiklik YAPMA, düzeltmeyi ben isteyince yap."
 )
 SECURITY_PROMPT = (
     "Güvenlik incelemesi yap. Kapsam: {target}. git aracıyla değişikliği bul ve değişen kodu oku. Ara: koda/commit'e "
@@ -68,6 +76,12 @@ def builtin_prompt(text: str) -> str | None:
         return INIT_PROMPT
     if name == "kurul":
         return council_prompt(args)
+    if name == "review":
+        words = args.split()
+        focus = next((DEEP_WORDS[w.lower()] for w in words if w.lower() in DEEP_WORDS), "")
+        if focus:
+            rest = " ".join(w for w in words if w.lower() not in DEEP_WORDS)
+            return TOOL_REVIEW_PROMPT.format(focus=focus, target=rest or "yerel değişiklikler (target=local)")
     if name in ("review", "security-review"):
         target = args or "çalışma klasöründeki commit'lenmemiş değişiklikler, yoksa son commit"
         return (REVIEW_PROMPT if name == "review" else SECURITY_PROMPT).format(target=target)

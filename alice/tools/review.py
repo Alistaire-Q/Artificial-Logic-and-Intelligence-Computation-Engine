@@ -23,8 +23,13 @@ class CodeReview(Tool):
         "repo": {"type": "string", "description": "target=pr: 'sahip/depo'. Boşsa çalışma klasörünün origin'i."},
         "base": {"type": "string", "description": "target=local: karşılaştırılacak dal (ör. origin/main). Boşsa "
                  "deponun ana dalı."},
-        "focus": {"type": "string", "enum": ["bugs", "security", "all"],
-                  "description": "bugs (varsayılan): doğruluk hataları. security: güvenlik. all: ikisi ve fazlası."},
+        "focus": {"type": "string", "enum": ["bugs", "security", "performance", "tests", "docs", "all", "deep"],
+                  "description": "bugs (varsayılan): doğruluk hataları. security: güvenlik. performance: ölçülebilir "
+                                 "yavaşlık/kaynak sızıntısı. tests: test edilmeyen yollar, hiçbir şeyi sınamayan "
+                                 "testler. docs: artık yanlış olan yorum/doküman. all: bugs+security tek ajanda. "
+                                 "deep: bugs, security, performance, tests ayrı ajanlarla aynı anda (daha pahalı; "
+                                 "büyük değişiklik ya da PR öncesi). .github/workflows değişirse iş akışı güvenlik "
+                                 "kuralları her odakta kendiliğinden denetlenir."},
         "post": {"type": "boolean", "description": "target=pr: bulguları PR'a inceleme olarak yaz."},
         "verify": {"type": "boolean", "description": "Bulguları ayrı bir ajanla doğrula. Varsayılan true."},
     }, [])

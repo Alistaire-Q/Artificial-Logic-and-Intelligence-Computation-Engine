@@ -216,6 +216,27 @@ class AllProvidersFailed(Exception):
         self.pinned = pinned
 
 
+def cached_tokens(usage: dict[str, Any]) -> int:
+    """Önbellekten okunan girdi token'ı; sağlayıcılar farklı adlarla veriyor."""
+    for path in (("prompt_tokens_details", "cached_tokens"), ("input_tokens_details", "cached_tokens"),
+                 ("cached_tokens",), ("cache_read_input_tokens",), ("prompt_cache_hit_tokens",)):
+        v: Any = usage
+        for k in path:
+            v = v.get(k) if isinstance(v, dict) else None
+        if isinstance(v, (int, float)) and v:
+            return int(v)
+    return 0
+
+
+def cache_write_tokens(usage: dict[str, Any]) -> int:
+    """Önbelleğe yazılan girdi token'ı (Anthropic: cache_creation_input_tokens; cliproxy: cache_write_tokens)."""
+    d = usage.get("prompt_tokens_details") if isinstance(usage.get("prompt_tokens_details"), dict) else {}
+    for v in (usage.get("cache_creation_input_tokens"), d.get("cache_write_tokens"), d.get("cached_creation_tokens")):
+        if isinstance(v, (int, float)) and v:
+            return int(v)
+    return 0
+
+
 @dataclass
 class UsageTracker:
     path: Path
@@ -234,8 +255,11 @@ class UsageTracker:
             row = day.setdefault(ref, {"requests": 0, "errors": 0, "prompt_tokens": 0, "completion_tokens": 0})
             if ok:
                 row["requests"] += 1
-                row["prompt_tokens"] += int(usage.get("prompt_tokens") or 0)
-                row["completion_tokens"] += int(usage.get("completion_tokens") or 0)
+                row["prompt_tokens"] += int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+                row["completion_tokens"] += int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+                # Önbellek isabeti günlük kullanımda da görünsün (hangi model ne kadar önbellekten okuyor).
+                row["cached_tokens"] = row.get("cached_tokens", 0) + cached_tokens(usage)
+                row["cache_write_tokens"] = row.get("cache_write_tokens", 0) + cache_write_tokens(usage)
             else:
                 row["errors"] += 1
             # Sadece son 14 günü tut.

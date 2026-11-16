@@ -30,7 +30,19 @@ FOCUS = {
     "security": "Güvenlik: enjeksiyon (komut, SQL, yol), kimlik/yetki atlatma, gizli bilgi sızıntısı (log, hata "
                 "mesajı, URL), güvensiz seri hale getirme, dış girdinin doğrulanmaması, SSRF.",
     "all": "Doğruluk hataları ve güvenlik açıkları; ayrıca gereksiz karmaşıklık ve açık performans sorunları.",
+    "performance": "Performans: döngü içinde tekrarlanan pahalı iş (dosya/ağ/veritabanı çağrısı, N+1 sorgu), gereksiz "
+                   "kopyalama ve büyük bellek tutma, kapanmayan kaynak (dosya, bağlantı, thread), ana/UI thread'ini "
+                   "bloklayan çağrı, sınırsız büyüyen önbellek/kuyruk. Yalnız ölçülebilir etkisi olanı yaz.",
+    "tests": "Test kapsamı: değişen davranışın test edilmeyen yolları (hata dalları, kenar durumlar, eşzamanlılık), "
+             "gerçekte hiçbir şeyi sınamayan testler (her durumda geçen assert, sahteyle kendini test eden), kırılgan "
+             "testler (zamanlamaya, sıraya, ortama bağlı). Bulguda hangi senaryonun test edilmediğini somut yaz; "
+             "'line' eksik testin ilgili olduğu kod satırı olsun.",
+    "docs": "Doküman doğruluğu: değişiklikten sonra artık yanlış olan yorumlar, docstring'ler, README/ayar açıklamaları "
+            "(var olmayan parametre, değişmiş varsayılan, eski davranış tarifi). Yalnız koda göre YANLIŞ olanı yaz, "
+            "eksik doküman ya da üslup değil.",
 }
+# deep: her biri ayrı odaklı inceleyiciler aynı anda çalışır, bulgular birleşip tek doğrulayıcıdan geçer.
+DEEP = ("bugs", "security", "performance", "tests")
 
 REVIEWER = """Sen bağımsız bir kod inceleyicisisin. Bu değişikliği sen yazmadın ve yazarın konuşmasını görmüyorsun.
 Görevin: değişiklikteki GERÇEK sorunları bulmak. Biçim, isimlendirme, zevk meselesi yazma.
@@ -175,13 +187,39 @@ def _finding(d: dict[str, Any]) -> Finding | None:
                    fix=str(d.get("fix") or "")[:600])
 
 
-def review(cfg: Any, router: Any, cwd: Path, title: str, diff: str, focus: str = "bugs",
-           verify: bool = True) -> list[Finding]:
+def _review_one(cfg: Any, router: Any, cwd: Path, title: str, diff: str, focus: str) -> list[Finding]:
     reviewer = _agent(cfg, router, cwd, REVIEWER.format(focus=FOCUS.get(focus, FOCUS["bugs"])))
     out = reviewer.run_turn(f"İncelenecek değişiklik: {title}\n\n```diff\n{shorten(diff)}\n```", max_steps=30)
-    findings = [f for f in (_finding(d) for d in parse_json(out, "findings")) if f]
+    return [f for f in (_finding(d) for d in parse_json(out, "findings")) if f]
+
+
+def _dedupe(findings: list[Finding]) -> list[Finding]:
+    """Farklı odaklı inceleyiciler aynı sorunu bulabilir: aynı dosyada 2 satır içinde, başlığı aynı olanlardan biri
+    kalır (önemi yüksek olan)."""
+    kept: list[Finding] = []
+    for f in sorted(findings, key=lambda f: SEVERITIES.index(f.severity)):
+        key = re.sub(r"\W+", " ", f.title.lower()).strip()
+        if any(k.file == f.file and abs(k.line - f.line) <= 2 and re.sub(r"\W+", " ", k.title.lower()).strip() == key
+               for k in kept):
+            continue
+        kept.append(f)
+    return kept
+
+
+def review(cfg: Any, router: Any, cwd: Path, title: str, diff: str, focus: str = "bugs",
+           verify: bool = True) -> list[Finding]:
+    if focus == "deep":
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=len(DEEP)) as pool:
+            parts = list(pool.map(lambda fo: _safe_review(cfg, router, cwd, title, diff, fo), DEEP))
+        findings = _dedupe([f for part in parts for f in part])
+    else:
+        findings = _review_one(cfg, router, cwd, title, diff, focus)
+    # Kural tabanlı iş akışı bulguları kesin: doğrulayıcıya gitmez (bir model onları "yanlış alarm" diye atamasın).
+    static = workflow_findings(cwd, diff)
     if not findings or not verify:
-        return _sorted(findings)
+        return _sorted(static + findings)
     listing = "\n\n".join(f"id={i}\n{f.text()}" for i, f in enumerate(findings))
     verifier = _agent(cfg, router, cwd, VERIFIER)
     res = verifier.run_turn(f"Değişiklik: {title}\n\n```diff\n{shorten(diff, MAX_DIFF // 2)}\n```\n\nBulgular:\n{listing}",
@@ -196,7 +234,42 @@ def review(cfg: Any, router: Any, cwd: Path, title: str, diff: str, focus: str =
         f.verdict, f.reason = str(v.get("verdict") or "").upper(), str(v.get("reason") or "")[:300]
         if f.verdict != "REJECTED":
             kept.append(f)
-    return _sorted(kept)
+    return _sorted(static + kept)
+
+
+def _safe_review(cfg: Any, router: Any, cwd: Path, title: str, diff: str, focus: str) -> list[Finding]:
+    """deep modunda bir inceleyicinin hatası (model yok, zaman aşımı) ötekilerin bulgularını yok etmesin."""
+    import logging
+
+    try:
+        return _review_one(cfg, router, cwd, title, diff, focus)
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).warning("inceleyici (%s) hata verdi", focus, exc_info=True)
+        return []
+
+
+def workflow_findings(cwd: Path, diff: str) -> list[Finding]:
+    """Farkta değişen GitHub Actions iş akışlarını kural tabanlı denetle (alice/workflow_audit.py). Yalnız değişen
+    satırlara düşen bulgular döner; dosya yerelde yoksa (başka depodaki PR) denetlenmez."""
+    from alice import workflow_audit
+
+    out: list[Finding] = []
+    for path, added in _added_lines(diff).items():
+        if not workflow_audit.is_workflow(path):
+            continue
+        try:
+            text = (cwd / path).read_text(encoding="utf-8-sig")
+        except (OSError, ValueError):
+            continue
+        rows = text.splitlines()
+        for issue in workflow_audit.audit(text):
+            # Yalnız bu değişiklikte EKLENEN satırlar; yereldeki dosya PR'ınkinden farklıysa (başka dal açık)
+            # satır metni tutmaz ve bulgu yanlış yere düşmesin diye atlanır.
+            n = issue.line
+            if n in added and 0 < n <= len(rows) and rows[n - 1].rstrip() == added[n].rstrip():
+                out.append(Finding(file=path, line=issue.line, severity=issue.severity, title=issue.title,
+                                   detail=issue.detail, fix=issue.fix, verdict="KURAL"))
+    return out
 
 
 def _sorted(findings: list[Finding]) -> list[Finding]:
@@ -233,6 +306,30 @@ def diff_lines(diff: str) -> dict[str, set[int]]:
         if raw.startswith("+") or raw.startswith(" ") or raw == "":
             cur.add(line)
             line += 1
+    return out
+
+
+def _added_lines(diff: str) -> dict[str, dict[int, str]]:
+    """Farkta eklenen satırlar: dosya -> {yeni dosyadaki satır no: metin}."""
+    out: dict[str, dict[int, str]] = {}
+    cur: dict[int, str] | None = None
+    line = 0
+    for raw in diff.splitlines():
+        if raw.startswith("+++ "):
+            path = raw[4:].strip()
+            cur = None if path == "/dev/null" else out.setdefault(path[2:] if path.startswith("b/") else path, {})
+            continue
+        if raw.startswith("--- ") or raw.startswith("diff --git"):
+            continue
+        m = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", raw)
+        if m:
+            line = int(m.group(1))
+            continue
+        if cur is None or raw.startswith("\\") or raw.startswith("-"):
+            continue
+        if raw.startswith("+"):
+            cur[line] = raw[1:]
+        line += 1
     return out
 
 
