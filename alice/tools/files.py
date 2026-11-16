@@ -463,6 +463,10 @@ def _apply_edit(text: str, old: str, new: str, replace_all: bool, where: str = "
         else:
             hint = _similar_hint(text, old)
         raise ToolError(f"{where}old_string dosyada bulunamadı. Dosyayı read_file ile tekrar oku ve birebir kopyala.{hint}")
+    if "\r\n" in text and text.count("\r\n") == text.count("\n") and "\n" in new and "\r\n" not in old:
+        # CRLF dosyada eski metin satır sonu içermeyince yeni metnin LF'leri dönüştürülmüyor, dosya karışık satır
+        # sonlu kalıyordu.
+        new = new.replace("\r\n", "\n").replace("\n", "\r\n")
     if count > 1 and not replace_all:
         lines = text.splitlines()
         old_lines = [l.strip() for l in old.splitlines() if l.strip()]

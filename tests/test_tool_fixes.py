@@ -39,3 +39,17 @@ def test_edit_cp1254_falls_back_to_utf8_for_unencodable(ctx, workdir):
     f.write_bytes("şişe\n".encode("cp1254"))
     _edit(ctx, "a.txt", "şişe", "日本")
     assert f.read_bytes().decode("utf-8") == "日本\n"
+
+
+def test_edit_in_crlf_file_inserts_crlf_lines(ctx, workdir):
+    f = workdir / "w.txt"
+    f.write_bytes(b"a\r\nb\r\nc\r\n")
+    _edit(ctx, "w.txt", "b", "b1\nb2")
+    assert f.read_bytes() == b"a\r\nb1\r\nb2\r\nc\r\n"
+
+
+def test_edit_in_lf_file_left_alone(ctx, workdir):
+    f = workdir / "w.txt"
+    f.write_bytes(b"a\nb\n")
+    _edit(ctx, "w.txt", "b", "b1\nb2")
+    assert f.read_bytes() == b"a\nb1\nb2\n"
