@@ -457,7 +457,9 @@ def write_state(**kw: Any) -> None:
 
 # --------------------------------------------------------------------------------- süreçler arası
 _RUNNING: str | None = None
-LOCK_STALE = 900.0  # saniye: bu kadar eski kilit, çökmüş bir süreçten kalmıştır
+# saniye: bu kadar eski kilit, çökmüş bir süreçten kalmıştır. Meşru bir güncelleme en çok fetch 300 + pip 900 +
+# duman testi 180 sn sürebilir; 900 sn'de kilit güncelleme sürerken "bayat" sayılıp ikinci süreç git'e giriyordu.
+LOCK_STALE = 1800.0
 
 
 def mark_running() -> str:
@@ -481,6 +483,23 @@ class UpdateBusy(RuntimeError):
     pass
 
 
+def _holder_alive(p: Path) -> bool:
+    """Kilidi tutan süreç hâlâ yaşıyor mu. Okunamıyorsa (yazılırken) ya da psutil yoksa yaşıyor sayılır; yalnız
+    yaşı belirler."""
+    try:
+        pid = int(p.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return True
+    if pid == os.getpid():
+        return True
+    try:
+        import psutil
+
+        return bool(psutil.pid_exists(pid))
+    except Exception:  # noqa: BLE001
+        return True
+
+
 class update_lock:  # noqa: N801 - bağlam yöneticisi olarak okunur: with update_lock():
     """Aynı anda tek süreç güncellesin (uygulama ve çekirdek aynı anda git'e girerse index.lock çakışır)."""
 
@@ -488,7 +507,7 @@ class update_lock:  # noqa: N801 - bağlam yöneticisi olarak okunur: with updat
         p = _lock_path()
         p.parent.mkdir(parents=True, exist_ok=True)
         try:
-            if time.time() - p.stat().st_mtime > LOCK_STALE:
+            if time.time() - p.stat().st_mtime > LOCK_STALE or not _holder_alive(p):
                 p.unlink(missing_ok=True)
         except OSError:
             pass

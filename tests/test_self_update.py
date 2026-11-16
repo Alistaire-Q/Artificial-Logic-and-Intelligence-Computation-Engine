@@ -50,6 +50,23 @@ def test_cokmus_surecten_kalan_kilit_temizlenir():
         pass
 
 
+def test_uzun_suren_guncellemenin_kilidi_bayat_sayilmaz_olu_surecinki_sayilir(monkeypatch):
+    import psutil
+
+    p = updater._lock_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("424242", encoding="utf-8")
+    old = p.stat().st_mtime - 1000  # fetch + pip + duman testi 900 sn'yi geçebilir
+    os.utime(p, (old, old))
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)
+    with pytest.raises(updater.UpdateBusy):
+        with updater.update_lock():
+            pass
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: False)  # tutan süreç çökmüş: hemen alınır
+    with updater.update_lock():
+        pass
+
+
 def test_kilit_doluyken_apply_beklemeden_soyler(at_clone, offline):
     clone, origin = at_clone
     push(origin, "yeni")
