@@ -160,3 +160,26 @@ def test_tool_on_off_and_status(tmp_path):
     assert "kapalı" in Tool().run(ctx, "status").text
     Tool().run(ctx, "on")
     assert kairos.is_enabled(c) and "açık" in Tool().run(ctx, "status").text
+
+
+def test_concurrent_state_writes_do_not_fail_or_leave_temp_files(tmp_path):
+    import threading
+
+    p = tmp_path / "kairos.json"
+    errors = []
+
+    def work(i):
+        for n in range(30):
+            try:
+                kairos.save_state({"writer": i, "n": n}, p)
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+
+    threads = [threading.Thread(target=work, args=(i,)) for i in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    # Ortak "kairos.tmp" ile yazanlardan biri FileNotFoundError alıyordu.
+    assert errors == [] and kairos.load_state(p)["n"] == 29
+    assert [x.name for x in tmp_path.iterdir()] == ["kairos.json"]
