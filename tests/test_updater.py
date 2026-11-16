@@ -303,6 +303,17 @@ def test_broken_update_rolls_back_and_is_skipped(repos, monkeypatch, offline):
     assert rb["from"] == bad and rb["to"] == old and updater.consume_rollback("app") is None
 
 
+def test_remote_head_ignores_branches_ending_with_same_name(repos, monkeypatch, offline):
+    """ls-remote "main" deseni "refs/heads/feature/main"i de döndürür; alfabetik önce geldiği için o dalın
+    commit'i yeni sürüm sanılmamalı."""
+    clone, origin = repos
+    main = git(origin, "rev-parse", "HEAD")
+    git(origin, "checkout", "-qb", "feature/main")
+    push(origin, "başka dal")
+    git(origin, "checkout", "-q", "main")
+    assert updater.remote_head(clone, "main") == (main, "")
+
+
 def test_forced_update_rollback_keeps_uncommitted_changes(repos, monkeypatch, offline):
     """--force kirli ağaçta çekip duman testi düşünce geri alma kullanıcının kaydedilmemiş işini silmemeli."""
     clone, origin = repos

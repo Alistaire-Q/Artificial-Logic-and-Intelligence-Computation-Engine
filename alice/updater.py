@@ -265,9 +265,11 @@ def remote_head(repo: Path, branch: str, timeout: float = 20.0) -> tuple[str, st
     code, out = _git(["ls-remote", "--heads", "origin", branch], repo, timeout=timeout)
     if code != 0:
         return "", out.strip().splitlines()[-1] if out.strip() else "ls-remote başarısız"
+    # ls-remote deseni sondan eşleşir: "main" deseni "refs/heads/x/main"i de getirir ve o (alfabetik önce gelen) dal
+    # alınıp yanlış commit "yeni sürüm" sanılıyordu. Tam ad aranır.
     for line in out.splitlines():
         parts = line.split()
-        if len(parts) == 2 and parts[1].endswith(f"/{branch}"):
+        if len(parts) == 2 and parts[1] == f"refs/heads/{branch}":
             return parts[0], ""
     return "", f"uzak dal bulunamadı: {branch}"
 
