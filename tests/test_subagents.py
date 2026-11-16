@@ -197,6 +197,36 @@ def test_project_runs_on_its_own_branch_and_ends_in_a_watched_pr(tmp_path, monke
     assert not (work / "b.txt").exists()
 
 
+def test_project_pr_refuses_to_push_a_secret(tmp_path, monkeypatch):
+    from alice import team_pr
+    from alice.tools import github as gh
+
+    for k, v in {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+                 "GIT_COMMITTER_EMAIL": "t@t"}.items():
+        monkeypatch.setenv(k, v)
+    remote, work = tmp_path / "remote.git", tmp_path / "work"
+    git(tmp_path, "init", "--bare", "-b", "main", str(remote))
+    work.mkdir()
+    git(work, "init", "-b", "main")
+    (work / "a.txt").write_text("a\n", encoding="utf-8")
+    git(work, "add", "a.txt")
+    git(work, "commit", "-m", "ilk")
+    git(work, "remote", "add", "origin", str(remote))
+    git(work, "push", "-u", "origin", "main")
+    monkeypatch.setattr(gh, "origin_repo", lambda cwd: "o/r")
+    monkeypatch.setattr(gh, "GitHubAPI", lambda token=None: pytest.fail("PR açılmamalı"))
+    team = SimpleNamespace(id="p2", title="Özellik", goal="hedef", summary="özet", members={}, cwd=work,
+                           parent_ctx=SimpleNamespace(config=None, state={"session_id": "s1"}),
+                           _repo_top=lambda: work)
+    team_pr.prepare(team)
+    (team.cwd / "conf.py").write_text('KEY = "ghp_' + "a1B2" * 9 + '"\n', encoding="utf-8")
+    out = team_pr.open_pr(team)
+    assert out.startswith("PR açılmadı: projede anahtar") and "conf.py" in out
+    branches = subprocess.run(["git", "branch", "--list", "alice/proje-p2"], cwd=remote, capture_output=True,
+                              text=True).stdout
+    assert branches.strip() == ""  # hiçbir şey push'lanmadı
+
+
 # ----------------------------------------------------------------------------------------- zamanlanmış proje
 def test_scheduled_project_starts_from_template(monkeypatch):
     import json
