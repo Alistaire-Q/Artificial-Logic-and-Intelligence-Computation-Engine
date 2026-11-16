@@ -71,3 +71,18 @@ def test_taint_sibling_folder_patch_and_session_allow(workdir):
     assert p.decide(ap, {"patch": outside_patch}, ctx) == "ask"
     assert p.decide(ap, {"patch": inside_patch}, ctx) == "allow"
     assert p.decide(rc, {"command": "echo x"}, ctx) == "ask"
+
+
+def test_taint_bare_allow_rule_does_not_bypass(workdir):
+    """config'teki desensiz "run_command" kuralı kirli turda komutu sormadan geçirmez; desenli kural geçirir."""
+    cfg = make_config({"brain": ["a:m"]}, sandbox="off")
+    ctx = ToolContext(cwd=workdir, config=cfg)
+    rc, wf = TOOLS["run_command"], TOOLS["write_file"]
+    bare = Permissions("ask", rules={"allow": ["run_command", "write_file"], "ask": [], "deny": []})
+    narrow = Permissions("ask", rules={"allow": ["run_command(git status*)"], "ask": [], "deny": []})
+    assert bare.decide(rc, {"command": "echo x"}, ctx) == "allow"
+    guard.mark(ctx, "web_fetch")
+    assert bare.decide(rc, {"command": "echo x"}, ctx) == "ask"
+    assert bare.decide(wf, {"path": str(workdir.parent / "disari.txt"), "content": "x"}, ctx) == "ask"
+    assert bare.decide(wf, {"path": "notlar.txt", "content": "x"}, ctx) == "allow"  # proje içi serbest kalır
+    assert narrow.decide(rc, {"command": "git status"}, ctx) == "allow"

@@ -15,7 +15,8 @@ Kalıcı kurallar (Claude Code'daki allow/deny gibi), config.toml ve projede .al
 Biçim: "araç" ya da "araç(desen)". Araç adında * olabilir. Desen (büyük/küçük harf duyarsız, fnmatch) aracın asıl
 argümanına bakar: command, path, url, target, app, action ya da query (ilk bulunan). deny her modda (yolo dahil)
 geçerlidir; ask yolo dışında her zaman sorar; allow sormadan izin verir (plan modunu delmez; tehlikeli bir işe
-ancak desenli bir kural izin verir, "run_command" tek başına rm -r'yi serbest bırakmaz).
+ancak desenli bir kural izin verir, "run_command" tek başına rm -r'yi serbest bırakmaz; dış içerik okunmuş bir turda
+desensiz kural komut çalıştırmayı, proje dışına yazmayı ve mesaj göndermeyi de sormadan geçirmez).
 """
 
 from __future__ import annotations
@@ -375,13 +376,18 @@ class Permissions:
             return "allow"
         if self.mode == "plan":
             return "allow" if risk == NETWORK else "deny"
-        allowed = self.matching_rule(tool, args, ctx, "allow")
-        if allowed and (risk != DANGER or parse_rule(allowed)[1] is not None):
-            return "allow"
         from alice import guard
 
+        allowed = self.matching_rule(tool, args, ctx, "allow")
+        if allowed and (risk != DANGER or parse_rule(allowed)[1] is not None):
+            # Desensiz kural ("run_command" tek başına) kirli turda komut çalıştırmayı/proje dışına yazmayı/mesaj
+            # göndermeyi sormadan geçirmez: dış içerikten gelen talimat o aracın her kullanımını açmış olurdu.
+            # Desenli kurallar ("run_command(git status*)") dar olduğu için geçerli kalır.
+            if parse_rule(allowed)[1] is not None or not (
+                    guard.tainted(ctx) and self._risky_after_untrusted(tool, args, risk, ctx)):
+                return "allow"
         # Bu turda dış içerik okundu: talimat oradan gelmiş olabilir. Oturumluk "hep izin ver" (always_allow) bunu
-        # delmez: kullanıcı o onayı enjeksiyonu düşünerek vermedi (açık allow kuralları yukarıda geçerli).
+        # delmez: kullanıcı o onayı enjeksiyonu düşünerek vermedi (desenli allow kuralları yukarıda geçerli).
         if guard.tainted(ctx) and self._risky_after_untrusted(tool, args, risk, ctx):
             return "ask"
         if tool.name in self.always_allow and risk != DANGER:
