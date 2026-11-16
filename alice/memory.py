@@ -1068,6 +1068,8 @@ class LongMemory:
         return Followup(*row)
 
     # ------------------------------------------------------------------ özetleme
+    PENDING_PAGE = 400  # bir geçişte okunan en çok tur
+
     def pending_sessions(self, now: float | None = None, force: bool = False) -> list[list[Episode]]:
         """Henüz özetlenmemiş, bitmiş konuşmalar (aralarında session_gap'ten uzun sessizlik olan tur grupları)."""
         now = now or time.time()
@@ -1075,7 +1077,7 @@ class LongMemory:
         since = float(raw) if raw else now - 3 * 86400  # ilk açılışta bütün geçmiş değil, son üç gün
         with self._lock:
             rows = self.db.execute("SELECT id, ts, channel, user, reply FROM episodes WHERE ts > ? "
-                                   "ORDER BY ts LIMIT 400", (since,)).fetchall()
+                                   "ORDER BY ts LIMIT ?", (since, self.PENDING_PAGE)).fetchall()
         groups: list[list[Episode]] = []
         for r in rows:
             e = Episode(*r)
@@ -1083,7 +1085,13 @@ class LongMemory:
                 groups[-1].append(e)
             else:
                 groups.append([e])
-        if groups and not force and now - groups[-1][-1].ts < self.session_gap:
+        if len(rows) >= self.PENDING_PAGE:
+            # Sayfa doldu: son grup sayfa sınırında kesilmiş olabilir (devamı sonraki sayfada). Özetlenirse bir
+            # konuşma iki ayrı özete bölünüyordu; sonraki geçişte bütün olarak gelir. Tek grup varsa (sayfadan
+            # uzun tek konuşma) başka yol yok: ilerlemek için bu parça özetlenir.
+            if len(groups) > 1:
+                groups.pop()
+        elif groups and not force and now - groups[-1][-1].ts < self.session_gap:
             groups.pop()  # konuşma sürüyor
         return groups
 

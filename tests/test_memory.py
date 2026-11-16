@@ -498,3 +498,26 @@ def test_failing_dream_backs_off_instead_of_retrying_every_scan():
     m._dream_retry_at = 0.0  # bekleme bitti
     m._last_dream_scan = None
     assert m.maybe_dream() and len(calls) == 2 and m._dream_fails == 2
+
+
+def test_pending_sessions_do_not_split_a_conversation_at_the_page_boundary(monkeypatch):
+    m = mem(session_gap_minutes=20)
+    monkeypatch.setattr(LongMemory, "PENDING_PAGE", 10)
+    base = time.time() - 86400
+
+    def turns(m, start, n):
+        with m._lock:
+            for i in range(n):
+                m.db.execute("INSERT INTO episodes(ts, user, reply) VALUES (?, ?, 'tamam')", (start + i * 60, f"tur {i}"))
+            m.db.commit()
+
+    turns(m, base, 4)                # 1. konuşma: 4 tur
+    turns(m, base + 3600, 9)         # 2. konuşma: 9 tur, sayfa (10) ortasından kesilir
+    groups = m.pending_sessions()
+    assert [len(g) for g in groups] == [4]  # yarım kalan ikinci konuşma bu geçişte özetlenmez
+    m._meta("digested_until", repr(groups[0][-1].ts))
+    assert [len(g) for g in m.pending_sessions()] == [9]  # sonraki geçişte bütün olarak gelir
+
+    m2 = mem(session_gap_minutes=20)
+    turns(m2, base, 15)  # sayfadan uzun tek konuşma: ilerlemek için parça özetlenir
+    assert [len(g) for g in m2.pending_sessions()] == [10]
