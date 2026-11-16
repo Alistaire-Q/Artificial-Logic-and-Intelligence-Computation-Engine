@@ -474,7 +474,13 @@ class Core:
             return
         answers = self.morning.check()
         if answers:
-            self.store.add_event("info", "Önsezi: sabah cevapları hazır", "; ".join(answers), "info", "now")
+            # Yalnız konu adları değil hazırlanan cevaplar da (kısaltılmış) görünsün.
+            def short(v: Any) -> str:
+                t = " ".join(str(v or "").split())
+                return t if len(t) <= 160 else t[:157].rstrip() + "…"
+
+            text = "; ".join(f"{k}: {s}" if s else str(k) for k, s in ((k, short(v)) for k, v in answers.items()))
+            self.store.add_event("info", "Önsezi: sabah cevapları hazır", text, "info", "now")
 
     def _health_report(self) -> None:
         from alice import health_report

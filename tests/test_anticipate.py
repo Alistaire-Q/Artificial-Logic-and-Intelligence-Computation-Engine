@@ -118,3 +118,18 @@ def test_game_update_prep_does_not_erase_dnd_note_written_meanwhile(tmp_path, mo
     assert st["update_told"] == "7" and st["dnd_prev"] == 0 and events
     assert q.mode("normal") and dnd["v"] == 0
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_morning_event_lists_prepared_answers():
+    from types import SimpleNamespace
+
+    from alice.core import service
+
+    events = []
+    core = object.__new__(service.Core)
+    core.morning = SimpleNamespace(check=lambda: {"hava": "Ankara 12 °C,\n parçalı bulutlu", "posta": "x" * 300})
+    core.store = SimpleNamespace(add_event=lambda *x: events.append(x))
+    core._morning()
+    body = events[0][2]
+    assert body.startswith("hava: Ankara 12 °C, parçalı bulutlu; posta: xxx") and body.endswith("…")
+    assert len(body) < 220
