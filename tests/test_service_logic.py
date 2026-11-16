@@ -235,6 +235,25 @@ def test_run_task_uses_original_when_removed_meanwhile(tmp_path):
     assert t.last_result == "ok"
 
 
+def test_failing_rule_step_does_not_skip_tasks_or_state(tmp_path, monkeypatch):
+    """Kural değerlendirmesi her turda patlasa da görevler çalışmalı ve durum dosyası yazılmalı (yoksa uygulama
+    çekirdeği kapalı sanıyordu); aynı hata günde bir kez kaydedilir."""
+    core, _ = make_core(tmp_path, run_agent=lambda p: "ok")
+    ran = []
+
+    def boom(now):
+        raise RuntimeError("bozuk kural")
+
+    monkeypatch.setattr(core.engine, "evaluate", boom)
+    monkeypatch.setattr(core, "_run_due", lambda now: ran.append(now))
+    core.tick(NOW)
+    core.tick(NOW + 15)
+    assert ran == [NOW, NOW + 15]
+    assert json.loads(state_path().read_text(encoding="utf-8"))["ts"] == NOW + 15
+    errs = [e for e in core.store.events(kind="error") if "kural değerlendirme" in e.title]
+    assert len(errs) == 1 and "bozuk kural" in errs[0].body
+
+
 # -------------------------------------------------------------------- döngü
 def test_run_forever_records_start_stop_and_errors(tmp_path, monkeypatch):
     core, _ = make_core(tmp_path)
