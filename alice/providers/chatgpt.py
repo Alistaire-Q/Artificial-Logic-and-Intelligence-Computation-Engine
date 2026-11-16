@@ -30,8 +30,9 @@ from urllib.parse import parse_qs, urlencode, urlparse
 import httpx
 
 from alice.config import ProviderConfig, alice_home
-from alice.providers.openai_compat import (_TRANSPORT_ERRORS, ChatResult, OpenAICompatProvider, ProviderError,
-                                           StreamCancelled, _transport_error, classify_error, normalize_message)
+from alice.providers.openai_compat import (_TOO_LARGE_HINTS, _TRANSPORT_ERRORS, ChatResult, OpenAICompatProvider,
+                                           ProviderError, StreamCancelled, _transport_error, classify_error,
+                                           normalize_message)
 
 ISSUER = "https://auth.openai.com"
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"  # Codex CLI'ın herkese açık OAuth istemcisi
@@ -802,6 +803,10 @@ class ChatGPTProvider(OpenAICompatProvider):
                             limit_err = ProviderError("rate_limit", f"ChatGPT limiti doldu: {msg}", 429)
                             limit_err.usage_limit = "usage_limit" in code  # kullanım limiti: hesap dolu sayılır
                             raise limit_err
+                        if any(h in f"{code} {msg}".lower() for h in _TOO_LARGE_HINTS):
+                            # Bağlam taşması akış içinde response.failed (context_length_exceeded) olarak geliyor:
+                            # "server" sayılınca router konuşmayı küçültmek yerine modeli bozuk sayıp soğumaya alıyordu.
+                            raise ProviderError("too_large", f"ChatGPT: {msg}")
                         raise ProviderError("server", f"ChatGPT: {msg}")
         except _TRANSPORT_ERRORS as e:
             raise _transport_error(e) from e

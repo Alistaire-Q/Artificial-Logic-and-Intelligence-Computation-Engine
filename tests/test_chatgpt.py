@@ -438,6 +438,19 @@ def test_stream_cut_mid_tool_call_is_an_error_not_an_empty_call():
     assert ei.value.kind == "network"
 
 
+def test_context_overflow_in_stream_is_too_large_not_server():
+    chatgpt.save_auth(tokens())
+
+    def handler(req):
+        return httpx.Response(200, content=sse({"type": "response.failed", "response": {"error": {
+            "code": "context_length_exceeded", "message": "Your input exceeds the context window of this model."}}}))
+
+    p = ChatGPTProvider(pc(), client=httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(ProviderError) as ei:
+        p.chat("gpt-5.5", [{"role": "user", "content": "x"}])
+    assert ei.value.kind == "too_large"
+
+
 def test_added_without_call_id_and_done_with_it_gives_one_call():
     chatgpt.save_auth(tokens())
 
