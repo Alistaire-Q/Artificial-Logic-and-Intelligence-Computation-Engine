@@ -1396,9 +1396,12 @@ Kurallar:
             while True:
                 if self.stopped and not self.finished:
                     with self.cond:  # olaylar gelen kutusunda kalır; Sürdür ya da kullanıcının mesajı yeniden başlatır
-                        if self.stopped:  # kilit altında yeniden bak: tam bu arada sürdürüldüyse çıkma
+                        exiting = self.stopped  # kilit altında yeniden bak: tam bu arada sürdürüldüyse çıkma
+                        if exiting:
                             self.lead_thread = None
-                    if self.lead_thread is None:
+                    # Karar kilit altında verilir: kilitten sonra lead_thread'e yeniden bakmak, bu arada Sürdür'ün
+                    # başlattığı yeni döngüyü görüp bu döngüyü de sürdürüyordu (aynı yönetici ajanında iki döngü).
+                    if exiting:
                         self.lead_state = "idle"
                         self._changed()
                         return

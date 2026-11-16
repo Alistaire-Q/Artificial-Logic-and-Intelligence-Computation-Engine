@@ -447,3 +447,34 @@ def test_check_command_timeout_kills_grandchildren(tmp_path):
     res = _Team.run_check(fake)
     assert res["code"] == -1 and "zaman aşımı" in res["out"]
     assert time.monotonic() - t0 < 20
+
+
+def test_stopped_lead_loop_exits_even_if_resumed_meanwhile(workdir):
+    # Döngü "durdu, çıkıyorum" dedikten hemen sonra Sürdür yeni bir döngü başlatırsa eski döngü lead_thread'i dolu
+    # görüp çalışmaya devam ediyordu: aynı yönetici ajanında iki döngü.
+    _, _, ctx = make(simple, workdir)
+    team = Team(ctx, "hedef")
+    from types import SimpleNamespace
+
+    team.lead_agent = SimpleNamespace(messages=[{"role": "system", "content": ""}])  # kurulmuş sayılsın
+    team.stopped = True
+    other = threading.Thread(target=lambda: None)  # Sürdür'ün başlattığı döngü yerine
+
+    class Hooked(threading.Condition):
+        fired = False
+
+        def __exit__(self, *a):
+            res = super().__exit__(*a)
+            if not Hooked.fired:
+                Hooked.fired = True
+                team.stopped, team.lead_thread = False, other  # tam bu arada sürdürüldü
+            return res
+
+    team.cond = Hooked()
+    t = threading.Thread(target=team._lead_loop, daemon=True)
+    t.start()
+    t.join(3)
+    alive = t.is_alive()
+    team.finished = True  # eski kodda döngü sürüyorsa kapansın
+    t.join(5)
+    assert not alive and team.lead_thread is other
