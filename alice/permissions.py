@@ -249,11 +249,13 @@ class Permissions:
             return not sandbox.usable(ctx, args)  # sandbox'ta çalışacaksa sormaya gerek yok: proje dışına yazamaz
         if risk == SEND or tool.name == "process_kill" or "command" in args:
             return True
-        if risk == WRITE and args.get("path"):
+        if risk == WRITE:
+            # "path" ve yama metnindeki dosyalar (apply_patch'in "path"i yok: önceden hiç bakılmıyordu). Önek
+            # karşılaştırması C:\proje2'yi C:\proje'nin içinde sayıyordu; klasör sınırına göre bakılır.
             try:
-                target = ctx.resolve(str(args["path"]))
-                return not str(target).startswith(str(Path(ctx.cwd).resolve()))
-            except (OSError, ValueError, AttributeError):
+                root = Path(ctx.cwd).resolve()
+                return any(not _inside(ctx.resolve(p), root) for p in _write_targets(args))
+            except (OSError, ValueError, AttributeError, TypeError):
                 return True
         return False
 
@@ -282,6 +284,12 @@ class Permissions:
         allowed = self.matching_rule(tool, args, ctx, "allow")
         if allowed and (risk != DANGER or parse_rule(allowed)[1] is not None):
             return "allow"
+        from alice import guard
+
+        # Bu turda dış içerik okundu: talimat oradan gelmiş olabilir. Oturumluk "hep izin ver" (always_allow) bunu
+        # delmez: kullanıcı o onayı enjeksiyonu düşünerek vermedi (açık allow kuralları yukarıda geçerli).
+        if guard.tainted(ctx) and self._risky_after_untrusted(tool, args, risk, ctx):
+            return "ask"
         if tool.name in self.always_allow and risk != DANGER:
             return "allow"
         if self.mode == "ask":
@@ -289,10 +297,6 @@ class Permissions:
         # auto
         if risk == DANGER:
             return "ask"
-        from alice import guard
-
-        if guard.tainted(ctx) and self._risky_after_untrusted(tool, args, risk, ctx):
-            return "ask"  # bu turda dış içerik okundu: talimat oradan gelmiş olabilir
         if risk == SEND and _confirm_outward(ctx):
             return "ask"
         if risk == WRITE:
@@ -302,6 +306,15 @@ class Permissions:
             except (OSError, ValueError):
                 return "ask"
         return "allow"
+
+
+def _inside(target: Path, root: Path) -> bool:
+    """target, root klasörünün içinde mi (Windows'ta büyük/küçük harf duyarsız)."""
+    t, r = str(target), str(root)
+    if sys.platform == "win32":
+        t, r = t.lower(), r.lower()
+    sep = "\\" if sys.platform == "win32" else "/"
+    return t == r or t.startswith(r.rstrip("\\/") + sep)
 
 
 def _write_targets(args: dict[str, Any]) -> list[str]:
