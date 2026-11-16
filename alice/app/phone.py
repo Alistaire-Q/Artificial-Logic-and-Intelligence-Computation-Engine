@@ -6,6 +6,13 @@ Yerel ağa açılan ayrı bir sunucu (varsayılan port 8765). Telefonda adres:
 Anahtar ~/.alice/phone-token dosyasında kalıcıdır; böylece telefondaki yer imi ve otomasyon
 her açılışta çalışır. `alice phone --new-token` ile değiştirilir.
 
+Anahtar adreste yalnız ilk açılışta (QR / yer imi) taşınır: sunucu onu HttpOnly, SameSite=Strict bir çereze çevirip
+anahtarsız adrese yönlendirir; sayfa sonra çerez ve X-Alice-Token / "Authorization: Bearer" başlığıyla konuşur
+(bkz. phone_handler). Bağlantı yerel ağda düz HTTP'dir: aynı ağdaki biri trafiği dinleyebilir. Yerleşik TLS yok
+(öz-imzalı sertifika için gereken `cryptography` ALICE'in bağımlılığı değil ve Android WebView öz-imzalı sertifikayı
+ek kod olmadan kabul etmiyor); evin dışından ya da güvenmediğin bir ağdan erişim için HTTPS olan aktarma sunucusunu
+(relay.py, `alice relay`) kullan.
+
 Android uygulaması (android/) aynı sayfayı açar; konuşma tanıma, bildirim, arama ve QR ile bağlanma ekler. APK'yı
 bilgisayar verir (/api/phone/app.apk, bkz. phone_apk.py); uygulama yeni sürüm çıkınca kendini oradan günceller. Tarayıcıda düz HTTP'de mikrofon açılmaz; orada sesli yazma telefonun ses kaydedicisiyle yapılır.
 """
@@ -81,6 +88,74 @@ def _relay_log(line: str) -> None:
         pass
 
 
+COOKIE = "alice_phone"
+COOKIE_MAX_AGE = 400 * 24 * 3600  # tarayıcıların izin verdiği en uzun süre: telefondaki yer imi QR'siz çalışsın
+ENTRY_PAGES = ("/m", "/")  # QR/yer imi adresleri: ?t= burada bir kez kabul edilip çereze çevrilir
+
+
+def phone_handler(base: type, state) -> type:
+    """Telefon sunucusunun istek işleyicisi: anahtar adreste dolaşmasın.
+
+    - Giriş sayfası (/m?t=..., /?t=...) doğru anahtarla gelirse HttpOnly + SameSite=Strict çerez kurulur ve anahtarsız
+      adrese yönlendirilir (303): anahtar tarayıcı geçmişinde, ekran görüntüsünde, yer iminde kalmaz.
+    - Sonraki GET'ler çerezle, API çağrıları X-Alice-Token ya da "Authorization: Bearer" başlığıyla doğrulanır.
+      POST yalnız başlıkla: çerez tek başına yazan isteğe yetmez (CSRF'e karşı ikinci kat; SameSite zaten engeller).
+    - ?t= API'lerde hâlâ kabul edilir: telefona kurulu eski uygulama sürümleri (olay akışı, erişilebilirlik
+      denetimi) ve saat otomasyonları onu kullanıyor; yeni sayfa kodu adrese anahtar koymaz.
+    """
+    from http.cookies import CookieError, SimpleCookie
+    from urllib.parse import parse_qs, urlencode, urlparse
+
+    from alice.app.server import _same
+
+    class PhoneHandler(base):  # type: ignore[misc, valid-type]
+        def _cookie_token(self) -> str:
+            raw = self.headers.get("Cookie") or ""
+            if not raw:
+                return ""
+            try:
+                jar = SimpleCookie()
+                jar.load(raw)
+            except CookieError:
+                return ""
+            m = jar.get(COOKIE)
+            return m.value if m is not None else ""
+
+        def _token_ok(self, query: dict[str, list[str]]) -> bool:
+            auth = self.headers.get("Authorization") or ""
+            if auth[:7].lower() == "bearer " and _same(auth[7:].strip(), state.token):
+                return True
+            if self.command in ("GET", "HEAD") and _same(self._cookie_token(), state.token):
+                return True
+            return super()._token_ok(query)
+
+        def _get(self) -> None:
+            u = urlparse(self.path)
+            if u.path in ENTRY_PAGES and "t" in u.query and self._host_ok() and self._origin_ok():
+                q = parse_qs(u.query, keep_blank_values=True)
+                if _same((q.get("t") or [""])[0], state.token):
+                    return self._pair_redirect(u.path, q)
+            return super()._get()
+
+        def _pair_redirect(self, path: str, q: dict[str, list[str]]) -> None:
+            rest = urlencode([(k, v) for k, vs in q.items() if k != "t" for v in vs])
+            host = (self.headers.get("Host") or "").split(":")[0]
+            from alice.app import relay
+
+            # Aktarma sunucusu HTTPS'tir: oradan gelen çerez yalnız HTTPS'te gitsin. Yerel ağ düz HTTP (Secure olmaz).
+            secure = "; Secure" if host and host == relay.host() else ""
+            self.send_response(303)
+            self.send_header("Location", path + ("?" + rest if rest else ""))
+            self.send_header("Set-Cookie", f"{COOKIE}={state.token}; Path=/; Max-Age={COOKIE_MAX_AGE}; HttpOnly; "
+                                           f"SameSite=Strict{secure}")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    return PhoneHandler
+
+
 class PhoneServer:
     def __init__(self, cfg: Config, store=None, port: int | None = None, new_token: bool = False, state=None):
         from alice.app.server import AppServer, AppState
@@ -98,7 +173,11 @@ class PhoneServer:
         self._own_store = store is None  # kendi açtığımız depoyu stop() kapatır
         self.state.watch_store = store or Store()
         self.port = int(port if port is not None else cfg.data.get("phone", {}).get("port", 8765))
-        self.server = AppServer(self.state, self.port, host="0.0.0.0", owns_state=state is None).start()
+        self.server = AppServer(self.state, self.port, host="0.0.0.0", owns_state=state is None)
+        httpd = self.server.httpd
+        if getattr(httpd, "RequestHandlerClass", None) is not None:  # testlerde sahte sunucu olabilir
+            httpd.RequestHandlerClass = phone_handler(httpd.RequestHandlerClass, self.state)
+        self.server.start()
         from alice.app import phone_apk
 
         phone_apk.refresh_async()  # telefon uygulamasının son sürümü bilgisayarda hazır olsun

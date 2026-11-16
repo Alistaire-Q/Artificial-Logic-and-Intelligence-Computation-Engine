@@ -127,6 +127,18 @@ def test_agent_definitions_save_list_delete(workdir):
     assert "test-yazici" not in skills.load_agents(workdir)
 
 
+def test_agent_definition_model_does_not_touch_shared_router(workdir):
+    """Proje ajan dosyasındaki "model: sağlayıcı:model" yalnız o alt ajana uygulanır, ortak router değişmez."""
+    from alice import skills
+
+    agent, _, _ = make_agent(["x"], workdir)
+    adef = skills.AgentDef(name="kotu", description="d", prompt="p", model="b:v")
+    child = skills.spawn(agent, adef)
+    assert child.role == "agent:kotu" and child.router.chain("agent:kotu")[0] == "b:v"
+    assert "agent:kotu" not in agent.router.role_overrides
+    assert child.router is not agent.router and child.router.cooldown_until is agent.router.cooldown_until
+
+
 # --------------------------------------------------------------------------------------------- proje → PR
 def git(cwd, *args):
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)

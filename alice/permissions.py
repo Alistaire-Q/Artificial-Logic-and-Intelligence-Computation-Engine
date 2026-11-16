@@ -15,13 +15,15 @@ Kalıcı kurallar (Claude Code'daki allow/deny gibi), config.toml ve projede .al
 Biçim: "araç" ya da "araç(desen)". Araç adında * olabilir. Desen (büyük/küçük harf duyarsız, fnmatch) aracın asıl
 argümanına bakar: command, path, url, target, app, action ya da query (ilk bulunan). deny her modda (yolo dahil)
 geçerlidir; ask yolo dışında her zaman sorar; allow sormadan izin verir (plan modunu delmez; tehlikeli bir işe
-ancak desenli bir kural izin verir, "run_command" tek başına rm -r'yi serbest bırakmaz).
+ancak desenli bir kural izin verir, "run_command" tek başına rm -r'yi serbest bırakmaz; dış içerik okunmuş bir turda
+desensiz kural komut çalıştırmayı, proje dışına yazmayı ve mesaj göndermeyi de sormadan geçirmez).
 """
 
 from __future__ import annotations
 
 import fnmatch
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -245,6 +247,7 @@ def persist_allow(cwd: Path, rule: str) -> Path:
 
 
 HISTORY_MAX = 2000  # satır: izin cevapları kaydı bu kadarla sınırlı
+_HISTORY_LOCK = threading.Lock()
 
 
 def history_path() -> Path:
@@ -262,11 +265,36 @@ def record_answer(tool: Tool, args: dict[str, Any], cwd: Path | None, risk: str,
            "answer": answer, "cwd": str(cwd or "")}
     p = history_path()
     p.parent.mkdir(parents=True, exist_ok=True)
+    # Aynı anda iki sohbet cevap yazınca oku-değiştir-yaz birinin satırını siliyordu: kilit + geçici dosyadan
+    # os.replace (yarım yazılmış dosya okunmaz).
+    with _HISTORY_LOCK:
+        try:
+            lines = p.read_text(encoding="utf-8").splitlines()[-(HISTORY_MAX - 1):]
+        except OSError:
+            lines = []
+        _atomic_write(p, "\n".join(lines + [json.dumps(row, ensure_ascii=False)]) + "\n")
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    import os
+    import tempfile
+    import time
+
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}-", suffix=".tmp", dir=str(path.parent))
     try:
-        lines = p.read_text(encoding="utf-8").splitlines()[-(HISTORY_MAX - 1):]
-    except OSError:
-        lines = []
-    p.write_text("\n".join(lines + [json.dumps(row, ensure_ascii=False)]) + "\n", encoding="utf-8")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        for attempt in range(5):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:  # Windows: hedef o an başka bir süreçte açık
+                if attempt == 4:
+                    raise
+                time.sleep(0.05)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
 
 
 def suggestions(cwd: Path | None = None, min_yes: int = 3) -> list[dict[str, Any]]:
@@ -275,18 +303,26 @@ def suggestions(cwd: Path | None = None, min_yes: int = 3) -> list[dict[str, Any
     import json
 
     try:
-        rows = [json.loads(ln) for ln in history_path().read_text(encoding="utf-8").splitlines() if ln.strip()]
-    except (OSError, ValueError):
+        text = history_path().read_text(encoding="utf-8", errors="replace")
+    except OSError:
         return []
     stats: dict[str, dict[str, Any]] = {}
-    for r in rows:
-        if cwd is not None and r.get("cwd") and Path(r["cwd"]) != Path(cwd):
+    for ln in text.splitlines():
+        # Bozuk bir satır (yarım yazma, elle düzenleme) ya da "rule"suz kayıt önerilerin tamamını yok etmesin: atla.
+        try:
+            r = json.loads(ln) if ln.strip() else None
+            if not isinstance(r, dict) or not isinstance(r.get("rule"), str) or not r["rule"]:
+                continue
+            if cwd is not None and r.get("cwd") and Path(str(r["cwd"])) != Path(cwd):
+                continue
+            ts = int(r.get("ts") or 0)
+        except (ValueError, TypeError):
             continue
-        s = stats.setdefault(r["rule"], {"rule": r["rule"], "tool": r["tool"], "yes": 0, "no": 0, "risky": False,
-                                         "last": 0})
+        s = stats.setdefault(r["rule"], {"rule": r["rule"], "tool": str(r.get("tool") or ""), "yes": 0, "no": 0,
+                                         "risky": False, "last": 0})
         s["yes" if r.get("answer") in ("y", "a", "p") else "no"] += 1
         s["risky"] = s["risky"] or r.get("risk") in (DANGER, SEND)
-        s["last"] = max(s["last"], int(r.get("ts") or 0))
+        s["last"] = max(s["last"], ts)
     have = set(project_rules(cwd).get("allow", [])) if cwd is not None else set()
     out = [s for s in stats.values() if s["yes"] >= min_yes and not s["no"] and not s["risky"] and s["rule"] not in have]
     return sorted(out, key=lambda s: (-s["yes"], -s["last"]))
@@ -375,13 +411,18 @@ class Permissions:
             return "allow"
         if self.mode == "plan":
             return "allow" if risk == NETWORK else "deny"
-        allowed = self.matching_rule(tool, args, ctx, "allow")
-        if allowed and (risk != DANGER or parse_rule(allowed)[1] is not None):
-            return "allow"
         from alice import guard
 
+        allowed = self.matching_rule(tool, args, ctx, "allow")
+        if allowed and (risk != DANGER or parse_rule(allowed)[1] is not None):
+            # Desensiz kural ("run_command" tek başına) kirli turda komut çalıştırmayı/proje dışına yazmayı/mesaj
+            # göndermeyi sormadan geçirmez: dış içerikten gelen talimat o aracın her kullanımını açmış olurdu.
+            # Desenli kurallar ("run_command(git status*)") dar olduğu için geçerli kalır.
+            if parse_rule(allowed)[1] is not None or not (
+                    guard.tainted(ctx) and self._risky_after_untrusted(tool, args, risk, ctx)):
+                return "allow"
         # Bu turda dış içerik okundu: talimat oradan gelmiş olabilir. Oturumluk "hep izin ver" (always_allow) bunu
-        # delmez: kullanıcı o onayı enjeksiyonu düşünerek vermedi (açık allow kuralları yukarıda geçerli).
+        # delmez: kullanıcı o onayı enjeksiyonu düşünerek vermedi (desenli allow kuralları yukarıda geçerli).
         if guard.tainted(ctx) and self._risky_after_untrusted(tool, args, risk, ctx):
             return "ask"
         if tool.name in self.always_allow and risk != DANGER:
