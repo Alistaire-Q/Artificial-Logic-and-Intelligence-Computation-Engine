@@ -453,10 +453,16 @@ class Core:
     def _prep_game_update(self) -> None:
         from alice import anticipate
 
-        st = anticipate.load_state()
+        # Bildirim ve Steam'i açmak yavaş olabilir: kilidi tutmadan bir kopya üzerinde çalış, sonra yalnız değişen
+        # anahtarları kilit altında taze duruma yaz (bu arada QuietGame'in yazdığı dnd_prev silinmesin).
+        before = anticipate.load_state()
+        st = dict(before)
         msg = anticipate.prep_game_update(self._processes(), lambda t, b: self.notifier.send(
             Notification(t, b, "info", "now", kind="info")), st)
-        anticipate.save_state(st)
+        changed = {k: v for k, v in st.items() if before.get(k, object()) != v}
+        if changed:
+            with anticipate.state_edit() as cur:
+                cur.update(changed)
         if msg:
             self.store.add_event("info", "Önsezi: oyun güncellemesi", msg, "info", "now")
 

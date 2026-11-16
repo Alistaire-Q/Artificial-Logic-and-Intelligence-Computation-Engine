@@ -16,15 +16,18 @@ Durum ~/.alice/anticipate.json'da. [anticipate] ayarlarıyla parçalar ayrı ayr
 from __future__ import annotations
 
 import json
+import os
 import re
 import statistics
 import subprocess
 import sys
+import threading
 import time
 from collections import Counter
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from alice.config import alice_home
 
@@ -50,18 +53,46 @@ def state_path() -> Path:
 
 def load_state(path: Path | None = None) -> dict[str, Any]:
     try:
-        return json.loads((path or state_path()).read_text(encoding="utf-8"))
+        data = json.loads((path or state_path()).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+    return data if isinstance(data, dict) else {}
+
+
+# Durum dosyasını iki thread yazar (mod değişince QuietGame, oyun öncesi hazırlık, sabah). Kilitsiz oku-değiştir-yaz
+# birinin yazdığını (ör. "Rahatsız etmeyin önceden kapalıydı" notu) ötekinin silmesine yol açıyordu: uçuştan sonra
+# DND açık kalıyordu. Değişiklikler state_edit() ile kilit altında yapılır, dosya atomik değiştirilir.
+_STATE_LOCK = threading.RLock()
 
 
 def save_state(st: dict[str, Any], path: Path | None = None) -> None:
     p = path or state_path()
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(st, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.write_text(json.dumps(st, ensure_ascii=False, indent=1), encoding="utf-8")
+        for attempt in range(5):
+            try:
+                os.replace(tmp, p)
+                return
+            except PermissionError:  # Windows: okuyan/virüs tarayıcı dosyayı bir an tutuyor
+                if attempt == 4:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
     except OSError:
-        pass
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
+@contextmanager
+def state_edit(path: Path | None = None) -> Iterator[dict[str, Any]]:
+    """Durumu kilit altında oku; blok bitince (hata yoksa) aynı kilit altında atomik yaz."""
+    with _STATE_LOCK:
+        st = load_state(path)
+        yield st
+        save_state(st, path)
 
 
 # ------------------------------------------------------------------ Steam
@@ -192,22 +223,26 @@ class QuietGame:
         if not self.enabled or self.wnf is None:
             return ""
         read, write = self.wnf
-        st = load_state(self.path)
-        if mode == "flight":
-            cur = read()
-            if cur is None or cur != 0 or "dnd_prev" in st:
-                return ""  # okunamadı, zaten açık ya da zaten biz açtık
-            if write(DND_ALARMS_ONLY):
-                st["dnd_prev"] = cur
+        with _STATE_LOCK:  # oku-değiştir-yaz arasında başka thread dnd_prev'i silmesin
+            st = load_state(self.path)
+            if mode == "flight":
+                cur = read()
+                if cur is None or cur != 0 or "dnd_prev" in st:
+                    return ""  # okunamadı, zaten açık ya da zaten biz açtık
+                if write(DND_ALARMS_ONLY):
+                    st["dnd_prev"] = cur
+                    save_state(st, self.path)
+                    return "Rahatsız etmeyin açıldı"
+                return ""
+            if "dnd_prev" in st:
+                try:
+                    prev = int(st.pop("dnd_prev"))
+                except (TypeError, ValueError):
+                    prev = 0
                 save_state(st, self.path)
-                return "Rahatsız etmeyin açıldı"
-            return ""
-        if "dnd_prev" in st:
-            prev = int(st.pop("dnd_prev"))
-            save_state(st, self.path)
-            if read() == DND_ALARMS_ONLY:  # sen bu arada değiştirdiysen dokunma
-                write(prev)
-                return "Rahatsız etmeyin eski haline döndü"
+                if read() == DND_ALARMS_ONLY:  # sen bu arada değiştirdiysen dokunma
+                    write(prev)
+                    return "Rahatsız etmeyin eski haline döndü"
         return ""
 
 
@@ -352,7 +387,6 @@ class Morning:
         if not topics or at is None or not at <= now.hour * 60 + now.minute < MORNING[1] * 60:
             return None
         answers = prepare_morning(self.cfg, topics, now, self.fetch)
-        st = load_state(self.path)
-        st["morning"] = {"day": day, "at": time.time(), "answers": answers}
-        save_state(st, self.path)
+        with state_edit(self.path) as st:
+            st["morning"] = {"day": day, "at": time.time(), "answers": answers}
         return answers
