@@ -546,7 +546,10 @@ class LongMemory:
         return int(self._meta("version") or 0)
 
     def _bump(self) -> None:
-        self._meta("version", str(self.version + 1))
+        # Oku-yaz tek kilit altında: iki iş parçacığı aynı sürümü okuyup aynı sayıyı yazınca bir değişiklik
+        # görünmez kalıyordu (sürümü izleyen taraf ikincisini hiç fark etmiyordu).
+        with self._lock:
+            self._meta("version", str(self.version + 1))
 
     def import_markdown(self, path: Path) -> int:
         """Eski düz hafıza dosyasını (memory.md, "* not  _(tarih)_" satırları) bir kez içeri al."""

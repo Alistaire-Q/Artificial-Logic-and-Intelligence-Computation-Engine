@@ -322,6 +322,24 @@ def test_silinen_kaydin_vektoru_kalmaz(tmp_path):
     m2.close()
 
 
+def test_surum_artisi_es_zamanli_cagrilarda_kaybolmaz():
+    import threading
+
+    m = mem()
+    start = m.version
+
+    def work():
+        for _ in range(40):
+            m._bump()
+
+    threads = [threading.Thread(target=work) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert m.version == start + 240
+
+
 def test_aractan_sonra_gelen_canli_cevap_soruya_eklenir():
     from types import SimpleNamespace
 
