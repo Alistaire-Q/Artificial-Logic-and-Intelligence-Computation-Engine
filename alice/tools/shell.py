@@ -157,6 +157,7 @@ class RunCommand(Tool):
             except (RuntimeError, OSError, subprocess.SubprocessError) as e:
                 raise ToolError(f"sandbox kurulamadı, komut çalıştırılmadı: {e}. Gerekiyorsa unsandboxed=true ile "
                                 "(kullanıcı onayıyla) çalıştır.") from e
+            env = sandbox.scrub_env(env, ctx)  # .env'deki API anahtarları sandbox'a geçmesin
             env.update(extra)
         limit = int(ctx.config.agent.get("tool_output_chars", 12000))
         if background:

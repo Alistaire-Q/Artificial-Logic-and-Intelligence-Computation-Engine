@@ -50,6 +50,9 @@ taint_guard = true
 # Windows: düşük bütünlük seviyesi; Linux: bubblewrap (apt install bubblewrap); macOS: sandbox-exec.
 sandbox = "auto"
 sandbox_network = true
+# Sandbox'taki komut ~/.alice'teki anahtar dosyalarını okuyamaz, .env'den gelen ve adı anahtar gibi olan ortam
+# değişkenlerini (*_API_KEY, *_TOKEN, CLIPROXY_*...) almaz. Bir komut gerçekten birine muhtaçsa adını buraya yaz.
+# sandbox_env_allow = ["HF_TOKEN"]
 # İş bitmeden durursa ("şimdi testleri çalıştıracağım" deyip susmak) en fazla kaç kez devam hatırlatılsın. 0 = kapalı.
 finish_nudges = 2
 # "Yaptım/indirildi/yok" gibi sonuç söyleyen cevap bu turdaki araç sonuçlarıyla desteklenmiyorsa (hızlı modelle
@@ -927,12 +930,20 @@ def _deep_merge(base: dict, over: dict) -> dict:
     return out
 
 
+# .env dosyalarından ortama yüklenen anahtar adları: sandbox'taki komutlara verilmezler (sandbox.scrub_env).
+LOADED_ENV_KEYS: set[str] = set()
+
+
 def load_env_file(path: Path) -> None:
     """Basit KEY=VALUE parser. Zaten tanımlı ortam değişkenlerinin üstüne yazmaz."""
     if not path.is_file():
         return
     # utf-8-sig: Not Defteri'nin eklediği BOM ilk anahtarın adına yapışıp ("﻿GEMINI_API_KEY") onu yok ediyordu.
-    for raw in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+    try:
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:  # sandbox'taki süreç (ALICE'i içe aktaran bir test) gizli .env'i okuyamaz
+        return
+    for raw in text.splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -941,6 +952,7 @@ def load_env_file(path: Path) -> None:
         value = value.strip().strip('"').strip("'")
         if key and value and key not in os.environ:
             os.environ[key] = value
+            LOADED_ENV_KEYS.add(key)
 
 
 KNOWN_VISION = ("*gemma-3-*", "*gemma-4-*", "*llama-4-*", "*-vl-*", "*-vl", "*vision*", "*pixtral*")
@@ -1344,6 +1356,7 @@ def set_env_value(key: str, value: str, path: Path | None = None) -> Path:
     tmp.replace(path)
     if value:
         os.environ[key] = value
+        LOADED_ENV_KEYS.add(key)
     else:
         os.environ.pop(key, None)
     return path
