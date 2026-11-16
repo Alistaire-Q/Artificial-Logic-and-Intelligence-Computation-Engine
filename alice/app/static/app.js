@@ -192,6 +192,9 @@ function setEmpty(v) { app.classList.toggle("empty", v); }
 function clearChat() {
   hideWorking();
   list.replaceChildren();
+  // Süren araç satırlarının sayaçları da durur: sohbet değişince/yeniden bağlanınca satır atılıyor ama aralığı sonsuza
+  // dek kopuk düğümü güncelliyordu (tool_end yeni bir satıra gider).
+  for (const t of S.tools.values()) clearInterval(t._timer);
   S.tools.clear(); S.perms.clear(); S.cur = null;
   setTodo("");
   setEmpty(true);
