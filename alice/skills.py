@@ -199,18 +199,28 @@ def spawn(parent, adef: AgentDef, ctx=None, ui=None):
                                                               if w.endswith("*"))]
     system = (f"{adef.prompt}\n\n# Environment\n- Working directory: {parent.ctx.cwd}\n"
               "You are a subagent: do the task you are given and reply with the result; the parent agent reads it.")
-    child = Agent(parent.config, parent.router, tools, ctx or parent.ctx, parent.permissions, ui or parent.ui,
-                  getattr(parent, "decider", None), system_prompt=system, is_child=True)
-    if adef.tools:
-        child.tool_specs = lambda: [t.spec() for t in tools]  # seçilen araçlar grup filtresinden bağımsız görünsün
     model = adef.model.strip()
+    router = parent.router
+    role = ""
     if model and ":" in model:
+        # Tanımdaki model yalnız bu alt ajana uygulanır: ortak router'ın role_overrides'ına yazılınca proje
+        # klasöründeki bir .alice/agents/*.md dosyası diğer sohbetlerin model menüsüne/zincirine sızıyordu.
+        # Sığ kopya: sağlık/soğuma/kullanım kayıtları ve istemciler ortak kalır, yalnız rol eşlemesi ayrılır.
+        import copy
+
         role = f"agent:{adef.name}"
         try:
             fallback = parent.router.chain(parent.role)
         except Exception:  # noqa: BLE001
             fallback = []
-        parent.router.role_overrides[role] = [model] + [r for r in fallback if r != model]
+        router = copy.copy(parent.router)
+        router.role_overrides = {**parent.router.role_overrides,
+                                 role: [model] + [r for r in fallback if r != model]}
+    child = Agent(parent.config, router, tools, ctx or parent.ctx, parent.permissions, ui or parent.ui,
+                  getattr(parent, "decider", None), system_prompt=system, is_child=True)
+    if adef.tools:
+        child.tool_specs = lambda: [t.spec() for t in tools]  # seçilen araçlar grup filtresinden bağımsız görünsün
+    if role:
         child.role = role
     elif model:
         child.role = model
