@@ -95,6 +95,7 @@ class Timeline:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.enc, self.dec = enc, dec
         self._lock = threading.Lock()
+        self._closed = False
         self._db = sqlite3.connect(str(self.path), check_same_thread=False)
         self._db.execute("CREATE TABLE IF NOT EXISTS shots (ts REAL, app TEXT, title BLOB, text BLOB)")
         self._db.execute("CREATE INDEX IF NOT EXISTS shots_ts ON shots(ts)")
@@ -102,6 +103,8 @@ class Timeline:
 
     def add(self, app: str, title: str, text: str, ts: float | None = None) -> None:
         with self._lock:
+            if self._closed:  # kapandıktan sonra gelen son kare (kaydedici iş parçacığı) sessizce düşer
+                return
             self._db.execute("INSERT INTO shots VALUES (?, ?, ?, ?)",
                              (time.time() if ts is None else ts, app, self.enc(title.encode("utf-8")),
                               self.enc(text[:MAX_TEXT].encode("utf-8"))))
@@ -130,6 +133,8 @@ class Timeline:
     def prune(self, keep_days: float, now: float | None = None) -> int:
         now = time.time() if now is None else now
         with self._lock:
+            if self._closed:
+                return 0
             n = self._db.execute("DELETE FROM shots WHERE ts < ?", (now - keep_days * 86400,)).rowcount
             self._db.commit()
         return n
@@ -146,7 +151,13 @@ class Timeline:
             return int(self._db.execute("SELECT COUNT(*) FROM shots").fetchone()[0])
 
     def close(self) -> None:
-        self._db.close()
+        """Kilit altında: kaydedici iş parçacığı o an yazıyorsa yazımın bitmesi beklenir (kilitsiz kapatma yarım
+        işlemi/ProgrammingError'ı kaydediciye bırakıyordu); sonra gelen yazımlar sessizce düşer."""
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._db.close()
 
 
 def snippet(text: str, words: list[str], width: int = 160) -> str:

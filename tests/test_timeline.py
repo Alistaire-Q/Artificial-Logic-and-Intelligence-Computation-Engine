@@ -53,6 +53,34 @@ def test_prune_and_wipe(tl):
     assert tl.wipe() == 1 and tl.count() == 0
 
 
+def test_close_waits_for_writer_and_later_writes_are_dropped(tmp_path):
+    import threading
+
+    t = Timeline(tmp_path / "timeline.db", enc=fake_enc, dec=fake_enc)
+    errors: list[BaseException] = []
+    stop = threading.Event()
+
+    def writer():
+        while not stop.is_set():
+            try:
+                t.add("a.exe", "t", "kare")
+                t.prune(30)
+            except BaseException as e:  # noqa: BLE001
+                errors.append(e)
+                return
+
+    th = threading.Thread(target=writer)
+    th.start()
+    t.add("a.exe", "t", "ilk")
+    t.close()
+    t.close()  # ikinci kapatma zararsız
+    stop.set()
+    th.join(5)
+    assert errors == []
+    t.add("a.exe", "t", "sonra")  # kapandıktan sonra sessizce düşer
+    assert t.prune(30) == 0
+
+
 def test_exclusions():
     assert excluded("KeePassXC.exe", "veritabanı")
     assert excluded("opera.exe", "Yeni InPrivate penceresi")
