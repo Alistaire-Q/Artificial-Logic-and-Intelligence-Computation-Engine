@@ -439,3 +439,28 @@ def test_missed_one_time_task_without_catch_up_is_removed(tmp_path):
     assert store.due(ts("2026-10-08T10:00")) == []
     assert store.get(once.id) is None and store.get(keep.id) is not None
     assert TaskStore(tmp_path / "tasks.json").get(once.id) is None
+
+
+def test_disk_low_rule_by_free_gb(store, tmp_path):
+    from alice.core.rules import DEFAULT_RULES
+
+    rule = next(r for r in DEFAULT_RULES if r.id == "disk-low")
+    eng, _ = engine(store, tmp_path, [rule])
+    store.add("pc.disk.c.free_gb", 0.02, ts=1000)
+    store.add("pc.disk.f.free_gb", 76.0, ts=1000)  # büyük veri diski yüzdece dolu ama yeri var: susmalı
+    assert [f.key for f in eng.evaluate(1010)] == ["pc.disk.c.free_gb"]
+
+
+def test_later_default_rule_added_to_old_rules_file(tmp_path):
+    import json
+
+    from alice.core.rules import RuleSet
+
+    p = tmp_path / "rules.json"
+    p.write_text(json.dumps([{"metric": "pc.disk.*.percent", "op": ">", "threshold": 95, "message": "x",
+                              "id": "disk-full", "enabled": False}]), encoding="utf-8")
+    rs = RuleSet(p)
+    assert {r.id for r in rs.rules} == {"disk-full", "disk-low"}
+    assert not rs.get("disk-full").enabled  # kullanıcının kapattığı kural kapalı kalır
+    assert rs.remove("disk-low")
+    assert RuleSet(p).get("disk-low") is None  # silinen varsayılan geri gelmez
