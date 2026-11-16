@@ -226,7 +226,7 @@ def _start_browser_ext(cfg) -> None:
     try:
         from alice.tools import browser_ext
 
-        browser_ext.start_hub(port)
+        browser_ext.start_hub(port, allowed_ids=cfg.agent.get("browser_ext_ids") or ())
     except Exception:  # noqa: BLE001
         pass
 

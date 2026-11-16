@@ -37,8 +37,9 @@ _OS_KEYS = {"control": "ctrl", "meta": "win", "arrowup": "up", "arrowdown": "dow
 class ExtHub:
     """Eklentinin bağlandığı yerel sunucu (çekirdekte, ayrı iş parçacığında). Aynı anda tek eklenti."""
 
-    def __init__(self, port: int = EXT_PORT, log=lambda s: None):
+    def __init__(self, port: int = EXT_PORT, log=lambda s: None, allowed_ids: list[str] | tuple[str, ...] = ()):
         self.port = port
+        self.allowed_ids = tuple(str(i).strip() for i in allowed_ids or () if str(i).strip())
         self.log = log
         self.loop: asyncio.AbstractEventLoop | None = None
         self.ws: Any = None
@@ -81,7 +82,29 @@ class ExtHub:
         origin = request.headers.get("Origin", "")
         if not origin.startswith(EXT_ORIGINS):
             return connection.respond(403, "forbidden\n")
+        if not self._ext_allowed(origin.split("://", 1)[1].strip("/")):
+            return connection.respond(403, "forbidden\n")
         return None
+
+    def _ext_allowed(self, ext_id: str) -> bool:
+        """Yalnız ALICE eklentisi bağlanabilsin. Origin'i herhangi bir yerel program (sandbox'taki bir komut da)
+        `chrome-extension://...` diye gönderebilir; gerçek eklentiyi kovup ALICE'e sahte sayfa içeriği verebilirdi.
+        Kabul edilenler: [agent] browser_ext_ids, ilk bağlanan eklentinin kimliği (~/.alice/browser-ext-id, sandbox'tan
+        gizli). Kimlik değiştiyse (eklenti başka klasörden yüklendi) o dosya silinince yeniden eşlenir."""
+        if not ext_id or not ext_id.isalnum():
+            return False
+        allowed = set(self.allowed_ids)
+        pinned = read_pinned_id()
+        if pinned:
+            allowed.add(pinned)
+        if ext_id in allowed:
+            return True
+        if not allowed:
+            pin_id(ext_id)
+            self.log(f"tarayıcı eklentisi eşlendi: {ext_id}")
+            return True
+        self.log(f"tanınmayan eklenti kimliği reddedildi: {ext_id} (yeniden eşlemek için {pin_path()} dosyasını sil)")
+        return False
 
     async def _handle(self, ws) -> None:
         old, self.ws = self.ws, ws
@@ -136,13 +159,38 @@ class ExtHub:
             self.pending.pop(cid, None)
 
 
+def pin_path():
+    from alice.config import alice_home
+
+    return alice_home() / "browser-ext-id"
+
+
+def read_pinned_id() -> str:
+    try:
+        return pin_path().read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def pin_id(ext_id: str) -> None:
+    path = pin_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(ext_id, encoding="utf-8")
+        from alice.sandbox import hide_from_sandbox
+
+        hide_from_sandbox(path)  # sandbox'taki komut eşlenen kimliği değiştiremesin
+    except Exception:  # noqa: BLE001 - yazılamazsa bu oturum için yine eşleşir sayılmaz; sonraki bağlantı tekrar dener
+        pass
+
+
 _HUB: ExtHub | None = None
 
 
-def start_hub(port: int = EXT_PORT, log=lambda s: None) -> ExtHub:
+def start_hub(port: int = EXT_PORT, log=lambda s: None, allowed_ids: list[str] | tuple[str, ...] = ()) -> ExtHub:
     global _HUB
     if _HUB is None:
-        _HUB = ExtHub(port, log).start()
+        _HUB = ExtHub(port, log, allowed_ids).start()
     return _HUB
 
 

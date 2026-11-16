@@ -100,6 +100,8 @@ browser_bridge_port = 9339
 # ALICE tarayıcı eklentisi (alice/extension, opera://extensions'ta "paketlenmemiş yükle") bu porta bağlanır. Bağlıyken
 # yukarıdaki uzaktan hata ayıklama hiç kullanılmaz: izin penceresi yok, indirmeler/tema ellenmez. 0 = kapalı.
 browser_ext_port = 9340
+# Bu porta yalnız ilk eşlenen eklenti bağlanabilir (kimliği ~/.alice/browser-ext-id); eklentiyi başka klasörden
+# yükledinse o dosyayı sil ya da kimliği buraya yaz: browser_ext_ids = ["..."]
 # true: rol zincirinde "auto" yazmasan da ölçülen en iyi ücretsiz modeller zincirin sonuna eklenir.
 auto_models = true
 # Arayüzde gizlenen modeller ya da sağlayıcılar ("groq" ya da "groq:model"): otomatik zincirlerde kullanılmaz.

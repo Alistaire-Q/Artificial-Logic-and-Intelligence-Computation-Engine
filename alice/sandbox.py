@@ -159,7 +159,7 @@ def mac_profile(cwd: Path, net: bool, secrets: list[Path] | None = None) -> str:
 # ~/.alice altındaki anahtar dosyaları. Sandbox her yeri okuyabilir ve (Windows'ta) ağı açık: kandırılmış bir komut
 # API anahtarlarını, abonelik oturumlarını ya da yerel servislerin anahtarlarını okuyup dışarı gönderebilirdi.
 SECRET_NAMES = (".env", ".env.bak", "chatgpt-auth.json", "connect.json", "phone-token", "relay.json",
-                "browser-bridge-token", "cliproxy/keys.txt", "cliproxy/config.yaml", "cliproxy/auths",
+                "browser-bridge-token", "browser-ext-id", "cliproxy/keys.txt", "cliproxy/config.yaml", "cliproxy/auths",
                 "cliproxy/auths-disabled")
 # Ortamdan da gizli değer taşıyan değişkenler sandbox'taki sürece verilmez (ALICE .env'i kendi ortamına yükler).
 _SECRET_ENV_RX = re.compile(r"(?i)(?:_API_?KEY|_KEY|_TOKEN|_SECRET|_PASSWORD|_PASSWD|_PASS|_PAT|_CREDENTIALS?)$|"

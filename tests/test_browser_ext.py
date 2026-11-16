@@ -337,3 +337,20 @@ def test_sandbox_hint_only_for_access_errors():
     assert ACCESS_DENIED.search("Remove-Item : Access to the path 'C:/x' is denied.")
     assert ACCESS_DENIED.search("UnauthorizedAccessException")
     assert not ACCESS_DENIED.search("Get-Item : Cannot find path 'C:/Users/k/Downloads/Sonora-Setup.exe'")
+
+
+def test_hub_pins_first_extension_id_and_rejects_impostors():
+    """Origin'i herhangi bir yerel program `chrome-extension://...` diye gönderebilir: ilk eşlenen eklenti dışındakiler
+    reddedilir, ayardaki kimlikler her zaman kabul edilir."""
+    h = browser_ext.ExtHub(0)
+    assert h._ext_allowed("abc")  # ilk bağlanan eşlenir
+    assert browser_ext.read_pinned_id() == "abc"
+    assert h._ext_allowed("abc")
+    assert not h._ext_allowed("evil")
+    assert not h._ext_allowed("")
+    assert not h._ext_allowed("a/b")
+    h2 = browser_ext.ExtHub(0, allowed_ids=["cfgid"])
+    assert h2._ext_allowed("cfgid") and h2._ext_allowed("abc") and not h2._ext_allowed("evil")
+    browser_ext.pin_path().unlink()
+    assert not h2._ext_allowed("other")  # ayarda kimlik varsa ilk gelen eşlenmez
+    assert browser_ext.ExtHub(0)._ext_allowed("other")  # dosya silinince yeniden eşlenir
