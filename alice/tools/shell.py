@@ -187,8 +187,15 @@ class RunCommand(Tool):
                     returncode = pop.wait(timeout=timeout)
                     timed_out = False
                 except subprocess.TimeoutExpired:
-                    pop.kill()  # sadece kabuğu öldür; açtığı pencereli program açık kalsın
-                    pop.wait()
+                    # Kabuk ve konsol alt süreçleri (takılan pytest, node...) ölür; komutun açtığı pencereli program
+                    # (Not Defteri, Blender penceresi) ve onun alt süreçleri açık kalır. Eskiden yalnız kabuk
+                    # öldürülüyordu, takılan alt süreçler arkada çalışmaya devam ediyordu.
+                    kill_console_tree(pop.pid)
+                    try:
+                        pop.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        pop.kill()
+                        pop.wait()
                     returncode, timed_out = -1, True
             fo.seek(0)
             fe.seek(0)
@@ -321,6 +328,91 @@ def kill_tree(pid: int) -> None:
     except psutil.NoSuchProcess:
         return
     for child in parent.children(recursive=True):
+        try:
+            child.kill()
+        except psutil.Error:
+            pass
+    try:
+        parent.kill()
+    except psutil.Error:
+        pass
+
+
+def _visible_window_pids() -> set[int]:
+    """Görünür üst düzey penceresi olan süreçlerin pid'leri (yalnız Windows)."""
+    if not IS_WIN:
+        return set()
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32  # type: ignore[attr-defined]
+    pids: set[int] = set()
+    proto = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+    def cb(hwnd, _lparam):  # noqa: ANN001
+        if user32.IsWindowVisible(hwnd):
+            pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            pids.add(int(pid.value))
+        return True
+
+    try:
+        user32.EnumWindows(proto(cb), 0)
+    except OSError:
+        pass
+    return pids
+
+
+def _is_gui_exe(path: str) -> bool:
+    """PE başlığındaki alt sistem alanı: 2 = Windows GUI (pencereli program), 3 = konsol."""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(4096)
+        if head[:2] != b"MZ":
+            return False
+        pe = int.from_bytes(head[0x3C:0x40], "little")
+        if head[pe:pe + 4] != b"PE\0\0":
+            return False
+        return int.from_bytes(head[pe + 0x5C:pe + 0x5E], "little") == 2
+    except (OSError, ValueError):
+        return False
+
+
+def _is_gui_process(proc: Any, window_pids: set[int]) -> bool:
+    if not IS_WIN:
+        return False  # POSIX'te güvenilir ayrım yok; zaman aşımında bütün ağaç ölür
+    if proc.pid in window_pids:
+        return True
+    try:
+        return _is_gui_exe(proc.exe())
+    except Exception:  # noqa: BLE001 - erişilemeyen süreç konsol sayılır
+        return False
+
+
+def kill_console_tree(pid: int) -> None:
+    """Zaman aşımında: kabuğu ve konsol alt süreçlerini öldür, pencereli programları (ve onların alt
+    süreçlerini) açık bırak. Pencereli = görünür penceresi var ya da exe'si GUI alt sistemli."""
+    import psutil
+
+    try:
+        parent = psutil.Process(pid)
+        children = parent.children(recursive=True)
+    except psutil.Error:
+        return
+    window_pids = _visible_window_pids()
+    keep: set[int] = set()
+    for child in children:
+        if child.pid in keep:
+            continue
+        if _is_gui_process(child, window_pids):
+            keep.add(child.pid)
+            try:
+                keep.update(c.pid for c in child.children(recursive=True))
+            except psutil.Error:
+                pass
+    for child in children:
+        if child.pid in keep:
+            continue
         try:
             child.kill()
         except psutil.Error:
