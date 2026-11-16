@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -420,12 +422,29 @@ def record_outcome(ref: str, ok: bool, kind: str = "", now: float | None = None,
         if ok and _health_dirty < 20:
             return
         _health_dirty = 0
-        snapshot = json.dumps(health, ensure_ascii=False)
+        # Kilit içinde ve benzersiz geçici dosya + os.replace ile: kilit dışında yazınca iki iş parçacığının yazımı
+        # iç içe geçip dosyayı yarım bırakabiliyor ya da eski anlık görüntü yenisinin üstüne yazılabiliyordu.
+        _write_health(json.dumps(health, ensure_ascii=False))
+
+
+def _write_health(text: str) -> None:
+    path = health_path()
+    tmp = ""
     try:
-        health_path().parent.mkdir(parents=True, exist_ok=True)
-        health_path().write_text(snapshot, encoding="utf-8")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=".model-health-", suffix=".tmp", dir=str(path.parent))
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+        tmp = ""
     except OSError:
         pass
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def reliability(ref: str, now: float | None = None) -> tuple[float, float]:
