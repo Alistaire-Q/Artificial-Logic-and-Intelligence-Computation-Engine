@@ -728,10 +728,12 @@ class ChatGPTProvider(OpenAICompatProvider):
         t0 = time.monotonic()
         text: list[str] = []
         calls: dict[str, dict[str, Any]] = {}
+        closed: set[str] = set()  # argümanları tamamlanan (output_item.done gelen) çağrılar
         usage: dict[str, Any] = {}
         served = model
         finish = ""
         got_data = False
+        completed = False
         try:
             with self._client.stream("POST", f"{self.cfg.base_url}/responses", headers=self._auth_headers(key),
                                      json=body, timeout=httpx.Timeout(self.FIRST_DATA, connect=15.0)) as r:
@@ -772,6 +774,10 @@ class ChatGPTProvider(OpenAICompatProvider):
                             cid = item.get("call_id") or item.get("id") or f"call_{len(calls)}"
                             calls[cid] = {"id": cid, "type": "function", "function": {
                                 "name": item.get("name") or "", "arguments": item.get("arguments") or ""}}
+                            if item.get("id") and item["id"] != cid:
+                                calls.pop(item["id"], None)  # added call_id'siz geldiyse çift çağrı kalmasın
+                            if kind == "response.output_item.done":
+                                closed.add(cid)
                             if on_tool is not None:
                                 on_tool(item.get("name") or "", len(item.get("arguments") or ""))
                             if on_call is not None and kind == "response.output_item.done":
@@ -780,6 +786,7 @@ class ChatGPTProvider(OpenAICompatProvider):
                                 except Exception:  # noqa: BLE001
                                     pass
                     elif kind in ("response.completed", "response.incomplete"):
+                        completed = True
                         resp = ev.get("response") or {}
                         if (resp.get("incomplete_details") or {}).get("reason") == "max_output_tokens":
                             finish = "length"
@@ -798,6 +805,10 @@ class ChatGPTProvider(OpenAICompatProvider):
                         raise ProviderError("server", f"ChatGPT: {msg}")
         except _TRANSPORT_ERRORS as e:
             raise _transport_error(e) from e
+        if not completed and any(cid not in closed for cid in calls):
+            # Akış bitiş olayı gelmeden kesildi ve bir araç çağrısının argümanları yarım (output_item.added'deki
+            # boş metin): önceden çağrı boş argümanla başarılı cevap sayılıp araç öyle çalıştırılıyordu.
+            raise ProviderError("network", "ChatGPT akışı yarıda kesildi (araç çağrısı tamamlanmadı)")
         msg: dict[str, Any] = {"content": "".join(text)}
         if calls:
             msg["tool_calls"] = list(calls.values())

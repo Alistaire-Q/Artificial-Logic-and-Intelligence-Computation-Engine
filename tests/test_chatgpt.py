@@ -419,3 +419,35 @@ def test_request_keeps_its_own_account_when_another_chat_switches():
     # süresi dolmuş anahtar yenilenirken seçili hesap değişmez
     chatgpt.save_auth({"access_token": tokens()["access_token"]}, key="acc2")
     assert chatgpt._store()["active"] == "acc1"
+
+
+def test_stream_cut_mid_tool_call_is_an_error_not_an_empty_call():
+    """Bitiş olayı gelmeden kesilen akışta argümanları gelmemiş araç çağrısı boş argümanla çalıştırılmamalı."""
+    chatgpt.save_auth(tokens())
+
+    def handler(req):
+        return httpx.Response(200, content=sse(
+            {"type": "response.output_item.added", "item": {"type": "function_call", "id": "fc1", "call_id": "c1",
+                                                             "name": "delete_file", "arguments": ""}},
+            {"type": "response.function_call_arguments.delta", "item_id": "fc1", "delta": "{\"pa"}))
+
+    p = ChatGPTProvider(pc(), client=httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(ProviderError) as ei:
+        p.chat("gpt-5.5", [{"role": "user", "content": "x"}], tools=[
+            {"type": "function", "function": {"name": "delete_file", "parameters": {}}}])
+    assert ei.value.kind == "network"
+
+
+def test_added_without_call_id_and_done_with_it_gives_one_call():
+    chatgpt.save_auth(tokens())
+
+    def handler(req):
+        return httpx.Response(200, content=sse(
+            {"type": "response.output_item.added", "item": {"type": "function_call", "id": "fc1", "name": "f",
+                                                             "arguments": ""}},
+            {"type": "response.output_item.done", "item": {"type": "function_call", "id": "fc1", "call_id": "c1",
+                                                            "name": "f", "arguments": "{\"a\": 1}"}}))
+
+    p = ChatGPTProvider(pc(), client=httpx.Client(transport=httpx.MockTransport(handler)))
+    r = p.chat("gpt-5.5", [{"role": "user", "content": "x"}], tools=[{"type": "function", "function": {"name": "f"}}])
+    assert [(c["id"], c["function"]["arguments"]) for c in r.message["tool_calls"]] == [("c1", "{\"a\": 1}")]
