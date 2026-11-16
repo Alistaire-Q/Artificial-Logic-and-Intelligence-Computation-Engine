@@ -93,7 +93,17 @@ def _extract(archive: Path, dest: Path) -> None:
             z.extractall(dest)
         return
     with tarfile.open(archive) as t:
-        t.extractall(dest)
+        if hasattr(tarfile, "data_filter"):
+            # "data" süzgeci: mutlak yol, "..", klasör dışına bağlantı, aygıt dosyası ve setuid reddedilir.
+            t.extractall(dest, filter="data")
+        else:  # pragma: no cover - süzgeçsiz eski Python: aynı kontrolleri elle yap
+            root = dest.resolve()
+            for m in t.getmembers():
+                target = (dest / m.name).resolve()
+                if (not (m.isfile() or m.isdir()) or os.path.isabs(m.name)
+                        or (target != root and root not in target.parents)):
+                    raise ValueError(f"arşivde güvensiz girdi: {m.name}")
+            t.extractall(dest)
     # tar arşivi tek bir klasör içeriyorsa içeriği yukarı taşı
     entries = list(dest.iterdir())
     if len(entries) == 1 and entries[0].is_dir():
@@ -128,7 +138,19 @@ access:
   api-keys:
     - "{keys['api_key']}"
 """
-    (home / "config.yaml").write_text(config, encoding="utf-8")
+    _write_private(home / "config.yaml", config)
+
+
+def _write_private(path: Path, text: str) -> None:
+    """Anahtar içeren dosyayı yalnız kullanıcının okuyabileceği şekilde yaz (POSIX'te 0600; Windows'ta dosya zaten
+    kullanıcı profilinde, ACL'si oradan gelir)."""
+    if os.name == "nt":
+        path.write_text(text, encoding="utf-8")
+        return
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.chmod(path, 0o600)  # dosya önceden varsa os.open'ın modu uygulanmaz
 
 
 def ensure_config() -> dict[str, str]:
@@ -145,7 +167,7 @@ def ensure_config() -> dict[str, str]:
                 keys[k.strip()] = v.strip()
     if not keys.get("api_key") or not keys.get("management_key"):
         keys = {"api_key": "alice-" + secrets.token_urlsafe(24), "management_key": secrets.token_urlsafe(32)}
-        keys_file.write_text("\n".join(f"{k}={v}" for k, v in keys.items()) + "\n", encoding="utf-8")
+        _write_private(keys_file, "\n".join(f"{k}={v}" for k, v in keys.items()) + "\n")
     if not (home / "config.yaml").exists():
         _write_config(home, keys)
     try:
@@ -173,9 +195,10 @@ def install(version: str = "", force: bool = False, log: Callable[[str], None] |
     emit = log or _log
     home = cliproxy.home()
     binary = home / cliproxy.binary_name()
+    # Sonuçta api_key yok: arayüz kullanmıyor (anahtar keys.txt ve .env'de), sonucu loglayan/gösteren yere sızmasın.
     if binary.exists() and not force:
-        keys = ensure_config()
-        return {"ok": True, "already": True, "path": str(home), "api_key": keys["api_key"]}
+        ensure_config()
+        return {"ok": True, "already": True, "path": str(home)}
     version = (version or PINNED_VERSION).strip()
     if version.lower() in ("", "latest"):
         version = PINNED_VERSION
@@ -197,9 +220,9 @@ def install(version: str = "", force: bool = False, log: Callable[[str], None] |
         return {"ok": False, "error": "arşivde cli-proxy-api bulunamadı"}
     if os.name != "nt":
         binary.chmod(binary.stat().st_mode | 0o111)
-    keys = ensure_config()
+    ensure_config()
     emit("kurulum tamam")
-    return {"ok": True, "version": version, "path": str(home), "api_key": keys["api_key"]}
+    return {"ok": True, "version": version, "path": str(home)}
 
 
 def install_async(version: str = "") -> dict[str, Any]:
