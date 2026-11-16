@@ -19,14 +19,14 @@ def expand_mentions(text: str, cwd: Path) -> str:
     seen = set()
     for m in MENTION.finditer(text):
         raw = m.group(1).strip('"').rstrip(".")
-        p = Path(raw).expanduser()
-        if not p.is_absolute():
-            p = cwd / p
         try:
+            p = Path(raw).expanduser()
+            if not p.is_absolute():
+                p = cwd / p
             p = p.resolve()
-        except OSError:
-            continue
-        if p in seen or not p.exists():
+            if p in seen or not p.exists():
+                continue
+        except (OSError, ValueError, RuntimeError):  # NUL karakterli yol ValueError, döngülü bağ RuntimeError verir
             continue
         seen.add(p)
         if p.is_dir():
