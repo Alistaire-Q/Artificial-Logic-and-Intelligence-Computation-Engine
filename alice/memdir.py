@@ -577,7 +577,9 @@ def project_root(cwd: Path | str | None) -> Path | None:
         return _roots[key]
     root: Path | None = None
     try:
-        r = subprocess.run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=str(cwd),
+        from alice.gitsafe import harden
+
+        r = subprocess.run(["git", *harden(["rev-parse", "--path-format=absolute", "--git-common-dir"])], cwd=str(cwd),
                            capture_output=True, text=True, timeout=5)
         out = r.stdout.strip()
         if r.returncode == 0 and out:

@@ -205,3 +205,39 @@ def test_sandboxed_command_output_reaches_the_model(tmp_path):
     c = ToolContext(cwd=proj, config=make_config({"brain": ["a:m"]}, sandbox="on"))
     res = TOOLS["run_command"].run(c, "Write-Output merhaba-kum-havuzu; Write-Error hata-satiri")
     assert "merhaba-kum-havuzu" in res.text and "hata-satiri" in res.text
+
+
+def test_git_snapshot_sees_planted_hooks_and_config(tmp_path):
+    import subprocess
+    from pathlib import Path
+
+    from alice import gitsafe
+
+    subprocess.run(["git", "init", "-q", str(tmp_path / "r")], check=True, capture_output=True)
+    sub = tmp_path / "r" / "alt"
+    sub.mkdir()
+    before = gitsafe.snapshot(sub)
+    assert str((tmp_path / "r" / ".git" / "config").resolve()) in before
+    assert gitsafe.changes(before, gitsafe.snapshot(sub)) == [] and gitsafe.warning([]) == ""
+    (tmp_path / "r" / ".git" / "hooks" / "pre-commit").write_text("kotu", encoding="utf-8")
+    with open(tmp_path / "r" / ".git" / "config", "a", encoding="utf-8") as f:
+        f.write("[core]\n\tfsmonitor = kotu\n")
+    changed = gitsafe.changes(before, gitsafe.snapshot(sub))
+    assert [Path(c).name for c in changed] == ["config", "pre-commit"]
+    assert "GÜVENLİK" in gitsafe.warning(changed)
+    assert gitsafe.snapshot(tmp_path) == {}  # depo değil
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows düşük bütünlük seviyesi")
+def test_windows_sandbox_hook_write_is_reported(tmp_path):
+    """Sandbox'taki komut .git/hooks'a yazabiliyor (klasör kilidi yeniden adlandırmayla aşılıyordu): en azından
+    sonuçta uyarı görünmeli."""
+    import subprocess
+
+    proj = tmp_path / "proje"
+    subprocess.run(["git", "init", "-q", str(proj)], check=True, capture_output=True)
+    c = ToolContext(cwd=proj, config=make_config({"brain": ["a:m"]}, sandbox="on"))
+    res = TOOLS["run_command"].run(c, "Write-Output temiz")
+    assert "GÜVENLİK" not in res.text
+    res = TOOLS["run_command"].run(c, "Set-Content -Path .git/hooks/pre-commit -Value 'echo kotu'")
+    assert "GÜVENLİK UYARISI" in res.text and "pre-commit" in res.text, res.text
