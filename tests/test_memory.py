@@ -175,6 +175,33 @@ def test_old_facts_migrate_to_notes_once():
     assert "gh oturumunun" in by["feedback"].body and by["user"].source == "kullanıcı"
 
 
+def test_partial_fact_migration_is_retried_without_overwriting_migrated_notes(monkeypatch):
+    m = mem()
+    now = time.time()
+    with m._lock:
+        for i, text in enumerate(["Kullanıcının kedisinin adı Pamuk.", "Kullanıcı sabahları kahve içer."]):
+            m.db.execute("INSERT INTO facts(created, updated, kind, text, terms, source) VALUES (?, ?, ?, ?, '', ?)",
+                         (now + i, now + i, "fact", text, "otomatik"))
+        m.db.commit()
+    real = m.remember
+
+    def flaky(text, *a, **kw):
+        if "kahve" in text:
+            raise RuntimeError("dizin dolu")
+        return real(text, *a, **kw)
+
+    monkeypatch.setattr(m, "remember", flaky)
+    assert m.migrate_facts() == 1
+    assert not m._meta("notes_migrated")  # biri taşınamadı: bitti sayılmaz
+    cat = next(n for n in notes(m) if "Pamuk" in n.body)
+    m.notes.save(cat.name, cat.description, cat.type, "Kullanıcının kedisinin adı Pamuk, 3 yaşında.")  # elle düzenleme
+    monkeypatch.setattr(m, "remember", real)
+    assert m.migrate_facts() == 1  # yalnız kalan taşındı
+    assert m._meta("notes_migrated") and m.migrate_facts() == 0
+    bodies = {n.body for n in notes(m)}
+    assert "Kullanıcının kedisinin adı Pamuk, 3 yaşında." in bodies and "Kullanıcı sabahları kahve içer." in bodies
+
+
 def test_episodes_pruned_by_age():
     m = mem(keep_days=1)
     m.record("eski konuşma", "cevap")

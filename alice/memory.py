@@ -507,19 +507,37 @@ class LongMemory:
         return len(ids)
 
     def migrate_facts(self) -> int:
-        """Eski tek cümlelik bilgileri (facts tablosu) bir kez notlara taşı. Tablo silinmez (yedek)."""
+        """Eski tek cümlelik bilgileri (facts tablosu) notlara taşı. Tablo silinmez (yedek).
+
+        Taşınan her bilginin kimliği kaydedilir; biri taşınamadıysa (dizin dolu vb.) taşıma "bitti" sayılmaz ve
+        sonraki açılışta yalnız taşınmamış olanlar denenir. Eskiden ilk denemede bitti işaretleniyordu (kalanlar
+        hiç taşınmıyordu); hepsini yeniden taşımak da sonradan düzenlenmiş notların üzerine yazardı."""
         if self._meta("notes_migrated"):
             return 0
-        n = 0
-        for f in reversed(self.facts()):
-            src = self._source(f.id)
-            try:
-                self.remember(f.text, f.kind, source="kullanıcı" if src in ("kullanıcı", "araç", "memory.md") else src,
-                              when=f.updated)
+        try:
+            done = {int(i) for i in json.loads(self._meta("notes_migrated_ids") or "[]")}
+        except (ValueError, TypeError):
+            done = set()
+        n, failed = 0, 0
+        try:
+            for f in reversed(self.facts()):
+                if f.id in done:
+                    continue
+                src = self._source(f.id)
+                try:
+                    self.remember(f.text, f.kind,
+                                  source="kullanıcı" if src in ("kullanıcı", "araç", "memory.md") else src,
+                                  when=f.updated)
+                except Exception:  # noqa: BLE001 - dizin doluysa kalanı sonra
+                    failed += 1
+                    log.debug("bilgi nota taşınamadı: %s", f.text, exc_info=True)
+                    continue
+                done.add(f.id)
                 n += 1
-            except Exception:  # noqa: BLE001 - dizin doluysa kalanı sonra
-                log.debug("bilgi nota taşınamadı: %s", f.text, exc_info=True)
-        self._meta("notes_migrated", datetime.now().isoformat(timespec="seconds"))
+        finally:
+            self._meta("notes_migrated_ids", json.dumps(sorted(done)))
+        if not failed:
+            self._meta("notes_migrated", datetime.now().isoformat(timespec="seconds"))
         return n
 
     def close(self) -> None:
