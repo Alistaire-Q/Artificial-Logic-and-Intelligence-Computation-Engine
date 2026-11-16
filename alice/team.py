@@ -1202,13 +1202,23 @@ class Team:
             top = _git(cwd, "rev-parse", "--show-toplevel", timeout=10)
             if top.returncode != 0:
                 return None
-            r = _git(cwd, "status", "--porcelain", "-uall", timeout=20)
+            # -z: yollar tırnaksız ve kaçışsız gelir. Düz çıktıda git Türkçe harfli yolları "d\303\274.py" diye
+            # kaçışlıyordu; o yol hiç var olmadığından komutla değişen dosya ajanın farkına girmiyordu.
+            r = _git(cwd, "status", "--porcelain", "-uall", "-z", timeout=20)
         except (OSError, subprocess.SubprocessError):
             return None
         root = Path(top.stdout.strip())
         out = set()
-        for line in r.stdout.splitlines():
-            path = line[3:].split(" -> ")[-1].strip().strip('"')
+        recs = r.stdout.split("\0")
+        i = 0
+        while i < len(recs):
+            rec = recs[i]
+            i += 1
+            if len(rec) < 4:
+                continue
+            if rec[0] in "RC":
+                i += 1  # yeniden adlandırma: ardından gelen kayıt eski yol
+            path = rec[3:]
             if path and not path.startswith(".alice-team/"):
                 out.add(str((root / path).resolve()))
         return out

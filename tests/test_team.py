@@ -413,3 +413,22 @@ def test_git_output_is_decoded_as_utf8(tmp_path):
     git("-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "-m", "ilk")
     r = team_mod._git(tmp_path, "show", "HEAD:t.txt")
     assert r.returncode == 0 and r.stdout == "Ğ Ş ı 😀\n"
+
+
+def test_git_dirty_handles_non_ascii_and_renamed_paths(tmp_path):
+    # Düz porcelain çıktısı "dü.py"yi "d\303\274.py" diye kaçışlıyordu: komutla değişen dosya bulunamıyordu.
+    from types import SimpleNamespace
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True)
+
+    git("init", "-q")
+    (tmp_path / "eski.py").write_text("x\n", encoding="utf-8")
+    git("add", "eski.py")
+    git("-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "-m", "ilk")
+    (tmp_path / "dü şey.py").write_text("y\n", encoding="utf-8")
+    git("mv", "eski.py", "yeni.py")
+    dirty = _Team._git_dirty(SimpleNamespace(cwd=tmp_path))
+    assert str((tmp_path / "dü şey.py").resolve()) in dirty
+    assert str((tmp_path / "yeni.py").resolve()) in dirty
+    assert str((tmp_path / "eski.py").resolve()) not in dirty
