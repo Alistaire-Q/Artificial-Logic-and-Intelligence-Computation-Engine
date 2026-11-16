@@ -63,3 +63,23 @@ def test_share_publishes_secret_gist_and_refuses_secrets(workdir):
     with pytest.raises(ToolError, match="paylaşılmadı"):
         Share().run(ctx, [".env"])
     assert Share().risk == "send"
+
+
+def test_record_answer_concurrent_writers_keep_every_row(workdir):
+    """Aynı anda cevap yazan sohbetler birbirinin satırını silmez (kilit + atomik yazma)."""
+    import threading
+
+    rc = RunCommand()
+
+    def write(i):
+        for _ in range(10):
+            perm.record_answer(rc, {"command": f"echo {i}"}, workdir, "exec", "y")
+
+    threads = [threading.Thread(target=write, args=(i,)) for i in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    lines = perm.history_path().read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 60
+    assert not list(perm.history_path().parent.glob("*.tmp"))

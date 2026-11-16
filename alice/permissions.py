@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import fnmatch
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -246,6 +247,7 @@ def persist_allow(cwd: Path, rule: str) -> Path:
 
 
 HISTORY_MAX = 2000  # satır: izin cevapları kaydı bu kadarla sınırlı
+_HISTORY_LOCK = threading.Lock()
 
 
 def history_path() -> Path:
@@ -263,11 +265,36 @@ def record_answer(tool: Tool, args: dict[str, Any], cwd: Path | None, risk: str,
            "answer": answer, "cwd": str(cwd or "")}
     p = history_path()
     p.parent.mkdir(parents=True, exist_ok=True)
+    # Aynı anda iki sohbet cevap yazınca oku-değiştir-yaz birinin satırını siliyordu: kilit + geçici dosyadan
+    # os.replace (yarım yazılmış dosya okunmaz).
+    with _HISTORY_LOCK:
+        try:
+            lines = p.read_text(encoding="utf-8").splitlines()[-(HISTORY_MAX - 1):]
+        except OSError:
+            lines = []
+        _atomic_write(p, "\n".join(lines + [json.dumps(row, ensure_ascii=False)]) + "\n")
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    import os
+    import tempfile
+    import time
+
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}-", suffix=".tmp", dir=str(path.parent))
     try:
-        lines = p.read_text(encoding="utf-8").splitlines()[-(HISTORY_MAX - 1):]
-    except OSError:
-        lines = []
-    p.write_text("\n".join(lines + [json.dumps(row, ensure_ascii=False)]) + "\n", encoding="utf-8")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        for attempt in range(5):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:  # Windows: hedef o an başka bir süreçte açık
+                if attempt == 4:
+                    raise
+                time.sleep(0.05)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
 
 
 def suggestions(cwd: Path | None = None, min_yes: int = 3) -> list[dict[str, Any]]:
