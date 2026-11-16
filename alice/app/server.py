@@ -1924,6 +1924,7 @@ class AppState:
         if text.split(" ", 1)[0].lower() == "/btw":
             question = text[4:].strip()
             if not question:
+                self._drop_if_idle(chat)
                 return False, "kullanım: /btw <soru>"
             threading.Thread(target=self._side_question, args=(chat, question), daemon=True, name="alice-btw").start()
             return True, None
@@ -1949,9 +1950,19 @@ class AppState:
             if prompt is None:
                 prompt = builtin_prompt(text)
                 if prompt is None:
+                    self._drop_if_idle(chat)
                     return False, f"bilinmeyen komut: {text.split()[0]}"
         self._start_turn(chat, text, prompt, images or [])
         return True, None
+
+    def _drop_if_idle(self, chat: Chat) -> None:
+        """chat_for'un bu istek için açtığı arka plan sohbeti tur başlatmadan kaldıysa (bilinmeyen komut, /btw) kapat.
+        Arkadaki sohbetler yalnız tur bitince kapanıyordu: tur hiç başlamayınca thread'i ve ajanı sonsuza dek kalıyordu."""
+        with self._chats_lock:
+            if chat is self.chat or chat.busy or self.background.get(chat.sid) is not chat:
+                return
+            self.background.pop(chat.sid, None)
+        chat.close()
 
     def _suggest(self, chat: Any) -> list[str]:
         """Tur bitince kullanıcının muhtemel sonraki mesajı (en fazla 2 kısa öneri). Arayüzde düğme olur; tıklayınca
@@ -2020,6 +2031,7 @@ class AppState:
         except Exception as e:  # noqa: BLE001 - yan soru başarısızsa iş etkilenmesin
             answer = f"cevaplanamadı: {str(e)[:300]}"
         pub({"type": "btw", "q": question, "a": answer, "pending": False})
+        self._drop_if_idle(chat)
 
     def deliver(self, sid: str, text: str, tries: int = 30) -> str:
         """Arka plandan bir sohbete mesaj (izleme olayı, ayrı oturumun sonucu): sohbet çalışıyorsa işe iletilir,

@@ -512,6 +512,20 @@ def test_phone_stop_for_finished_chat_does_not_stop_the_desktop(app):
     assert _wait(lambda: not state.agent.busy)
 
 
+def test_phone_message_that_starts_no_turn_does_not_leak_a_chat(app):
+    """Telefonun canlı olmayan sohbetine /btw ya da bilinmeyen komut: açılan arka plan sohbeti kapanmalı."""
+    state, srv, client, prov = app
+    prov.script = lambda model, messages, tools, **kw: "yan cevap"
+    phone = client.post("/api/new", json={"detached": True}).json()["sid"]
+    r = client.post("/api/send", json={"text": "/olmayankomut", "sid": phone})
+    assert r.status_code == 409 and state.find_chat(phone) is None
+    events, t = collect(state, lambda e: e["type"] == "btw" and not e.get("pending"))
+    assert client.post("/api/send", json={"text": "/btw ne?", "sid": phone}).json()["ok"]
+    t.join()
+    assert any(e.get("a") == "yan cevap" for e in events)
+    assert _wait(lambda: state.find_chat(phone) is None) and state.sid != phone
+
+
 def test_btw_side_question_does_not_touch_history(app):
     state, srv, client, prov = app
 
