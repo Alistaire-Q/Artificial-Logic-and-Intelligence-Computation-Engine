@@ -208,6 +208,43 @@ def test_chat_sends_adaptive_thinking_effort_and_fallback():
                          "cache_creation_input_tokens": 0}
 
 
+def test_error_event_mid_stream_is_classified_by_its_type(monkeypatch):
+    """Akış 200 ile açıldıktan sonra gelen overloaded_error geçici sunucu hatasıdır, "bad_request" değil."""
+    import sys
+    import types
+
+    import httpx
+
+    class APIStatusError(Exception):
+        def __init__(self, msg, response, body):
+            super().__init__(msg)
+            self.response, self.body, self.status_code = response, body, response.status_code
+
+    fake = types.ModuleType("anthropic")
+    fake.APITimeoutError = type("APITimeoutError", (Exception,), {})
+    fake.APIConnectionError = type("APIConnectionError", (Exception,), {})
+    fake.APIStatusError = APIStatusError
+    monkeypatch.setitem(sys.modules, "anthropic", fake)
+
+    def boom(kind):
+        body = {"type": "error", "error": {"type": kind, "message": "x"}}
+        resp = httpx.Response(200, request=httpx.Request("POST", "https://api.anthropic.com/v1/messages"))
+        return APIStatusError(str(body), resp, body)
+
+    class Stream(FakeStream):
+        def __iter__(self):
+            raise self.err
+
+    for kind, want in (("overloaded_error", "server"), ("api_error", "server"), ("rate_limit_error", "rate_limit")):
+        p = _provider({}, _final())
+        stream = Stream([], _final())
+        stream.err = boom(kind)
+        p._client.beta.messages.stream = lambda **kw: stream  # noqa: B023
+        with pytest.raises(ProviderError) as ei:
+            p.chat_stream("claude-opus-5-5", [{"role": "user", "content": "x"}], lambda t: None)
+        assert ei.value.kind == want, kind
+
+
 def test_cache_write_tokens_reach_the_usage_counter():
     from alice.providers.router import cache_write_tokens, cached_tokens
 

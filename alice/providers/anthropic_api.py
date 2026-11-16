@@ -26,6 +26,10 @@ FALLBACK_BETA = "server-side-fallback-2026-07-01"
 # Sunucu tarafı yedeği destekleyen modeller (Haiku'da yok).
 FALLBACK_MODELS = ("claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5")
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
+# Akış içi "error" olayının türü -> HTTP karşılığı (sınıflandırma için).
+_STREAM_ERROR_STATUS = {"overloaded_error": 529, "rate_limit_error": 429, "request_too_large": 413,
+                        "authentication_error": 401, "permission_error": 403, "not_found_error": 404,
+                        "billing_error": 402, "invalid_request_error": 400, "api_error": 500}
 
 
 def _sdk() -> Any:
@@ -246,7 +250,18 @@ class AnthropicProvider:
                 body = e.response.text
             except Exception:  # noqa: BLE001
                 body = str(e)
-            err = classify_error(e.status_code, body, dict(e.response.headers))
+            status = e.status_code
+            if status < 400:
+                # Akış 200 ile açıldıktan sonra gelen "error" olayı (overloaded_error, api_error...): paket bunu
+                # 200 durumlu APIStatusError yapıyor ve classify_error 200'ü "bad_request" sayıyordu; geçici
+                # yoğunluk hatası kalıcı istek hatası gibi işleniyordu. Durum kodu hata türünden çıkarılır.
+                raw = getattr(e, "body", None)
+                etype = ((raw.get("error") or {}).get("type") if isinstance(raw, dict)
+                         and isinstance(raw.get("error"), dict) else None) or ""
+                text = f"{e} {body}"
+                status = _STREAM_ERROR_STATUS.get(etype) or next(
+                    (code for name, code in _STREAM_ERROR_STATUS.items() if name in text), 500)
+            err = classify_error(status, body or str(e), dict(e.response.headers))
         else:
             err = ProviderError("server", str(e))
         err.args = tuple(redact(a, self.cfg.api_key) if isinstance(a, str) else a for a in err.args)
