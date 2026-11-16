@@ -347,7 +347,13 @@ class NoteBook:
                 return None
             trash = self.root / ".trash"
             trash.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(note.path), str(trash / f"{datetime.now():%Y%m%d-%H%M%S}-{note.name}.md"))
+            # Mikrosaniye + gerekirse sayaç: aynı not aynı saniyede iki kez silinince (yaz-sil-yaz-sil) saniye
+            # çözünürlüklü ad önceki çöp kopyasının üzerine yazıyordu. Ad zamana göre sıralı kalır.
+            stamp = f"{datetime.now():%Y%m%d-%H%M%S-%f}"
+            dest, i = trash / f"{stamp}-{note.name}.md", 1
+            while dest.exists():
+                dest, i = trash / f"{stamp}.{i}-{note.name}.md", i + 1
+            shutil.move(str(note.path), str(dest))
             for old in sorted(trash.glob("*.md"))[:-KEEP_TRASH]:
                 old.unlink(missing_ok=True)
             if self.index_path.is_file():

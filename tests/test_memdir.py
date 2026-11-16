@@ -72,6 +72,28 @@ def test_delete_goes_to_trash_and_backup_restore(tmp_path):
     assert {n.name for n in b.scan()} == {"a", "b"}
 
 
+def test_same_note_deleted_twice_in_one_second_keeps_both_trash_copies(tmp_path, monkeypatch):
+    from datetime import datetime as real_dt
+
+    from alice import memdir
+
+    class Frozen(real_dt):
+        @classmethod
+        def now(cls, tz=None):
+            return real_dt(2026, 11, 16, 12, 0, 0, 0)
+
+    monkeypatch.setattr(memdir, "datetime", Frozen)
+    b = NoteBook(tmp_path / "m")
+    for body in ("ilk", "ikinci", "üçüncü"):
+        b.save("a", body, "user", body)
+        assert b.delete("a") is not None
+    copies = sorted((b.root / ".trash").glob("*-a.md"))
+    assert len(copies) == 3
+    texts = [c.read_text(encoding="utf-8") for c in copies]
+    for word in ("ilk", "ikinci", "üçüncü"):
+        assert sum(word in t for t in texts) == 1
+
+
 def test_daily_log_is_append_only_and_read_since(tmp_path):
     b = NoteBook(tmp_path / "m")
     p = b.append_log("Kullanıcı yarın sınava girecek")
