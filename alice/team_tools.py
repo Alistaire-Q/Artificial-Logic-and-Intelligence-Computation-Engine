@@ -281,7 +281,8 @@ class LeadPlan(Tool):
             # Düzeltilmiş plan, reddeden kurulun kendisine göre incelenir (kimliğiyle bulunur).
             prev = next((c for c in reversed(t.councils) if c.get("id") == t.plan_prev_id), None) \
                 if t.plan_rejects and t.plan_prev_id else None
-            t.council_busy += 1
+            with t.cond:  # kurul thread'leri sayacı kilit altında azaltıyor: kilitsiz artış kaybolup sayaç takılmasın
+                t.council_busy += 1
             try:
                 snap = t._council("plan", f"Proje planı: {t.goal}", context, t.councils, previous=prev)
             finally:

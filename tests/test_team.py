@@ -499,3 +499,28 @@ def test_next_survives_member_added_while_launching(workdir):
     team._launch = launch
     team._next()
     assert launched == ["a", "b"]
+
+
+def test_plan_council_counter_changes_under_lock(workdir):
+    # Plan aracı council_busy'yi kilitsiz artırıyordu; kurul thread'leri kilit altında azaltırken artış kaybolursa
+    # sayaç sıfıra dönmüyor, finish ve final kurulu sonsuza dek "kurul toplanıyor" diye bekliyordu.
+    from alice.team_tools import LeadPlan
+
+    bad = []
+
+    class Checked(_Team):
+        @property
+        def council_busy(self):
+            return self._busy
+
+        @council_busy.setter
+        def council_busy(self, v):
+            if hasattr(self, "cond") and not self.cond._is_owned():
+                bad.append(v)
+            self._busy = v
+
+    _, _, ctx = make(simple, workdir)
+    team = Checked(ctx, "hedef", council=True)
+    team._council = lambda *a, **k: {"state": "stopped"}
+    res = LeadPlan(team).run(ctx, "yaklaşım", [{"name": "backend", "task": "a"}])
+    assert res.is_error and team.council_busy == 0 and not bad
