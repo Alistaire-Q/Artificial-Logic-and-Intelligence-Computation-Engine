@@ -193,7 +193,8 @@ def test_project_runs_on_its_own_branch_and_ends_in_a_watched_pr(tmp_path, monke
     log = subprocess.run(["git", "log", "--oneline", "alice/proje-p1"], cwd=remote, capture_output=True,
                          text=True).stdout
     assert "ALICE projesi" in log
-
+    assert (work / "a.txt").read_text(encoding="utf-8") == "kullanıcının yarım işi\n"  # kullanıcının kopyası yerinde
+    assert not (work / "b.txt").exists()
 
 
 def test_project_pr_refuses_to_push_a_secret(tmp_path, monkeypatch):
@@ -224,8 +225,6 @@ def test_project_pr_refuses_to_push_a_secret(tmp_path, monkeypatch):
     branches = subprocess.run(["git", "branch", "--list", "alice/proje-p2"], cwd=remote, capture_output=True,
                               text=True).stdout
     assert branches.strip() == ""  # hiçbir şey push'lanmadı
-    assert (work / "a.txt").read_text(encoding="utf-8") == "kullanıcının yarım işi\n"  # kullanıcının kopyası yerinde
-    assert not (work / "b.txt").exists()
 
 
 # ----------------------------------------------------------------------------------------- zamanlanmış proje
