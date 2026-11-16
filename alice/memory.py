@@ -115,6 +115,13 @@ _FEEDBACK = re.compile(
     r"güzel olmuş|guzel olmus|eline sağlık|eline saglik|böyle devam|boyle devam|doğru yaptın|dogru yaptin|"
     r"beğendim|begendim|istemiyorum|isterim|tercih|don'?t|stop|exactly|perfect|keep doing)\b", re.I)
 
+DIGEST_BAD_TRIES = 3  # modelin kullanılamaz özet cevabı aynı konuşmada bu kadar olursa konuşma atlanır
+
+
+class _BadDigest(ValueError):
+    """Özet modeli cevap verdi ama cevap JSON değil/boş (ağ ya da kota hatası değil)."""
+
+
 RECALL_ITEM_CHARS, RECALL_TOTAL_CHARS = 1800, 6000
 RECENT_TURNS_HOURS = 3  # sistem istemine giren "son turlar" bundan eskiyse girmez (yeni sohbet devam sanılmasın)
 
@@ -1084,10 +1091,23 @@ class LongMemory:
                 if sum(len(e.user) for e in group) >= 40:  # "saat kaç" gibi tek kısa tur özetlenmez
                     try:
                         self._digest_one(group)
+                    except _BadDigest:
+                        # Model cevap verdi ama kullanılamaz: aynı konuşmada hep böyle olursa sonraki bütün
+                        # konuşmalar sonsuza dek özetsiz kalıyordu. Birkaç denemeden sonra bu konuşma atlanır.
+                        key = repr(group[-1].ts)
+                        fails = (int(self._meta("digest_bad_count") or 0) + 1
+                                 if self._meta("digest_bad_group") == key else 1)
+                        self._meta("digest_bad_group", key)
+                        self._meta("digest_bad_count", str(fails))
+                        if fails < DIGEST_BAD_TRIES:
+                            self._meta("digest_fail_until", repr(time.time() + 900))
+                            break
+                        log.debug("konuşma özetlenemedi, atlanıyor (%s deneme)", fails)
                     except Exception:  # noqa: BLE001 - model yok/kota: sonra tekrar denenir
                         self._meta("digest_fail_until", repr(time.time() + 900))
                         break
-                    done += 1
+                    else:
+                        done += 1
                 self._meta("digested_until", repr(group[-1].ts))
         finally:
             self._digest_lock.release()
@@ -1107,7 +1127,7 @@ class LongMemory:
         prompt = DIGEST_PROMPT.format(date=f"{start:%Y-%m-%d %A}", open=open_items, transcript=transcript)
         data = parse_json(self.extractor(prompt) if self.extractor else "")
         if not data:
-            raise ValueError("özet cevabı boş")
+            raise _BadDigest("özet cevabı boş")
         # Kalıcı notları özet değil, tur sonu çıkarımı ve Dream yazar (Dream bu özetleri okuyup damıtır).
         summary = strip_filler(data.get("summary") or "") if isinstance(data.get("summary"), str) else ""
         if summary:
