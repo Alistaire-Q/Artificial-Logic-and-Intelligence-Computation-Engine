@@ -6,7 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from alice.tools.base import READ, SEND, WRITE, Tool, ToolContext, ToolError, ToolResult, obj
+from alice.tools.base import DANGER, READ, SEND, Tool, ToolContext, ToolError, ToolResult, obj
 
 
 class PermissionsTool(Tool):
@@ -25,7 +25,9 @@ class PermissionsTool(Tool):
     risk = READ
 
     def risk_for(self, args: dict[str, Any]) -> str:
-        return WRITE if args.get("action") == "apply" else READ
+        # İzin kuralı eklemek sonraki bütün onayları kaldırır: her zaman kullanıcıya sorulur (dış içerik okunmuş bir
+        # turda modelin kendine izin yazmasın).
+        return DANGER if args.get("action") == "apply" else READ
 
     def run(self, ctx: ToolContext, action: str, rules: list[str] | None = None,
             everywhere: bool = False) -> ToolResult:

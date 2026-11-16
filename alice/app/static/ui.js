@@ -1011,8 +1011,16 @@ function assistantPane(pane, data) {
     const row = el("div", "list-row");
     const l = el("span", "l");
     l.append(el("b", "", r.rule), el("small", "", (r.kind === "allow" ? "izin ver" : r.kind === "deny" ? "yasak" : "sor") +
-      " · " + (r.source === "project" ? "bu proje (.alice/permissions.toml)" : "config.toml (dosyadan düzenle)")));
+      " · " + (r.source === "project" ? "bu proje (.alice/permissions.toml)" : "config.toml (dosyadan düzenle)") +
+      (r.untrusted ? " · onaylanmadı, uygulanmıyor" : "")));
     row.appendChild(l);
+    if (r.untrusted) {
+      const t = el("button", "btn", "Onayla");
+      t.title = "Bu kural dosyası ALICE dışında yazılmış ya da değişmiş (ör. klonlanan repo). Onaylarsan uygulanır.";
+      t.addEventListener("click", () => api("/api/assistant/action", { action: "rules_trust" })
+        .then((x) => { if (x && x.ok) { t.remove(); } }));
+      row.appendChild(t);
+    }
     if (r.source === "project") {
       const b = el("button", "btn", "Sil");
       b.addEventListener("click", () => api("/api/assistant/action", { action: "rule_delete", kind: r.kind, rule: r.rule })

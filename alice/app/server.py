@@ -1143,15 +1143,17 @@ class AppState:
     def assistant(self) -> dict[str, Any]:
         from alice.connect import store
         from alice.doctor import run_all
-        from alice.permissions import project_rules
+        from alice.permissions import project_rules, project_rules_trusted
         from alice.skills import load_agents, load_skills
         from alice.tools import gmail
 
         cfg_rules = self.cfg.data.get("permissions") or {}
-        proj = project_rules(self.ctx.cwd)
+        proj = project_rules(self.ctx.cwd, include_untrusted=True)
+        trusted = project_rules_trusted(self.ctx.cwd)
         rules = [{"kind": k, "rule": r, "source": "config"} for k in ("allow", "ask", "deny")
                  for r in cfg_rules.get(k, []) or []]
-        rules += [{"kind": k, "rule": r, "source": "project"} for k in ("allow", "ask", "deny") for r in proj.get(k, [])]
+        rules += [{"kind": k, "rule": r, "source": "project", "untrusted": k == "allow" and not trusted}
+                  for k in ("allow", "ask", "deny") for r in proj.get(k, [])]
         values = {f"{sec}.{key}": (self.cfg.data.get(sec) or {}).get(key) for sec, key in self.ASSISTANT_SETTINGS}
         return {
             "checks": [c.__dict__ for c in run_all(self.cfg, self.ctx.cwd, network=False)],
@@ -1214,6 +1216,10 @@ class AppState:
         from alice.connect import store
         from alice.tools import gmail
 
+        if action == "rules_trust":
+            from alice.permissions import trust_project_rules
+
+            return {"ok": trust_project_rules(self.ctx.cwd)}
         if action == "rule_delete":
             from alice.permissions import remove_project_rule
 

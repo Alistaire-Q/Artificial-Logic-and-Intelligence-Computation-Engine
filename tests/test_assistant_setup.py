@@ -120,7 +120,7 @@ def test_assistant_tab_status_settings_rules_and_gmail(app, workdir, isolated_ho
     store.save("gmail:okul", access_token="t", expires_at=time.time() + 3600, email="h@okul.edu")
     d = client.get("/api/assistant").json()
     assert len(d["checks"]) == 11 and d["settings"]["agent.sandbox"] == "auto"
-    assert {"kind": "allow", "rule": "run_command(git status*)", "source": "project"} in d["rules"]
+    assert {"kind": "allow", "rule": "run_command(git status*)", "source": "project", "untrusted": False} in d["rules"]
     assert d["gmail"] == [{"account": "okul", "email": "h@okul.edu"}] and d["google_ready"] is False
 
     assert client.post("/api/assistant/set", json={"section": "agent", "key": "sandbox", "value": "on"}).json()["ok"]
