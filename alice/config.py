@@ -1060,6 +1060,9 @@ class ProviderConfig:
                 and not any(fnmatch.fnmatch(low, p) for p in NOT_VISION))
 
 
+_warned_providers: set[str] = set()  # base_url'siz sağlayıcı uyarısı süreç başına bir kez
+
+
 @dataclass
 class Config:
     data: dict[str, Any]
@@ -1077,9 +1080,27 @@ class Config:
     def decider(self) -> dict[str, Any]:
         return self.data.get("decider", {})
 
+    def provider_errors(self) -> dict[str, str]:
+        """Kullanılamayan [providers.x] tanımları ve sebebi (providers() bunları atlar)."""
+        out = {}
+        for name, p in (self.data.get("providers", {}) or {}).items():
+            if not isinstance(p, dict):
+                out[name] = "bir tablo olmalı ([providers.ad] altında base_url = ...)"
+            elif not str(p.get("base_url") or "").strip():
+                out[name] = "base_url yok"
+        return out
+
     def providers(self) -> dict[str, ProviderConfig]:
         out = {}
-        for name, p in self.data.get("providers", {}).items():
+        bad = self.provider_errors()
+        for name, p in (self.data.get("providers", {}) or {}).items():
+            if name in bad:
+                # base_url'siz özel sağlayıcı her yerde KeyError veriyordu (uygulama, doctor, yönlendirme): atla, bir
+                # kez uyar.
+                if name not in _warned_providers:
+                    _warned_providers.add(name)
+                    print(f"UYARI: [providers.{name}] kullanılmıyor: {bad[name]}", file=sys.stderr)
+                continue
             out[name] = ProviderConfig(
                 name=name,
                 base_url=_expand_env(str(p["base_url"])).rstrip("/"),

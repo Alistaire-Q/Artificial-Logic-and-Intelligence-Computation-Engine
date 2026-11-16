@@ -618,6 +618,8 @@ def _doctor_update(cfg: Config) -> None:
 def doctor(cfg: Config) -> int:
     router = Router(cfg, max_wait=0)
     console.print(f"[bold]ALICE home:[/] {alice_home()}  config: {cfg.path or '(varsayılan)'}")
+    for name, why in cfg.provider_errors().items():
+        console.print(f"[yellow]{escape(f'[providers.{name}] kullanılmıyor: {why}')}[/]")
     _doctor_update(cfg)
     _doctor_connect(cfg)
     from alice.doctor import probe_providers, run_all
