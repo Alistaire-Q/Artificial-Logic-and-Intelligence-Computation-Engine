@@ -1248,12 +1248,23 @@ class Team:
             return None
         t0 = time.time()
         try:
-            r = subprocess.run(self.check, shell=True, cwd=str(cwd or self.cwd), capture_output=True, text=True,
-                               timeout=int(self.parent_ctx.config.agent.get("team_check_timeout", 600)),
-                               encoding="utf-8", errors="replace")
-            out, code = (r.stdout + r.stderr), r.returncode
-        except subprocess.TimeoutExpired:
-            out, code = "zaman aşımı", -1
+            pop = subprocess.Popen(self.check, shell=True, cwd=str(cwd or self.cwd), stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True, encoding="utf-8",
+                                   errors="replace", creationflags=_NO_WINDOW)
+            try:
+                so, se = pop.communicate(timeout=int(self.parent_ctx.config.agent.get("team_check_timeout", 600)))
+                out, code = (so or "") + (se or ""), pop.returncode
+            except subprocess.TimeoutExpired:
+                # subprocess.run burada yalnız kabuğu öldürüp boruların kapanmasını süresiz bekliyordu: kabuğun
+                # açtığı test süreci boruyu tuttuğu için kurul thread'i (ve proje) sonsuza dek takılıyordu.
+                from alice.tools.shell import kill_tree
+
+                kill_tree(pop.pid)
+                try:
+                    pop.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+                out, code = "zaman aşımı", -1
         except OSError as e:
             out, code = str(e), -1
         res = {"cmd": self.check, "code": code, "out": out[-4000:], "secs": int(time.time() - t0)}

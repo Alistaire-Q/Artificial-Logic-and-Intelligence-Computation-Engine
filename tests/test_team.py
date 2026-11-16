@@ -432,3 +432,18 @@ def test_git_dirty_handles_non_ascii_and_renamed_paths(tmp_path):
     assert str((tmp_path / "dü şey.py").resolve()) in dirty
     assert str((tmp_path / "yeni.py").resolve()) in dirty
     assert str((tmp_path / "eski.py").resolve()) not in dirty
+
+
+def test_check_command_timeout_kills_grandchildren(tmp_path):
+    # Kabuğun açtığı süreç boruyu tutarken subprocess.run zaman aşımında sonsuza dek bekliyordu (kurul takılıyordu).
+    import sys
+    import time
+    from types import SimpleNamespace
+
+    fake = SimpleNamespace(check=f'"{sys.executable}" -c "import time; time.sleep(60)"', cwd=tmp_path,
+                           parent_ctx=SimpleNamespace(config=SimpleNamespace(agent={"team_check_timeout": 1})),
+                           mark=lambda *a: None)
+    t0 = time.monotonic()
+    res = _Team.run_check(fake)
+    assert res["code"] == -1 and "zaman aşımı" in res["out"]
+    assert time.monotonic() - t0 < 20
