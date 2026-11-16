@@ -476,12 +476,20 @@ class HttpRequest(Tool):
                     if r.status_code >= 400:
                         r.read()
                         return ToolResult(f"HTTP {r.status_code} {r.url}\n\n{truncate(r.text, 2000)}", is_error=True)
-                    with open(dest, "wb") as f:
-                        for part in r.iter_bytes():
-                            if ctx.cancelled():
-                                raise ToolError("kullanıcı durdurdu; dosya yarım kaldı")
-                            f.write(part)
-                            size += len(part)
+                    # Önce yan dosyaya: eskiden hedef baştan "wb" ile açılıyordu, indirme yarıda kesilince (ağ hatası,
+                    # Durdur) var olan dosya silinmiş, yerinde yarım bir dosya kalıyordu.
+                    tmp = dest.with_name(dest.name + ".part")
+                    try:
+                        with open(tmp, "wb") as f:
+                            for part in r.iter_bytes():
+                                if ctx.cancelled():
+                                    raise ToolError("kullanıcı durdurdu; dosya kaydedilmedi")
+                                f.write(part)
+                                size += len(part)
+                        tmp.replace(dest)
+                    except BaseException:
+                        tmp.unlink(missing_ok=True)
+                        raise
                 return ToolResult(f"HTTP {r.status_code}: {size} byte kaydedildi -> {dest}")
             r = httpx.request(method, _expand_env(url), **kw)
         except httpx.HTTPError as e:

@@ -413,3 +413,14 @@ def test_web_search_caches_engine_results(ctx, monkeypatch):
     # Farklı sorgu önbelleğe takılmaz.
     web.WebSearch().run(ctx, query="başka sorgu")
     assert len(calls) == 2
+
+
+def test_http_request_interrupted_download_keeps_existing_file(ctx, monkeypatch, workdir):
+    client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200, content=b"yeni")))
+    monkeypatch.setattr(web.httpx, "stream", lambda method, url, **kw: client.stream(method, url, **kw))
+    (workdir / "f.bin").write_bytes(b"eski ve saglam")
+    monkeypatch.setattr(ctx, "cancelled", lambda: True)
+    with pytest.raises(ToolError, match="durdurdu"):
+        web.HttpRequest().run(ctx, url="https://a/f.bin", save_to="f.bin")
+    assert (workdir / "f.bin").read_bytes() == b"eski ve saglam"
+    assert [p.name for p in workdir.iterdir()] == ["f.bin"]  # yarım .part kalmaz
