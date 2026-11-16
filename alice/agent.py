@@ -563,12 +563,14 @@ class Agent:
         routed = self._route_role(user_text)
         if routed:
             self.role = routed
+        self._turn_blocked = False
         try:
             final = self._run_turn(user_text, max_steps, images, recall)
         finally:
             self._last_turn_role = self.role  # sonraki turun yönlendirmesi önbelleği sıcak modelde kalabilsin
             self.role = old_role
-        self._remember_turn(user_text, final)
+        if not self._turn_blocked:  # hook'un engellediği mesaj hafızaya boş bir tur olarak yazılmasın
+            self._remember_turn(user_text, final)
         return final
 
     ROUTE_ROLES = {"strong": "route-strong", "light": "route-light"}
@@ -670,6 +672,7 @@ class Agent:
                 blocked = feedback(res)
                 if blocked:
                     self.ui.info(f"hook mesajı engelledi: {blocked}")
+                    self._turn_blocked = True
                     return ""
                 extra.append(context(res))
             extra = [e for e in extra if e]

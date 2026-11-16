@@ -151,7 +151,10 @@ def test_hooks_from_config_and_prompt_block(workdir):
     assert [x.event for x in h.hooks] == ["UserPromptSubmit"]
     agent, provs, ui = make_agent(["olmamalı"], workdir)
     agent.hooks = h
+    remembered = []
+    agent._remember_turn = lambda u, r: remembered.append((u, r))
     assert agent.run_turn("merhaba") == "" and provs["a"].calls == []
+    assert remembered == []  # engellenen mesaj hafızaya boş tur olarak yazılmaz
 
 
 # ----------------------------------------------------------------------------------------- takvim
