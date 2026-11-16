@@ -215,14 +215,21 @@ class SetupPanel:
 
         weights = ranking.load_weights()
         role = str(d.get("role", ""))
+        if role and role not in ranking.DEFAULT_WEIGHTS:  # sıfırlamada da: bilinmeyen rol KeyError'du
+            return {"ok": False, "error": f"bilinmeyen rol: {role}"}
         if d.get("reset"):
             weights = {r: dict(w) for r, w in ranking.DEFAULT_WEIGHTS.items()} if not role else \
                 {**weights, role: dict(ranking.DEFAULT_WEIGHTS[role])}
         else:
-            if role not in ranking.DEFAULT_WEIGHTS:
-                return {"ok": False, "error": f"bilinmeyen rol: {role}"}
+            if not role:
+                return {"ok": False, "error": "rol gerekli"}
             new = d.get("weights") or {}
-            vals = {k: float(new.get(k, weights[role][k])) for k in ranking.METRICS}
+            if not isinstance(new, dict):
+                return {"ok": False, "error": "ağırlıklar metrik → sayı eşlemesi olmalı"}
+            try:
+                vals = {k: float(new.get(k, weights[role][k])) for k in ranking.METRICS}
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "ağırlıklar sayı olmalı"}
             if any(not 0 <= v <= 100 for v in vals.values()) or not sum(vals.values()):
                 return {"ok": False, "error": "ağırlıklar 0-100 arası olmalı, hepsi sıfır olamaz"}
             weights[role] = vals
