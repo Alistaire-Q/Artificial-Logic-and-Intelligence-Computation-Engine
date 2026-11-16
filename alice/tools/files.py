@@ -398,6 +398,9 @@ class ReadFile(Tool):
         start = max(int(offset or 1), 1)
         limit = max(int(limit or 2000), 1)
         chunk = lines[start - 1:start - 1 + limit]
+        if not chunk and lines:
+            # Eskiden "(boş dosya)" diyordu: model dolu dosyayı boş sanıyordu.
+            raise ToolError(f"offset={start} dosyanın sonunu geçiyor: {p.name} {len(lines)} satır")
         body = "\n".join(f"{i:>6}\t{line[:2000]}" for i, line in enumerate(chunk, start))
         more = len(lines) - (start - 1 + len(chunk))
         if more > 0:

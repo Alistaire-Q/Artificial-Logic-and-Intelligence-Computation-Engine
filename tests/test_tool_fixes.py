@@ -53,3 +53,13 @@ def test_edit_in_lf_file_left_alone(ctx, workdir):
     f.write_bytes(b"a\nb\n")
     _edit(ctx, "w.txt", "b", "b1\nb2")
     assert f.read_bytes() == b"a\nb1\nb2\n"
+
+
+def test_read_offset_past_end_is_error_not_empty(ctx, workdir):
+    from alice.tools.base import ToolError
+
+    (workdir / "r.txt").write_text("a\nb\nc\n", encoding="utf-8")
+    with pytest.raises(ToolError, match="3 satır"):
+        ReadFile().run(ctx, path="r.txt", offset=50)
+    (workdir / "e.txt").write_text("", encoding="utf-8")
+    assert "boş dosya" in ReadFile().run(ctx, path="e.txt").text
