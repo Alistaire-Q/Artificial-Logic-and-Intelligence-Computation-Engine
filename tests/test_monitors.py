@@ -96,7 +96,7 @@ def fake_ps(monkeypatch):
         v = state.usage[mp]
         if isinstance(v, Exception):
             raise v
-        return SimpleNamespace(percent=v)
+        return SimpleNamespace(percent=v, free=(100 - v) * 1024 ** 3)
 
     monkeypatch.setattr(monitors.psutil, "disk_usage", usage)
 
@@ -157,11 +157,12 @@ def test_disks_skip_readonly_cdrom_and_errors_and_throttle(fake_ps):
     fake_ps.usage = {"/": 10.0, "/denied": PermissionError("no"), "C:\\": 70.0}
     mon = make_mon()
     rows = mon._disks()
-    assert rows == [("pc.disk.root.percent", 10.0, None), ("pc.disk.c.percent", 70.0, None)]
+    assert rows == [("pc.disk.root.percent", 10.0, None), ("pc.disk.root.free_gb", 90.0, None),
+                    ("pc.disk.c.percent", 70.0, None), ("pc.disk.c.free_gb", 30.0, None)]
     # Dakikada bir: hemen ardından boş döner
     assert mon._disks() == []
     mon._disk_at -= 61
-    assert len(mon._disks()) == 2
+    assert len(mon._disks()) == 4
 
 
 def test_temps_from_psutil_takes_max_cpu(fake_ps):
