@@ -201,9 +201,12 @@ class BuiltinBrowser:
 
     def _launch(self, exe: str) -> None:
         self.port = _free_port()
+        # --remote-allow-origins verilmez: ALICE'in CDP istemcileri (websockets, Playwright) Origin göndermez ve
+        # Origin'siz bağlantı kabul edilir; "*" ise tarayıcıda açılan herhangi bir sayfanın bu porta bağlanıp
+        # tarayıcıyı sürmesine izin veriyordu.
         args = [exe, f"--remote-debugging-port={self.port}", f"--user-data-dir={self.profile}", "--headless=new",
                 f"--window-size={VIEWPORT[0]},{VIEWPORT[1]}", "--no-first-run", "--no-default-browser-check",
-                "--disable-features=Translate,MediaRouter", "--remote-allow-origins=*",
+                "--disable-features=Translate,MediaRouter",
                 *(["--no-sandbox", "--disable-gpu"] if self.no_sandbox else []),
                 *os.environ.get("ALICE_BROWSER_FLAGS", "").split(), "about:blank"]
         self.proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

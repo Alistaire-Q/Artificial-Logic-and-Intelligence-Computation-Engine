@@ -141,3 +141,14 @@ def test_lock_is_reentrant_safe():
     b._lock = threading.Lock()
     b.proc = None
     assert not b.running()
+
+
+def test_devtools_port_does_not_allow_any_origin(monkeypatch, tmp_path):
+    """--remote-allow-origins=* yok: tarayıcıdaki bir sayfa DevTools portuna bağlanıp tarayıcıyı süremez."""
+    seen = []
+    monkeypatch.setattr(bbm.subprocess, "Popen", lambda args, **kw: seen.append(args) or object())
+    b = bbm.BuiltinBrowser(tmp_path / "profil")
+    monkeypatch.setattr(b, "_http", lambda path, method="GET": {})
+    b._launch("chrome.exe")
+    assert seen and f"--remote-debugging-port={b.port}" in seen[0]
+    assert not any(a.startswith("--remote-allow-origins") for a in seen[0])
