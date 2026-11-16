@@ -15,7 +15,7 @@ def test_old_env_gets_new_provider_lines(tmp_path, monkeypatch):
 
 
 def test_set_config_value_header_with_comment_and_multiline_value(tmp_path, monkeypatch):
-    import tomllib
+    from alice.config import tomllib
 
     from alice.config import remove_config_section, set_config_value
 
@@ -36,7 +36,7 @@ def test_set_config_value_header_with_comment_and_multiline_value(tmp_path, monk
 
 
 def test_set_config_value_on_default_config_stays_valid(tmp_path, monkeypatch):
-    import tomllib
+    from alice.config import tomllib
 
     from alice.config import set_config_value
 
