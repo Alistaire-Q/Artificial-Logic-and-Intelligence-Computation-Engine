@@ -524,6 +524,13 @@ class LongMemory:
             with self._lock:
                 self.db.execute("DELETE FROM episodes WHERE ts < ?", (time.time() - self.keep_days * 86400,))
                 self.db.commit()
+        with self._lock:
+            # Silinen turların/özetlerin vektörleri kalıyordu: tablo durmadan büyüyor, anlam aramasının ilk sıralarını
+            # artık var olmayan kayıtlar kapıyordu (gerçek eşleşmeler k sınırının dışında kalıyordu).
+            self.db.execute("DELETE FROM vectors WHERE kind = 'episode' AND ref NOT IN (SELECT id FROM episodes)")
+            self.db.execute("DELETE FROM vectors WHERE kind = 'summary' AND ref NOT IN (SELECT id FROM summaries)")
+            self.db.execute("DELETE FROM vectors WHERE kind = 'fact' AND ref NOT IN (SELECT id FROM facts)")
+            self.db.commit()
 
     def _meta(self, key: str, value: str | None = None) -> str | None:
         with self._lock:
@@ -731,10 +738,10 @@ class LongMemory:
                     left = True
                     break
                 with self._lock:
-                    # Embedding sürerken güncellenen/silinen bilgi eski metnin vektörüyle kaydedilmesin.
-                    facts = dict(self.db.execute("SELECT id, text FROM facts").fetchall())
+                    # Embedding sürerken güncellenen/silinen kayıt eski metnin vektörüyle kaydedilmesin (silinen
+                    # sohbetin turu sahipsiz vektör olarak kalıyordu; add_reply sonrası eski cevabın vektörü yazılıyordu).
                     rows = [(k, ref, pack(v)) for (k, ref, text), v in zip(part, vecs)
-                            if k != "fact" or facts.get(ref) == text]
+                            if self._embed_text(k, ref) == text]
                     self.db.executemany("INSERT OR REPLACE INTO vectors(kind, ref, vec) VALUES (?, ?, ?)", rows)
                     self.db.commit()
                 done += len(part)
@@ -743,6 +750,17 @@ class LongMemory:
         if left and isinstance(self.path, Path):
             self._index_later()
         return done
+
+    def _embed_text(self, kind: str, ref: int) -> str | None:
+        """Kaydın şu anki vektörlenecek metni (index_pending'deki biçimle aynı); kayıt yoksa None."""
+        if kind == "fact":
+            row = self.db.execute("SELECT text FROM facts WHERE id = ?", (ref,)).fetchone()
+            return row[0] if row else None
+        if kind == "summary":
+            row = self.db.execute("SELECT text FROM summaries WHERE id = ?", (ref,)).fetchone()
+            return row[0] if row else None
+        row = self.db.execute("SELECT user, reply FROM episodes WHERE id = ?", (ref,)).fetchone()
+        return f"Kullanıcı: {row[0]}\nALICE: {row[1][:400]}" if row else None
 
     def _index_later(self) -> None:
         """Birikmiş kayıtlar var (kota doldu ya da çok fazla): kota açılınca devam et."""

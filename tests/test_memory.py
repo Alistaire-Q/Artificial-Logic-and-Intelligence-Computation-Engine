@@ -290,6 +290,38 @@ def test_vektorler_parti_parti_kaydedilir_kota_dolunca_kalan_beklenir():
     assert m.db.execute("SELECT COUNT(*) FROM vectors").fetchone()[0] == 20
 
 
+def test_silinen_kaydin_vektoru_kalmaz(tmp_path):
+    from alice.memvec import normalize
+
+    class Emb:
+        available = True
+
+        def __init__(self, hook=None):
+            self.hook = hook
+
+        def embed(self, texts):
+            if self.hook:
+                self.hook()
+            return [normalize([1.0, 0.5]) for _ in texts]
+
+    m = LongMemory(tmp_path / "m.db", {"keep_days": 30}, None, None, notes_root=tmp_path / "notes")
+    old = time.time() - 60 * 86400
+    _chat(m, old, "eski konuşma", "cevap")
+    _chat(m, time.time() - 5, "yeni konuşma", "cevap")
+    gone = m.db.execute("SELECT id FROM episodes WHERE ts = ?", (old,)).fetchone()[0]
+    keep = m.db.execute("SELECT id FROM episodes WHERE ts != ?", (old,)).fetchone()[0]
+    # Embedding sürerken sohbet silinirse sahipsiz vektör yazılmasın.
+    m.embedder = Emb(hook=lambda: m.forget_episode(keep))
+    m.index_pending()
+    refs = {r[0] for r in m.db.execute("SELECT ref FROM vectors WHERE kind = 'episode'")}
+    assert keep not in refs and gone in refs
+    m.close()
+    # Eski turlar budanınca vektörleri de gider (anlam aramasının ilk sıralarını kapmasın).
+    m2 = LongMemory(tmp_path / "m.db", {"keep_days": 30}, None, None, notes_root=tmp_path / "notes")
+    assert m2.db.execute("SELECT COUNT(*) FROM vectors").fetchone()[0] == 0
+    m2.close()
+
+
 def test_aractan_sonra_gelen_canli_cevap_soruya_eklenir():
     from types import SimpleNamespace
 
