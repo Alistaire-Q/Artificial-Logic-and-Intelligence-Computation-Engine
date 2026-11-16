@@ -430,7 +430,8 @@ def test_schedule_tool_paths(core_ctx):
         s.run(core_ctx, action="run_now")
     with pytest.raises(ToolError, match="görev yok"):
         s.run(core_ctx, action="run_now", id="yok")
-    assert s.run(core_ctx, action="remove", id="yok").text == "görev yok: yok"
+    with pytest.raises(ToolError, match="görev yok"):
+        s.run(core_ctx, action="remove", id="yok")
     s.run(core_ctx, action="add", cron="0 8 * * *", prompt="hava durumu", description="sabah")
     from alice.core.schedule import TaskStore
 
