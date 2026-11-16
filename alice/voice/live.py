@@ -20,6 +20,7 @@ from typing import Any, Callable
 from alice.tools.base import ToolResult
 from alice.voice.lang import correction, foreign, junk
 from alice.voice.listen import FOLLOW_MAX, ends_with_hush, is_yes
+from alice.voice.lang import not_for_me
 from alice.voice.vocab import known_names
 
 URL = ("wss://generativelanguage.googleapis.com/ws/"
@@ -901,8 +902,8 @@ class LiveSession:
                                 threading.Thread(target=send_frame, daemon=True).start()
                             state["heard"].append(t)
                             state["cur"] += t
-                            if ends_with_hush(state["cur"]):
-                                self.hushed = True  # "Alice sus": hemen sus ve oturumu kapat
+                            if ends_with_hush(state["cur"]) or not_for_me(state["cur"]):
+                                self.hushed = True  # "Alice sus", "sana demedim": hemen sus ve oturumu kapat
                                 state["mute"] = True
                                 out.clear()
                                 self.log(f"live susturuldu: {state['cur'][-80:]}")

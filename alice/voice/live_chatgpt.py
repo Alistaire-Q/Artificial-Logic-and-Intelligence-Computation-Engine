@@ -13,6 +13,7 @@ from __future__ import annotations
 import array
 import base64
 import json
+import re
 import queue
 import threading
 import time
@@ -43,7 +44,8 @@ Araçların vermediği sayıları ve durumları asla uydurma; bilmiyorsan söyle
 Mikrofon oyun/video/başkalarının konuşmasını da duyar; sana söylenmemiş, anlamsız ya da Türkçe olmayan
 cümlelere cevap verme, sessiz kal. Kullanıcı Discord'da ya da oyunda arkadaşlarıyla da konuşur: cümle başka
 birine hitap ediyorsa (bir isim, "gel buraya", "bak şimdi") ya da oyuna dair kendi kendine söylenmiş bir lafsa
-hiç ses çıkarma. Sohbetin devamıysa (az önceki sorunun cevabı, "evet", "aç onu") cevap ver. Her zaman Türkçe
+hiç ses çıkarma. Sohbetin devamıysa (az önceki sorunun cevabı, "evet", "aç onu") cevap ver. Kullanıcı "sus",
+"yeter", "sana demedim" ya da "sana demiyorum" derse hiçbir şey söyleme: "tamam" bile deme. Her zaman Türkçe
 konuş."""
 
 THINK_TOOL = {
@@ -62,7 +64,7 @@ REALTIME_TOOLS = ("youtube", "media", "windows", "weather", "notes", "now", "spo
 # Codex Realtime'ın kabul ettiği sesler (2026-11-06, sunucunun "Supported values" hatasından).
 REALTIME_VOICES = ("alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar")
 
-HUSH_WORDS = ("sus", "sussana", "kes", "yeter", "boşver", "kapat")
+HUSH_WORDS = ("sus", "sussana", "susun", "şşt", "boşver")  # cümlenin herhangi bir yerinde geçse de susturur
 
 _OPENAI_TYPES = {"OBJECT": "object", "STRING": "string", "INTEGER": "integer", "NUMBER": "number",
                  "BOOLEAN": "boolean", "ARRAY": "array", "NULL": "null"}
@@ -598,8 +600,13 @@ class RealtimeSession:
                             except Exception:  # noqa: BLE001 - ekran hatası konuşmayı bozmasın
                                 pass
                         if self._is_hush(text):
+                            # "Sus", "sana demedim": çalan sesi kes, üretilen cevabı iptal et ve oturumu kapat. Eskiden
+                            # yalnız döküm kuyruğu boşalıyordu; sunucu cevabı sürdürüyor, ALICE konuşmaya devam ediyordu.
                             self.hushed = True
                             out.clear()
+                            if state["responding"]:
+                                send({"type": "response.cancel"})
+                            self.log(f"realtime susturuldu: {text[-80:]}")
                             state["done"] = True
                         elif state["gate"] == "pending":
                             if self._addressed(text):
@@ -747,8 +754,22 @@ class RealtimeSession:
 
     @staticmethod
     def _is_hush(text: str) -> bool:
-        low = text.lower().strip()
-        return any(w in low.split() for w in HUSH_WORDS) if low else False
+        """Döküm susturma mı? "Sus ya, sus ya." gibi noktalamalı ve tekrarlı cümleler, "... Alice yeter" gibi sonda
+        söylenenler ve "sana demedim / sana demiyorum" da sayılır. Eskiden sözcükler noktalamasıyla karşılaştırılıyordu:
+        "Sus!" ya da "Sus." tek başına susturmuyordu; "sana demedim" hiç tanınmıyordu."""
+        from alice.voice.lang import not_for_me
+        from alice.voice.listen import ends_with_hush, is_hush
+
+        low = (text or "").strip()
+        if not low:
+            return False
+        if not_for_me(low):
+            return True
+        parts = [x for x in re.split(r"[.!?,;:\n]+", low) if x.strip()]
+        if any(is_hush(x) or ends_with_hush(x) for x in parts) or ends_with_hush(low):
+            return True
+        words = re.findall(r"\w+", low.replace("I", "ı").replace("İ", "i").lower())
+        return any(w in HUSH_WORDS for w in words)
 
     def _hud(self, state: str, detail: str) -> None:
         if not self.hud_on:

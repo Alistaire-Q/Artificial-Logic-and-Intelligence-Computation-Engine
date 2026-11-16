@@ -71,6 +71,30 @@ def test_hush_detection():
     assert RealtimeSession._is_hush("Alice sus lütfen")
     assert RealtimeSession._is_hush("tamam yeter")
     assert not RealtimeSession._is_hush("bugün hava nasıl")
+    # 16 Kasım logu: noktalama ve "sana demedim" susturmuyordu
+    for t in ("Sus.", "Sus!", "Sus ya, sus ya. Ya sus ya.", "Sana demiyorum.", "Sana demedim, sana demedim.",
+              "sesini kes", "Şşt"):
+        assert RealtimeSession._is_hush(t), t
+    for t in ("dosyayı kapat", "susam al", "Aile başlayan.", "kes şunu ortadan ikiye"):
+        assert not RealtimeSession._is_hush(t), t
+
+
+def test_hush_cancels_response_in_progress():
+    """Sus denince sunucudaki cevap da iptal edilmeli: yoksa ALICE konuşmayı sürdürüyordu."""
+    ws = FakeWS([
+        {"type": "session.created"},
+        {"type": "response.created"},
+        {"type": "response.output_audio.delta", "delta": base64.b64encode(b"\x01\x02" * 12).decode()},
+        {"type": "conversation.item.input_audio_transcription.completed", "transcript": "Sana demiyorum."},
+    ])
+    out = TimedOut(5.0)
+    s = make_session()
+    s._connect = lambda url, secret: ws
+    s._secret = lambda: "test-secret"  # noqa: SLF001
+    s._out_factory = lambda: out
+    s.converse("selam", queue.Queue(), threading.Event())
+    assert s.hushed
+    assert {"type": "response.cancel"} in ws.sent
 
 
 def test_session_config_has_audio_vad_and_tools():
