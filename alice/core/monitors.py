@@ -10,12 +10,13 @@ LibreHardwareMonitor açıksa onun WMI kaydı okunur (psutil Windows'ta sıcakl�
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
 import sys
 import time
-from typing import Protocol
+from typing import Any, Callable, Protocol
 
 import psutil
 
@@ -62,6 +63,53 @@ def foreground_process() -> str | None:
         return None
 
 
+_PRIVATE_READER: Any = False  # False: henüz denenmedi, None: kullanılamıyor
+
+
+def _private_ws_reader() -> Callable[[int], int | None] | None:
+    """Windows: süreç -> özel çalışma kümesi (Görev Yöneticisi'nin "Bellek" sütunu). Kullanılamıyorsa None."""
+    global _PRIVATE_READER
+    if _PRIVATE_READER is not False:
+        return _PRIVATE_READER
+    _PRIVATE_READER = None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class Counters(ctypes.Structure):  # PROCESS_MEMORY_COUNTERS_EX2 (Windows 10 1809+)
+            _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD)] + [
+                (n, ctypes.c_size_t) for n in (
+                    "PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage", "QuotaPagedPoolUsage",
+                    "QuotaPeakNonPagedPoolUsage", "QuotaNonPagedPoolUsage", "PagefileUsage", "PeakPagefileUsage",
+                    "PrivateUsage", "PrivateWorkingSetSize", "SharedCommitUsage")]
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        k32.K32GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD]
+        query = 0x1000  # PROCESS_QUERY_LIMITED_INFORMATION
+
+        def read(pid: int) -> int | None:
+            h = k32.OpenProcess(query, False, pid)
+            if not h:
+                return None
+            try:
+                c = Counters()
+                c.cb = ctypes.sizeof(Counters)
+                if not k32.K32GetProcessMemoryInfo(h, ctypes.byref(c), c.cb):
+                    return None
+                return int(c.PrivateWorkingSetSize) or None
+            finally:
+                k32.CloseHandle(h)
+
+        if read(os.getpid()):  # eski Windows yapıyı tanımazsa sıfır/başarısız döner: rss'e düş
+            _PRIVATE_READER = read
+    except (OSError, AttributeError, ImportError):
+        pass
+    return _PRIVATE_READER
+
+
 def _win_proc_stats() -> list[tuple[int, str, int, float]] | None:
     """Windows: (pid, ad, rss bayt, kullanıcı+çekirdek işlemci sn); erişilemeyen süreçler atlanır. Başka
     platformda ya da psutil'in iç yapısı değişmişse None (yavaş genel yol kullanılır)."""
@@ -74,12 +122,15 @@ def _win_proc_stats() -> list[tuple[int, str, int, float]] | None:
     except (ImportError, AttributeError):
         return None
     out = []
+    private = _private_ws_reader()
     for p in psutil.process_iter(["name"]):  # adlar tek anlık görüntüden gelir: hızlı
         name = p.info.get("name") or ""
         if not name:
             continue
         try:
-            rss = mem_info(p.pid)[2]  # psutil'de de rss = WorkingSetSize = 3. alan
+            # Çok süreçli tarayıcılarda (Opera GX: 61 süreç) WorkingSet ortak sayfaları her süreçte tekrar sayar: toplam
+            # 9,6 GB çıkıp "Opera 10 GB kullanıyor" deniyordu, Görev Yöneticisi 2,4 GB gösterirken. Ona özel kısım sayılır.
+            rss = (private(p.pid) if private else None) or mem_info(p.pid)[2]  # psutil rss = WorkingSetSize
             user, system, _created = times(p.pid)
         except Exception:  # noqa: BLE001 - korumalı süreç (erişim yok) ya da süreç kapandı: atla
             continue
