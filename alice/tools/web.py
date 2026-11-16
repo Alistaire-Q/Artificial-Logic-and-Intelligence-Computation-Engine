@@ -467,6 +467,8 @@ class HttpRequest(Tool):
         elif body is not None:
             kw["content"] = body.encode("utf-8")
         method = method.upper()
+        # Adreste ${env:..} varsa sonuçta açılmış adres (r.url) değil şablon gösterilir: anahtar modele sızmasın.
+        where = (lambda r: url) if _ENV_RX.search(url) else (lambda r: r.url)
         try:
             if save_to:
                 dest = ctx.resolve(save_to)
@@ -475,7 +477,7 @@ class HttpRequest(Tool):
                 with httpx.stream(method, _expand_env(url), **kw) as r:
                     if r.status_code >= 400:
                         r.read()
-                        return ToolResult(f"HTTP {r.status_code} {r.url}\n\n{truncate(r.text, 2000)}", is_error=True)
+                        return ToolResult(f"HTTP {r.status_code} {where(r)}\n\n{truncate(r.text, 2000)}", is_error=True)
                     # Önce yan dosyaya: eskiden hedef baştan "wb" ile açılıyordu, indirme yarıda kesilince (ağ hatası,
                     # Durdur) var olan dosya silinmiş, yerinde yarım bir dosya kalıyordu.
                     tmp = dest.with_name(dest.name + ".part")
@@ -503,7 +505,7 @@ class HttpRequest(Tool):
             except ValueError:
                 pass
         limit = int(ctx.config.agent.get("tool_output_chars", 12000))
-        return ToolResult(truncate(f"HTTP {r.status_code} {r.url}\n{shown}\n\n{text}", limit),
+        return ToolResult(truncate(f"HTTP {r.status_code} {where(r)}\n{shown}\n\n{text}", limit),
                           is_error=r.status_code >= 400)
 
 

@@ -424,3 +424,17 @@ def test_http_request_interrupted_download_keeps_existing_file(ctx, monkeypatch,
         web.HttpRequest().run(ctx, url="https://a/f.bin", save_to="f.bin")
     assert (workdir / "f.bin").read_bytes() == b"eski ve saglam"
     assert [p.name for p in workdir.iterdir()] == ["f.bin"]  # yarım .part kalmaz
+
+
+def test_http_request_env_secret_in_url_not_echoed(ctx, monkeypatch):
+    monkeypatch.setenv("ALICE_TEST_KEY", "cokgizli")
+    seen = {}
+
+    def fake_request(method, url, **kw):
+        seen["url"] = url
+        return httpx.Response(200, text="ok", request=httpx.Request(method, url))
+
+    monkeypatch.setattr(web.httpx, "request", fake_request)
+    r = web.HttpRequest().run(ctx, url="https://api.x/v1?key=${env:ALICE_TEST_KEY}")
+    assert seen["url"].endswith("key=cokgizli")
+    assert "cokgizli" not in r.text and "${env:ALICE_TEST_KEY}" in r.text
