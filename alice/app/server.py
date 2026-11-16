@@ -69,6 +69,19 @@ class BadRequest(Exception):
         self.code = code
 
 
+def int_field(d: dict[str, Any], key: str, default: int = 0) -> int:
+    """İstek gövdesindeki tamsayı alan; sayı değilse 500 yerine 400 (BadRequest)."""
+    v = d.get(key)
+    if v is None or v == "":
+        return default
+    if isinstance(v, bool):
+        raise BadRequest(400, f"{key} tamsayı olmalı")
+    try:
+        return int(v)
+    except (TypeError, ValueError, OverflowError):
+        raise BadRequest(400, f"{key} tamsayı olmalı") from None
+
+
 # ----------------------------------------------------------------------- olaylar
 class EventBus:
     def __init__(self) -> None:
@@ -822,6 +835,8 @@ class AppState:
         return None
 
     def resume(self, sid: str) -> bool:
+        if not sid:  # sess.load("") en son sohbeti açar: boş kimlik "o sohbet" değil
+            return False
         with self._chats_lock:
             if sid == self.chat.sid:
                 return True
@@ -1424,9 +1439,11 @@ class AppState:
             b, n = mem.find_note(key, cwd) if key else (None, None)
             if n is None:
                 return {"ok": False, "error": "not bulunamadı"}
+            # Yalnız gönderilen alanlar değişir: gövdesiz kayıt (ör. sadece açıklama) notun gövdesini silmesin.
+            body = str(d.get("body") or "") if "body" in d else n.body
             try:
                 b.save(n.name, str(d.get("description") or n.description), str(d.get("type") or n.type),
-                       str(d.get("body") or ""), title=n.title, source="kullanıcı")
+                       body, title=n.title, source="kullanıcı")
             except (MemoryFull, ValueError) as e:
                 return {"ok": False, "error": str(e)}
             mem._bump()
@@ -2438,7 +2455,8 @@ def make_handler(state: AppState):
                 except ToolError as e:
                     return self._json({"ok": False, "error": str(e)}, 404)
             if u.path == "/api/usage":
-                return self._json(state.agent.usage_breakdown())
+                # Oturum dökümü (Kullanım dökümü penceresi) + bugünün model başına istek sayıları (Ayarlar > Kullanım).
+                return self._json({**state.agent.usage_breakdown(), "today": state.router.usage.today()})
             if u.path == "/api/prs":
                 return self._json(state.pr_panel(force=(q.get("force") or [""])[0] == "1"))
             if u.path == "/api/subagents":
@@ -2514,8 +2532,6 @@ def make_handler(state: AppState):
             if u.path == "/api/update":
                 return self._json(state.check_update() if (q.get("refresh") or [""])[0] == "1"
                                   else (state.update.as_dict() if state.update is not None else {"available": False}))
-            if u.path == "/api/usage":
-                return self._json(state.router.usage.today())
             if u.path == "/api/tools":
                 return self._json([{"name": t.name, "risk": t.risk, "description": t.description.split("\n")[0][:160]}
                                    for t in state.agent.tools.values()])
@@ -2780,13 +2796,15 @@ def make_handler(state: AppState):
                     err = state.new_session()
                     return self._json({"ok": not err, "error": err, **state.status()}, 409 if err else 200)
                 if p == "/api/resume":
+                    sid = str(d.get("id") or "").strip()
+                    if not sid:  # boş kimlik en son sohbeti açıyordu (sess.load("")): istenen sohbet değil
+                        return self._json({"ok": False, "error": "sohbet kimliği gerekli"}, 400)
                     if d.get("detached"):  # telefon: sohbeti aç ama bilgisayarın öndeki sohbetini değiştirme
-                        sid = str(d.get("id", ""))
                         hist = state.history_for(sid)
                         found = bool(hist) or state.find_chat(sid) is not None
                         return self._json({"ok": found, "sid": sid, "history": hist,
                                            "error": None if found else "sohbet bulunamadı", **state.status()})
-                    ok = state.resume(str(d.get("id", "")))
+                    ok = state.resume(sid)
                     return self._json({"ok": ok, "error": None if ok else "sohbet açılamadı (arkada çok fazla iş var "
                                        "ya da sohbet bulunamadı)",
                                        "history": state.history_for(),
@@ -2814,7 +2832,10 @@ def make_handler(state: AppState):
                         return self._json({"ok": False, "error": str(e)}, 400)
                     return self._json({"ok": True, "note": note, **state.status()})
                 if p == "/api/rewind":
-                    out = state.rewind(int(d.get("mi", -1)))
+                    try:
+                        out = state.rewind(int_field(d, "mi", -1))
+                    except ValueError as e:  # geçersiz mesaj sırası: istemci hatası
+                        return self._json({"ok": False, "error": str(e)}, 400)
                     return self._json({"ok": True, **out, "history": state.history_for(),
                                        **state.status()})
                 if p == "/api/changes/revert":
@@ -2828,7 +2849,7 @@ def make_handler(state: AppState):
                     from alice import prwatch
                     from alice.tools.base import ToolError
 
-                    repo, number = str(d.get("repo", "")), int(d.get("number") or 0)
+                    repo, number = str(d.get("repo", "")), int_field(d, "number")
                     if not repo or not number:
                         return self._json({"ok": False, "error": "repo ve number gerekli"}, 400)
                     try:
@@ -2970,6 +2991,8 @@ def make_handler(state: AppState):
                         except OSError:
                             pass
                     return self._json({"ok": True})
+            except BadRequest as e:
+                return self._json({"ok": False, "error": str(e)}, e.code)
             except Exception as e:  # noqa: BLE001
                 log_error()
                 return self._json({"ok": False, "error": str(e)}, 500)

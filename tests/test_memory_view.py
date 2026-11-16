@@ -59,6 +59,11 @@ def test_memory_tab_lists_edits_deletes_dreams_and_purges(app):
     assert r["ok"]
     edited = state.agent.memory.notes.get(keep["name"])
     assert edited.body == "F-16 ve F-18 uçurur." and edited.source == "kullanıcı"  # elle düzeltilen korunur
+    # Gövdesiz kayıt (yalnız açıklama) gövdeyi silmez; yalnız gönderilen alan değişir.
+    assert client.post("/api/memory/action", json={"action": "save", "key": keep["key"],
+                                                    "description": "Uçtuğu uçaklar"}).json()["ok"]
+    edited = state.agent.memory.notes.get(keep["name"])
+    assert edited.body == "F-16 ve F-18 uçurur." and edited.description == "Uçtuğu uçaklar"
     state.agent.memory.synthesizer = lambda p: json.dumps({"summary": "Zaten derli toplu."})
     r = client.post("/api/memory/action", json={"action": "dream"}).json()
     assert r["ok"] and any("derli toplu" in x for x in r["done"])

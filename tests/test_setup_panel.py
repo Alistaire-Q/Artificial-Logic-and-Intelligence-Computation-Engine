@@ -322,6 +322,13 @@ def test_score_table_and_weights_reorder_chains_without_reprobing():
     assert not p.action("weights_set", {"role": "brain", "weights": {"zeka": 0, "hiz": 0, "tepki": 0, "akis": 0, "baglam": 0,
                                                                        "guven": 0}})["ok"]
     assert not p.action("weights_set", {"role": "uzay", "weights": {}})["ok"]
+    # Bilinmeyen rolü sıfırlamak ve sözlük olmayan/sayı olmayan ağırlıklar 500 değil hata yanıtı.
+    assert not p.action("weights_set", {"role": "uzay", "reset": True})["ok"]
+    assert not p.action("weights_set", {"role": "brain", "weights": [1, 2]})["ok"]
+    assert not p.action("weights_set", {"role": "brain", "weights": "zeka=100"})["ok"]
+    assert not p.action("weights_set", {"role": "brain", "weights": {"zeka": [1]}})["ok"]
+    assert not p.action("weights_set", {"role": "brain", "weights": {"zeka": "çok"}})["ok"]
+    assert ranking.load_weights()["brain"]["hiz"] == 90  # reddedilenler kaydı bozmadı
     p.action("weights_set", {"role": "brain", "reset": True})
     assert ranking.load_weights()["brain"] == ranking.DEFAULT_WEIGHTS["brain"]
 
