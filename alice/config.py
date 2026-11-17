@@ -410,8 +410,9 @@ voice = "off"
 # sabit modeller de yazabilirsin, ör. brain = ["gemini:gemini-flash-latest", "auto"].
 [roles]
 # Ana beyin (System 2): planlama, kod yazma, araç kullanma.
-# Başta GLM 5.3 (NVIDIA, 1M bağlam); kotası dolar ya da hata verirse ölçülen en iyi ücretsiz modellere geçer.
-brain = ["nvidia:z-ai/glm-5.3", "auto", "ollama:qwen3:8b"]
+# Measured best free models first; local Ollama as the last resort. (GLM 5.3 on NVIDIA used to lead this chain but
+# was retired by the provider: every first request timed out before falling back.)
+brain = ["auto", "ollama:qwen3:8b"]
 # Sesli asistan: beyin kadar yetenekli ama ilk kelimesi en çabuk gelen modeller (konuşmaya geç başlamasın).
 voice = ["auto", "ollama:qwen3:8b"]
 # Hızlı, kısa işler: özet, input'a yazılacak metni üretme, decider emülasyonu.
@@ -1212,10 +1213,11 @@ def load_config(path: Path | None = None, cwd: Path | None = None) -> Config:
 
 
 # `alice init` wrote old defaults into config.toml. If the user never touched them, apply new defaults
-# (e.g. main model becoming GLM 5.3); values changed by the user remain intact.
+# (e.g. a retired model leaving the brain chain); values changed by the user remain intact.
 # Section name can be dotted ("providers.cloudflare").
 LEGACY_DEFAULTS: list[tuple[tuple[str, str], Any]] = [
     (("roles", "brain"), ["auto", "ollama:qwen3:8b"]),
+    (("roles", "brain"), ["nvidia:z-ai/glm-5.3", "auto", "ollama:qwen3:8b"]),  # NVIDIA retired GLM 5.3
     (("providers.cloudflare", "models"), ["@cf/moonshotai/kimi-k2.5", "@cf/zai-org/glm-4.7-flash",
                                           "@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/google/gemma-4-26b-a4b-it",
                                           "@cf/meta/llama-4-scout-17b-16e-instruct"]),
