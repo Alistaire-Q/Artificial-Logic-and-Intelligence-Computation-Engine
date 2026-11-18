@@ -259,6 +259,87 @@ def test_catalog_view_groups_tested_models_by_provider():
     assert view["b"]["models"][0]["tested"] and not view["a"]["models"][1]["tested"]
 
 
+def test_catalog_view_lists_live_provider_catalogs(monkeypatch):
+    """The menu must not stay frozen on measured models: every provider's live catalog shows new models too.
+    Embed/tts style non-chat models are still filtered out, and OpenRouter only contributes its known families."""
+    cfg = make_config({"brain": ["gemini:gemini-2.5-pro"]}, auto_models=False,
+                      providers={"gemini": {"base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+                                            "api_key_env": ""},
+                                 "groq": {"base_url": "https://api.groq.com/openai/v1", "api_key_env": ""},
+                                 "openrouter": {"base_url": "https://openrouter.ai/api/v1", "api_key_env": ""},
+                                 "zai": {"base_url": "https://api.z.ai/api/paas/v4", "api_key_env": "",
+                                         "models": ["glm-4.7-flash"]}})
+    catalogs = {
+        "gemini": [{"id": "models/gemini-2.5-pro"}, {"id": "models/gemini-4-hydrogen"},
+                   {"id": "models/gemini-embedding-001"}],
+        "groq": [{"id": "brand-new-model"}, {"id": "whisper-large"}],
+        "openrouter": [
+        {"id": "deepseek/deepseek-r1:free", "pricing": {"prompt": "0", "completion": "0"}},
+        {"id": "some-vendor/mystery:free", "pricing": {"prompt": "0", "completion": "0"}},
+        {"id": "openai/gpt-5", "pricing": {"prompt": "1", "completion": "1"}}]}
+    calls = []
+    monkeypatch.setattr(Router, "_fetch_catalog", lambda self, name: calls.append(name) or catalogs[name])
+    r = router_with(cfg, {"gemini": FakeProvider("gemini", []), "groq": FakeProvider("groq", []),
+                          "openrouter": FakeProvider("openrouter", []), "zai": FakeProvider("zai", [])})
+    r._real_clients = True
+    view = {p["name"]: p for p in r.catalog_view()}
+    assert {m["ref"] for m in view["gemini"]["models"]} == {"gemini:gemini-2.5-pro", "gemini:gemini-4-hydrogen"}
+    assert {m["ref"] for m in view["groq"]["models"]} == {"groq:brand-new-model"}
+    assert {m["ref"] for m in view["openrouter"]["models"]} == {"openrouter:deepseek/deepseek-r1:free"}
+    assert view["zai"]["models"] == []  # a fixed model list means the live catalog is not asked
+    assert sorted(calls) == ["gemini", "groq", "openrouter"]
+    # the catalog is cached: opening the menu again must not hit the providers a second time
+    view = {p["name"]: p for p in r.catalog_view()}
+    assert sorted(calls) == ["gemini", "groq", "openrouter"]
+    assert {m["ref"] for m in view["groq"]["models"]} == {"groq:brand-new-model"}
+
+
+def test_catalog_view_fetches_catalogs_in_parallel(monkeypatch):
+    """Providers are scanned in parallel with a short timeout: a slow one must not make the menu wait
+    for the others (the old serial scan was 8 s per provider)."""
+    import time as _time
+
+    cfg = make_config({"brain": ["a:m"]}, auto_models=False,
+                      providers={n: {"base_url": f"https://{n}.example/v1", "api_key_env": ""} for n in "abc"})
+
+    def slow(self, name):
+        _time.sleep(0.3)
+        return [{"id": "new-model"}]
+
+    monkeypatch.setattr(Router, "_fetch_catalog", slow)
+    r = router_with(cfg, {n: FakeProvider(n, []) for n in "abc"})
+    r._real_clients = True
+    t0 = _time.monotonic()
+    view = {p["name"]: p for p in r.catalog_view()}
+    assert _time.monotonic() - t0 < 0.6  # serially this would take 0.9 s
+    assert all(f"{n}:new-model" in {m["ref"] for m in view[n]["models"]} for n in "abc")
+
+
+def test_catalog_view_survives_unreadable_catalog(monkeypatch):
+    """A provider whose catalog cannot be read (timeout, auth) must not break the menu: it opens with the
+    measured models and the failure is logged instead of swallowed silently. The failure is not cached,
+    so the catalog is tried again on the next open."""
+    cfg = make_config({"brain": ["groq:old"]}, auto_models=False,
+                      providers={"groq": {"base_url": "https://api.groq.com/openai/v1", "api_key_env": ""}})
+    logs = []
+
+    def fail(self, name):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(Router, "_fetch_catalog", fail)
+    cache = {"results": {"groq:old": {"ok": True, "quality": 60}}}
+    r = router_with(cfg, {"groq": FakeProvider("groq", [])}, auto_cache=cache)
+    r._log = logs.append
+    r._real_clients = True
+    view = {p["name"]: p for p in r.catalog_view()}
+    assert {m["ref"] for m in view["groq"]["models"]} == {"groq:old"}
+    assert any("catalog unreadable" in x for x in logs)
+    calls = []
+    monkeypatch.setattr(Router, "_fetch_catalog", lambda self, name: calls.append(name) or (_ for _ in ()).throw(TimeoutError("timed out")))
+    assert {m["ref"] for m in r.catalog_view()[0]["models"]} == {"groq:old"}
+    assert calls == ["groq"]  # a failed read is not cached, so the next open retries it
+
+
 def test_catalog_view_explains_provider_with_no_working_model():
     """If a server added from the UI has no model answering, the card must not stay empty:
     the provider's error must show."""
