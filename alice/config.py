@@ -567,7 +567,7 @@ models = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fa
 base_url = "http://127.0.0.1:8317/v1"
 api_key_env = "CLIPROXY_API_KEY"
 auto = false
-vision_models = ["claude-*"]
+vision_models = ["claude-*", "gemini-*", "gpt-*", "o1*", "o3*", "o4*", "*vision*", "*-vl*"]
 max_input_tokens = 1000000
 models = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1",
           "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6.1-terra", "gpt-6-chat-thinking"]
@@ -961,7 +961,11 @@ def load_env_file(path: Path) -> None:
             LOADED_ENV_KEYS.add(key)
 
 
-KNOWN_VISION = ("*gemma-3-*", "*gemma-4-*", "*llama-4-*", "*-vl-*", "*-vl", "*vision*", "*pixtral*")
+KNOWN_VISION = (
+    "*gemma-3-*", "*gemma-4-*", "*llama-4-*", "*-vl-*", "*-vl", "*vision*", "*pixtral*",
+    "*gemini*", "*claude*", "*gpt-4o*", "*gpt-4.1*", "*gpt-5*", "*gpt-6*", "*o1*", "*o3*", "*o4*",
+    "*llava*", "*minicpm*", "*qwen*vl*",
+)
 NOT_VISION = ("*-1b*", "*embed*", "*tts*", "*guard*")
 
 

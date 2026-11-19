@@ -602,3 +602,23 @@ def test_proxy_auth_error_does_not_close_the_whole_proxy():
     r._penalize("cliproxy:claude-opus-5-5", "cliproxy", ProviderError("auth", "401", 401), False, False)
     assert "cliproxy" not in r.dead_providers
     assert r.available("cliproxy:gpt-6.1-terra")[0] and not r.available("cliproxy:claude-opus-5-5")[0]
+
+
+def test_known_vision_models_and_cliproxy():
+    """Models from known multimodal families (gemini, gpt-4o, gpt-5, claude, etc.) are recognized as vision-capable,
+    even when proxy or custom providers do not explicitly list them."""
+    from alice.config import Config, ProviderConfig, default_config_dict
+
+    defaults = default_config_dict()
+    cliproxy_cfg = Config(defaults).providers()["cliproxy"]
+    assert cliproxy_cfg.supports_vision("gemini-3.8-flash-high")
+    assert cliproxy_cfg.supports_vision("gpt-5.6-terra")
+    assert cliproxy_cfg.supports_vision("claude-opus-5-5")
+
+    # Custom provider with no vision_models specified
+    custom = ProviderConfig(name="custom", base_url="http://x", vision_models=[])
+    assert custom.supports_vision("gemini-2.5-flash")
+    assert custom.supports_vision("gpt-4o")
+    assert custom.supports_vision("claude-3-5-sonnet")
+    assert custom.supports_vision("gpt-6-luna")
+    assert not custom.supports_vision("deepseek-v3")
