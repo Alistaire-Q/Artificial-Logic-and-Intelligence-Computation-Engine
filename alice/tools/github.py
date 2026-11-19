@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from alice.tools.base import DANGER, READ, WRITE, Tool, ToolContext, ToolError, ToolResult, obj, truncate
+from alice.tools.shell import hidden_startupinfo
 
 API = "https://api.github.com"
 TOKEN_ENVS = ("GITHUB_TOKEN", "GH_TOKEN", "GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_PAT")
@@ -56,12 +57,13 @@ def _token_candidates(cfg: Any = None):
     3. the key of the GitHub MCP server in the config,
     4. GITHUB_MODELS_TOKEN.
     """
-    # Priority: gh CLI session (user's preference)
+    # Priority: gh CLI session (user's keyring preference)
     gh = shutil.which("gh")
     if gh:
         try:
+            gh_env = {k: v for k, v in os.environ.items() if k not in ("GITHUB_TOKEN", "GH_TOKEN")}
             r = subprocess.run([gh, "auth", "token"], capture_output=True, text=True, timeout=10,
-                               creationflags=NO_WINDOW)
+                               env=gh_env, creationflags=NO_WINDOW, startupinfo=hidden_startupinfo())
             if r.returncode == 0 and r.stdout.strip():
                 yield r.stdout.strip()
         except (OSError, subprocess.SubprocessError):
@@ -130,8 +132,9 @@ def token_source(cfg: Any, token: str | None) -> str:
     gh = shutil.which("gh")
     if gh:
         try:
+            gh_env = {k: v for k, v in os.environ.items() if k not in ("GITHUB_TOKEN", "GH_TOKEN")}
             r = subprocess.run([gh, "auth", "token"], capture_output=True, text=True, timeout=10,
-                               creationflags=NO_WINDOW)
+                               env=gh_env, creationflags=NO_WINDOW, startupinfo=hidden_startupinfo())
             if r.returncode == 0 and r.stdout.strip() == token:
                 return "gh CLI (keyring)"
         except (OSError, subprocess.SubprocessError):
@@ -180,7 +183,7 @@ def run_git(args: list[str], cwd: Path, token: str | None = None, timeout: int =
 
         # Hooks and fsmonitor are off: a program that a sandboxed command left in .git must not run with ALICE's git.
         r = subprocess.run([git, *harden(args, cwd)], cwd=cwd, capture_output=True, timeout=timeout, env=git_env(token),
-                           stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
+                           stdin=subprocess.DEVNULL, creationflags=NO_WINDOW, startupinfo=hidden_startupinfo())
     except subprocess.TimeoutExpired as e:
         raise ToolError(f"git {args[0]} {timeout} sn'de bitmedi") from e
     out = (r.stdout + r.stderr).decode("utf-8", errors="replace").strip()
