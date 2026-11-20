@@ -74,7 +74,7 @@ class SimHub:
 
     def start(self) -> "SimHub":
         global ACTIVE
-        if self.cfg.get("dcs", False):
+        if self.cfg.get("dcs", True):
             from alice.sims.dcs import PORT, DCSListener, ensure_installed
             from alice.sims.wingmen import settings as wingmen_settings
 
@@ -103,7 +103,7 @@ class SimHub:
                                                port=int(self.cfg.get("dcs_port", PORT))).start())
             except OSError as e:
                 self.store.add_event("error", "DCS dinleyicisi başlamadı", str(e), "warn", "flight")
-        if self.cfg.get("warthunder", False):
+        if self.cfg.get("warthunder", True):
             from alice.sims.warthunder import WarThunderPoller
 
             comp = self.companion("warthunder")
