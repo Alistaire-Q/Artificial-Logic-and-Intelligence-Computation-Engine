@@ -1196,7 +1196,7 @@ class AppState:
     def buddy_action(self, action: str, value: str = "") -> dict[str, Any]:
         from alice import buddy
 
-        if action not in ("pet", "feed", "rename"):
+        if action not in ("pet", "feed", "rename", "play", "reroll"):
             return {"ok": False, "error": "bilinmeyen işlem"}
         return {"ok": True, "text": buddy.act(action, value), "buddy": buddy.view(self.cfg)}
 

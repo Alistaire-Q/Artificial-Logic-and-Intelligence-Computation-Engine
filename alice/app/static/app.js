@@ -197,6 +197,8 @@ function clearChat() {
   for (const t of S.tools.values()) clearInterval(t._timer);
   S.tools.clear(); S.perms.clear(); S.cur = null;
   setTodo("");
+  const ts = document.getElementById("turnSuggest");
+  if (ts) ts.replaceChildren();
   setEmpty(true);
   greet();
 }

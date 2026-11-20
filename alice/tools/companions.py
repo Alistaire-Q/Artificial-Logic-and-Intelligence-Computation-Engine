@@ -10,8 +10,8 @@ from alice.tools.base import READ, WRITE, Tool, ToolContext, ToolError, ToolResu
 class Buddy(Tool):
     name = "buddy"
     description = ("BUDDY, kullanıcının küçük arkadaşı (Tamagotchi). status: çizimi, adı, türü, nadirliği, seviyesi ve "
-                   "tokluk/enerji/keyif. pet: okşa. feed: besle (yarım saatte bir). rename: value ile yeni ad.")
-    parameters = obj({"action": {"type": "string", "enum": ["status", "pet", "feed", "rename"],
+                   "tokluk/enerji/keyif. pet: okşa. feed: besle. play: oyun oyna. rename: yeni ad. reroll: yeni tür/arkadaş çek.")
+    parameters = obj({"action": {"type": "string", "enum": ["status", "pet", "feed", "play", "rename", "reroll"],
                                  "description": "Yapılacak iş."},
                       "value": {"type": "string", "description": "rename: yeni ad."}}, ["action"])
     risk = READ

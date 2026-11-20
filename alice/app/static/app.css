@@ -302,8 +302,8 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; position: r
 #app.empty #hero { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: calc(var(--vh) * 18) 24px 26px; }
 .hero-mark img { width: 72px; height: 72px; border-radius: 50%; object-fit: cover; box-shadow: 0 0 0 2px var(--line); }
 #hero h1 { margin: 0; font: 600 30px/1.2 var(--sans); letter-spacing: -.025em; text-align: center; color: var(--text); }
-#suggest { display: none; }
-#app.empty #suggest { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 14px; }
+#starterSuggest { display: none; }
+#app.empty #starterSuggest { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 14px; }
 #app.empty #statusbar { visibility: hidden; }
 .sg {
   display: inline-flex; align-items: center; gap: 7px; padding: 7px 13px; border: 1px solid var(--line); border-radius: var(--r-md);

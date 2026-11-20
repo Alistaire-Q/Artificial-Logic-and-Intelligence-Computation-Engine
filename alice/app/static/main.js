@@ -162,10 +162,10 @@ function onBackground(ev) {
 /* Sonraki mesaj önerileri: tur bitince en fazla iki düğme. Tıklayınca kutuya yazılır (değiştirip gönderebilirsin);
    yazmaya başlayınca ya da yeni tur başlayınca kaybolur. */
 function showSuggest(items) {
-  let box = document.getElementById("suggest");
+  let box = document.getElementById("turnSuggest");
   if (!box) {
     box = el("div", "suggest");
-    box.id = "suggest";
+    box.id = "turnSuggest";
     const wrap = document.getElementById("composerWrap");
     wrap.insertBefore(box, document.getElementById("composer"));
     document.getElementById("input").addEventListener("input", () => { if (box.childElementCount) box.replaceChildren(); });

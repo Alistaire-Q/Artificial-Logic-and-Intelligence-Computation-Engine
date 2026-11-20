@@ -76,9 +76,13 @@
     };
     item("Besle", () => act("feed"));
     item("Okşa", () => { hearts(); act("pet"); });
+    item("Oyna", () => { act("play"); });
     item("Ad koy", () => {
       const v = prompt("Yeni adı:", (B.data && B.data.name) || "");
       if (v) act("rename", v);
+    });
+    item("Yeniden Çek (Reroll)", () => {
+      if (confirm("Yeni bir tür ve kişilik çekilsin mi?")) act("reroll");
     });
     item("Gizle", () => { setHidden(true); B.box.hidden = true; toast("BUDDY gizlendi; Ayarlar > Asistan'dan geri açabilirsin"); });
     B.box.appendChild(m);

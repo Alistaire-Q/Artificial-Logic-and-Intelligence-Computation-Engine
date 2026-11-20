@@ -289,20 +289,22 @@ social_mode = "wake"
 # Oyun/uçuş uyarılarını (tehdit, irtifa vb. anonslar) aç/kapatır; sesli sohbet etkilenmez. Boş = kapalı.
 # Kapanınca alçalan, açılınca yükselen bip çalar. WT'nin kendi tuşlarıyla çakışmasın.
 game_mute_key = "ctrl+shift+m"
+# Oyun uyarı sesleri (War Thunder/DCS tehdit ve irtifa anonsları). Varsayılan olarak kapalı.
+game_alerts = false
 # ALICE cevap verdikten sonra bu kadar saniye "Hey Alice" demeden devam edebilirsin (en fazla 5).
 # "Alice sus" dersen yeniden "Alice" diyene kadar hiçbir şeyi komut saymaz.
 follow_up = 5
 
 # Uçuş simülasyonları (çekirdekle çalışır). DCS için önce: alice dcs install
 [sims]
-dcs = true
+dcs = false
 dcs_port = 41230
 # Sesle kanat adamı yönetimi ("İkinci, sağdaki SAM'i bastır"): DCS'in Scripts\Hooks altına kurulan hook bu portu
 # sadece 127.0.0.1'de dinler; yalnızca tek oyunculuda ya da sunucu sensen çalışır. Kanat adamları boşsa oyuncuya
 # en yakın dost AI uçak grupları; sabit sıra için grup adlarını yaz (İkinci = ilk ad, Üçüncü = ikinci ad...).
 dcs_wingmen_port = 41231
 # dcs_wingmen = ["Uzi 2", "Uzi 3"]
-warthunder = true
+warthunder = false
 # Ekrandan füze görme (War Thunder füzeyi API'de vermiyor, ekranda gösteriyor). Sadece uçuşta, sol kenardaki RWR
 # bölgesi saniyede 6 kez yakalanır ve turkuaz yazıları okunur: TRACK = kilitlendin, LAUNCH/MSL = füze, MSL'nin
 # dairedeki yeri = yön. Oyuna dokunmaz. Bölge ekran yüksekliğine göre kendiliğinden; HUD'u taşıdıysan:
@@ -567,7 +569,7 @@ models = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fa
 base_url = "http://127.0.0.1:8317/v1"
 api_key_env = "CLIPROXY_API_KEY"
 auto = false
-vision_models = ["claude-*"]
+vision_models = ["claude-*", "gemini-*", "gpt-*", "o1*", "o3*", "o4*", "*vision*", "*-vl*"]
 max_input_tokens = 1000000
 models = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1",
           "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6.1-terra", "gpt-6-chat-thinking"]
@@ -961,7 +963,11 @@ def load_env_file(path: Path) -> None:
             LOADED_ENV_KEYS.add(key)
 
 
-KNOWN_VISION = ("*gemma-3-*", "*gemma-4-*", "*llama-4-*", "*-vl-*", "*-vl", "*vision*", "*pixtral*")
+KNOWN_VISION = (
+    "*gemma-3-*", "*gemma-4-*", "*llama-4-*", "*-vl-*", "*-vl", "*vision*", "*pixtral*",
+    "*gemini*", "*claude*", "*gpt-4o*", "*gpt-4.1*", "*gpt-5*", "*gpt-6*", "*o1*", "*o3*", "*o4*",
+    "*llava*", "*minicpm*", "*qwen*vl*",
+)
 NOT_VISION = ("*-1b*", "*embed*", "*tts*", "*guard*")
 
 
