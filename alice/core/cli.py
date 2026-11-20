@@ -378,6 +378,12 @@ def _start_voice(cfg, core):
             state = "kapalı" if speaker.alerts_muted else "açık"
             voice_log(f"oyun uyarı sesi {state} ({alert_mute_key})")
             console.print(f"[dim]oyun uyarı sesi {state}[/]")
+            try:
+                from alice.config import set_config_value
+
+                set_config_value("voice", "game_alerts", not speaker.alerts_muted)
+            except Exception as e:  # noqa: BLE001
+                voice_log(f"oyun uyarı ayarı kaydedilemedi: {e}")
             threading.Thread(target=beep, args=(speaker.alerts_muted,), daemon=True).start()
 
         alert_hotkey = WinHotkeys({alert_mute_key: toggle_alerts})

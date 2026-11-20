@@ -289,20 +289,22 @@ social_mode = "wake"
 # Oyun/uçuş uyarılarını (tehdit, irtifa vb. anonslar) aç/kapatır; sesli sohbet etkilenmez. Boş = kapalı.
 # Kapanınca alçalan, açılınca yükselen bip çalar. WT'nin kendi tuşlarıyla çakışmasın.
 game_mute_key = "ctrl+shift+m"
+# Oyun uyarı sesleri (War Thunder/DCS tehdit ve irtifa anonsları). Varsayılan olarak kapalı.
+game_alerts = false
 # ALICE cevap verdikten sonra bu kadar saniye "Hey Alice" demeden devam edebilirsin (en fazla 5).
 # "Alice sus" dersen yeniden "Alice" diyene kadar hiçbir şeyi komut saymaz.
 follow_up = 5
 
 # Uçuş simülasyonları (çekirdekle çalışır). DCS için önce: alice dcs install
 [sims]
-dcs = true
+dcs = false
 dcs_port = 41230
 # Sesle kanat adamı yönetimi ("İkinci, sağdaki SAM'i bastır"): DCS'in Scripts\Hooks altına kurulan hook bu portu
 # sadece 127.0.0.1'de dinler; yalnızca tek oyunculuda ya da sunucu sensen çalışır. Kanat adamları boşsa oyuncuya
 # en yakın dost AI uçak grupları; sabit sıra için grup adlarını yaz (İkinci = ilk ad, Üçüncü = ikinci ad...).
 dcs_wingmen_port = 41231
 # dcs_wingmen = ["Uzi 2", "Uzi 3"]
-warthunder = true
+warthunder = false
 # Ekrandan füze görme (War Thunder füzeyi API'de vermiyor, ekranda gösteriyor). Sadece uçuşta, sol kenardaki RWR
 # bölgesi saniyede 6 kez yakalanır ve turkuaz yazıları okunur: TRACK = kilitlendin, LAUNCH/MSL = füze, MSL'nin
 # dairedeki yeri = yön. Oyuna dokunmaz. Bölge ekran yüksekliğine göre kendiliğinden; HUD'u taşıdıysan:

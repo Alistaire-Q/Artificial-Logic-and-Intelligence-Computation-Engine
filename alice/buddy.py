@@ -92,7 +92,13 @@ class Bones:
 
 
 def roll(seed: str | None = None) -> Bones:
-    """Bones from seed: the same user always gets the same buddy."""
+    """Bones from seed: user seed or custom seed."""
+    from alice.config import load_config
+    if seed is None:
+        try:
+            seed = load_config().data.get("buddy", {}).get("seed") or None
+        except Exception:  # noqa: BLE001
+            seed = None
     digest = hashlib.sha256(f"{seed or user_seed()}|{SALT}".encode()).digest()
     rng = random.Random(int.from_bytes(digest[:8], "big"))
     pick = rng.uniform(0, sum(w for _, w, _ in RARITIES))
@@ -185,7 +191,7 @@ def _soul(st: dict[str, Any], bones: Bones, router: Any = None) -> None:
                 f"Küçük bir {bones.species} maskot için Türkçe, sevimli, tek kelimelik bir ad ve tek cümlelik kişilik "
                 f"yaz. En güçlü yanı {top}. Yalnız JSON: {{\"name\": \"...\", \"persona\": \"...\"}}")}],
                 temperature=0.9, max_tokens=120)
-            raw = (res.message.get("content") or "").strip()
+            raw = (getattr(res, "text", None) or (res.message.get("content") if hasattr(res, "message") else "") or "").strip()
             data = json.loads(raw[raw.find("{"): raw.rfind("}") + 1])
             name = str(data.get("name") or "").strip()[:20]
             persona = str(data.get("persona") or "").strip()[:200]
@@ -245,13 +251,29 @@ def act(action: str, value: str = "", path: Path | None = None, now: float | Non
         if action == "pet":
             st["mood"] = _clamp(st["mood"] + 15)
             st["pets"] = int(st.get("pets", 0)) + 1
-            out = f"{name} mırıldandı, keyfi yerine geldi."
+            st["xp"] = int(st.get("xp", 0)) + 1
+            pet_replies = [
+                f"{name} mırıldandı, keyfi yerine geldi.",
+                f"{name} gözlerini kısıp sana sokuldu.",
+                f"{name} mutlu bir ses çıkararak neşelendi.",
+                f"{name} okşanmanın tadını çıkarıyor."
+            ]
+            out = random.choice(pet_replies)
+        elif action == "play":
+            if st.get("energy", 80) < 15:
+                out = f"{name} çok yorgun, biraz dinlenmesi gerek."
+            else:
+                st["energy"] = _clamp(st["energy"] - 12)
+                st["mood"] = _clamp(st["mood"] + 20)
+                st["xp"] = int(st.get("xp", 0)) + 3
+                out = f"{name} seninle oyun oynadı, çok eğlendi! (+3 XP)"
         elif action == "feed":
             if now - float(st.get("fed", 0)) < 30 * 60:
                 out = f"{name} tok, az önce yedi."
             else:
                 st["food"] = _clamp(st["food"] + 30)
                 st["mood"] = _clamp(st["mood"] + 5)
+                st["xp"] = int(st.get("xp", 0)) + 1
                 st["fed"] = now
                 out = f"{name} afiyetle yedi."
         elif action == "rename":
@@ -260,6 +282,19 @@ def act(action: str, value: str = "", path: Path | None = None, now: float | Non
                 return "yeni ad gerekli"
             st["name"] = new
             out = f"Artık adı {new}."
+        elif action == "reroll":
+            import uuid
+            new_seed = uuid.uuid4().hex[:12]
+            try:
+                from alice.config import set_config_value
+                set_config_value("buddy", "seed", new_seed)
+            except Exception:
+                pass
+            st.pop("name", None)
+            st.pop("persona", None)
+            bones = roll(new_seed)
+            _soul(st, bones)
+            out = f"Yeni bir dost katıldı! Türü: {bones.species} ({bones.rarity}), adı: {st['name']}."
         else:
             return f"bilinmeyen işlem: {action}"
         _save(st, path)
@@ -294,7 +329,10 @@ def on_turn(cfg: Any, router: Any = None, user: str = "", reply: str = "", path:
             f"{word}sın. Sahibin ile asistanı arasındaki son konuşmaya en fazla 10 kelimelik, Türkçe, sevimli bir "
             "yan yorum yap. Tavsiye verme, soru sorma, emoji kullanma. Yalnız yorumu yaz.\n\n"
             f"Sahibi: {user[:400]}\nAsistan: {reply[:400]}")}], temperature=0.9, max_tokens=40)
-        text = " ".join((res.message.get("content") or "").split()).strip('"')[:90]
+        raw_c = getattr(res, "text", None) or (res.message.get("content") if hasattr(res, "message") else "") or ""
+        if isinstance(raw_c, list):
+            raw_c = "".join(p.get("text", "") for p in raw_c if isinstance(p, dict))
+        text = " ".join(str(raw_c).split()).strip('"')[:90]
     except Exception:  # noqa: BLE001
         return ""
     if not text:

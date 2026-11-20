@@ -1260,6 +1260,8 @@ def build_voice_agent(cfg, inner_ui=None, speaker: Speaker | None = None, cwd=No
     if hasattr(speaker, "alert_volume"):
         speaker.volume = float(vcfg.get("volume", 1.0))
         speaker.alert_volume = float(vcfg.get("alert_volume", 0.5))
+        # Persisted toggle for flight/game alert audio: defaults to false (muted)
+        speaker.alerts_muted = not bool(vcfg.get("game_alerts", False))
     ui = VoiceUI(speaker, inner_ui)
     agent = Agent(cfg, router, all_tools(cfg, ctx.emit), ctx, Permissions(cfg.agent.get("permission_mode", "auto")), ui, decider)
     agent.messages[0]["content"] += "\n\n" + VOICE_PROMPT
