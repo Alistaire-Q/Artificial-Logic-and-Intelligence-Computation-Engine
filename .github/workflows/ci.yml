@@ -60,3 +60,51 @@ jobs:
         with:
           name: coverage
           path: coverage.xml
+
+  # The Linux install the README tells people to run, on a clean Ubuntu.
+  linux-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # the piped run below clones this repo, so it needs the real history and the PR's commit
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      # The one-liner path: the script arrives on stdin (`curl ... | bash`), from a folder that is not a clone, and
+      # clones into a relative --dir. Pointed at this checkout so the PR's own code is what gets cloned.
+      - name: Piped install (curl | bash path)
+        run: |
+          set -e
+          git -C "$GITHUB_WORKSPACE" branch -f ci-install HEAD
+          mkdir -p "$RUNNER_TEMP/elsewhere" && cd "$RUNNER_TEMP/elsewhere"
+          ALICE_REPO_URL="file://$GITHUB_WORKSPACE" ALICE_REF=ci-install \
+            bash -s -- --dir piped-alice < "$GITHUB_WORKSPACE/install.sh"
+          test -x "$RUNNER_TEMP/elsewhere/piped-alice/.venv/bin/alice"
+          test "$(git -C "$RUNNER_TEMP/elsewhere/piped-alice" branch --show-current)" = main
+          # ~/.local/bin/alice must be an absolute link that works from anywhere.
+          case "$(readlink "$HOME/.local/bin/alice")" in /*) ;; *) echo "relative symlink"; exit 1 ;; esac
+          cd / && "$HOME/.local/bin/alice" --version
+          bash -s -- --help < "$GITHUB_WORKSPACE/install.sh" | grep -q 'curl -fsSL'
+      # A run from inside a clone installs that clone. The piped install above recorded its own venv first, so this
+      # also checks the launcher follows the newest install instead of a Python recorded earlier.
+      - name: install.sh in a clone
+        run: bash install.sh
+      - name: Check the install
+        run: |
+          set -e
+          "$HOME/.local/bin/alice" --version
+          test "$(readlink "$HOME/.local/bin/alice")" = "$GITHUB_WORKSPACE/.venv/bin/alice"
+          grep -q "^Exec=$GITHUB_WORKSPACE/.venv/bin/python -m alice app" "$HOME/.local/share/applications/alice.desktop"
+          test -f "$HOME/.local/share/applications/alice.desktop"
+          grep -q -- '-m alice app' "$HOME/.local/share/applications/alice.desktop"
+          test -f "$HOME/.alice/config.toml"
+      - name: Re-running install.sh is safe
+        run: |
+          set -e
+          grep -q '"pending"' "$HOME/.alice/setup.json"
+          # A finished wizard must stay finished when the script runs again (repair, or the curl line once more).
+          "$GITHUB_WORKSPACE/.venv/bin/python" -c "from alice.features import set_wizard_state; set_wizard_state(wizard='done')"
+          bash install.sh --no-shortcut
+          grep -q '"done"' "$HOME/.alice/setup.json"
+          "$HOME/.local/bin/alice" --version
